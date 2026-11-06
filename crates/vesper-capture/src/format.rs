@@ -10,6 +10,10 @@ use pipewire::spa::pod::{
 use pipewire::spa::sys;
 use pipewire::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Fraction, Id, Rectangle};
 
+#[allow(
+    clippy::trivially_copy_pass_by_ref,
+    reason = "called with byte-string literals"
+)]
 const fn fourcc(code: &[u8; 4]) -> u32 {
     u32::from_le_bytes(*code)
 }
@@ -259,7 +263,7 @@ pub fn monotonic_now() -> Duration {
         tv_nsec: 0,
     };
     // SAFETY: valid pointer; CLOCK_MONOTONIC always exists on Linux.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 

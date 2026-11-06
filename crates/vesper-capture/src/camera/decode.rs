@@ -57,12 +57,16 @@ impl Frame {
 
 impl Drop for Frame {
     fn drop(&mut self) {
-        unsafe { ff::av_frame_free(&mut self.0) };
+        unsafe { ff::av_frame_free(&raw mut self.0) };
     }
 }
 
 /// The VPP graph from the decoder's YUV surfaces to RGB ones, built for one
 /// decoder frames context and size.
+#[allow(
+    clippy::struct_field_names,
+    reason = "FFmpeg's filter graph of this VPP graph"
+)]
 struct Graph {
     graph: *mut ff::AVFilterGraph,
     src: *mut ff::AVFilterContext,
@@ -72,7 +76,7 @@ struct Graph {
 
 impl Drop for Graph {
     fn drop(&mut self) {
-        unsafe { ff::avfilter_graph_free(&mut self.graph) };
+        unsafe { ff::avfilter_graph_free(&raw mut self.graph) };
     }
 }
 
@@ -150,7 +154,7 @@ impl Decoder {
                 let render_node = ff::render_node_c_string()?;
                 check(
                     ff::av_hwdevice_ctx_create(
-                        &mut d.device,
+                        &raw mut d.device,
                         ff::AV_HWDEVICE_TYPE_VAAPI,
                         render_node.as_ptr(),
                         ptr::null_mut(),
@@ -292,9 +296,9 @@ impl Drop for Decoder {
         self.graph = None;
         unsafe {
             ff::av_frame_unref(self.decoded.0);
-            ff::av_packet_free(&mut self.packet);
-            ff::avcodec_free_context(&mut self.ctx);
-            ff::av_buffer_unref(&mut self.device);
+            ff::av_packet_free(&raw mut self.packet);
+            ff::avcodec_free_context(&raw mut self.ctx);
+            ff::av_buffer_unref(&raw mut self.device);
         }
     }
 }
@@ -308,7 +312,7 @@ unsafe fn filter(
     unsafe {
         check(
             ff::avfilter_graph_create_filter(
-                &mut f,
+                &raw mut f,
                 ff::avfilter_get_by_name(name.as_ptr()),
                 name.as_ptr(),
                 args.map_or(ptr::null(), CStr::as_ptr),

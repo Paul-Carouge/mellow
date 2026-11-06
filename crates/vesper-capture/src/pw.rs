@@ -516,7 +516,7 @@ pub fn run<F>(
                 // SAFETY: same generation, so the buffer is still in the pool.
                 |buffer| unsafe { stream.queue_raw_buffer(buffer) },
                 || mainloop.quit(),
-            )
+            );
         }
     });
     let _ = ready.send(Ok(()));
@@ -547,7 +547,7 @@ mod tests {
                     1,
                     |b| queued.borrow_mut().push(b as usize),
                     || mainloop.quit(),
-                )
+                );
             }
         });
         let guard = |ptr: usize, generation: u32| {

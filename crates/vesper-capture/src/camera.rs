@@ -97,6 +97,8 @@ fn info_of(props: &pw::spa::utils::dict::DictRef) -> Option<CameraInfo> {
 
 /// The cameras on the PipeWire graph now, sorted by description. Blocks up
 /// to a few seconds when PipeWire does not answer: call it off the UI thread.
+/// # Errors
+/// When PipeWire cannot be reached.
 pub fn cameras() -> Result<Vec<CameraInfo>> {
     pw::init();
     let mainloop = MainLoopRc::new(None)?;
@@ -168,6 +170,7 @@ pub enum CameraFrame {
 }
 
 impl CameraFrame {
+    #[must_use]
     pub fn pts(&self) -> Duration {
         match self {
             Self::Gpu(f) => f.pts,
@@ -221,7 +224,9 @@ impl Shared {
     }
 
     fn lock(&self) -> MutexGuard<'_, Slot> {
-        self.slot.lock().unwrap_or_else(|e| e.into_inner())
+        self.slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     fn publish(&self, frame: CameraFrame) {
@@ -255,11 +260,20 @@ pub struct Camera {
     shared: Arc<Shared>,
 }
 
+impl std::fmt::Debug for Camera {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Camera").finish_non_exhaustive()
+    }
+}
+
 impl Camera {
     /// Starts streaming the camera named `node_name` on a thread of its own:
     /// returns at once. Finding the node, negotiating and decoding happen on
     /// that thread; a failure shows in [`Camera::take`]. Errs only if the
     /// thread cannot start.
+    ///
+    /// # Errors
+    /// When the camera thread cannot be spawned.
     pub fn open(node_name: &str) -> Result<Self> {
         let (wake, stop_rx) = pw::channel::channel();
         let shared = Arc::new(Shared::new(wake));
@@ -281,6 +295,9 @@ impl Camera {
     /// The newest picture since the last call, if any. Errs once the stream
     /// ended (camera unplugged, PipeWire gone, no usable format...), with
     /// the reason; reopening is the caller's call.
+    ///
+    /// # Errors
+    /// When the camera ended, with the reason.
     pub fn take(&self) -> Result<Option<CameraFrame>> {
         let mut slot = self.shared.lock();
         match &slot.ended {
@@ -290,12 +307,14 @@ impl Camera {
     }
 
     /// The mode the camera streams in, once negotiated.
+    #[must_use]
     pub fn mode(&self) -> Option<Mode> {
         self.shared.lock().mode
     }
 
     /// Whether MJPEG is decoded on the CPU because the GPU could not: worth
     /// a notice, it costs a core at 1080p.
+    #[must_use]
     pub fn software_decode(&self) -> bool {
         self.shared.lock().software
     }
@@ -333,7 +352,7 @@ fn decode_loop(shared: &Shared) {
                 slot = shared
                     .jpeg_ready
                     .wait(slot)
-                    .unwrap_or_else(|e| e.into_inner());
+                    .unwrap_or_else(std::sync::PoisonError::into_inner);
             }
         };
         if decoder.is_none() {
@@ -453,8 +472,8 @@ impl State {
             self.shared.jpeg_ready.notify_one();
             return;
         }
-        match raw_frame(mode, &datas) {
-            Some((layout, planes, data)) => self.shared.publish(CameraFrame::Cpu(CpuFrame {
+        if let Some((layout, planes, data)) = raw_frame(mode, &datas) {
+            self.shared.publish(CameraFrame::Cpu(CpuFrame {
                 width: mode.width,
                 height: mode.height,
                 layout,
@@ -463,8 +482,9 @@ impl State {
                 matrix,
                 range,
                 pts,
-            })),
-            None => warn!("camera buffer too small for {mode:?}: dropped"),
+            }));
+        } else {
+            warn!("camera buffer too small for {mode:?}: dropped");
         }
     }
 }

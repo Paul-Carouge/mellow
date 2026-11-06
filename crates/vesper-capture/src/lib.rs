@@ -25,6 +25,12 @@
     clippy::cast_ptr_alignment,
     reason = "FFmpeg hands out its structures as byte pointers to memory av_malloc aligned"
 )]
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    reason = "PipeWire thread entry points own what they are given and set up one stream \
+              with its listener closures in one place"
+)]
 
 pub mod camera;
 mod ffmpeg;
@@ -78,6 +84,12 @@ pub struct Capture {
     thread: Option<JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for Capture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Capture").finish_non_exhaustive()
+    }
+}
+
 impl Capture {
     /// Opens the portal picker (skipped when `restore_token` is still valid)
     /// and starts streaming, at most `max_fps` frames per second (the
@@ -89,6 +101,9 @@ impl Capture {
     /// [`CLOSE_TIMEOUT`]).
     /// Blocks until the user picks a source; `cancel` ends the wait for the
     /// portal, closing its picker.
+    ///
+    /// # Errors
+    /// When the portal or PipeWire fails, or the user cancels.
     pub fn start(
         restore_token: Option<&str>,
         cancel: &Cancel,
@@ -101,6 +116,9 @@ impl Capture {
 
     /// [`Capture::start`], offering windows only (a game's window). `cancel`
     /// ends the wait for the portal, closing its picker.
+    ///
+    /// # Errors
+    /// When the portal or PipeWire fails, or the user cancels.
     pub fn start_window(
         restore_token: Option<&str>,
         cancel: &Cancel,
@@ -141,11 +159,13 @@ impl Capture {
     }
 
     /// Token that skips the picker next time (persist mode: until revoked).
+    #[must_use]
     pub fn restore_token(&self) -> Option<&str> {
         self.restore_token.as_deref()
     }
 
     /// The picked monitor or window.
+    #[must_use]
     pub fn source(&self) -> &SourceInfo {
         &self.source
     }
@@ -174,6 +194,9 @@ impl Drop for Capture {
 /// Opens the picker only, offering monitors and windows: the picked source
 /// and a token that restores it without the picker. No stream starts.
 /// Blocks until the user picks; `cancel` closes the picker.
+///
+/// # Errors
+/// When the portal fails, or the user cancels.
 pub fn pick(cancel: &Cancel) -> Result<(Option<String>, SourceInfo)> {
     let sources = SourceType::Monitor | SourceType::Window;
     let shown = PickerShown::new();
@@ -235,6 +258,7 @@ type Opened = (
 );
 
 /// Whether `error` is the user closing the picker without picking.
+#[must_use]
 pub fn is_cancelled(error: &Error) -> bool {
     matches!(
         error.downcast_ref::<ashpd::Error>(),
@@ -246,6 +270,7 @@ pub fn is_cancelled(error: &Error) -> bool {
 
 /// Whether the portal answered `error` to the request itself (a restore it
 /// could not do, a refusal), not the user cancelling nor D-Bus failing.
+#[must_use]
 pub fn is_refused(error: &Error) -> bool {
     matches!(
         error.downcast_ref::<ashpd::Error>(),
@@ -273,7 +298,7 @@ impl Cancel {
             .0
             .waker
             .lock()
-            .unwrap_or_else(|e| e.into_inner())
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
             .take();
         if let Some(waker) = waker {
             waker.wake();
@@ -281,6 +306,7 @@ impl Cancel {
     }
 
     /// Whether [`Cancel::cancel`] was called.
+    #[must_use]
     pub fn is_cancelled(&self) -> bool {
         self.0.done.load(Ordering::SeqCst)
     }
@@ -289,7 +315,11 @@ impl Cancel {
     fn wait(&self) -> impl Future<Output = ()> + '_ {
         std::future::poll_fn(move |cx| {
             // The waker first: a cancel in between still wakes it.
-            *self.0.waker.lock().unwrap_or_else(|e| e.into_inner()) = Some(cx.waker().clone());
+            *self
+                .0
+                .waker
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(cx.waker().clone());
             if self.0.done.load(Ordering::SeqCst) {
                 Poll::Ready(())
             } else {
@@ -337,7 +367,9 @@ async fn open_portal(
     if cancel.0.done.load(Ordering::SeqCst) {
         return Err(CANCELLED.into());
     }
-    let session = proxy.create_session(Default::default()).await?;
+    let session = proxy
+        .create_session(ashpd::desktop::CreateSessionOptions::default())
+        .await?;
     let select = SelectSourcesOptions::default()
         .set_cursor_mode(cursor)
         .set_sources(sources)
@@ -365,7 +397,10 @@ async fn open_portal(
         };
         let node_id = stream.pipe_wire_node_id();
         let fd = proxy
-            .open_pipe_wire_remote(&session, Default::default())
+            .open_pipe_wire_remote(
+                &session,
+                ashpd::desktop::screencast::OpenPipeWireRemoteOptions::default(),
+            )
             .await?;
         let token = streams.restore_token().map(str::to_owned);
         Ok::<_, Error>((node_id, fd, token, source))

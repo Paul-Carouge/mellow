@@ -1,3 +1,5 @@
+#![allow(clippy::print_stderr, reason = "tests say why they skip")]
+
 use std::ffi::c_int;
 use std::io::Seek;
 use std::os::fd::AsRawFd;
@@ -204,7 +206,7 @@ unsafe fn read_back(frame: &VideoFrame) -> Vec<u8> {
         let render_node = ff::render_node_c_string().expect("render node path");
         ok(
             ff::av_hwdevice_ctx_create(
-                &mut dev,
+                &raw mut dev,
                 ff::AV_HWDEVICE_TYPE_VAAPI,
                 render_node.as_ptr(),
                 ptr::null_mut(),
@@ -213,7 +215,7 @@ unsafe fn read_back(frame: &VideoFrame) -> Vec<u8> {
             "device",
         );
         let mut frames = ff::av_hwframe_ctx_alloc(dev);
-        let fc = (*frames).data as *mut ff::AVHWFramesContext;
+        let fc = (*frames).data.cast::<ff::AVHWFramesContext>();
         (*fc).format = ff::AV_PIX_FMT_VAAPI;
         (*fc).sw_format = ff::AV_PIX_FMT_BGR0;
         (*fc).width = frame.width as c_int;
@@ -224,7 +226,7 @@ unsafe fn read_back(frame: &VideoFrame) -> Vec<u8> {
         let desc_buf = ff::av_buffer_allocz(size_of::<ff::AVDRMFrameDescriptor>());
         (*src).buf[0] = desc_buf;
         (*src).data[0] = (*desc_buf).data;
-        let desc = &mut *((*desc_buf).data as *mut ff::AVDRMFrameDescriptor);
+        let desc = &mut *(*desc_buf).data.cast::<ff::AVDRMFrameDescriptor>();
         let fd = frame.planes[0].fd.as_raw_fd();
         desc.nb_objects = 1;
         desc.objects[0].fd = fd;
@@ -260,11 +262,11 @@ unsafe fn read_back(frame: &VideoFrame) -> Vec<u8> {
         }
         // The import holds the BO; `src` only borrows the frame's fd.
         desc.objects[0].fd = -1;
-        ff::av_frame_free(&mut sw);
-        ff::av_frame_free(&mut va);
-        ff::av_frame_free(&mut src);
-        ff::av_buffer_unref(&mut frames);
-        ff::av_buffer_unref(&mut dev);
+        ff::av_frame_free(&raw mut sw);
+        ff::av_frame_free(&raw mut va);
+        ff::av_frame_free(&raw mut src);
+        ff::av_buffer_unref(&raw mut frames);
+        ff::av_buffer_unref(&raw mut dev);
         out
     }
 }

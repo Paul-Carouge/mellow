@@ -137,6 +137,7 @@ fn parse(bytes: &[u8]) -> Option<Parsed> {
 }
 
 /// Every mode one `EnumFormat` pod offers that we can use.
+#[must_use]
 pub fn enum_modes(bytes: &[u8]) -> Vec<Mode> {
     let Some(p) = parse(bytes) else {
         return Vec::new();
@@ -163,6 +164,7 @@ pub fn enum_modes(bytes: &[u8]) -> Vec<Mode> {
 /// The format the server settled on, with the colour of raw pictures:
 /// what the pod says, else BT.601 limited (V4L2's default for webcams).
 /// MJPEG is always BT.601 full range (JFIF).
+#[must_use]
 pub fn negotiated(bytes: &[u8]) -> Option<(Mode, Matrix, Range)> {
     let p = parse(bytes)?;
     let encoding = *p.encodings.first()?;
@@ -209,6 +211,7 @@ fn encoding_rank(mode: &Mode) -> u8 {
 /// `fps` (29.97 counts as 30), at the lowest rate that does; failing that,
 /// the fastest (then the biggest). Bigger than `max` only when nothing fits (the smallest
 /// then). Between encodings of the same mode, see [`encoding_rank`].
+#[must_use]
 pub fn select(modes: &[Mode], max: (u32, u32), fps: u32) -> Option<Mode> {
     let want = u64::from(fps) * 1000 - 500;
     modes.iter().copied().max_by_key(|m| {
@@ -228,6 +231,7 @@ pub fn select(modes: &[Mode], max: (u32, u32), fps: u32) -> Option<Mode> {
 }
 
 /// The `EnumFormat` pod that asks for exactly `mode`.
+#[must_use]
 pub fn format_pod(mode: &Mode) -> Vec<u8> {
     let mut properties = vec![Property::new(
         sys::SPA_FORMAT_mediaType,
@@ -272,6 +276,7 @@ pub fn format_pod(mode: &Mode) -> Vec<u8> {
 }
 
 /// The `Buffers` param: shared memory, mapped by the stream.
+#[must_use]
 pub fn buffers_param() -> Vec<u8> {
     let shm = (1 << sys::SPA_DATA_MemPtr) | (1 << sys::SPA_DATA_MemFd);
     serialize(Object {
@@ -601,8 +606,8 @@ mod tests {
 
     #[test]
     fn audio_and_garbage_pods_give_nothing() {
-        assert!(enum_modes(&[]).is_empty());
-        assert!(enum_modes(&[1, 2, 3, 4, 5, 6, 7, 8]).is_empty());
+        assert_eq!(enum_modes(&[]).len(), 0);
+        assert_eq!(enum_modes(&[1, 2, 3, 4, 5, 6, 7, 8]).len(), 0);
         assert!(negotiated(&crate::format::header_meta_param()).is_none());
     }
 }
