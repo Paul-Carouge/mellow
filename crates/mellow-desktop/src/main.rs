@@ -25,7 +25,8 @@ fn main() -> ExitCode {
         .run(move |cx| {
             if let Err(error) = mellow_desktop::start(network_handle, cx) {
                 tracing::error!("{error:#}");
-                cx.quit();
+                // GPUI's `run` never returns on macOS, so the failure status is set here.
+                std::process::exit(1);
             }
         });
     ExitCode::SUCCESS
