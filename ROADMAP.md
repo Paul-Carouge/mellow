@@ -128,6 +128,7 @@ Each step is merged and usable; parity is checked against the web client's featu
 7. Voice: `str0m` client, audio processing, push-to-talk while unfocused, voice panel, soundboard.
 8. Video: receiving cameras and shares, camera sending (VP8 simulcast), screen sharing on Vesper's engine (its own ADR), share sound captured natively.
 9. Video attachments and MP4 GIFs, compression before upload, packaging (.app, Linux tarball), self-update, macOS signing (owner's decision), then Windows.
+Progress: step 1 is under way. Done: the skeleton (#279: `crates/mellow-desktop` with generated Dusk tokens and icon names, embedded fonts and icons, the empty Dusk shell with its breakpoints, window chrome, the Tokio bridge, light/dark following the OS; below their breakpoints the navigator and side sheet are hidden instead of shown as drawer and overlay), `mellow-client-core` at every REST route (#275), its gateway handle and full state model (#276) and the web's shared text, search, notification and list rules (#278), and the audio voice engine `mellow-media` (#277).
 - Later: a mobile client (push notifications, ADR-0008, set aside until then).
 
 ## M4 — Self-hosting polish and first release

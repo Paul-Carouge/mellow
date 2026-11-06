@@ -652,7 +652,8 @@ design/
 generated (committed, checked in CI):
   web/src/lib/tokens.css
   web/public/favicon.svg, web/public/icons/*, web/public/manifest.webmanifest
-  (native clients and the admin UI get their generators when they start, ADR-0036)
+  crates/mellow-desktop/src/theme/tokens.rs, crates/mellow-desktop/src/theme/icons.rs
+  (other native clients and the admin UI get their generators when they start)
 ```
 
 ### 3.2 Three tiers
@@ -670,20 +671,21 @@ generated (committed, checked in CI):
 
 | Platform | Transformation | Example for `color.text.on-accent` | Example for `component.channel-row.height` |
 |---|---|---|---|
-| Slint | Global per top-level category or component, property name is the rest in kebab-case | `MellowColor.text-on-accent` | `MellowChannelRow.height` |
+| GPUI | Field of `ThemeTokens` for themed values, otherwise a constant, path in snake case | `DARK_THEME.color_text_on_accent` | `COMPONENT_CHANNEL_ROW_HEIGHT` |
 | Compose | Material slot when one exists (3.4), otherwise a camelCase property in `MellowTheme` | `MaterialTheme.colorScheme.onPrimary` | `MellowTheme.components.channelRow.height` |
 | CSS | Custom property prefixed with `--mw-`, dots become dashes | `--mw-color-text-on-accent` | `--mw-component-channel-row-height` |
 
 ### 3.4 Platform mapping
 
-#### Slint (desktop)
+#### GPUI (desktop)
 
-The generator writes one `.slint` file with the globals `MellowColor`, `MellowType`, `MellowSpace`, `MellowSize`, `MellowRadius`, `MellowElevation`, `MellowMotion`, plus one global per component (`MellowRail`, `MellowChannelRow`, `MellowMessage`, …).
+The generator writes `crates/mellow-desktop/src/theme/tokens.rs`, plain Rust data with no GPUI type (ADR-0051), so it survives GPUI upgrades and its tests need no window:
 
-- `MellowColor` has an `in-out property <bool> dark` set by the Rust side from the user's theme setting and the OS appearance. Every colour property is generated as `dark ? <dark value> : <light value>`.
-- `MellowType` and `MellowSize` multiply every length by `in-out property <float> zoom` (0.5–2.0); `type.message*` and `type.code` are also multiplied by `chat-font-scale` (chat font size / 16).
-- `MellowMotion` durations are generated as `reduce-motion ? 0ms : <value>`.
-- We build Mellow components on Slint primitives so the Mellow look is identical on every OS; std-widgets are used only for behaviour we cannot reasonably rebuild (for example scrolling), styled with our tokens. Our colour global is `MellowColor` because std-widgets already export `Palette`.
+- **Themed values** (colours as `0xRRGGBBAA`, shadows as `ShadowLayer` lists) are the fields of one `ThemeTokens` struct, with the constants `DARK_THEME` and `LIGHT_THEME`. The window's appearance picks one (`theme::ActiveTheme`) and switching theme swaps one reference. Generation fails if any other token differs per theme.
+- **Everything else** is a constant named after its path in capitals (`component.channel-row.height` → `COMPONENT_CHANNEL_ROW_HEIGHT`): lengths in logical pixels (`f32`) that `theme::length` turns into rems, so the window's rem size is the zoom; numbers `f32`; font weights `u16`; families `&[&str]`; easings `[f32; 4]`; type styles `TypeToken`, whose `scales_with_chat_font` marks `type.message*` and `type.code`.
+- **Durations are typed.** A duration that is, or aliases through, `motion.duration.*` is an `AnimationDuration`, which `theme::animation_duration` returns as zero under reduced motion (the OS setting: read by gpui-component at start and followed live on Linux, re-read whenever the window is activated on macOS and Windows); every other one is a `Delay` and keeps its value. Literal loop periods (Melli, typing dots) are delays: their reduced-motion form is drawn still.
+- **Breakpoints** `BREAKPOINT_NAVIGATOR` (816), `BREAKPOINT_SIDE_SHEET` (1064) and `BREAKPOINT_SEARCH_SHEET` (1224) are summed from the pane tokens as the web client does (4.2).
+- The same run writes `icons.rs`: an `IconName` enum with one variant per `design/icons/*.svg`, its asset path and its bytes (`include_bytes!` from `design/icons`), so a missing icon fails to compile. Figtree and Source Code Pro are embedded from `design/fonts` the same way.
 
 #### Compose (Android, Material 3 Expressive)
 

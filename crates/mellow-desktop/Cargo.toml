@@ -1,0 +1,42 @@
+[package]
+name = "mellow-desktop"
+description = "The native Mellow desktop client, built on GPUI (ADR-0051)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[[bin]]
+name = "mellow"
+path = "src/main.rs"
+
+[features]
+# GPUI precompiles its Metal shaders with `xcrun metal`, which only a full Xcode with its Metal
+# toolchain has; compiling them at startup instead lets every Mac (and CI) build the workspace.
+# Release builds on a Mac with the Metal toolchain pass `--no-default-features` (ADR-0051).
+default = ["runtime-shaders"]
+runtime-shaders = ["gpui_platform/runtime_shaders"]
+
+[dependencies]
+anyhow.workspace = true
+# GPUI from Longbridge's weekly crates.io snapshot of Zed (crates.io only, Apache-2.0). gpui-pre,
+# gpui-pre-platform and gpui-component are pinned together and upgraded together (ADR-0051).
+gpui = { package = "gpui-pre", version = "=0.3.11" }
+# Without `wayland` and `x11` the Linux build has no windowing backend.
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["wayland", "x11", "font-kit"] }
+gpui-component = "=0.9.0"
+# Pinned with gpui-component, which depends on it; Mellow calls it to re-read reduced motion.
+gpui-base = "=0.9.0"
+tokio = { workspace = true, features = ["rt-multi-thread"] }
+tracing.workspace = true
+# `tracing-log` forwards the `log` records of GPUI and wgpu, whose errors would otherwise be lost.
+tracing-subscriber = { workspace = true, features = ["tracing-log"] }
+
+[dev-dependencies]
+gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+tokio = { workspace = true, features = ["sync"] }
+
+[lints]
+workspace = true

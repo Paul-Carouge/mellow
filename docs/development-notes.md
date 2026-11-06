@@ -91,6 +91,11 @@ cargo xtask tokens --check
 A local hook refuses `git commit` when fmt or clippy fail on the touched crate: run them first. The hook checks before the command runs, so a combined "fix && commit" command is refused as a whole.
 
 ## Traps already hit
+- **GPUI desktop shaders**: `mellow-desktop` defaults to `runtime-shaders` because `xcrun metal` needs a full Xcode with the Metal toolchain; a desktop release built on a Mac with that toolchain must pass `--no-default-features`, or it ships shaders compiled at start-up (ADR-0051).
+- **Feature unification with GPUI**: built together (`cargo test --workspace`), Cargo unifies GPUI's features into the server, notably serde_json `preserve_order`, which the release build (`-p mellow-server`) does not have; the wire-sample test broke on key order. CI tests `mellow-desktop` in its own step; the samples' keys are sorted so a local workspace run stays green.
+- **GPUI assets**: `with_assets(EmbeddedAssets)` replaces gpui-component's own icon assets, so every icon the desktop draws must come from `design/icons` through the generated `IconName`.
+- **GPUI logs**: GPUI, its platform crates and wgpu log through `log`; `mellow-desktop` enables `tracing-subscriber`'s `tracing-log` or their errors vanish.
+- **Reduced motion on the desktop**: gpui-base follows the OS setting live only on Linux (XDG portal); on macOS and Windows it is read at start, so `start` re-reads it when the window is activated.
 - **SDP mids read by hand**: `str0m` turns every non-alphanumeric character of `a=mid:` into `_` (spaces included, nothing trimmed) and keeps 16 characters; any mid the server reads itself must go through the same rule (`voice_rules::mid_as_read_by_the_webrtc_library`) and be unique, or two lines can swap roles.
 - **`web-client` feature**: `cargo build --release -p mellow-server` alone serves no web client (`/` is 404); build `web/dist`, then `--features web-client`, for a browser check.
 - **Parallel worktrees sharing `CARGO_TARGET_DIR`**: `mellow-server`'s build script writes the embedded web asset table into one `OUT_DIR`, so a build can pick up another worktree's table (seen as `WEB_CLIENT_BUILD_TAG` missing). `touch crates/mellow-server/build.rs` before building in a worktree.
