@@ -6,13 +6,12 @@ use std::time::Duration;
 use mellow_protocol::{
     ChannelKind, ChannelPlacement, InitialCategory, InitialTextChannel,
     MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
-    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, Permissions, Snowflake,
+    MAXIMUM_SOUND_DURATION_MILLISECONDS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, Permissions,
+    Snowflake,
 };
 
 use crate::domain::account_rules::is_invisible_format_character;
-use crate::domain::sound_rules::{
-    MAXIMUM_SOUND_DURATION_MILLISECONDS, MAXIMUM_SOUND_NAME_LENGTH, MINIMUM_SOUND_NAME_LENGTH,
-};
+use crate::domain::sound_rules::{MAXIMUM_SOUND_NAME_LENGTH, MINIMUM_SOUND_NAME_LENGTH};
 
 pub const MINIMUM_GUILD_NAME_LENGTH: usize = 2;
 pub const MAXIMUM_GUILD_NAME_LENGTH: usize = 100;

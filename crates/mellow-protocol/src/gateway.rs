@@ -80,6 +80,24 @@ pub enum ClientFrame {
 /// The shortest time between two sounds played by one member (ADR-0032).
 pub const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS: u64 = 2_000;
 
+/// The rate of the one format the instance stores sounds in (ADR-0032): a canonical WAV, PCM
+/// 16-bit, mono, with a 44-byte header and nothing after the samples.
+pub const SOUND_SAMPLE_RATE_HERTZ: u32 = 48_000;
+
+/// Discord's limit: 5.2 seconds.
+pub const MAXIMUM_SOUND_DURATION_MILLISECONDS: u32 = 5_200;
+
+/// The most samples a sound holds.
+pub const MAXIMUM_SOUND_SAMPLES: u32 =
+    SOUND_SAMPLE_RATE_HERTZ / 1_000 * MAXIMUM_SOUND_DURATION_MILLISECONDS;
+
+/// The canonical sound WAV's `fmt ` chunk of 16 bytes: PCM, one channel, 48 kHz, 96 000 bytes
+/// per second, 2-byte blocks, 16 bits.
+pub const CANONICAL_SOUND_FORMAT_CHUNK: [u8; 24] = [
+    b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0x00, 0x77, 0x01, 0, 2, 0,
+    16, 0,
+];
+
 /// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
 pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
 

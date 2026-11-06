@@ -1,6 +1,10 @@
 //! Rules of soundboard sounds (ADR-0032) that need no I/O: names, emoji and the one audio format
 //! the server stores.
 
+use mellow_protocol::{
+    CANONICAL_SOUND_FORMAT_CHUNK, MAXIMUM_SOUND_SAMPLES, SOUND_SAMPLE_RATE_HERTZ,
+};
+
 use crate::domain::guild_rules::{GuildRuleViolation, trimmed_within};
 use crate::domain::message_rules::reaction_emoji_key;
 
@@ -8,23 +12,11 @@ use crate::domain::message_rules::reaction_emoji_key;
 pub(crate) const MAXIMUM_SOUNDS_PER_GUILD: u32 = 48;
 pub(crate) const MINIMUM_SOUND_NAME_LENGTH: usize = 2;
 pub(crate) const MAXIMUM_SOUND_NAME_LENGTH: usize = 32;
-pub(crate) const SOUND_SAMPLE_RATE_HERTZ: u32 = 48_000;
 const SOUND_BYTES_PER_SAMPLE: u32 = 2;
-/// Discord's limit: 5.2 seconds.
-pub(crate) const MAXIMUM_SOUND_DURATION_MILLISECONDS: u32 = 5_200;
-const MAXIMUM_SOUND_SAMPLES: u32 =
-    SOUND_SAMPLE_RATE_HERTZ / 1_000 * MAXIMUM_SOUND_DURATION_MILLISECONDS;
 const CANONICAL_WAV_HEADER_BYTES: usize = 44;
 /// The largest upload read: a canonical WAV of the longest sound.
 pub(crate) const MAXIMUM_SOUND_FILE_BYTES: usize =
     CANONICAL_WAV_HEADER_BYTES + (MAXIMUM_SOUND_SAMPLES * SOUND_BYTES_PER_SAMPLE) as usize;
-
-/// `fmt ` chunk of 16 bytes: PCM, one channel, 48 kHz, 96 000 bytes per second, 2-byte blocks,
-/// 16 bits.
-const CANONICAL_FORMAT_CHUNK: [u8; 24] = [
-    b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0x00, 0x77, 0x01, 0, 2, 0,
-    16, 0,
-];
 
 /// Checks that `file` is a canonical PCM WAV, mono, 48 kHz, 16-bit, of 1 sample to 5.2 seconds,
 /// with nothing before or after its samples, and returns its duration in milliseconds, rounded
@@ -44,7 +36,7 @@ pub(crate) fn canonical_wav_duration_milliseconds(file: &[u8]) -> Result<u32, Gu
     let samples_bytes = file.len().saturating_sub(CANONICAL_WAV_HEADER_BYTES);
     let is_canonical = file.starts_with(b"RIFF")
         && file.get(8..12) == Some(b"WAVE")
-        && file.get(12..36) == Some(&CANONICAL_FORMAT_CHUNK)
+        && file.get(12..36) == Some(&CANONICAL_SOUND_FORMAT_CHUNK)
         && file.get(36..40) == Some(b"data")
         && usize::try_from(riff_size).is_ok_and(|size| size == file.len() - 8)
         && usize::try_from(data_size).is_ok_and(|size| size == samples_bytes)
@@ -85,6 +77,8 @@ pub(crate) fn normalize_sound_emoji(
 
 #[cfg(test)]
 pub(crate) mod tests {
+    use mellow_protocol::MAXIMUM_SOUND_DURATION_MILLISECONDS;
+
     use super::*;
 
     /// A canonical WAV of `samples` samples, as the web client encodes it.
@@ -94,7 +88,7 @@ pub(crate) mod tests {
         file.extend_from_slice(b"RIFF");
         file.extend_from_slice(&(36 + data_bytes).to_le_bytes());
         file.extend_from_slice(b"WAVE");
-        file.extend_from_slice(&CANONICAL_FORMAT_CHUNK);
+        file.extend_from_slice(&CANONICAL_SOUND_FORMAT_CHUNK);
         file.extend_from_slice(b"data");
         file.extend_from_slice(&data_bytes.to_le_bytes());
         file.resize(file.len() + data_bytes as usize, 0x7F);
