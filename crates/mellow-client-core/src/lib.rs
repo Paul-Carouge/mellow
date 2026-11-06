@@ -6,6 +6,7 @@ mod gateway;
 mod instance;
 mod nonce;
 mod rest;
+pub mod shared_logic;
 pub mod state;
 
 pub use error::ClientError;
