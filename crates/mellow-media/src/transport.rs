@@ -26,6 +26,7 @@ use crate::offer::{MediaLines, OfferError, ReceiveSlotKind, new_peer};
 use crate::person_settings::{PersonSoundSource, PersonVoiceSettingsStore};
 use crate::session::{VoiceSessionEvent, VoiceSignalling, VoiceToggles};
 use crate::simulcast::{LAYERS, VideoSourceKind, rid_of};
+use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
 use crate::video_receiver::VideoReceivers;
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
 
@@ -259,6 +260,13 @@ impl PeerConnection {
                 IceConnectionState::Connected | IceConnectionState::Completed,
             ) if self.is_media_connected => reports.push(PeerReport::MediaConnected),
             Event::PeerStats(stats) => {
+                let previous = video.uplink.ceiling();
+                let loss_percent = stats.egress_loss_fraction.map(loss_percent_of);
+                let ceiling = video.uplink.after_report(loss_percent, Instant::now());
+                if ceiling != previous {
+                    tracing::debug!(?ceiling, "the uplink's video layers changed");
+                    video.encoder.set_layer_ceiling(ceiling);
+                }
                 if let Some(round_trip) = stats
                     .selected_candidate_pair
                     .and_then(|pair| pair.current_round_trip_time)
@@ -385,6 +393,8 @@ pub(crate) struct VideoLink {
     pub(crate) source: Option<(VideoSourceKind, Instant)>,
     /// The last `voice_video_watch` list, sent again after each answer (a join forgets it).
     pub(crate) watched_cameras: Vec<WatchedCamera>,
+    /// The layers the uplink carries, from the server's loss feedback.
+    pub(crate) uplink: UplinkLayerCeiling,
 }
 
 /// Everything the network thread owns.
@@ -789,6 +799,7 @@ mod tests {
                 keyframe_requested_at: HashMap::new(),
                 source: None,
                 watched_cameras: Vec::new(),
+                uplink: UplinkLayerCeiling::default(),
             },
             is_path_dropped: Arc::new(AtomicBool::new(false)),
         };

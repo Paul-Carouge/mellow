@@ -8,7 +8,8 @@ use std::time::{Duration, Instant};
 
 use mellow_protocol::SimulcastLayer;
 
-use crate::simulcast::{FRAMES_PER_SECOND, SimulcastEncoder, VideoSourceKind};
+use crate::simulcast::{FRAMES_PER_SECOND, LAYERS, SimulcastEncoder, VideoSourceKind};
+use crate::uplink::layers_within;
 use crate::video_frame::{CapturedFrame, I420Picture};
 use crate::vp8::VIDEO_CLOCK_RATE;
 
@@ -38,6 +39,8 @@ struct Inbox {
     generation: u64,
     picture: Option<(CapturedFrame, Instant)>,
     active_layers: Option<Vec<SimulcastLayer>>,
+    /// The highest layer the uplink carries now (`crate::uplink`).
+    layer_ceiling: Option<SimulcastLayer>,
     keyframe_requests: Vec<Option<SimulcastLayer>>,
     is_stopped: bool,
     /// Something above changed since the thread last looked.
@@ -103,6 +106,10 @@ impl VideoEncoderControl {
         self.update(|inbox| inbox.active_layers = Some(active));
     }
 
+    pub(crate) fn set_layer_ceiling(&self, ceiling: SimulcastLayer) {
+        self.update(|inbox| inbox.layer_ceiling = Some(ceiling));
+    }
+
     pub(crate) fn request_keyframe(&self, layer: Option<SimulcastLayer>) {
         self.update(|inbox| inbox.keyframe_requests.push(layer));
     }
@@ -125,8 +132,11 @@ impl VideoEncoderControl {
         // Kept to encode again while no new picture comes: screen capture delivers one only
         // when the screen changes, and a still screen must still answer keyframe requests.
         let mut last_picture: Option<(u64, I420Picture)> = None;
+        // What the server asks for, trimmed to what the uplink carries.
+        let mut asked_layers = LAYERS.to_vec();
+        let mut layer_ceiling = SimulcastLayer::High;
         loop {
-            let (source, generation, picture, active_layers, keyframe_requests) = {
+            let (source, generation, picture, active_layers, new_ceiling, keyframe_requests) = {
                 let repeat_due_at = last_picture
                     .as_ref()
                     .and(last_encoded_at)
@@ -141,6 +151,7 @@ impl VideoEncoderControl {
                     inbox.generation,
                     inbox.picture.take(),
                     inbox.active_layers.take(),
+                    inbox.layer_ceiling.take(),
                     std::mem::take(&mut inbox.keyframe_requests),
                 )
             };
@@ -152,16 +163,26 @@ impl VideoEncoderControl {
             }
             let Some(kind) = source else {
                 encoder = None;
+                // A new source starts with every layer asked for, as a browser's does.
+                asked_layers = LAYERS.to_vec();
                 continue;
             };
+            let is_new_encoder = encoder.is_none();
             let encoder = encoder.get_or_insert_with(|| SimulcastEncoder::new(kind));
             if encoder.kind() != kind
                 && let Err(error) = encoder.set_kind(kind)
             {
                 tracing::warn!(%error, "the video encoders could not change source");
             }
-            if let Some(active) = active_layers {
-                encoder.set_active_layers(&active);
+            let has_layers_changed =
+                is_new_encoder || active_layers.is_some() || new_ceiling.is_some();
+            // An empty list leaves the layers as they are: the session ends the source instead.
+            if let Some(active) = active_layers.filter(|active| !active.is_empty()) {
+                asked_layers = active;
+            }
+            layer_ceiling = new_ceiling.unwrap_or(layer_ceiling);
+            if has_layers_changed {
+                encoder.set_active_layers(&layers_within(&asked_layers, layer_ceiling));
             }
             let is_keyframe_requested = !keyframe_requests.is_empty();
             for layer in keyframe_requests {

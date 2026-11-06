@@ -38,6 +38,7 @@ mod sound_player;
 mod soundboard;
 mod sounds;
 mod transport;
+mod uplink;
 mod video_frame;
 mod video_receiver;
 mod video_sender;

@@ -30,6 +30,7 @@ use crate::processing::ProcessingSettings;
 use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
 use crate::sounds::{LocalSound, VoiceCue};
 use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError, VideoLink};
+use crate::uplink::UplinkLayerCeiling;
 use crate::video_frame::DecodedPixelFormat;
 use crate::video_receiver::{VideoFrames, VideoReceivers};
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
@@ -347,6 +348,7 @@ impl VoiceSession {
             keyframe_requested_at: HashMap::new(),
             source: None,
             watched_cameras: Vec::new(),
+            uplink: UplinkLayerCeiling::default(),
         };
         let network = NetworkThread {
             machine: ConnectionMachine::new(options.channel_id),
