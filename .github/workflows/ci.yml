@@ -68,7 +68,11 @@ jobs:
           # shellcheck disable=SC2086 # the package list is split into words on purpose
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES}
       # Every crate's tests run even when one fails, so one platform gap hides nothing else.
-      - run: cargo test --workspace --locked --no-fail-fast
+      # The desktop client is tested apart: built together, Cargo would unify GPUI's features
+      # (serde_json `preserve_order`, ...) into the server, which its release build (`-p
+      # mellow-server`) does not have.
+      - run: cargo test --workspace --exclude mellow-desktop --locked --no-fail-fast
+      - run: cargo test -p mellow-desktop --locked --no-fail-fast
 
   desktop-macos:
     name: Desktop client (macOS)
