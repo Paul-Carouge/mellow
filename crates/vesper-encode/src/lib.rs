@@ -1388,13 +1388,23 @@ unsafe fn buffer_source(
         (*par).width = width as c_int;
         (*par).height = height as c_int;
         (*par).hw_frames_ctx = frames;
-        if yuv {
-            (*par).color_space = ff::AVCOL_SPC_BT709;
-            (*par).color_range = ff::AVCOL_RANGE_MPEG;
-        }
         let ret = ff::av_buffersrc_parameters_set(src, par);
         ff::av_free(par.cast());
         check(ret, "buffersrc params")?;
+        if yuv {
+            check(
+                ff::set_buffer_source_colour_option(
+                    src,
+                    c"colorspace",
+                    i64::from(ff::AVCOL_SPC_BT709),
+                ),
+                "buffersrc colorspace",
+            )?;
+            check(
+                ff::set_buffer_source_colour_option(src, c"range", i64::from(ff::AVCOL_RANGE_MPEG)),
+                "buffersrc range",
+            )?;
+        }
         check(
             ff::avfilter_init_dict(src, ptr::null_mut()),
             "init buffersrc",

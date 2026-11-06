@@ -342,6 +342,10 @@ fn decode_loop(shared: &Shared) {
                 Err(e) => return shared.end(format!("cannot decode the camera's MJPEG: {e}")),
             }
         }
+        #[allow(
+            clippy::expect_used,
+            reason = "invariant: set just above when it was None"
+        )]
         let d = decoder.as_mut().expect("set above");
         match d.decode(&jpeg, pts) {
             Ok(frame) => {

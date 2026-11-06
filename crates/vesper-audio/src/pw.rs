@@ -44,6 +44,10 @@ const LINKED: [u32; 8] = [
 
 /// Our only `EnumFormat`: F32 interleaved, 48 kHz, these channels. The
 /// stream's adapter converts whatever the device has (mono mics get upmixed).
+#[allow(
+    clippy::expect_used,
+    reason = "invariant: serializing a fixed format into a growable Vec cannot fail"
+)]
 fn format_pod(channels: &[u32]) -> Vec<u8> {
     let mut info = spa::param::audio::AudioInfoRaw::new();
     info.set_format(spa::param::audio::AudioFormat::F32LE);

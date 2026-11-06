@@ -9,10 +9,39 @@
     reason = "the names of FFmpeg's C structures"
 )]
 
-use std::ffi::{CString, NulError, c_int};
+use std::ffi::{CStr, CString, NulError, c_int};
 use std::os::unix::ffi::OsStringExt;
 
 pub(crate) use rusty_ffmpeg::ffi::*;
+
+/// Sets a colour option (`colorspace` or `range`) of a `buffer` source, the
+/// options behind `AVBufferSrcParameters.color_space` and `.color_range`
+/// (`FFmpeg` 7.1). Older `FFmpeg` (6.1 on Ubuntu 24.04) has neither: the source
+/// then keeps the frames' own colour properties, and this returns 0.
+/// Otherwise returns `FFmpeg`'s status.
+///
+/// # Safety
+/// `buffer_source` is a live `buffer` filter context, not yet initialised.
+pub(crate) unsafe fn set_buffer_source_colour_option(
+    buffer_source: *mut AVFilterContext,
+    option: &CStr,
+    value: i64,
+) -> c_int {
+    // SAFETY: the caller hands a live filter context; `option` is a C string.
+    let status = unsafe {
+        av_opt_set_int(
+            buffer_source.cast(),
+            option.as_ptr(),
+            value,
+            AV_OPT_SEARCH_CHILDREN as c_int,
+        )
+    };
+    if status == AVERROR_OPTION_NOT_FOUND {
+        0
+    } else {
+        status
+    }
+}
 
 /// [`vesper_core::discover_render_node`] as the C string
 /// `av_hwdevice_ctx_create` takes.

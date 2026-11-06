@@ -220,6 +220,10 @@ impl Decoder {
                 self.generation = vesper_core::next_pool_generation();
                 self.graph = Some(vpp_graph(dec, key)?);
             }
+            #[allow(
+                clippy::expect_used,
+                reason = "invariant: built just above when it was None"
+            )]
             let graph = self.graph.as_ref().expect("built above");
             // Takes the reference: `decoded` is left blank.
             check(
@@ -344,11 +348,17 @@ unsafe fn vpp_graph(dec: *const ff::AVFrame, key: (*mut u8, c_int, c_int)) -> Re
         (*par).width = (*dec).width;
         (*par).height = (*dec).height;
         (*par).hw_frames_ctx = (*dec).hw_frames_ctx;
-        (*par).color_space = (*dec).colorspace;
-        (*par).color_range = (*dec).color_range;
         let ret = ff::av_buffersrc_parameters_set(g.src, par);
         ff::av_free(par.cast());
         check(ret, "VPP source parameters")?;
+        check(
+            ff::set_buffer_source_colour_option(g.src, c"colorspace", i64::from((*dec).colorspace)),
+            "VPP source colorspace",
+        )?;
+        check(
+            ff::set_buffer_source_colour_option(g.src, c"range", i64::from((*dec).color_range)),
+            "VPP source range",
+        )?;
         check(
             ff::avfilter_init_dict(g.src, ptr::null_mut()),
             "init VPP source",

@@ -111,6 +111,10 @@ pub fn parse_format(bytes: &[u8]) -> Option<FormatInfo> {
     Some(info)
 }
 
+#[allow(
+    clippy::expect_used,
+    reason = "invariant: serializing into a growable Vec cannot fail"
+)]
 pub(crate) fn serialize(obj: Object) -> Vec<u8> {
     PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(obj))
         .expect("pod serialization into a Vec cannot fail")
