@@ -265,13 +265,18 @@ fn mention_match_rank(person: &PublicUser, folded_query: &str) -> Option<u8> {
     (username.contains(folded_query) || shown_name.contains(folded_query)).then_some(2)
 }
 
+/// A matching person with what orders the suggestions: the match rank, then the shown name
+/// folded once (case and accents ignored), then the person.
+type RankedMention<'p> = (u8, String, &'p PublicUser);
+
 /// shortcut: the web compares shown names with `Intl.Collator`; without ICU collation data this
 /// compares them folded (case and accents ignored), then as written. Pull in `icu_collator` if
 /// people report a different order between the web and the desktop.
-pub(crate) fn compare_names_for_people(left: &str, right: &str) -> Ordering {
-    fold_for_search(left)
-        .cmp(&fold_for_search(right))
-        .then_with(|| left.cmp(right))
+fn compare_ranked_mentions(left: &RankedMention<'_>, right: &RankedMention<'_>) -> Ordering {
+    left.0
+        .cmp(&right.0)
+        .then_with(|| left.1.cmp(&right.1))
+        .then_with(|| display_name(left.2).cmp(display_name(right.2)))
 }
 
 /// The people `query` may name, best match first and then by shown name, at most
@@ -285,21 +290,22 @@ pub fn suggest_mentions<'p>(
 ) -> Vec<&'p PublicUser> {
     let folded_query = fold_for_search(query);
     let mut seen = HashSet::from([excluded_user_id]);
-    let mut matches: Vec<(u8, &PublicUser)> = people
+    let mut matches: Vec<RankedMention<'p>> = people
         .iter()
         .filter(|person| seen.insert(person.id))
-        .filter_map(|person| mention_match_rank(person, &folded_query).map(|rank| (rank, person)))
+        .filter_map(|person| {
+            mention_match_rank(person, &folded_query)
+                .map(|rank| (rank, fold_for_search(display_name(person)), person))
+        })
         .collect();
-    matches.sort_by(|(left_rank, left), (right_rank, right)| {
-        left_rank
-            .cmp(right_rank)
-            .then_with(|| compare_names_for_people(display_name(left), display_name(right)))
-    });
-    matches
-        .into_iter()
-        .take(MAXIMUM_MENTION_SUGGESTIONS)
-        .map(|(_, person)| person)
-        .collect()
+    // Runs on every keystroke on the UI thread and a lone "@" matches the whole server: only the
+    // kept few are fully sorted, as the web keeps only its best few while reading.
+    if matches.len() > MAXIMUM_MENTION_SUGGESTIONS {
+        matches.select_nth_unstable_by(MAXIMUM_MENTION_SUGGESTIONS, compare_ranked_mentions);
+        matches.truncate(MAXIMUM_MENTION_SUGGESTIONS);
+    }
+    matches.sort_by(compare_ranked_mentions);
+    matches.into_iter().map(|(_, _, person)| person).collect()
 }
 
 #[cfg(test)]
