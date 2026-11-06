@@ -9,7 +9,9 @@ use std::collections::{BTreeSet, HashMap};
 use std::hash::Hash;
 use std::time::{Duration, Instant};
 
-use mellow_protocol::{SimulcastLayer, Snowflake, VideoTileSize, VoiceVideoRefusal};
+use mellow_protocol::{SimulcastLayer, Snowflake, VideoCodec, VideoTileSize, VoiceVideoRefusal};
+
+use crate::domain::h264_keyframes::constrained_baseline_picture_size;
 
 /// Cameras on at once in one voice channel. The owner's server lost frames with 25 cameras and
 /// default socket buffers (ADR-0035): raised once a run with larger buffers shows it holds more.
@@ -64,6 +66,30 @@ pub(crate) fn arriving_layer_at_most(
         layer = lower;
     }
     layer
+}
+
+/// The codec a camera m-line sends, from those it negotiated (ADR-0052): VP8 whenever it is among
+/// them, since every client decodes it, else H.264. A client that wants to send H.264 offers only
+/// H.264 on its camera line.
+#[must_use]
+pub(crate) fn camera_codec_of(negotiated: &[VideoCodec]) -> Option<VideoCodec> {
+    [VideoCodec::Vp8, VideoCodec::H264]
+        .into_iter()
+        .find(|codec| negotiated.contains(codec))
+}
+
+/// The codecs every one of a participant's video receive m-lines negotiated, so any free slot can
+/// carry a camera in one of them (ADR-0052). Nothing without receive lines.
+#[must_use]
+pub(crate) fn codecs_decoded_on_every_line(lines: &[Vec<VideoCodec>]) -> Vec<VideoCodec> {
+    let Some((first, others)) = lines.split_first() else {
+        return Vec::new();
+    };
+    first
+        .iter()
+        .filter(|codec| others.iter().all(|line| line.contains(codec)))
+        .copied()
+        .collect()
 }
 
 /// The layer that fits a tile shown at `size` (ADR-0035).
@@ -619,28 +645,42 @@ pub(crate) const fn maximum_bytes_per_second_of(layer: SimulcastLayer) -> u32 {
     }
 }
 
-/// Whether a VP8 keyframe's picture fits its layer: at most twice the camera layer's size each way
-/// for `q` (640 × 360) and `l` (1280 × 720), and a 1440p screen for `h` (2560 × 1440, ADR-0037). A camera could otherwise send a tiny
-/// keyframe declaring a huge picture, which every watcher of that layer would have to allocate
-/// and decode. A keyframe without the VP8 start code does not fit.
+/// Whether a keyframe's picture fits its layer: at most twice the camera layer's size each way for
+/// `q` (640 × 360) and `l` (1280 × 720), and a 1440p screen for `h` (2560 × 1440, ADR-0037). A
+/// camera could otherwise send a tiny keyframe declaring a huge picture, which every watcher of
+/// that layer would have to allocate and decode. A VP8 keyframe without its start code does not
+/// fit, nor an H.264 one without a Constrained Baseline sequence parameter set (ADR-0052).
 #[must_use]
-pub(crate) fn is_keyframe_within_layer_size(layer: SimulcastLayer, keyframe: &[u8]) -> bool {
+pub(crate) fn is_keyframe_within_layer_size(
+    codec: VideoCodec,
+    layer: SimulcastLayer,
+    keyframe: &[u8],
+) -> bool {
+    let picture_size = match codec {
+        VideoCodec::Vp8 => vp8_keyframe_picture_size(keyframe),
+        VideoCodec::H264 => constrained_baseline_picture_size(keyframe),
+    };
+    let (maximum_width, maximum_height) = match layer {
+        SimulcastLayer::Quarter => (640, 360),
+        SimulcastLayer::Low => (1_280, 720),
+        SimulcastLayer::High => (2_560, 1_440),
+    };
+    picture_size.is_some_and(|(width, height)| width <= maximum_width && height <= maximum_height)
+}
+
+/// The picture size a VP8 keyframe declares after its start code (RFC 6386, 9.1).
+fn vp8_keyframe_picture_size(keyframe: &[u8]) -> Option<(u64, u64)> {
     const VP8_START_CODE: [u8; 3] = [0x9d, 0x01, 0x2a];
     /// The two top bits of each dimension are its upscaling hint, not its size.
     const DIMENSION_MASK: u16 = 0x3fff;
     let (Some(start_code), Some(&[width_low, width_high, height_low, height_high])) =
         (keyframe.get(3..6), keyframe.get(6..10))
     else {
-        return false;
+        return None;
     };
     let width = u16::from_le_bytes([width_low, width_high]) & DIMENSION_MASK;
     let height = u16::from_le_bytes([height_low, height_high]) & DIMENSION_MASK;
-    let (maximum_width, maximum_height) = match layer {
-        SimulcastLayer::Quarter => (640, 360),
-        SimulcastLayer::Low => (1_280, 720),
-        SimulcastLayer::High => (2_560, 1_440),
-    };
-    start_code == VP8_START_CODE && width <= maximum_width && height <= maximum_height
+    (start_code == VP8_START_CODE).then_some((u64::from(width), u64::from(height)))
 }
 
 /// A token bucket of bytes refilled at `maximum_bytes_per_second_of` its layer and holding one
@@ -1278,6 +1318,24 @@ mod tests {
     }
 
     #[test]
+    fn a_camera_sends_vp8_whenever_it_can_and_watchers_decode_what_all_their_lines_carry() {
+        use VideoCodec::{H264, Vp8};
+        assert_eq!(camera_codec_of(&[H264, Vp8]), Some(Vp8));
+        assert_eq!(camera_codec_of(&[H264]), Some(H264));
+        assert_eq!(camera_codec_of(&[]), None);
+        assert_eq!(
+            codecs_decoded_on_every_line(&[vec![H264, Vp8], vec![Vp8, H264]]),
+            vec![H264, Vp8]
+        );
+        assert_eq!(
+            codecs_decoded_on_every_line(&[vec![Vp8, H264], vec![Vp8]]),
+            vec![Vp8],
+            "a line without H.264 could be the free one"
+        );
+        assert_eq!(codecs_decoded_on_every_line(&[]), Vec::<VideoCodec>::new());
+    }
+
+    #[test]
     fn keyframes_declare_at_most_twice_their_layer_size() {
         let keyframe = |width: u16, height: u16| {
             let mut frame = vec![0x10, 0, 0, 0x9d, 0x01, 0x2a];
@@ -1285,26 +1343,76 @@ mod tests {
             frame.extend(height.to_le_bytes());
             frame
         };
-        assert!(is_keyframe_within_layer_size(Quarter, &keyframe(320, 180)));
-        assert!(is_keyframe_within_layer_size(Quarter, &keyframe(640, 360)));
-        assert!(!is_keyframe_within_layer_size(Quarter, &keyframe(641, 360)));
+        assert!(is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            Quarter,
+            &keyframe(320, 180)
+        ));
+        assert!(is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            Quarter,
+            &keyframe(640, 360)
+        ));
         assert!(!is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            Quarter,
+            &keyframe(641, 360)
+        ));
+        assert!(!is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
             Quarter,
             &keyframe(16_383, 16_383)
         ));
-        assert!(is_keyframe_within_layer_size(High, &keyframe(2_560, 1_440)));
+        assert!(is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            High,
+            &keyframe(2_560, 1_440)
+        ));
         assert!(!is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
             High,
             &keyframe(2_561, 1_440)
         ));
         assert!(
-            is_keyframe_within_layer_size(Quarter, &keyframe(0x0140 | 0xc000, 180)),
+            is_keyframe_within_layer_size(
+                VideoCodec::Vp8,
+                Quarter,
+                &keyframe(0x0140 | 0xc000, 180)
+            ),
             "the scaling bits are not part of the size"
         );
         let mut without_start_code = keyframe(320, 180);
         without_start_code[3] = 0;
-        assert!(!is_keyframe_within_layer_size(Quarter, &without_start_code));
-        assert!(!is_keyframe_within_layer_size(Quarter, &[0x10, 0, 0]));
+        assert!(!is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            Quarter,
+            &without_start_code
+        ));
+        assert!(!is_keyframe_within_layer_size(
+            VideoCodec::Vp8,
+            Quarter,
+            &[0x10, 0, 0]
+        ));
+    }
+
+    #[test]
+    fn h264_keyframes_declare_at_most_twice_their_layer_size_too() {
+        use crate::domain::h264_keyframes::test_streams::keyframe;
+        let fits = |layer, width, height| {
+            is_keyframe_within_layer_size(VideoCodec::H264, layer, &keyframe(width, height, &[1]))
+        };
+        assert!(fits(Quarter, 320, 180));
+        assert!(fits(Quarter, 640, 360));
+        assert!(!fits(Quarter, 656, 360));
+        assert!(fits(Low, 1_280, 720));
+        assert!(!fits(Low, 1_920, 1_080));
+        assert!(fits(High, 2_560, 1_440));
+        assert!(!fits(High, 3_840, 2_160));
+        let vp8_keyframe = [0x10, 0, 0, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xb4, 0x00];
+        assert!(
+            !is_keyframe_within_layer_size(VideoCodec::H264, Quarter, &vp8_keyframe),
+            "a frame of another codec never fits"
+        );
     }
 
     #[test]

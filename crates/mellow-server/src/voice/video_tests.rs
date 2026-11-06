@@ -1,5 +1,6 @@
 //! Cameras through the real gateway and UDP port (ADR-0035), with headless `str0m` clients that
-//! send three synthetic VP8 simulcast layers and answer keyframe requests, as in the ADR's spike.
+//! send three synthetic VP8 or H.264 simulcast layers (ADR-0052) and answer keyframe requests, as
+//! in the ADR's spike.
 
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
@@ -10,11 +11,11 @@ use std::time::{Duration, Instant};
 
 use futures_util::StreamExt as _;
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Permissions, ServerFrame, SimulcastLayer, Snowflake, VideoTileSize,
-    VoiceVideoRefusal, WatchedCamera,
+    ClientFrame, GatewayEvent, Permissions, ServerFrame, SimulcastLayer, Snowflake, VideoCodec,
+    VideoTileSize, VoiceVideoRefusal, WatchedCamera,
 };
 use str0m::change::{SdpAnswer, SdpPendingOffer};
-use str0m::format::Codec;
+use str0m::format::{Codec, PayloadParams};
 use str0m::media::{Direction, Frequency, MediaKind, MediaTime, Mid, Rid, Simulcast};
 use str0m::net::{Protocol, Receive};
 use str0m::{Candidate, Event, Input, Output, Rtc};
@@ -22,6 +23,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::media::MediaEvent;
 use super::tests::{Fixture, HEARING_TIMEOUT, fixture, join, next_voice_state_update, pending_bot};
+use crate::domain::h264_keyframes::test_streams::{delta_frame, keyframe};
 use crate::gateway::tests::{ClientSocket, identified, receive_dispatch, send};
 
 const VIDEO_FRAME_INTERVAL: Duration = Duration::from_millis(33);
@@ -77,6 +79,17 @@ enum BotLink {
     Slow,
 }
 
+/// The video codecs a bot offers on its camera and receive lines.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BotCodecs {
+    /// As every web client before ADR-0052.
+    Vp8,
+    /// As a native client sending from a hardware encoder.
+    H264,
+    /// As a web client whose browser decodes H.264: it still sends VP8.
+    Vp8AndH264,
+}
+
 /// The offer without transport-wide congestion control, so the server estimates nothing.
 fn without_congestion_feedback(offer: &str) -> String {
     offer
@@ -113,14 +126,20 @@ struct PendingCameraBot {
 /// An offer as the web client makes it with video: a voice line and one voice slot, then a
 /// simulcast camera and `VIDEO_RECEIVE_SLOTS` camera slots, then if asked a screen sound line and
 /// one screen sound slot.
-fn pending_camera_bot(has_screen_sound: bool) -> PendingCameraBot {
+fn pending_camera_bot(has_screen_sound: bool, codecs: BotCodecs) -> PendingCameraBot {
     str0m::crypto::from_feature_flags().install_process_default();
     let socket = UdpSocket::bind("127.0.0.1:0").unwrap();
-    let mut rtc = Rtc::builder()
-        .clear_codecs()
-        .enable_opus(true, false)
-        .enable_vp8(true)
-        .build(Instant::now());
+    let mut config = Rtc::builder().clear_codecs().enable_opus(true, false);
+    if codecs != BotCodecs::H264 {
+        config.codec_config().enable_vp8(true);
+    }
+    if codecs != BotCodecs::Vp8 {
+        // Constrained Baseline in packetisation mode 1, as ADR-0052 asks of senders.
+        config
+            .codec_config()
+            .add_h264(102_u8.into(), Some(103_u8.into()), true, 0x42_e0_1f);
+    }
+    let mut rtc = config.build(Instant::now());
     rtc.add_local_candidate(Candidate::host(socket.local_addr().unwrap(), "udp").unwrap());
     let mut change = rtc.sdp_api();
     change.add_media(MediaKind::Audio, Direction::SendOnly, None, None, None);
@@ -219,6 +238,7 @@ async fn join_with_camera(
         TINY_FRAMES,
         false,
         BotLink::Steady,
+        BotCodecs::Vp8,
     )
     .await
 }
@@ -236,6 +256,7 @@ async fn join_with_screen_sound(
         TINY_FRAMES,
         true,
         BotLink::Steady,
+        BotCodecs::Vp8,
     )
     .await
 }
@@ -257,6 +278,7 @@ async fn join_with_camera_sending(
         },
         false,
         BotLink::Steady,
+        BotCodecs::Vp8,
     )
     .await
 }
@@ -268,6 +290,7 @@ async fn join_camera_bot(
     frame_bytes: FrameBytes,
     has_screen_sound: bool,
     link: BotLink,
+    codecs: BotCodecs,
 ) -> CameraBot {
     let PendingCameraBot {
         mut rtc,
@@ -276,7 +299,7 @@ async fn join_camera_bot(
         screen_sound_mid,
         socket: udp,
         offer,
-    } = pending_camera_bot(has_screen_sound);
+    } = pending_camera_bot(has_screen_sound, codecs);
     let offer = match link {
         BotLink::Steady => without_congestion_feedback(&offer),
         BotLink::Slow => offer,
@@ -341,15 +364,10 @@ fn run_camera_bot(
                         }
                     }
                 }
-                Output::Event(Event::MediaData(frame))
-                    if frame.data.len() == SOUND_FRAME_BYTES && frame.data[0] == SOUND_TAG =>
-                {
-                    let key = (frame.data[1], SOUND_TAG);
-                    *received.lock().unwrap().entry(key).or_default() += 1;
-                }
-                Output::Event(Event::MediaData(frame)) if frame.data.len() >= FRAME_BYTES => {
-                    let key = (frame.data[MARKER_OFFSET], frame.data[LAYER_OFFSET]);
-                    *received.lock().unwrap().entry(key).or_default() += 1;
+                Output::Event(Event::MediaData(frame)) => {
+                    if let Some(key) = marker_of_received(&frame) {
+                        *received.lock().unwrap().entry(key).or_default() += 1;
+                    }
                 }
                 Output::Event(_) => {}
             }
@@ -415,6 +433,21 @@ fn run_camera_bot(
     }
 }
 
+/// The sender's marker and the layer's RID byte (`SOUND_TAG` for screen sound) of a frame a bot
+/// received.
+fn marker_of_received(frame: &str0m::media::MediaData) -> Option<(u8, u8)> {
+    if frame.data.len() == SOUND_FRAME_BYTES && frame.data[0] == SOUND_TAG {
+        return Some((frame.data[1], SOUND_TAG));
+    }
+    if frame.params.spec().codec == Codec::H264 {
+        let [.., marker, layer] = frame.data[..] else {
+            panic!("an H.264 frame without its marker");
+        };
+        return Some((marker, layer));
+    }
+    (frame.data.len() >= FRAME_BYTES).then(|| (frame.data[MARKER_OFFSET], frame.data[LAYER_OFFSET]))
+}
+
 /// Whether the bot's link loses the datagram starting with `first_byte`: a slow link loses most
 /// media datagrams once connected (RTP and RTCP start with 128 to 191), never ICE or DTLS.
 fn is_lost(link: BotLink, is_connected: bool, first_byte: u8, media_datagrams: &mut u32) -> bool {
@@ -423,6 +456,20 @@ fn is_lost(link: BotLink, is_connected: bool, first_byte: u8, media_datagrams: &
     }
     *media_datagrams += 1;
     !media_datagrams.is_multiple_of(SLOW_LINK_KEEPS_ONE_DATAGRAM_IN)
+}
+
+/// A frame the H.264 depacketizer accepts: for keyframes a 320 × 180 Constrained Baseline SPS, a
+/// PPS and an IDR slice, otherwise a slice; the slice ends with padding, the camera's marker and
+/// the layer.
+fn synthetic_h264_frame(marker: u8, rid: &str, is_keyframe: bool, length: usize) -> Vec<u8> {
+    // No two zero bytes in a row, which would read as a start code.
+    let mut slice_tail = vec![0xaa_u8; length.max(FRAME_BYTES)];
+    slice_tail.extend([marker, rid.as_bytes()[0]]);
+    if is_keyframe {
+        keyframe(320, 180, &slice_tail)
+    } else {
+        delta_frame(&slice_tail)
+    }
 }
 
 /// One frame of each of the bot's camera layers, a keyframe where one is due.
@@ -437,15 +484,25 @@ fn write_camera_layers(
         let Some(writer) = rtc.writer(camera_mid) else {
             return;
         };
-        let payload_type = writer
-            .payload_params()
-            .find(|params| params.spec().codec == Codec::Vp8)
-            .map(str0m::format::PayloadParams::pt)
+        // VP8 whenever the line negotiated it, as the server expects (ADR-0052).
+        let (payload_type, codec) = [Codec::Vp8, Codec::H264]
+            .into_iter()
+            .find_map(|codec| {
+                writer
+                    .payload_params()
+                    .find(|params| params.spec().codec == codec)
+                    .map(|params| (PayloadParams::pt(params), codec))
+            })
             .unwrap();
         let length = match *rid {
             "q" => frame_bytes.quarter,
             "l" => frame_bytes.low,
             _ => frame_bytes.high,
+        };
+        let frame = if codec == Codec::Vp8 {
+            synthetic_vp8_frame(marker, rid, *is_due, length)
+        } else {
+            synthetic_h264_frame(marker, rid, *is_due, length)
         };
         writer
             .rid(Rid::from(*rid))
@@ -453,7 +510,7 @@ fn write_camera_layers(
                 payload_type,
                 now,
                 MediaTime::new(rtp_time, Frequency::NINETY_KHZ),
-                synthetic_vp8_frame(marker, rid, *is_due, length),
+                frame,
             )
             .unwrap();
         *is_due = false;
@@ -642,6 +699,7 @@ async fn a_watcher_on_a_lossy_link_has_its_tile_paused() {
         CAMERA_LIKE_FRAMES,
         false,
         BotLink::Steady,
+        BotCodecs::Vp8,
     )
     .await;
     let _member_bot = join_camera_bot(
@@ -651,6 +709,7 @@ async fn a_watcher_on_a_lossy_link_has_its_tile_paused() {
         TINY_FRAMES,
         false,
         BotLink::Slow,
+        BotCodecs::Vp8,
     )
     .await;
 
@@ -977,4 +1036,96 @@ async fn a_member_without_speak_shares_their_screen_without_its_sound() {
     fixture.close().await;
 
     assert_eq!(heard, 0, "the picture arrives, the sound does not");
+}
+
+/// A camera bot with the codecs `codecs`, sending tiny frames on a steady link.
+async fn join_with_codecs(
+    socket: &mut ClientSocket,
+    channel_id: Snowflake,
+    marker: u8,
+    codecs: BotCodecs,
+) -> CameraBot {
+    join_camera_bot(
+        socket,
+        channel_id,
+        marker,
+        TINY_FRAMES,
+        false,
+        BotLink::Steady,
+        codecs,
+    )
+    .await
+}
+
+/// Reads `socket` until `user_id`'s voice state shows their camera on, and returns its codec.
+async fn codec_of_camera_turned_on(
+    socket: &mut ClientSocket,
+    user_id: Snowflake,
+) -> Option<VideoCodec> {
+    loop {
+        let state = next_voice_state_update(socket, user_id).await;
+        if state.self_video {
+            return state.video_codec;
+        }
+    }
+}
+
+/// Whether `socket` is given a slot for `camera_id` within `SETTLE_TIME`.
+async fn is_slot_given_soon(socket: &mut ClientSocket, camera_id: Snowflake) -> bool {
+    let deadline = tokio::time::Instant::now() + SETTLE_TIME;
+    while let Ok(Some(Ok(message))) = tokio::time::timeout_at(deadline, socket.next()).await {
+        let Message::Text(text) = message else {
+            continue;
+        };
+        if let ServerFrame::Dispatch { event, .. } = serde_json::from_str(&text).unwrap()
+            && let GatewayEvent::VoiceSlotAssigned { user_id, .. } = *event
+            && user_id == camera_id
+        {
+            return true;
+        }
+    }
+    false
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_h264_camera_reaches_only_the_watchers_that_decode_h264() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let (owner_id, member_id) = (fixture.user_id("owner"), fixture.user_id("member"));
+    let owner_bot = join_with_codecs(&mut owner, fixture.lounge, 1, BotCodecs::H264).await;
+    // A web client from before ADR-0052: VP8 only.
+    let vp8_only_bot = join_with_codecs(&mut member, fixture.lounge, 2, BotCodecs::Vp8).await;
+
+    send(&mut owner, &camera_state(true)).await;
+    let announced_codec = codec_of_camera_turned_on(&mut member, owner_id).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Small)).await;
+    let is_slot_given_without_h264 = is_slot_given_soon(&mut member, owner_id).await;
+    let frames_without_h264 = vp8_only_bot.received(1, "q");
+    drop(vp8_only_bot);
+
+    // The same person reconnects from a browser that decodes H.264 too.
+    let both_bot = join_with_codecs(&mut member, fixture.lounge, 2, BotCodecs::Vp8AndH264).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Small)).await;
+    let slot = camera_slot_of(&mut member, owner_id).await;
+    both_bot.wait_until_receiving(1, "q").await;
+
+    // Its own camera is VP8, which the H.264-only client cannot decode.
+    send(&mut member, &camera_state(true)).await;
+    let member_codec = codec_of_camera_turned_on(&mut owner, member_id).await;
+    send(&mut owner, &watch(member_id, VideoTileSize::Small)).await;
+    let is_slot_given_without_vp8 = is_slot_given_soon(&mut owner, member_id).await;
+    let vp8_frames_at_the_h264_client = owner_bot.received(2, "q");
+    drop((owner_bot, both_bot));
+    fixture.close().await;
+
+    assert_eq!(announced_codec, Some(VideoCodec::H264));
+    assert!(
+        !is_slot_given_without_h264,
+        "a watcher that cannot decode H.264 gets no slot for it"
+    );
+    assert_eq!(frames_without_h264, 0);
+    assert_ne!(slot, "", "a watcher decoding H.264 gets a slot");
+    assert_eq!(member_codec, Some(VideoCodec::Vp8), "VP8 whenever offered");
+    assert!(!is_slot_given_without_vp8, "nor one that cannot decode VP8");
+    assert_eq!(vp8_frames_at_the_h264_client, 0);
 }

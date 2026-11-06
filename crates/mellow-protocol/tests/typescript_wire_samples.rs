@@ -34,9 +34,9 @@ use mellow_protocol::{
     PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role,
     ServerFrame, SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed,
     TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus,
-    UserProfile, VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal,
-    VoiceState, VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
-    YouTubeVideoEmbed,
+    UserProfile, VideoCodec, VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason,
+    VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed,
+    YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -665,12 +665,14 @@ fn voice_state() -> VoiceState {
         join_sound_id: Some(id(600)),
         self_video: true,
         self_stream: false,
+        video_codec: Some(VideoCodec::H264),
     }
 }
 
 fn sparse_voice_state() -> VoiceState {
     VoiceState {
         join_sound_id: None,
+        video_codec: None,
         ..voice_state()
     }
 }

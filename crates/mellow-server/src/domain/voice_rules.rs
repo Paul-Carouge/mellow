@@ -50,8 +50,20 @@ pub(crate) struct VoiceOfferShape {
     /// 0 when the offer has no video m-lines: this participant can neither send nor watch
     /// cameras.
     pub(crate) video_receive_slots: usize,
+    /// The video m-lines' mids, to read the codecs each one negotiated (ADR-0052); `None` without
+    /// video.
+    pub(crate) video_lines: Option<VideoLines>,
     /// The audio m-lines after the video ones, for the sound of shared screens (ADR-0037).
     pub(crate) screen_sound: Option<ScreenSoundLines>,
+}
+
+/// The mids of the video m-lines, those that have one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct VideoLines {
+    /// The line the client sends its camera or screen on.
+    pub(crate) send_mid: Option<String>,
+    /// The lines it receives the cameras and screens it watches on.
+    pub(crate) receive_mids: Vec<String>,
 }
 
 /// The mids of the screen sound m-lines: they are audio like the voice ones, so only their place
@@ -181,6 +193,7 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         return Ok(VoiceOfferShape {
             audio_receive_slots,
             video_receive_slots: 0,
+            video_lines: None,
             screen_sound: None,
         });
     }
@@ -190,6 +203,17 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
         MAXIMUM_VIDEO_RECEIVE_SLOTS,
     )
     .ok_or(InvalidVoiceOffer::UnexpectedMediaLines)?;
+    let video_lines = VideoLines {
+        send_mid: video_sections
+            .first()
+            .and_then(|section| section.mid.clone()),
+        receive_mids: video_sections
+            .get(1..=video_receive_slots)
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|section| section.mid.clone())
+            .collect(),
+    };
     let screen_sound_sections = video_sections
         .get(video_receive_slots + 1..)
         .unwrap_or_default();
@@ -201,6 +225,7 @@ pub(crate) fn validate_voice_offer(sdp_offer: &str) -> Result<VoiceOfferShape, I
     Ok(VoiceOfferShape {
         audio_receive_slots,
         video_receive_slots,
+        video_lines: Some(video_lines),
         screen_sound,
     })
 }
@@ -439,6 +464,7 @@ mod tests {
         VoiceOfferShape {
             audio_receive_slots,
             video_receive_slots: 0,
+            video_lines: None,
             screen_sound: None,
         }
     }
@@ -494,6 +520,10 @@ mod tests {
             Ok(VoiceOfferShape {
                 audio_receive_slots: 1,
                 video_receive_slots: 1,
+                video_lines: Some(VideoLines {
+                    send_mid: Some("2".into()),
+                    receive_mids: vec!["3".into()],
+                }),
                 screen_sound: None,
             })
         );
@@ -502,6 +532,10 @@ mod tests {
             Ok(VoiceOfferShape {
                 audio_receive_slots: 1,
                 video_receive_slots: 9,
+                video_lines: Some(VideoLines {
+                    send_mid: Some("2".into()),
+                    receive_mids: (3..12).map(|mid| mid.to_string()).collect(),
+                }),
                 screen_sound: None,
             })
         );
@@ -560,6 +594,10 @@ mod tests {
             Ok(VoiceOfferShape {
                 audio_receive_slots: 1,
                 video_receive_slots: 1,
+                video_lines: Some(VideoLines {
+                    send_mid: Some("2".into()),
+                    receive_mids: vec!["3".into()],
+                }),
                 screen_sound: Some(ScreenSoundLines {
                     send_mid: "4".into(),
                     receive_mids: vec!["5".into()],

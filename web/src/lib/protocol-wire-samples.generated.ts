@@ -1411,7 +1411,8 @@ export const readySamples = [
         "self_stream": false,
         "self_video": true,
         "suppressed": false,
-        "user_id": "10"
+        "user_id": "10",
+        "video_codec": "h264"
       },
       {
         "channel_id": "30",
@@ -1458,7 +1459,8 @@ export const voiceStateSamples = [
     "self_stream": false,
     "self_video": true,
     "suppressed": false,
-    "user_id": "10"
+    "user_id": "10",
+    "video_codec": "h264"
   },
   {
     "channel_id": "30",
@@ -2389,7 +2391,8 @@ export const gatewayEventSamples = [
         "self_stream": false,
         "self_video": true,
         "suppressed": false,
-        "user_id": "10"
+        "user_id": "10",
+        "video_codec": "h264"
       }
     },
     "t": "VOICE_STATE_UPDATE"
@@ -2689,7 +2692,8 @@ export const serverFrameSamples = [
           "self_stream": false,
           "self_video": true,
           "suppressed": false,
-          "user_id": "10"
+          "user_id": "10",
+          "video_codec": "h264"
         },
         {
           "channel_id": "30",

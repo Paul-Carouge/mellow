@@ -238,6 +238,7 @@ mod tests {
             join_sound_id: None,
             self_video: false,
             self_stream: false,
+            video_codec: None,
         }
     }
 

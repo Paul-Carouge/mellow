@@ -8,6 +8,7 @@ import {
   type ClientFrame,
   type SimulcastLayer,
   type Snowflake,
+  type VideoCodec,
   type VideoTileSize,
   SCREEN_SOUND_RECEIVE_SLOTS,
   VIDEO_RECEIVE_SLOTS,
@@ -229,7 +230,10 @@ export interface VoicePorts {
   listCameras(): Promise<readonly CameraDevice[]>;
   /** An audio input sent as a shared screen's sound, untouched; rejects when it cannot open. */
   requestSoundSource(deviceId: string): Promise<MediaStream>;
-  /** Opus and VP8 to keep in offers with video; `null` where the browser cannot restrict codecs: audio only. */
+  /**
+   * Opus and VP8 to keep in offers with video, and H.264 on the receive slots where the browser
+   * decodes it (ADR-0052); `null` where the browser cannot restrict codecs: audio only.
+   */
   codecPreferences(): CodecPreferences | null;
   /** Calls `onChange` when a device is plugged or unplugged; returns how to stop. */
   watchDevices(onChange: () => void): () => void;
@@ -277,6 +281,8 @@ export class VoiceSession {
   watchedCameras = $state.raw<readonly WatchedCamera[]>([]);
   /** The watched screen's and cameras' video tracks, by person, once their picture arrives. */
   videoTracks = $state.raw<ReadonlyMap<Snowflake, MediaStreamTrack>>(new Map());
+  /** The video receive slots of this call take H.264 too (ADR-0052): this browser decodes it. */
+  receivesH264 = $state(false);
   /** People whose picture the instance paused for this connection, too slow for it (`VOICE_VIDEO_PAUSED`). */
   pausedVideoUserIds = $state.raw<ReadonlySet<Snowflake>>(new Set());
   /** Whether the watched screen carries sound, sampled twice a second. */
@@ -1645,11 +1651,18 @@ export class VoiceSession {
     });
   }
 
+  /** Whether this call can show a picture in `codec`, as a voice state names it (absent: VP8). */
+  canShowVideoIn(codec: VideoCodec | null | undefined): boolean {
+    return codec === undefined || codec === null || codec === "vp8" || (codec === "h264" && this.receivesH264);
+  }
+
   /**
-   * The camera line (your camera or screen) and the video receive slots, with Opus and VP8 only so
-   * the offer stays under the instance's limit (ADR-0035). Without codec choice, the offer stays audio only.
+   * The camera line (your camera or screen) with VP8 only, and the video receive slots with VP8
+   * and, where the browser decodes it, H.264 Constrained Baseline (ADR-0052), so the offer stays
+   * under the instance's limit (ADR-0035). Without codec choice, the offer stays audio only.
    */
   private addVideoTransceivers(peer: RTCPeerConnection, audioTransceivers: readonly RTCRtpTransceiver[]): void {
+    this.receivesH264 = false;
     this.videoSender = null;
     this.screenSoundSender = null;
     this.videoReceivers = [];
@@ -1670,7 +1683,7 @@ export class VoiceSession {
       const receivers: RTCRtpTransceiver[] = [];
       for (let slot = 0; slot < VIDEO_RECEIVE_SLOTS; slot += 1) {
         const receiver = peer.addTransceiver("video", { direction: "recvonly" });
-        receiver.setCodecPreferences(codecs.video);
+        receiver.setCodecPreferences(codecs.receivedVideo);
         receivers.push(receiver);
       }
       // The shared screen's sound, then the watched screens' sound: audio lines after the video
@@ -1687,6 +1700,7 @@ export class VoiceSession {
       this.screenSoundSender = screenSound.sender;
       this.videoReceivers = receivers;
       this.screenSoundReceivers = soundReceivers;
+      this.receivesH264 = codecs.receivesH264;
     } catch (error) {
       // A browser refusing simulcast or these codecs joins with audio only.
       console.warn("couldn't add video to the call", error);

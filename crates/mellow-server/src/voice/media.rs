@@ -1,7 +1,7 @@
 //! The media loop (ADR-0030): one OS thread outside the Tokio runtime owns the UDP socket and every
 //! participant's WebRTC session (`str0m`, sans-IO). It forwards each speaker's Opus packets, as
-//! they are, to the other participants of their channel, and each camera's VP8 frames, one
-//! simulcast layer per watcher (ADR-0035), and reports speaking edges and dead connections. It
+//! they are, to the other participants of their channel, and each camera's VP8 or H.264 frames,
+//! one simulcast layer per watcher (ADR-0035, ADR-0052), and reports speaking edges and dead connections. It
 //! never touches SQLite: permissions arrive already decided, as commands.
 
 use std::collections::{HashMap, VecDeque};
@@ -10,7 +10,7 @@ use std::net::{SocketAddr, UdpSocket};
 use std::sync::mpsc::{Receiver, TryRecvError};
 use std::time::{Duration, Instant};
 
-use mellow_protocol::{SimulcastLayer, Snowflake};
+use mellow_protocol::{SimulcastLayer, Snowflake, VideoCodec};
 use str0m::change::SdpOffer;
 use str0m::format::{Codec, FormatParams};
 use str0m::media::{Direction, Frequency, KeyframeRequestKind, MediaData, MediaKind, Mid, Pt, Rid};
@@ -22,10 +22,11 @@ use crate::domain::video_rules::{
     FrameForwarding, LayerAllocation, LayerByteBudget, LayerCosts, LayerRate, LayerSwitch,
     LinkReport, MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, RecentRate, Throttle, TileDemand,
-    active_layers, arriving_layer_at_most, fair_share_of_upload, fit_tiles,
-    is_keyframe_within_layer_size, is_layer_gone, layer_cost, loss_percent_of,
+    active_layers, arriving_layer_at_most, camera_codec_of, codecs_decoded_on_every_line,
+    fair_share_of_upload, fit_tiles, is_keyframe_within_layer_size, is_layer_gone, layer_cost,
+    loss_percent_of,
 };
-use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector};
+use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector, VideoLines};
 
 /// Addresses remembered per participant: a client changing networks adds one now and then.
 const MAXIMUM_SOURCE_ADDRESSES_PER_PARTICIPANT: usize = 4;
@@ -74,6 +75,14 @@ const SILENT_CONNECTION_TIMEOUT: Duration = Duration::from_secs(30);
 const OPUS_PAYLOAD_TYPE: u8 = 111;
 const OPUS_CHANNELS: u8 = 2;
 const OPUS_MINIMUM_PACKET_MILLISECONDS: u8 = 10;
+/// The payload types the answer gives H.264 and its retransmissions when the offer does not
+/// impose them (`str0m`'s own defaults for Constrained Baseline).
+const H264_PAYLOAD_TYPE: u8 = 108;
+const H264_RETRANSMISSION_PAYLOAD_TYPE: u8 = 109;
+/// `profile-level-id` of H.264 Constrained Baseline (`42e0`) at level 3.1 (`1f`), what browsers
+/// offer. The level is not enforced on either side (`str0m` matches any level of the profile); the
+/// keyframe size checks bound the picture instead (ADR-0052).
+const H264_CONSTRAINED_BASELINE_PROFILE_LEVEL_ID: u32 = 0x42_e0_1f;
 /// How often a watcher's session reports the loss its congestion feedback shows (ADR-0035): its
 /// tiles follow it.
 const LINK_REPORT_INTERVAL: Duration = Duration::from_secs(1);
@@ -90,7 +99,8 @@ const REALLOCATION_INTERVAL: Duration = Duration::from_millis(500);
 /// the participant's downlink each second, which the cameras they watch follow (ADR-0035).
 ///
 /// # Errors
-/// `None` when the offer does not parse or cannot be answered with Opus (and VP8 for video).
+/// `None` when the offer does not parse or cannot be answered with Opus (and VP8 or H.264 for
+/// video).
 pub(crate) fn answer_offer(
     sdp_offer: &str,
     candidate_address: SocketAddr,
@@ -103,9 +113,17 @@ pub(crate) fn answer_offer(
         // estimate that lags behind a 1440p screen, which blurred and stalled it on fast links.
         config = config.set_stats_interval(Some(LINK_REPORT_INTERVAL));
     }
-    // VP8 with its retransmission stream is the only video codec (ADR-0035): every watcher can
-    // decode every camera, and the server never has to choose.
+    // VP8 with its retransmission stream, which every web client sends and decodes (ADR-0035),
+    // and H.264 Constrained Baseline in packetisation mode 1 for hardware encoders (ADR-0052): no
+    // B-frames, so frames are forwarded in the order they arrive. A camera sends one of them,
+    // and only watchers whose receive lines carry it get it.
     config.codec_config().enable_vp8(true);
+    config.codec_config().add_h264(
+        Pt::new_with_value(H264_PAYLOAD_TYPE),
+        Some(Pt::new_with_value(H264_RETRANSMISSION_PAYLOAD_TYPE)),
+        true,
+        H264_CONSTRAINED_BASELINE_PROFILE_LEVEL_ID,
+    );
     // In-band FEC and DTX in the answer ask the browser to send them (ADR-0030): FEC hides lost
     // packets, DTX sends almost nothing in silence.
     config.codec_config().add_config(
@@ -127,6 +145,74 @@ pub(crate) fn answer_offer(
     Some((Box::new(rtc), answer.to_sdp_string()))
 }
 
+/// The video codecs an answered session agreed on (ADR-0052).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub(crate) struct SessionVideoCodecs {
+    /// The codec of the participant's camera or screen; `None` when they cannot send video.
+    pub(crate) camera: Option<VideoCodec>,
+    /// The codecs every one of their video receive lines carries: the cameras they may watch.
+    pub(crate) decoded: Vec<VideoCodec>,
+}
+
+/// The video codec of a payload, if it is one the SFU forwards.
+const fn video_codec_of(codec: Codec) -> Option<VideoCodec> {
+    match codec {
+        Codec::Vp8 => Some(VideoCodec::Vp8),
+        Codec::H264 => Some(VideoCodec::H264),
+        _ => None,
+    }
+}
+
+/// Whether a camera's frame on `layer` may reach watchers: in the codec its voice state announces,
+/// which its watchers were chosen for (ADR-0052), and for a keyframe, declaring a picture that
+/// fits the layer (ADR-0035).
+fn is_frame_in_announced_codec_and_size(
+    camera_codec: Option<VideoCodec>,
+    layer: SimulcastLayer,
+    frame: &MediaData,
+) -> bool {
+    camera_codec.is_some_and(|codec| {
+        video_codec_of(frame.params.spec().codec) == Some(codec)
+            && (!frame.is_keyframe() || is_keyframe_within_layer_size(codec, layer, &frame.data))
+    })
+}
+
+/// The video codecs the m-line `mid` of an answered session negotiated, in the offer's order.
+fn negotiated_video_codecs(rtc: &Rtc, mid: &str) -> Vec<VideoCodec> {
+    let Some(media) = rtc.media(Mid::from(mid)) else {
+        return Vec::new();
+    };
+    let mut codecs = Vec::new();
+    for payload_type in media.remote_pts() {
+        let codec = rtc
+            .codec_config()
+            .find(|params| params.pt() == *payload_type)
+            .and_then(|params| video_codec_of(params.spec().codec));
+        if let Some(codec) = codec
+            && !codecs.contains(&codec)
+        {
+            codecs.push(codec);
+        }
+    }
+    codecs
+}
+
+/// What the answered session `rtc` sends and decodes, from its video m-lines (ADR-0052).
+pub(crate) fn session_video_codecs(rtc: &Rtc, lines: &VideoLines) -> SessionVideoCodecs {
+    let receive_lines: Vec<Vec<VideoCodec>> = lines
+        .receive_mids
+        .iter()
+        .map(|mid| negotiated_video_codecs(rtc, mid))
+        .collect();
+    SessionVideoCodecs {
+        camera: lines
+            .send_mid
+            .as_deref()
+            .and_then(|mid| camera_codec_of(&negotiated_video_codecs(rtc, mid))),
+        decoded: codecs_decoded_on_every_line(&receive_lines),
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct MediaJoin {
     pub(crate) user_id: Snowflake,
@@ -143,6 +229,7 @@ pub(crate) struct MediaJoin {
     pub(crate) may_speak: bool,
     /// The m-lines for the sound of shared screens, when the offer has them (ADR-0037).
     pub(crate) screen_sound: Option<ScreenSoundMids>,
+    pub(crate) video_codecs: SessionVideoCodecs,
 }
 
 /// The audio m-lines of a participant's offer that carry shared screens' sound, not voices.
@@ -284,6 +371,8 @@ struct Collected {
 struct ParticipantVideo {
     /// The m-line the participant sends their camera on; `None` when their offer has no video.
     camera_mid: Option<Mid>,
+    /// What their camera sends and what they decode (ADR-0052).
+    codecs: SessionVideoCodecs,
     /// Video receive m-lines not given to a camera.
     free_video_slots: Vec<Mid>,
     /// The cameras this participant shows, with the layer each tile fits, as last asked.
@@ -433,6 +522,7 @@ impl Participant {
             slots: ReceiveSlots::default(),
             video: ParticipantVideo {
                 screen_sound: join.screen_sound,
+                codecs: join.video_codecs,
                 free_screen_sound_slots,
                 ..ParticipantVideo::default()
             },
@@ -786,6 +876,8 @@ impl MediaLoop<'_> {
                 drain_output(&mut participant, &self.socket, &mut self.collected);
                 let (user_id, connection_id) = (participant.user_id, participant.connection_id);
                 self.participants.insert(user_id, participant);
+                // Its codec may have changed, or it is new to watchers who listed it already.
+                self.give_slots_to_watchers_of(user_id);
                 if was_speaking {
                     self.emit(MediaEvent::Speaking {
                         user_id,
@@ -893,6 +985,28 @@ impl MediaLoop<'_> {
         self.give_slots_to_shown_cameras(user_id);
     }
 
+    /// Gives the watchers showing `camera_id` a slot for it again, or takes the slot back if they
+    /// cannot decode it (ADR-0052).
+    fn give_slots_to_watchers_of(&mut self, camera_id: Snowflake) {
+        let watchers: Vec<Snowflake> = self
+            .participants
+            .values()
+            .filter(|watcher| {
+                watcher.user_id != camera_id
+                    && watcher
+                        .video
+                        .shown_cameras
+                        .iter()
+                        .any(|(shown, _)| *shown == camera_id)
+            })
+            .map(|watcher| watcher.user_id)
+            .collect();
+        for watcher_id in watchers {
+            self.current_participant = Some(watcher_id);
+            self.give_slots_to_shown_cameras(watcher_id);
+        }
+    }
+
     /// Gives the shown cameras of participants whose video slots just appeared their slots.
     fn give_new_video_slots(&mut self) {
         let waiting: Vec<Snowflake> = self
@@ -913,10 +1027,38 @@ impl MediaLoop<'_> {
     /// its tile fits within the watcher's bandwidth, frees the slots of cameras no longer shown,
     /// and reports the cameras whose watched layers changed.
     fn give_slots_to_shown_cameras(&mut self, user_id: Snowflake) {
+        let Some(decoded) = self
+            .participants
+            .get(&user_id)
+            .map(|watcher| watcher.video.codecs.decoded.clone())
+        else {
+            return;
+        };
+        // A camera whose codec the watcher does not decode gets no slot: the watcher's voice
+        // state shows the codec, so its client says why (ADR-0052). A camera not connected yet
+        // keeps its place; its arrival checks again.
+        let undecodable: Vec<Snowflake> = self
+            .participants
+            .values()
+            .filter(|camera| {
+                camera
+                    .video
+                    .codecs
+                    .camera
+                    .is_some_and(|codec| !decoded.contains(&codec))
+            })
+            .map(|camera| camera.user_id)
+            .collect();
         let Some(watcher) = self.participants.get_mut(&user_id) else {
             return;
         };
-        let cameras = watcher.video.shown_cameras.clone();
+        let cameras: Vec<(Snowflake, SimulcastLayer)> = watcher
+            .video
+            .shown_cameras
+            .iter()
+            .filter(|(camera_id, _)| !undecodable.contains(camera_id))
+            .copied()
+            .collect();
         let mut changed_cameras = Vec::new();
         let mut slot_assignments = Vec::new();
         let free_video_slots = &mut watcher.video.free_video_slots;
@@ -1358,8 +1500,7 @@ impl MediaLoop<'_> {
             return;
         };
         let is_keyframe = frame.is_keyframe();
-        // A keyframe declaring a picture too large for its layer reaches no one (ADR-0035).
-        if is_keyframe && !is_keyframe_within_layer_size(layer, &frame.data) {
+        if !is_frame_in_announced_codec_and_size(camera.video.codecs.camera, layer, frame) {
             return;
         }
         // Over its layer's budget, the frame reaches no one (ADR-0035): a client cannot send a
@@ -1775,6 +1916,7 @@ mod tests {
             is_deafened: false,
             may_speak: true,
             screen_sound: None,
+            video_codecs: SessionVideoCodecs::default(),
         })));
         let sharer = media.participants.get_mut(&sharer_id).unwrap();
         sharer.voice_payload_types = payload_types_of(&sharer.rtc, voice_mid);
@@ -1830,6 +1972,7 @@ mod tests {
             is_deafened: false,
             may_speak: true,
             screen_sound: None,
+            video_codecs: SessionVideoCodecs::default(),
         })));
         media.apply(MediaCommand::SetCamera {
             user_id: camera_id,
@@ -1894,6 +2037,7 @@ mod tests {
                 is_deafened: false,
                 may_speak: true,
                 screen_sound: None,
+                video_codecs: SessionVideoCodecs::default(),
             })));
         }
         // `str0m` announces video slots once connected; this session never connects.
@@ -2102,6 +2246,7 @@ mod tests {
                 is_deafened: false,
                 may_speak: true,
                 screen_sound: None,
+                video_codecs: SessionVideoCodecs::default(),
             })));
         }
 
