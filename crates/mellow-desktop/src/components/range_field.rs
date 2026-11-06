@@ -6,8 +6,9 @@ use std::sync::Arc;
 
 use gpui::{
     App, Bounds, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
-    MouseDownEvent, MouseMoveEvent, ParentElement as _, Pixels, RenderOnce, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, canvas, div, prelude::FluentBuilder as _,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, RenderOnce, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    prelude::FluentBuilder as _,
 };
 
 use super::{child_id, focus_ring, is_focus_visible, remembered_focus_handle, with_type};
@@ -135,12 +136,10 @@ impl RenderOnce for RangeField {
         let accent = color(tokens.component_slider_accent);
         let (bounds, value) = (self.bounds, self.value);
         let on_change = self.on_change;
-        let (key_change, down_change, move_change) =
+        let (key_change, down_change, drag_change) =
             (on_change.clone(), on_change.clone(), on_change);
-        let (down_track, move_track, paint_track) =
-            (track_bounds.clone(), track_bounds.clone(), track_bounds);
-        let (down_drag, move_drag, up_drag) =
-            (is_dragging.clone(), is_dragging.clone(), is_dragging);
+        let (down_track, paint_track) = (track_bounds.clone(), track_bounds);
+        let (down_drag, paint_drag) = (is_dragging.clone(), is_dragging);
         let thumb_left = gpui::relative(fraction);
 
         let track = div()
@@ -177,29 +176,39 @@ impl RenderOnce for RangeField {
                     if let Some(on_change) = down_change.as_ref() {
                         on_change(bounds.value_at_fraction(fraction), window, cx);
                     }
+                    // The next paint registers the window-level drag listeners.
+                    window.refresh();
                 },
             )
-            .on_mouse_move(move |event: &MouseMoveEvent, window, cx| {
-                if !*move_drag.read(cx) {
-                    return;
-                }
-                if event.pressed_button != Some(MouseButton::Left) {
-                    move_drag.update(cx, |dragging, _| *dragging = false);
-                    return;
-                }
-                let fraction = fraction_at(event.position.x, *move_track.read(cx));
-                if let Some(on_change) = move_change.as_ref() {
-                    on_change(bounds.value_at_fraction(fraction), window, cx);
-                }
-            })
-            .on_mouse_up(MouseButton::Left, move |_, _, cx| {
-                up_drag.update(cx, |dragging, _| *dragging = false);
-            })
             .child(
-                // Measures the track for the pointer: a drag maps x to a value.
+                // Measures the track for the pointer and, while dragging, follows the pointer
+                // across the whole window: element listeners stop once it leaves the track.
                 canvas(
                     move |bounds, _, cx| paint_track.update(cx, |stored, _| *stored = bounds),
-                    |_, (), _, _| {},
+                    move |track, (), window, cx| {
+                        if !*paint_drag.read(cx) {
+                            return;
+                        }
+                        let (move_drag, up_drag) = (paint_drag.clone(), paint_drag);
+                        window.on_mouse_event(move |event: &MouseMoveEvent, phase, window, cx| {
+                            if !phase.bubble() || !*move_drag.read(cx) {
+                                return;
+                            }
+                            if event.pressed_button != Some(MouseButton::Left) {
+                                move_drag.update(cx, |dragging, _| *dragging = false);
+                                return;
+                            }
+                            let fraction = fraction_at(event.position.x, track);
+                            if let Some(on_change) = drag_change.as_ref() {
+                                on_change(bounds.value_at_fraction(fraction), window, cx);
+                            }
+                        });
+                        window.on_mouse_event(move |_: &MouseUpEvent, phase, _, cx| {
+                            if phase.bubble() {
+                                up_drag.update(cx, |dragging, _| *dragging = false);
+                            }
+                        });
+                    },
                 )
                 .absolute()
                 .inset_0(),

@@ -9,7 +9,8 @@ use gpui::{
 
 use super::{
     Button, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuOrigin, ModalDialog,
-    ModalDialogEvent, Switch, Tabs, bind_tab_navigation, with_tab_navigation,
+    ModalDialogEvent, RangeBounds, RangeField, Switch, Tabs, bind_tab_navigation,
+    with_tab_navigation,
 };
 use crate::theme::ActiveTheme;
 use crate::theme::icons::IconName;
@@ -403,4 +404,87 @@ fn a_tall_dialog_scrolls_its_body_and_keeps_its_buttons_visible(cx: &mut TestApp
         "the footer stays inside the window, at {:?}",
         footer.bottom()
     );
+}
+
+const VOLUME_BOUNDS: RangeBounds = RangeBounds {
+    minimum: 0.0,
+    maximum: 200.0,
+    step: 1.0,
+};
+const RANGE_WINDOW_WIDTH: f32 = 400.0;
+/// Narrower than the window, so the pointer can leave the track sideways.
+const RANGE_FIELD_WIDTH: f32 = 200.0;
+
+struct RangeHarness {
+    value: f32,
+}
+
+impl Render for RangeHarness {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let entity = cx.entity();
+        div().p(gpui::px(RANGE_FIELD_WIDTH / 4.0)).child(
+            div()
+                .debug_selector(|| "range-field".to_owned())
+                .w(gpui::px(RANGE_FIELD_WIDTH))
+                .child(
+                    RangeField::new("volume", "Volume", self.value, VOLUME_BOUNDS, |value| {
+                        SharedString::from(format!("{value} %"))
+                    })
+                    .on_change(move |value, _, cx| {
+                        entity.update(cx, |harness, cx| {
+                            harness.value = value;
+                            cx.notify();
+                        });
+                    }),
+                ),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_slider_drag_follows_the_pointer_outside_the_track_until_release(cx: &mut TestAppContext) {
+    set_up(cx);
+    let (harness, cx) = cx.add_window_view(|_, _| RangeHarness { value: 0.0 });
+    cx.simulate_resize(gpui::size(gpui::px(RANGE_WINDOW_WIDTH), gpui::px(300.0)));
+    cx.run_until_parked();
+    let field = cx
+        .debug_bounds("range-field")
+        .unwrap_or_else(|| panic!("the range field was not drawn"));
+    // The track is the field's bottom row.
+    let on_track = gpui::point(field.center().x, field.bottom() - gpui::px(2.0));
+    let value = |cx: &mut VisualTestContext| harness.read_with(cx, |harness, _| harness.value);
+
+    cx.simulate_mouse_down(on_track, gpui::MouseButton::Left, gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(value(cx), 100.0, "a press in the middle picks the middle");
+
+    let past_the_end_and_below = gpui::point(
+        gpui::px(RANGE_WINDOW_WIDTH - 1.0),
+        field.bottom() + gpui::px(80.0),
+    );
+    cx.simulate_mouse_move(
+        past_the_end_and_below,
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert_eq!(
+        value(cx),
+        200.0,
+        "the drag follows the pointer off the track"
+    );
+
+    cx.simulate_mouse_up(
+        past_the_end_and_below,
+        gpui::MouseButton::Left,
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    cx.simulate_mouse_move(
+        gpui::point(gpui::px(1.0), on_track.y),
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    assert_eq!(value(cx), 200.0, "a release ends the drag");
 }
