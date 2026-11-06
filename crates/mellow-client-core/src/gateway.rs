@@ -1,11 +1,14 @@
-//! The live connection: identify, heartbeat, resume after drops, reconnect with backoff.
+//! The live connection: identify, heartbeat, resume after drops, reconnect with backoff, and the
+//! frames the app sends (voice) while a session is attached.
 
 use std::hash::{BuildHasher as _, Hasher as _};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
 use mellow_protocol::{ClientFrame, GatewayEvent, Ready, ServerFrame};
-use tokio::sync::mpsc;
+use tokio::sync::{Notify, mpsc};
 use tokio::time::{Instant, timeout};
 use tokio_tungstenite::tungstenite::Message as WebSocketMessage;
 use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
@@ -26,6 +29,12 @@ const MINIMUM_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(1);
 /// A `Ready` for hundreds of guilds stays well below this; it bounds what a hostile instance can
 /// make the client buffer (tungstenite's default is 64 MiB).
 const MAXIMUM_GATEWAY_MESSAGE_BYTES: usize = 8 * 1024 * 1024;
+/// After `reconnect_now` on a live connection, the socket must acknowledge a heartbeat within
+/// this or it is abandoned: a socket that survived a network change may be dead without knowing
+/// it (the web client's `NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT_MILLISECONDS`).
+const NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT: Duration = Duration::from_secs(10);
+/// Frames waiting for the connection task; a voice session sends a handful at a time.
+const MAXIMUM_QUEUED_FRAMES: usize = 32;
 
 /// What the gateway reports to the app, in order.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +55,92 @@ pub enum GatewayUpdate {
     SignedOut,
 }
 
+/// What the app and the connection task share.
+#[derive(Debug, Default)]
+struct SharedConnectionState {
+    /// `Ready` or `Resumed` came back on the current socket: frames may be sent.
+    is_session_attached: AtomicBool,
+    /// The app asked to retry now (the network came back or changed).
+    reconnect_requested: Notify,
+}
+
+/// The app's side of a running gateway: sends frames on the live session and asks for a
+/// reconnection now. Cheap to clone.
+#[derive(Debug, Clone)]
+pub struct GatewayHandle {
+    frames: mpsc::Sender<ClientFrame>,
+    shared: Arc<SharedConnectionState>,
+}
+
+/// The connection task's side of a `GatewayHandle`, given to `run_gateway`.
+#[derive(Debug)]
+pub struct GatewayCommands {
+    frames: mpsc::Receiver<ClientFrame>,
+    shared: Arc<SharedConnectionState>,
+}
+
+impl GatewayHandle {
+    /// A handle, and the commands `run_gateway` reads from it.
+    #[must_use]
+    pub fn new() -> (Self, GatewayCommands) {
+        let (sender, receiver) = mpsc::channel(MAXIMUM_QUEUED_FRAMES);
+        let shared = Arc::new(SharedConnectionState::default());
+        let handle = Self {
+            frames: sender,
+            shared: Arc::clone(&shared),
+        };
+        let commands = GatewayCommands {
+            frames: receiver,
+            shared,
+        };
+        (handle, commands)
+    }
+
+    /// Sends `frame` on the live session. False, and nothing is sent, while no session is
+    /// attached (connecting, reconnecting, signed out), when too many frames wait, and for the
+    /// frames the task owns (`identify`, `resume`, `heartbeat`). A frame is never kept for a
+    /// later connection: voice state would be stale there, and a voice session joins again after
+    /// each `Ready` anyway.
+    #[must_use]
+    pub fn send(&self, frame: ClientFrame) -> bool {
+        let is_owned_by_the_task = matches!(
+            frame,
+            ClientFrame::Identify { .. } | ClientFrame::Resume { .. } | ClientFrame::Heartbeat
+        );
+        !is_owned_by_the_task && self.is_session_attached() && self.frames.try_send(frame).is_ok()
+    }
+
+    /// Whether `Ready` or `Resumed` came back on the current connection.
+    #[must_use]
+    pub fn is_session_attached(&self) -> bool {
+        self.shared.is_session_attached.load(Ordering::Acquire)
+    }
+
+    /// The network came back or changed: a task waiting out its backoff reconnects now, with the
+    /// backoff reset; a live session checks that its socket still answers a heartbeat. An attempt
+    /// under way goes on (a request made during it may cut its next backoff short).
+    pub fn reconnect_now(&self) {
+        self.shared.reconnect_requested.notify_one();
+    }
+}
+
+impl GatewayCommands {
+    /// The session is gone: `send` refuses frames, and those already queued are dropped rather
+    /// than sent on the next connection.
+    fn detach_session(&mut self) {
+        self.shared
+            .is_session_attached
+            .store(false, Ordering::Release);
+        while self.frames.try_recv().is_ok() {}
+    }
+
+    fn attach_session(&self) {
+        self.shared
+            .is_session_attached
+            .store(true, Ordering::Release);
+    }
+}
+
 /// Where to pick up after a drop.
 #[derive(Debug)]
 struct ResumePoint {
@@ -62,12 +157,19 @@ enum ConnectionEnd {
     },
 }
 
+#[derive(Debug, PartialEq, Eq)]
+enum WaitEnd {
+    DelayElapsed,
+    ReconnectRequested,
+}
+
 /// Keeps a session alive until the token is refused (sends `SignedOut`) or `updates` is dropped.
-/// Abort the task to disconnect.
+/// Abort the task to disconnect. `commands` comes from `GatewayHandle::new`.
 pub async fn run_gateway(
     instance: InstanceAddress,
     token: Zeroizing<String>,
     updates: mpsc::Sender<GatewayUpdate>,
+    mut commands: GatewayCommands,
 ) {
     let url = match instance.gateway_url() {
         Ok(url) => url,
@@ -83,17 +185,16 @@ pub async fn run_gateway(
         if updates.is_closed() {
             return;
         }
-        match run_connection(&url, &token, &mut resume_point, &updates).await {
+        let end = run_connection(&url, &token, &mut resume_point, &updates, &mut commands).await;
+        commands.detach_session();
+        match end {
             ConnectionEnd::UpdatesClosed => return,
             ConnectionEnd::IdentifyRefused if is_token_refused(&instance, &token).await => {
                 let _ = updates.send(GatewayUpdate::SignedOut).await;
                 return;
             }
             // Refused for another reason (session cap, transient server error): retry later.
-            ConnectionEnd::IdentifyRefused => {
-                tokio::time::sleep(reconnect_delay(consecutive_failures, random_u64())).await;
-                consecutive_failures = consecutive_failures.saturating_add(1);
-            }
+            ConnectionEnd::IdentifyRefused => {}
             ConnectionEnd::Lost { was_connected } => {
                 if was_connected {
                     consecutive_failures = 0;
@@ -101,10 +202,21 @@ pub async fn run_gateway(
                         return;
                     }
                 }
-                tokio::time::sleep(reconnect_delay(consecutive_failures, random_u64())).await;
-                consecutive_failures = consecutive_failures.saturating_add(1);
             }
         }
+        let delay = reconnect_delay(consecutive_failures, random_u64());
+        consecutive_failures = match wait_or_reconnect_now(delay, &commands.shared).await {
+            WaitEnd::DelayElapsed => consecutive_failures.saturating_add(1),
+            WaitEnd::ReconnectRequested => 0,
+        };
+    }
+}
+
+/// The backoff wait, cut short by `GatewayHandle::reconnect_now`.
+async fn wait_or_reconnect_now(delay: Duration, shared: &SharedConnectionState) -> WaitEnd {
+    tokio::select! {
+        () = tokio::time::sleep(delay) => WaitEnd::DelayElapsed,
+        () = shared.reconnect_requested.notified() => WaitEnd::ReconnectRequested,
     }
 }
 
@@ -154,11 +266,16 @@ async fn connect(
     }
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "one select loop over the socket, the timers and the app's commands reads best whole"
+)]
 async fn run_connection(
     url: &Url,
     token: &Zeroizing<String>,
     resume_point: &mut Option<ResumePoint>,
     updates: &mpsc::Sender<GatewayUpdate>,
+    commands: &mut GatewayCommands,
 ) -> ConnectionEnd {
     let lost = ConnectionEnd::Lost {
         was_connected: false,
@@ -168,7 +285,7 @@ async fn run_connection(
     };
     let (mut sink, mut stream) = socket.split();
 
-    let Ok(Some(ServerFrame::Hello { d: hello })) =
+    let Ok(Some(IncomingFrame::Known(ServerFrame::Hello { d: hello }))) =
         timeout(HANDSHAKE_TIMEOUT, next_frame(&mut stream)).await
     else {
         return lost;
@@ -197,6 +314,11 @@ async fn run_connection(
         tokio::time::interval_at(Instant::now() + heartbeat_interval, heartbeat_interval);
     let handshake_deadline = tokio::time::sleep(HANDSHAKE_TIMEOUT);
     tokio::pin!(handshake_deadline);
+    // Armed by `reconnect_now` on a live session.
+    let link_check_deadline = tokio::time::sleep(NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT);
+    tokio::pin!(link_check_deadline);
+    let mut is_checking_link = false;
+    let mut are_commands_open = true;
 
     loop {
         let lost = ConnectionEnd::Lost {
@@ -213,33 +335,73 @@ async fn run_connection(
                 continue;
             }
             () = &mut handshake_deadline, if !is_connected => return lost,
-        };
-        let update = match frame {
-            None => return lost,
-            Some(ServerFrame::Hello { .. }) => continue,
-            Some(ServerFrame::HeartbeatAck) => {
-                is_heartbeat_acknowledged = true;
+            command = commands.frames.recv(), if is_connected && are_commands_open => {
+                match command {
+                    Some(frame) => {
+                        if send_frame(&mut sink, &frame).await.is_err() {
+                            return lost;
+                        }
+                    }
+                    // Every handle is gone: nothing more will come.
+                    None => are_commands_open = false,
+                }
                 continue;
             }
-            Some(ServerFrame::Ready { d: ready }) => {
+            () = commands.shared.reconnect_requested.notified() => {
+                // Before the session is attached, the handshake deadline already watches it.
+                if is_connected && !is_checking_link {
+                    if send_frame(&mut sink, &ClientFrame::Heartbeat).await.is_err() {
+                        return lost;
+                    }
+                    is_heartbeat_acknowledged = false;
+                    is_checking_link = true;
+                    link_check_deadline
+                        .as_mut()
+                        .reset(Instant::now() + NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT);
+                }
+                continue;
+            }
+            () = &mut link_check_deadline, if is_checking_link => return lost,
+        };
+        let frame = match frame {
+            None => return lost,
+            Some(IncomingFrame::Known(frame)) => frame,
+            // A newer server's event: skipped, but counted, so a resume does not replay it.
+            Some(IncomingFrame::UnknownDispatch { sequence }) => {
+                if let Some(point) = resume_point.as_mut() {
+                    point.last_sequence = sequence;
+                }
+                continue;
+            }
+        };
+        let update = match frame {
+            ServerFrame::Hello { .. } => continue,
+            ServerFrame::HeartbeatAck => {
+                is_heartbeat_acknowledged = true;
+                is_checking_link = false;
+                continue;
+            }
+            ServerFrame::Ready { d: ready } => {
                 is_connected = true;
+                commands.attach_session();
                 *resume_point = Some(ResumePoint {
                     session_id: ready.session_id.clone(),
                     last_sequence: 0,
                 });
                 GatewayUpdate::Ready(ready)
             }
-            Some(ServerFrame::Resumed) => {
+            ServerFrame::Resumed => {
                 is_connected = true;
+                commands.attach_session();
                 GatewayUpdate::Resumed
             }
-            Some(ServerFrame::Dispatch { sequence, event }) => {
+            ServerFrame::Dispatch { sequence, event } => {
                 if let Some(point) = resume_point.as_mut() {
                     point.last_sequence = sequence;
                 }
                 GatewayUpdate::Event(*event)
             }
-            Some(ServerFrame::InvalidSession) => {
+            ServerFrame::InvalidSession => {
                 *resume_point = None;
                 // Refusing a fresh `Identify` means the token itself is no good.
                 if !is_resuming && !is_connected {
@@ -255,9 +417,24 @@ async fn run_connection(
     }
 }
 
+enum IncomingFrame {
+    Known(ServerFrame),
+    /// A dispatch whose event this client does not know (a newer server).
+    UnknownDispatch {
+        sequence: u64,
+    },
+}
+
+/// Just enough of a dispatch to count it when its event cannot be parsed.
+#[derive(serde::Deserialize)]
+struct DispatchSequence {
+    op: String,
+    s: u64,
+}
+
 /// The next server frame; `None` once the connection is closed or broken. Frames this client
-/// cannot parse (a newer server) are skipped.
-async fn next_frame<S>(stream: &mut S) -> Option<ServerFrame>
+/// cannot parse (a newer server) are skipped; a dispatch among them still reports its sequence.
+async fn next_frame<S>(stream: &mut S) -> Option<IncomingFrame>
 where
     S: futures_util::Stream<Item = Result<WebSocketMessage, tokio_tungstenite::tungstenite::Error>>
         + Unpin,
@@ -265,15 +442,23 @@ where
     loop {
         match stream.next().await? {
             Ok(WebSocketMessage::Text(text)) => match serde_json::from_str(&text) {
-                Ok(frame) => return Some(frame),
-                // Never the error text itself: serde quotes the offending value, which may be
-                // message content.
-                Err(error) => tracing::warn!(
-                    category = ?error.classify(),
-                    line = error.line(),
-                    column = error.column(),
-                    "skipping an unknown gateway frame"
-                ),
+                Ok(frame) => return Some(IncomingFrame::Known(frame)),
+                Err(error) => {
+                    if let Ok(DispatchSequence { op, s }) = serde_json::from_str(&text)
+                        && op == "dispatch"
+                    {
+                        tracing::debug!(sequence = s, "skipping an unknown gateway event");
+                        return Some(IncomingFrame::UnknownDispatch { sequence: s });
+                    }
+                    // Never the error text itself: serde quotes the offending value, which may
+                    // be message content.
+                    tracing::warn!(
+                        category = ?error.classify(),
+                        line = error.line(),
+                        column = error.column(),
+                        "skipping an unknown gateway frame"
+                    );
+                }
             },
             Ok(WebSocketMessage::Close(_)) | Err(_) => return None,
             Ok(_) => {}
@@ -310,20 +495,39 @@ mod tests {
         mpsc::Receiver<GatewayUpdate>,
         tokio::task::JoinHandle<()>,
     ) {
+        let (listener, updates, client, _) = scripted_gateway_with_handle().await;
+        (listener, updates, client)
+    }
+
+    async fn scripted_gateway_with_handle() -> (
+        TcpListener,
+        mpsc::Receiver<GatewayUpdate>,
+        tokio::task::JoinHandle<()>,
+        GatewayHandle,
+    ) {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let address = listener.local_addr().unwrap();
         let instance = InstanceAddress::parse(&format!("http://{address}")).unwrap();
         let (sender, updates) = mpsc::channel(16);
+        let (handle, commands) = GatewayHandle::new();
         let client = tokio::spawn(run_gateway(
             instance,
             Zeroizing::new("mlw_t".into()),
             sender,
+            commands,
         ));
-        (listener, updates, client)
+        (listener, updates, client, handle)
     }
 
     /// Accepts the next connection and sends `Hello` with the shortest heartbeat the client allows.
     async fn accept(listener: &TcpListener) -> ServerSocket {
+        accept_with_heartbeat(listener, 1_000).await
+    }
+
+    async fn accept_with_heartbeat(
+        listener: &TcpListener,
+        heartbeat_interval_milliseconds: u64,
+    ) -> ServerSocket {
         let (stream, _) = timeout(STEP_TIMEOUT, listener.accept())
             .await
             .unwrap()
@@ -331,7 +535,7 @@ mod tests {
         let mut socket = tokio_tungstenite::accept_async(stream).await.unwrap();
         let hello = ServerFrame::Hello {
             d: Hello {
-                heartbeat_interval_milliseconds: 1_000,
+                heartbeat_interval_milliseconds,
             },
         };
         send(&mut socket, &hello).await;
@@ -486,6 +690,133 @@ mod tests {
         drop(updates);
         drop(listener);
         timeout(STEP_TIMEOUT, client).await.unwrap().unwrap();
+    }
+
+    const LEAVE: ClientFrame = ClientFrame::VoiceLeave;
+
+    fn play_sound(sound_id: u64) -> ClientFrame {
+        ClientFrame::VoicePlaySound {
+            sound_id: Snowflake::from_raw(sound_id),
+        }
+    }
+
+    #[tokio::test]
+    async fn frames_go_out_only_on_an_attached_session_and_never_to_a_later_one() {
+        // The longest heartbeat, so every frame the server reads is one the app sent.
+        let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
+        assert!(
+            !handle.send(LEAVE.clone()),
+            "nothing before the first Ready"
+        );
+
+        let mut first = accept_with_heartbeat(&listener, 30_000).await;
+        assert!(matches!(
+            receive(&mut first).await,
+            ClientFrame::Identify { .. }
+        ));
+        assert!(!handle.send(LEAVE.clone()), "nor during the handshake");
+        send(&mut first, &ready("session-1")).await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        assert!(handle.is_session_attached());
+        assert!(
+            !handle.send(ClientFrame::Heartbeat),
+            "the task owns the session frames"
+        );
+        assert!(handle.send(play_sound(9)));
+        assert_eq!(receive(&mut first).await, play_sound(9));
+
+        drop(first);
+        assert_eq!(next_update(&mut updates).await, GatewayUpdate::Disconnected);
+        assert!(!handle.is_session_attached());
+        assert!(!handle.send(play_sound(10)), "refused while reconnecting");
+
+        let mut second = accept_with_heartbeat(&listener, 30_000).await;
+        assert!(matches!(
+            receive(&mut second).await,
+            ClientFrame::Resume { .. }
+        ));
+        send(&mut second, &ServerFrame::Resumed).await;
+        assert_eq!(next_update(&mut updates).await, GatewayUpdate::Resumed);
+        assert!(handle.send(LEAVE.clone()));
+        assert_eq!(
+            receive(&mut second).await,
+            LEAVE,
+            "the frame refused while reconnecting never comes"
+        );
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unknown_event_is_skipped_but_counted_for_the_resume() {
+        let (listener, mut updates, client) = scripted_gateway().await;
+        let mut first = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut first).await,
+            ClientFrame::Identify { .. }
+        ));
+        send(&mut first, &ready("session-1")).await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        let from_a_newer_server =
+            r#"{"op":"dispatch","s":8,"d":{"t":"SOMETHING_NEW","data":{"x":1}}}"#;
+        first
+            .send(WebSocketMessage::text(from_a_newer_server))
+            .await
+            .unwrap();
+        drop(first);
+        assert_eq!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Disconnected,
+            "the unknown event reaches no one"
+        );
+
+        let mut second = accept(&listener).await;
+        match receive(&mut second).await {
+            ClientFrame::Resume { last_sequence, .. } => assert_eq!(last_sequence, 8),
+            other => panic!("expected a resume, got {other:?}"),
+        }
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn reconnect_now_checks_a_live_socket_with_a_heartbeat() {
+        let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
+        let mut socket = accept_with_heartbeat(&listener, 30_000).await;
+        assert!(matches!(
+            receive(&mut socket).await,
+            ClientFrame::Identify { .. }
+        ));
+        send(&mut socket, &ready("session-1")).await;
+        assert!(matches!(
+            next_update(&mut updates).await,
+            GatewayUpdate::Ready(_)
+        ));
+        handle.reconnect_now();
+        // Well before the 30 s interval: the check's own beat.
+        assert_eq!(receive(&mut socket).await, ClientFrame::Heartbeat);
+        send(&mut socket, &ServerFrame::HeartbeatAck).await;
+        assert!(
+            handle.send(LEAVE.clone()),
+            "an answered check keeps the session"
+        );
+        assert_eq!(receive(&mut socket).await, LEAVE);
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn reconnect_now_cuts_the_backoff_wait_short() {
+        let shared = SharedConnectionState::default();
+        shared.reconnect_requested.notify_one();
+        let wait = wait_or_reconnect_now(Duration::from_secs(3_600), &shared);
+        assert_eq!(
+            timeout(STEP_TIMEOUT, wait).await.unwrap(),
+            WaitEnd::ReconnectRequested
+        );
     }
 
     #[test]

@@ -9,7 +9,8 @@ use std::time::Duration;
 
 use mellow_client_core::state::ClientState;
 use mellow_client_core::{
-    ClientError, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce, run_gateway,
+    ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce,
+    run_gateway,
 };
 use mellow_protocol::{
     ApiErrorCode, AuditAction, AuditLogQuery, ChangePasswordRequest, ChannelKind, CreateBanRequest,
@@ -217,6 +218,7 @@ async fn rest_and_gateway_keep_the_state_in_sync_until_logout() {
         instance.address.clone(),
         Zeroizing::new(member.token().unwrap().to_owned()),
         sender,
+        GatewayHandle::new().1,
     ));
     let mut state = ClientState::default();
     let GatewayUpdate::Ready(ready) = next_update(&mut updates).await else {
@@ -554,6 +556,7 @@ async fn account_settings_round_trip_through_the_rest_client() {
         instance.address.clone(),
         Zeroizing::new(member.token().unwrap().to_owned()),
         sender,
+        GatewayHandle::new().1,
     ));
     let GatewayUpdate::Ready(_) = next_update(&mut updates).await else {
         panic!("the first update is Ready");
@@ -654,6 +657,7 @@ async fn direct_messages_reach_only_the_recipient_and_survive_a_reconnect() {
         instance.address.clone(),
         Zeroizing::new(member.token().unwrap().to_owned()),
         sender,
+        GatewayHandle::new().1,
     ));
     let mut state = ClientState::default();
     let GatewayUpdate::Ready(ready) = next_update(&mut updates).await else {
@@ -710,6 +714,7 @@ async fn direct_messages_reach_only_the_recipient_and_survive_a_reconnect() {
         instance.address.clone(),
         Zeroizing::new(member.token().unwrap().to_owned()),
         sender,
+        GatewayHandle::new().1,
     ));
     let GatewayUpdate::Ready(ready) = next_update(&mut updates).await else {
         panic!("expected Ready");
