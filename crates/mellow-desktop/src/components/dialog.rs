@@ -66,8 +66,8 @@ impl Focusable for ModalDialog {
 
 impl ModalDialog {
     /// Opens over the window; the control that had focus gets it back when the dialog closes.
-    /// A destructive dialog, or one with Cancel alone, starts on Cancel (DESIGN.md §8); others on
-    /// their first control.
+    /// Focus always starts on Cancel for now (DESIGN.md §8 wants that for destructive dialogs and
+    /// Cancel-only ones); starting on a body control lands with the first dialog that needs it.
     pub fn new(
         title: impl Into<SharedString>,
         cancel_label: impl Into<SharedString>,
