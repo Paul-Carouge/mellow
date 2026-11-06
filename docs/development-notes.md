@@ -69,10 +69,10 @@ decisions live in [docs/adr/](adr/). Update this file when a new trap or habit a
 - New work branches from `main`, one PR per step. When PRs are stacked, merge them in order by rebasing the top branch on `main` and fast-forwarding `main` to its head (in zsh, write `"origin/${branch}:refs/heads/main"`: `$branch:r…` is read as the `:r` modifier).
 
 ## Next candidates
-**Current focus: the web client only** (owner's decisions, 2026-10-22 and 2026-11-02, ADR-0036). New features, UI work and fixes target `web/` and the server and protocol it needs; the Slint desktop app was removed (it stays in the git history), and native clients come back after the web client. `mellow-client-core` must keep compiling and passing its tests.
+**Current focus: the GPUI desktop client** (owner's decision, 2026-11-06, [ADR-0051](adr/0051-gpui-desktop-client.md)). Steps in ROADMAP.md M3. GPUI comes from crates.io as `gpui-pre` (Longbridge snapshots) under `gpui-component`, both pinned with `=` and upgraded together; on a Mac without Xcode's Metal toolchain build with the `runtime_shaders` feature. The research reports of 2026-11-06 (GPUI, media stack, voice protocol, feature parity, client-core gaps, design translation, server and ops) were summarised into ADR-0051.
 ROADMAP items 0 to 15 and 22 are released, and item 16 (voice) is done up to 16.4 (soundboard, `v0.26.0`), plus RNNoise and the enhanced voice from item 21 (`v0.25.0`). **Next, in the owner's order (2026-11-02): item 17, fixes and quick wins from the owner's "Boîte à idées"** (the permission-change screen bug first, with a failing test), then 16.5 video (ADR-0035 proposed on `docs/adr-0035-video-in-voice-channels` with the `spikes/video-sfu` measurements on the Mac; it awaits the owner's decision and the same series on the i7-8700T), 16.6 screen sharing (Vesper, its own ADR and a relicence first), then 18 to 21. Read the "Quality bar" in CLAUDE.md before starting: it replaces a separate optimisation or robustness pass.
 Still open from earlier items: a native speaker's review of the French copy; the server names a new server's default category and channel in English when a client sends no template.
-Later, after the web client: native clients on `mellow-client-core` with their own ADR (ADR-0036; GPUI is the owner's candidate).
+Next: ROADMAP M3, the GPUI desktop client (ADR-0051).
 
 ## Workflow that worked
 - One branch per milestone step (`feat/…`), atomic Conventional Commits, a `docs:` commit for README/ROADMAP/ARCHITECTURE/ADR.

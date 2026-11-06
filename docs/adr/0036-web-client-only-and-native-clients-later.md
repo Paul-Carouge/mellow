@@ -1,6 +1,6 @@
 # 0036. Web client only; native clients come back later, possibly with GPUI
 
-- Status: Accepted
+- Status: Superseded by [ADR-0051](0051-gpui-desktop-client.md) (2026-11-06; the removals stay done)
 - Date: 2026-11-02
 - Supersedes: [ADR-0010](0010-desktop-ui-with-slint.md), [ADR-0023](0023-release-only-the-linux-server-during-the-web-phase.md)
 - Sets aside until a native client starts: [ADR-0008](0008-android-push-notifications.md), [ADR-0011](0011-shared-client-core-with-uniffi.md), [ADR-0017](0017-desktop-app-updates-itself-from-signed-releases.md), the desktop parts of [ADR-0018](0018-roll-back-the-executable-only-and-guard-the-install-location.md)
