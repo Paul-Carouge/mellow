@@ -1,14 +1,20 @@
-//! Typed calls to the REST API (`/api/v1`).
+//! Typed calls to the REST API (`/api/v1`). Routes are grouped by area in the submodules; files
+//! (downloads and uploads) are in `files`.
+
+mod accounts;
+mod files;
+mod guilds;
+mod messages;
 
 use std::time::Duration;
 
 use mellow_protocol::{
-    AcknowledgeRequest, ApiErrorBody, Attachment, AuditLogEntry, AuditLogQuery, Ban,
-    ChangePasswordRequest, Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest,
-    CreateInviteRequest, CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest,
-    Guild, Invite, LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest,
-    RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest, SessionCreated,
-    SetPermissionOverwriteRequest, Snowflake, UpdateChannelRequest, UpdateCurrentUserRequest,
+    AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
+    Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
+    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild, Invite,
+    LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest, RegisterRequest,
+    ReorderRolesRequest, Role, SendMessageRequest, SessionCreated, SetPermissionOverwriteRequest,
+    Snowflake, TwoFactorChallenge, UpdateChannelRequest, UpdateCurrentUserRequest,
     UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
@@ -16,6 +22,7 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use zeroize::Zeroizing;
 
+pub use self::files::{Download, DownloadableFile, DownloadedFile, UploadProgress};
 use crate::error::ClientError;
 use crate::instance::InstanceAddress;
 
@@ -24,6 +31,8 @@ const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
 /// Far above any honest answer (a 1 000-member list or a page of messages); bounds what a
 /// hostile instance can make the client buffer.
 const MAXIMUM_RESPONSE_BODY_BYTES: usize = 8 * 1024 * 1024;
+/// The longest `Retry-After` honoured with one automatic retry; a longer wait is the caller's call.
+const LONGEST_HONOURED_RETRY_AFTER: Duration = Duration::from_secs(10);
 
 #[derive(Clone)]
 pub struct RestClient {
@@ -100,37 +109,111 @@ impl RestClient {
         builder: RequestBuilder,
     ) -> Result<T, ClientError> {
         let response = Self::response_or_api_error(builder).await?;
+        Self::decode_json(response).await
+    }
+
+    async fn decode_json<T: DeserializeOwned>(
+        response: reqwest::Response,
+    ) -> Result<T, ClientError> {
         let body = Self::bounded_body(response).await?;
         serde_json::from_slice(&body)
             .map_err(|error| ClientError::UnexpectedResponse(format!("{:?}", error.classify())))
+    }
+
+    /// An authenticated call without a body, answered with JSON.
+    async fn call<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+    ) -> Result<T, ClientError> {
+        Self::send_and_decode_json(self.request(method, path, true)?).await
+    }
+
+    /// An authenticated call with a JSON body, answered with JSON.
+    async fn call_with_json<T: DeserializeOwned>(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<T, ClientError> {
+        Self::send_and_decode_json(self.request(method, path, true)?.json(body)).await
+    }
+
+    /// An authenticated call without a body, answered with `204 No Content`.
+    async fn call_without_answer(&self, method: Method, path: &str) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(method, path, true)?).await
+    }
+
+    /// An authenticated call with a JSON body, answered with `204 No Content`.
+    async fn call_with_json_without_answer(
+        &self,
+        method: Method,
+        path: &str,
+        body: &impl Serialize,
+    ) -> Result<(), ClientError> {
+        Self::send_and_discard_body(self.request(method, path, true)?.json(body)).await
     }
 
     async fn send_and_discard_body(builder: RequestBuilder) -> Result<(), ClientError> {
         Self::response_or_api_error(builder).await.map(|_| ())
     }
 
-    async fn bounded_body(mut response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
-        let too_large = || ClientError::UnexpectedResponse("response body too large".into());
+    async fn bounded_body(response: reqwest::Response) -> Result<Vec<u8>, ClientError> {
+        Self::body_within(response, MAXIMUM_RESPONSE_BODY_BYTES)
+            .await?
+            .ok_or_else(|| ClientError::UnexpectedResponse("response body too large".into()))
+    }
+
+    /// The whole body, or `None` as soon as it is known to exceed `maximum_bytes`.
+    async fn body_within(
+        mut response: reqwest::Response,
+        maximum_bytes: usize,
+    ) -> Result<Option<Vec<u8>>, ClientError> {
         if response
             .content_length()
-            .is_some_and(|length| length > MAXIMUM_RESPONSE_BODY_BYTES as u64)
+            .is_some_and(|length| length > maximum_bytes as u64)
         {
-            return Err(too_large());
+            return Ok(None);
         }
         let mut body = Vec::new();
         while let Some(chunk) = response.chunk().await.map_err(ClientError::Network)? {
-            if body.len() + chunk.len() > MAXIMUM_RESPONSE_BODY_BYTES {
-                return Err(too_large());
+            if body.len() + chunk.len() > maximum_bytes {
+                return Ok(None);
             }
             body.extend_from_slice(&chunk);
         }
-        Ok(body)
+        Ok(Some(body))
+    }
+
+    /// Sends the request; a `429` or `503` that asks to come back within
+    /// `LONGEST_HONOURED_RETRY_AFTER` is retried once after that delay. Such refusals come before
+    /// the instance acts, so even a `POST` is safe to repeat. Streamed bodies (uploads) cannot be
+    /// replayed and are never retried.
+    async fn send_retrying_when_asked(
+        builder: RequestBuilder,
+    ) -> Result<reqwest::Response, ClientError> {
+        let replay = builder.try_clone();
+        let response = builder.send().await.map_err(ClientError::Network)?;
+        match (replay, honoured_retry_delay(&response)) {
+            (Some(replay), Some(delay)) => {
+                drop(response);
+                tokio::time::sleep(delay).await;
+                replay.send().await.map_err(ClientError::Network)
+            }
+            _ => Ok(response),
+        }
     }
 
     async fn response_or_api_error(
         builder: RequestBuilder,
     ) -> Result<reqwest::Response, ClientError> {
-        let response = builder.send().await.map_err(ClientError::Network)?;
+        let response = Self::send_retrying_when_asked(builder).await?;
+        Self::api_error_unless_success(response).await
+    }
+
+    async fn api_error_unless_success(
+        response: reqwest::Response,
+    ) -> Result<reqwest::Response, ClientError> {
         let status = response.status();
         if status.is_success() {
             return Ok(response);
@@ -178,11 +261,19 @@ impl RestClient {
     }
 
     /// # Errors
-    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…; `UnexpectedResponse`
-    /// for an account with two-factor sign-in on, whose second step (ADR-0049) this core does not
-    /// offer yet: it comes with the native client's ADR.
+    /// `Api` with `InvalidCredentials`, `AccountDisabled`, `RateLimited`…; `TwoFactorRequired`
+    /// when the password was right but the account has two-factor sign-in on (ADR-0049): finish
+    /// with [`Self::complete_two_factor_sign_in`].
     pub async fn login(&mut self, request: &LoginRequest) -> Result<SessionCreated, ClientError> {
-        let session: SessionCreated = self.post_json("api/v1/auth/login", request, false).await?;
+        let builder = self
+            .request(Method::POST, "api/v1/auth/login", false)?
+            .json(request);
+        let response = Self::response_or_api_error(builder).await?;
+        if response.status() == StatusCode::ACCEPTED {
+            let challenge: TwoFactorChallenge = Self::decode_json(response).await?;
+            return Err(ClientError::TwoFactorRequired(challenge));
+        }
+        let session: SessionCreated = Self::decode_json(response).await?;
         self.token = Some(Zeroizing::new(session.token.clone()));
         Ok(session)
     }
@@ -312,29 +403,6 @@ impl RestClient {
             true,
         )?)
         .await
-    }
-
-    /// Uploads one file to a channel; send its id in a message within the hour (ADR-0020).
-    ///
-    /// # Errors
-    /// Network or API errors; the instance refuses files over its size limit.
-    pub async fn upload_attachment(
-        &self,
-        channel_id: Snowflake,
-        file_name: &str,
-        bytes: Vec<u8>,
-    ) -> Result<Attachment, ClientError> {
-        let builder = self
-            .request(
-                Method::POST,
-                &format!("api/v1/channels/{channel_id}/attachments"),
-                true,
-            )?
-            // In a header, never in the URL: proxy logs must not hold file names.
-            .header("x-mellow-file-name", percent_encode(file_name))
-            .header(reqwest::header::CONTENT_TYPE, "application/octet-stream")
-            .body(bytes);
-        Self::send_and_decode_json(builder).await
     }
 
     /// The one-to-one conversation with that user, opened if needed.
@@ -707,6 +775,27 @@ impl RestClient {
     }
 }
 
+/// The delay a `429 Too Many Requests` or `503 Service Unavailable` asks for in whole seconds,
+/// when it is short enough to wait for.
+fn honoured_retry_delay(response: &reqwest::Response) -> Option<Duration> {
+    if !matches!(
+        response.status(),
+        StatusCode::TOO_MANY_REQUESTS | StatusCode::SERVICE_UNAVAILABLE
+    ) {
+        return None;
+    }
+    let seconds: u64 = response
+        .headers()
+        .get(reqwest::header::RETRY_AFTER)?
+        .to_str()
+        .ok()?
+        .trim()
+        .parse()
+        .ok()?;
+    let delay = Duration::from_secs(seconds);
+    (delay <= LONGEST_HONOURED_RETRY_AFTER).then_some(delay)
+}
+
 /// Percent-encodes everything but unreserved ASCII (RFC 3986), as `encodeURIComponent` does.
 fn percent_encode(text: &str) -> String {
     use std::fmt::Write as _;
@@ -734,5 +823,72 @@ mod tests {
         let printed = format!("{client:?}");
         assert!(!printed.contains("mlw_secret"), "{printed}");
         assert!(printed.contains("<redacted>"));
+    }
+
+    /// A loopback server answering each connection with the next scripted answer; returns its
+    /// address and the number of requests it has read.
+    async fn scripted_server(
+        answers: Vec<&'static str>,
+    ) -> (
+        InstanceAddress,
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+    ) {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address =
+            InstanceAddress::parse(&format!("http://{}", listener.local_addr().unwrap())).unwrap();
+        let request_count = std::sync::Arc::new(AtomicUsize::new(0));
+        let counter = std::sync::Arc::clone(&request_count);
+        tokio::spawn(async move {
+            for answer in answers {
+                let (mut connection, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                while !request.windows(4).any(|window| window == b"\r\n\r\n") {
+                    let read = connection.read(&mut buffer).await.unwrap();
+                    request.extend_from_slice(&buffer[..read]);
+                }
+                counter.fetch_add(1, Ordering::SeqCst);
+                connection.write_all(answer.as_bytes()).await.unwrap();
+                connection.shutdown().await.unwrap();
+            }
+        });
+        (address, request_count)
+    }
+
+    const HEALTHY: &str = "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n{\"status\":\"ok\",\"version\":\"0.48.0\"}";
+
+    #[tokio::test]
+    async fn a_busy_answer_with_a_short_retry_after_is_retried_once() {
+        let (address, request_count) = scripted_server(vec![
+            "HTTP/1.1 503 Service Unavailable\r\nRetry-After: 0\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            HEALTHY,
+        ])
+        .await;
+        let health = RestClient::new(address).unwrap().health().await.unwrap();
+        assert_eq!(health.version, "0.48.0");
+        assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn a_refusal_without_retry_after_or_with_a_long_one_is_not_retried() {
+        for refusal in [
+            "HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+            "HTTP/1.1 429 Too Many Requests\r\nRetry-After: 3600\r\nConnection: close\r\nContent-Length: 0\r\n\r\n",
+        ] {
+            let (address, request_count) = scripted_server(vec![refusal, HEALTHY]).await;
+            let error = RestClient::new(address)
+                .unwrap()
+                .health()
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(error, ClientError::UnexpectedResponse(_)),
+                "{error:?}"
+            );
+            assert_eq!(request_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
     }
 }

@@ -13,7 +13,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 icu_properties.workspace = true
 mellow-protocol.workspace = true
-reqwest = { workspace = true }
+reqwest = { workspace = true, features = ["stream"] }
 serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
@@ -26,6 +26,9 @@ zeroize.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
+# Authenticator codes and test pictures; both already build for the server.
+aws-lc-rs.workspace = true
+image.workspace = true
 # Integration tests run a real in-process server; the client never depends on it otherwise.
 mellow-server = { path = "../mellow-server" }
 tempfile.workspace = true

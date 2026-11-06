@@ -13,4 +13,4 @@ pub use error::ClientError;
 pub use gateway::{GatewayUpdate, run_gateway};
 pub use instance::InstanceAddress;
 pub use nonce::generate_message_nonce;
-pub use rest::RestClient;
+pub use rest::{Download, DownloadableFile, DownloadedFile, RestClient, UploadProgress};
