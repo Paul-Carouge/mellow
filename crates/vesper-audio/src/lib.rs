@@ -1636,10 +1636,12 @@ mod tests {
     }
 
     #[test]
+    #[ignore = "real sleeps against encode_loop's wall-clock stall detection (Mellow keeps such tests out of CI): run with --ignored"]
     fn small_buffers_are_encoded_in_whole_20ms_blocks() {
         // 1 s of a 1 kHz tone in 64-frame buffers (a 64 quantum), pushed by
         // another thread in bursts while the encode thread waits for them.
-        let anchor = Duration::from_secs(10);
+        // Anchored on the real clock so a stall pads at most the stall itself.
+        let anchor = monotonic_now();
         let tone: Vec<f32> = (0..SAMPLE_RATE as usize)
             .flat_map(|i| [0.5 * (std::f32::consts::TAU * i as f32 / 48.0).sin(); 2])
             .collect();
