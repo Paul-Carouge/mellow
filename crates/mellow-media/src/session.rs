@@ -7,8 +7,8 @@
 
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
-use std::sync::Arc;
 use std::sync::mpsc::{self, Receiver, Sender};
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -30,6 +30,7 @@ use crate::uplink::UplinkLayerCeiling;
 use crate::video_frame::DecodedPixelFormat;
 use crate::video_receiver::{VideoFrames, VideoReceivers};
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
+use crate::watch_list::{SharedSignalling, WatchListOutbox, lock};
 
 /// An empty `VOICE_VIDEO_LAYERS` this soon after a source started is the previous source's
 /// ending, not this one's (the web's `VIDEO_RESTART_GRACE_MILLISECONDS`).
@@ -205,7 +206,9 @@ pub struct VoiceSession {
     channel_id: Snowflake,
     offer_id: u32,
     toggles: VoiceToggles,
-    signalling: Box<dyn VoiceSignalling>,
+    signalling: SharedSignalling,
+    /// Paces `voice_video_watch` under the server's limit.
+    watch_list: Arc<WatchListOutbox>,
     media_lines: MediaLines,
     events: Sender<VoiceSessionEvent>,
     audio_commands: Sender<AudioCommand>,
@@ -240,6 +243,21 @@ fn spawn_video_encoder(
         .name("mellow-video-encode".into())
         .spawn(move || control.run(&outgoing))?;
     Ok((thread, outgoing_receiver))
+}
+
+/// The thread pacing `voice_video_watch` lists, with the signalling it shares with the session.
+fn spawn_watch_list(
+    signalling: Box<dyn VoiceSignalling>,
+) -> std::io::Result<(SharedSignalling, Arc<WatchListOutbox>, JoinHandle<()>)> {
+    let signalling: SharedSignalling = Arc::new(Mutex::new(signalling));
+    let watch_list = Arc::new(WatchListOutbox::default());
+    let thread = {
+        let (watch_list, signalling) = (Arc::clone(&watch_list), Arc::clone(&signalling));
+        std::thread::Builder::new()
+            .name("mellow-voice-watch-list".into())
+            .spawn(move || watch_list.run(&signalling))?
+    };
+    Ok((signalling, watch_list, thread))
 }
 
 /// The local address the system routes to `server` from, found without sending anything.
@@ -338,11 +356,13 @@ impl VoiceSession {
         let transport_thread = std::thread::Builder::new()
             .name("mellow-voice-network".into())
             .spawn(move || transport.run())?;
+        let (signalling, watch_list, watch_thread) = spawn_watch_list(signalling)?;
         let session = Self {
             channel_id: options.channel_id,
             offer_id: 1,
             toggles: options.toggles,
             signalling,
+            watch_list,
             media_lines,
             events,
             audio_commands,
@@ -351,9 +371,9 @@ impl VoiceSession {
             video_frames,
             video_source: None,
             watched_cameras: Vec::new(),
-            threads: vec![audio_thread, transport_thread, video_thread],
+            threads: vec![audio_thread, transport_thread, video_thread, watch_thread],
         };
-        session.signalling.send_frame(ClientFrame::VoiceJoin {
+        session.send_frame(ClientFrame::VoiceJoin {
             channel_id: session.channel_id,
             offer_id: session.offer_id,
             sdp_offer,
@@ -388,7 +408,8 @@ impl VoiceSession {
                             .send(TransportCommand::ApplyAnswer(Box::new(answer)));
                         // The join forgot any earlier list.
                         if !self.watched_cameras.is_empty() {
-                            self.send_watched_cameras();
+                            self.watch_list
+                                .send_now(self.watched_cameras.clone(), &self.signalling);
                         }
                     }
                     Err(error) => {
@@ -478,7 +499,7 @@ impl VoiceSession {
     /// Always the full state: the server drops `voice_state` frames over its rate limit.
     fn send_voice_state(&self) {
         let source = self.video_source.map(|(kind, _)| kind);
-        self.signalling.send_frame(ClientFrame::VoiceState {
+        self.send_frame(ClientFrame::VoiceState {
             self_mute: self.toggles.is_muted(),
             self_deaf: self.toggles.is_deafened(),
             self_video: source.is_some(),
@@ -526,7 +547,7 @@ impl VoiceSession {
     }
 
     /// The cameras and screens to show (at most `MAXIMUM_VIDEO_RECEIVE_SLOTS`, the rest is
-    /// ignored), replacing the previous list. Only a change of people or tile sizes reaches the
+    /// server, at most every 400 ms (the latest change always arrives); drawn sizes apply at once.
     /// server; drawn sizes apply at once.
     pub fn watch_videos(&mut self, watched: &[WatchedVideo]) {
         let watched = &watched[..watched
@@ -552,14 +573,13 @@ impl VoiceSession {
             .collect();
         if cameras != self.watched_cameras {
             self.watched_cameras = cameras;
-            self.send_watched_cameras();
+            self.watch_list
+                .send(self.watched_cameras.clone(), &self.signalling);
         }
     }
 
-    fn send_watched_cameras(&self) {
-        self.signalling.send_frame(ClientFrame::VoiceVideoWatch {
-            cameras: self.watched_cameras.clone(),
-        });
+    fn send_frame(&self, frame: ClientFrame) {
+        lock(&self.signalling).send_frame(frame);
     }
 
     /// The decoded pictures of the watched cameras and screens, for the interface.
@@ -612,7 +632,9 @@ impl VoiceSession {
 
     /// Tells the server and stops.
     pub fn leave(self) {
-        self.signalling.send_frame(ClientFrame::VoiceLeave);
+        // No watch list may follow the leave.
+        self.watch_list.stop();
+        self.send_frame(ClientFrame::VoiceLeave);
     }
 
     fn command(&self, command: AudioCommand) {
@@ -629,6 +651,7 @@ impl VoiceSession {
         let _ = self.audio_commands.send(AudioCommand::Stop);
         let _ = self.transport_commands.send(TransportCommand::Stop);
         self.video_encoder.shut_down();
+        self.watch_list.stop();
         for thread in self.threads.drain(..) {
             if thread.join().is_err() {
                 tracing::error!("a voice thread panicked");
@@ -699,7 +722,8 @@ mod tests {
             channel_id: Snowflake::from_raw(1),
             offer_id: 1,
             toggles: VoiceToggles::default(),
-            signalling: Box::new(|_| {}),
+            signalling: Arc::new(Mutex::new(Box::new(|_| {}))),
+            watch_list: Arc::new(WatchListOutbox::default()),
             media_lines: peer.media_lines,
             events,
             audio_commands,
@@ -800,9 +824,9 @@ mod tests {
     ) {
         let (mut session, _audio, _transport, events) = session_without_threads();
         let (frames, sent) = mpsc::channel();
-        session.signalling = Box::new(move |frame| {
+        session.signalling = Arc::new(Mutex::new(Box::new(move |frame| {
             let _ = frames.send(frame);
-        });
+        })));
         (session, sent, events)
     }
 
