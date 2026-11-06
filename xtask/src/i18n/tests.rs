@@ -190,6 +190,20 @@ fn rejects_shapes_it_does_not_support() {
 }
 
 #[test]
+fn refuses_a_nullable_parameter_written_unnarrowed() {
+    // The web would write "null" here, the list fallback "undefined": neither is wanted.
+    let message = error(&[(
+        "fr.ts",
+        "(status ? `Statut : ${status}` : \"Aucun statut\")",
+        "`Statut : ${status}`",
+    )]);
+    assert!(
+        message.contains("narrow `status` before writing it in a template"),
+        "{message}"
+    );
+}
+
+#[test]
 fn stops_when_the_plural_rules_change() {
     let message = error(&[("plural.ts", "=== \"one\"", "=== \"few\"")]);
     assert!(

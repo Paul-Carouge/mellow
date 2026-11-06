@@ -568,15 +568,24 @@ impl<'a> FunctionCompiler<'a> {
                     format!("super::format_number_like_javascript({})", compiled.code),
                     Precedence::Postfix,
                 ),
-                ValueType::OptionalText => Compiled::new(
-                    // Only lists' `at`, indexing and destructuring give optional text here.
-                    format!(
-                        "{}.unwrap_or(\"undefined\")",
-                        compiled.wrapped(Precedence::Postfix)
-                    ),
-                    ValueType::Text,
-                    Precedence::Postfix,
-                ),
+                ValueType::OptionalText => {
+                    // JavaScript writes a missing list element as "undefined" but a nullable
+                    // parameter as "null": only list accesses are written, the rest must be
+                    // narrowed first.
+                    ensure!(
+                        is_list_element_access(expression),
+                        "narrow `{}` before writing it in a template",
+                        compiled.code
+                    );
+                    Compiled::new(
+                        format!(
+                            "{}.unwrap_or(\"undefined\")",
+                            compiled.wrapped(Precedence::Postfix)
+                        ),
+                        ValueType::Text,
+                        Precedence::Postfix,
+                    )
+                }
                 other => bail!("cannot write {other:?} in a template string"),
             };
             has_placeholders = true;
@@ -1508,6 +1517,17 @@ fn is_minus_one(expression: &Expression) -> bool {
         Expression::Unary { operator: UnaryOperator::Negate, operand }
             if matches!(operand.as_ref(), Expression::Number(one) if one.to_bits() == 1.0_f64.to_bits())
     )
+}
+
+/// `list[0]` or `list.at(-1)`: optional text JavaScript writes as "undefined" when missing.
+fn is_list_element_access(expression: &Expression) -> bool {
+    match expression {
+        Expression::Index { .. } => true,
+        Expression::Call { callee, .. } => {
+            matches!(callee.as_ref(), Expression::Member { property, .. } if property == "at")
+        }
+        _ => false,
+    }
 }
 
 fn is_list_expression(expression: &Expression) -> bool {
