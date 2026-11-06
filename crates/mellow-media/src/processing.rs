@@ -100,8 +100,9 @@ impl VoiceProcessor {
             *self = Self::new(settings);
             return;
         }
-        if settings.voice_enhancement != self.settings.voice_enhancement {
-            self.enhancer = settings.voice_enhancement.map(VoiceEnhancer::new);
+        if let (Some(enhancer), Some(equalizer)) = (&mut self.enhancer, settings.voice_enhancement)
+        {
+            enhancer.set_equalizer(equalizer);
         }
         self.settings = settings;
     }

@@ -205,6 +205,17 @@ impl Biquad {
         }
     }
 
+    /// Another filter's response with this one's history.
+    fn take_coefficients_of(&mut self, retuned: Self) {
+        *self = Self {
+            x1: self.x1,
+            x2: self.x2,
+            y1: self.y1,
+            y2: self.y2,
+            ..retuned
+        };
+    }
+
     fn process(&mut self, input: f32) -> f32 {
         let output = self.b0 * input + self.b1 * self.x1 + self.b2 * self.x2
             - self.a1 * self.y1
@@ -370,36 +381,48 @@ pub(crate) struct VoiceEnhancer {
 impl VoiceEnhancer {
     pub(crate) fn new(equalizer: EqualizerDecibels) -> Self {
         Self {
-            filters: [
-                Biquad::new(
-                    FilterShape::HighPass {
-                        quality_decibels: RUMBLE_FILTER_QUALITY,
-                    },
-                    RUMBLE_CUTOFF_HERTZ,
-                ),
-                Biquad::new(
-                    FilterShape::LowShelf {
-                        gain_decibels: equalizer.bass,
-                    },
-                    BASS_SHELF_HERTZ,
-                ),
-                Biquad::new(
-                    FilterShape::Peaking {
-                        quality: MIDS_PEAK_QUALITY,
-                        gain_decibels: equalizer.mids,
-                    },
-                    MIDS_PEAK_HERTZ,
-                ),
-                Biquad::new(
-                    FilterShape::HighShelf {
-                        gain_decibels: equalizer.treble,
-                    },
-                    TREBLE_SHELF_HERTZ,
-                ),
-            ],
+            filters: Self::filters_for(equalizer),
             compressor: Dynamics::new(COMPRESSOR),
             limiter: Dynamics::new(LIMITER),
         }
+    }
+
+    /// New slider values keep every filter's and the dynamics' state, as the web only sets
+    /// `gain.value`: rebuilding would click and burst while a slider moves.
+    pub(crate) fn set_equalizer(&mut self, equalizer: EqualizerDecibels) {
+        for (filter, retuned) in self.filters.iter_mut().zip(Self::filters_for(equalizer)) {
+            filter.take_coefficients_of(retuned);
+        }
+    }
+
+    fn filters_for(equalizer: EqualizerDecibels) -> [Biquad; 4] {
+        [
+            Biquad::new(
+                FilterShape::HighPass {
+                    quality_decibels: RUMBLE_FILTER_QUALITY,
+                },
+                RUMBLE_CUTOFF_HERTZ,
+            ),
+            Biquad::new(
+                FilterShape::LowShelf {
+                    gain_decibels: equalizer.bass,
+                },
+                BASS_SHELF_HERTZ,
+            ),
+            Biquad::new(
+                FilterShape::Peaking {
+                    quality: MIDS_PEAK_QUALITY,
+                    gain_decibels: equalizer.mids,
+                },
+                MIDS_PEAK_HERTZ,
+            ),
+            Biquad::new(
+                FilterShape::HighShelf {
+                    gain_decibels: equalizer.treble,
+                },
+                TREBLE_SHELF_HERTZ,
+            ),
+        ]
     }
 
     pub(crate) fn process(&mut self, samples: &mut [f32]) {
@@ -528,6 +551,24 @@ mod tests {
             .iter()
             .fold(0_f32, |peak, sample| peak.max(sample.abs()));
         assert!(loudest < 1.0, "{loudest}");
+    }
+
+    #[test]
+    fn moving_a_slider_keeps_the_enhancer_s_state() {
+        let natural = VoiceEnhancementPreset::Natural.equalizer();
+        let speech = sine(440.0, 0.3, 0.2);
+        let (first_half, second_half) = speech.split_at(speech.len() / 2);
+        let mut untouched = VoiceEnhancer::new(natural);
+        let mut retuned = VoiceEnhancer::new(natural);
+        for enhancer in [&mut untouched, &mut retuned] {
+            enhancer.process(&mut first_half.to_vec());
+        }
+        retuned.set_equalizer(natural);
+        let mut expected = second_half.to_vec();
+        let mut actual = second_half.to_vec();
+        untouched.process(&mut expected);
+        retuned.process(&mut actual);
+        assert_eq!(actual, expected);
     }
 
     #[test]
