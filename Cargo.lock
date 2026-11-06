@@ -2109,6 +2109,7 @@ dependencies = [
  "anyhow",
  "futures-util",
  "getrandom 0.4.3",
+ "icu_properties",
  "mellow-protocol",
  "mellow-server",
  "reqwest",
@@ -2119,6 +2120,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "unicode-normalization",
  "url",
  "zeroize",
 ]

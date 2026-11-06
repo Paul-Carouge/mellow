@@ -11,6 +11,7 @@ publish.workspace = true
 [dependencies]
 futures-util.workspace = true
 getrandom.workspace = true
+icu_properties.workspace = true
 mellow-protocol.workspace = true
 reqwest = { workspace = true }
 serde.workspace = true
@@ -19,6 +20,7 @@ thiserror.workspace = true
 tokio = { workspace = true, features = ["sync", "time", "net"] }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
 tracing.workspace = true
+unicode-normalization.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
