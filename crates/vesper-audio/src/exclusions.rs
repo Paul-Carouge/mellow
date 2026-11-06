@@ -30,9 +30,16 @@ struct State {
     on_change: Option<OnExclusions>,
 }
 
+impl std::fmt::Debug for Exclusions {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Exclusions").finish_non_exhaustive()
+    }
+}
+
 impl Exclusions {
     /// `on_change` is told the apps left out after each change, on the
     /// thread that made it (a capture's PipeWire thread, or the caller's).
+    #[must_use]
     pub fn new(on_change: Option<OnExclusions>) -> Arc<Self> {
         Arc::new(Self {
             state: Mutex::new(State {
@@ -106,6 +113,12 @@ impl State {
 pub struct Hold {
     exclusions: Arc<Exclusions>,
     app: String,
+}
+
+impl std::fmt::Debug for Hold {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Hold").finish_non_exhaustive()
+    }
 }
 
 impl Drop for Hold {

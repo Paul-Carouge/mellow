@@ -163,9 +163,18 @@ pub struct Mix {
     extradata: Vec<u8>,
 }
 
+impl std::fmt::Debug for Mix {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("Mix").finish_non_exhaustive()
+    }
+}
+
 impl Mix {
     /// A mix starting at `anchor` (the anchor of its inputs). `on_packet`
     /// runs on whichever input thread completes a 20 ms block.
+    ///
+    /// # Errors
+    /// When the Opus encoder cannot be made.
     pub fn start(
         anchor: Duration,
         on_packet: impl FnMut(EncodedPacket) + Send + 'static,
@@ -188,6 +197,7 @@ impl Mix {
     }
 
     /// A new input. Create every input before any of them gets samples.
+    #[must_use]
     pub fn input(&self) -> MixInput {
         let mut state = lock(&self.state);
         state.inputs.push(Queue::default());
@@ -199,6 +209,7 @@ impl Mix {
     }
 
     /// `OpusHead` for the container's codec private data.
+    #[must_use]
     pub fn extradata(&self) -> &[u8] {
         &self.extradata
     }
@@ -224,6 +235,7 @@ impl Mix {
     }
 
     /// Whether the mix works (it is encoded or tapped).
+    #[must_use]
     pub fn active(&self) -> bool {
         self.active.load(Ordering::Relaxed)
     }
@@ -247,6 +259,12 @@ pub struct MixInput {
     state: Arc<Mutex<State>>,
     active: Arc<AtomicBool>,
     index: usize,
+}
+
+impl std::fmt::Debug for MixInput {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("MixInput").finish_non_exhaustive()
+    }
 }
 
 impl MixInput {
@@ -313,7 +331,7 @@ mod tests {
         let packets: Vec<_> = rx.iter().collect();
         assert!(packets.len() >= 10, "{} packets", packets.len());
         for w in packets.windows(2) {
-            assert_eq!(w[1].pts - w[0].pts, Duration::from_millis(20));
+            assert_eq!(w[1].pts.saturating_sub(w[0].pts), Duration::from_millis(20));
         }
         // Past the codec's start-up, the decoded mix peaks at 0.25 + 0.125.
         let decoded = decode(&head, &packets);
@@ -349,7 +367,7 @@ mod tests {
         mix.set_encoding(false);
         let (btx, brx) = mpsc::channel();
         mix.set_tap(Some(Box::new(move |pts, block: &[f32]| {
-            btx.send((pts, block.to_vec())).unwrap()
+            btx.send((pts, block.to_vec())).unwrap();
         })));
         let a = mix.input();
         a.push(&vec![2.0; FRAME * usize::from(CHANNELS) * 5], 0);
@@ -384,13 +402,13 @@ mod tests {
         // frame on, both inputs summed position by position.
         let (tx, rx) = mpsc::channel();
         mix.set_tap(Some(Box::new(move |pts, s: &[f32]| {
-            tx.send((pts, s[0])).unwrap()
+            tx.send((pts, s[0])).unwrap();
         })));
         assert!(mix.active());
         a.push(&vec![0.1; block * 4], 10 * FRAME as u64);
         b.push(&vec![0.2; block * 3], 11 * FRAME as u64);
         let got: Vec<_> = rx.try_iter().collect();
-        assert!(!got.is_empty());
+        assert_ne!(got.len(), 0);
         let frame = |n: u64| anchor + Duration::from_nanos(n * 1_000_000_000 / 48_000);
         assert_eq!(got[0].0, frame(11 * FRAME as u64));
         assert!((got[1].1 - 0.3).abs() < 1e-4, "{}", got[1].1);

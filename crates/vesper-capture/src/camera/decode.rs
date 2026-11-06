@@ -383,7 +383,7 @@ unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
         return Err("empty JPEG picture".into());
     }
     let format = f.format;
-    let is = |p: P| format == p as c_int;
+    let is = |pixel_format: ff::AVPixelFormat| format == pixel_format;
     let range = if f.color_range == ff::AVCOL_RANGE_MPEG {
         Range::Limited
     } else {

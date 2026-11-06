@@ -63,6 +63,17 @@
     reason = "frame counts, sample positions and C integer fields convert between bounded \
               integer and float types on purpose"
 )]
+#![allow(
+    clippy::float_cmp,
+    reason = "exact comparisons detect unity gain and a ramp that reached its target"
+)]
+#![allow(
+    clippy::too_many_lines,
+    clippy::needless_pass_by_value,
+    clippy::ignored_unit_patterns,
+    reason = "PipeWire thread entry points own what they are given and set up one stream \
+              with its listener closures in one place"
+)]
 
 mod exclusions;
 mod mix;
@@ -146,6 +157,7 @@ pub const MIN_DB: f32 = -60.0;
 pub const MAX_DB: f32 = 12.0;
 
 /// Linear gain of a volume in dB, clamped to `MIN_DB..=MAX_DB`; `MIN_DB` is silence.
+#[must_use]
 pub fn db_to_gain(db: f32) -> f32 {
     if db.is_nan() || db <= MIN_DB {
         0.0
@@ -259,6 +271,15 @@ pub struct Options {
     /// streams to itself instead of reading its monitor; with no app held
     /// it reads the monitor, as without this. `None`: neither.
     pub exclusions: Option<Arc<Exclusions>>,
+}
+
+impl std::fmt::Debug for Options {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Options")
+            .field("anchor", &self.anchor)
+            .finish_non_exhaustive()
+    }
 }
 
 /// See [`Options::on_signal`].
@@ -441,9 +462,20 @@ pub struct AudioCapture {
     encode_thread: Option<JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for AudioCapture {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AudioCapture")
+            .finish_non_exhaustive()
+    }
+}
+
 impl AudioCapture {
     /// Starts capturing `source`. `on_packet` runs on the encode thread with
     /// one Opus packet per 20 ms, without gaps, until the capture stops.
+    ///
+    /// # Errors
+    /// When the Opus encoder cannot be made, a thread cannot be spawned or the PipeWire stream fails to start.
     pub fn start(
         source: Source,
         options: Options,
@@ -503,6 +535,7 @@ impl AudioCapture {
 
     /// Peaks since the last call (0 while muted), and whether a block
     /// clipped since then. Cheap: a few atomics.
+    #[must_use]
     pub fn take_peaks(&self) -> Peaks {
         self.shared.take_peaks()
     }
@@ -511,6 +544,7 @@ impl AudioCapture {
     /// [`Options::on_signal`]: a resting meter needs no polling. Returns
     /// true, without arming, when such a block already came since the
     /// peaks were last taken: the meter must not rest.
+    #[must_use]
     pub fn wake_on_signal(&self) -> bool {
         self.shared.wake_on_signal()
     }
@@ -528,11 +562,13 @@ impl AudioCapture {
 
     /// What the duck does now, and whether the voice spoke since the last
     /// call. Cheap: a few atomics.
+    #[must_use]
     pub fn take_duck_state(&self) -> DuckState {
         self.shared.take_duck_state()
     }
 
     /// `OpusHead` for the container's codec private data.
+    #[must_use]
     pub fn extradata(&self) -> &[u8] {
         &self.extradata
     }
@@ -596,13 +632,14 @@ fn open_encoder() -> Result<OpusEncoder> {
 }
 
 /// Now on `CLOCK_MONOTONIC`, the clock of every pts.
+#[must_use]
 pub fn monotonic_now() -> Duration {
     let mut ts = libc::timespec {
         tv_sec: 0,
         tv_nsec: 0,
     };
     // SAFETY: valid pointer; CLOCK_MONOTONIC always exists on Linux.
-    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &mut ts) };
+    unsafe { libc::clock_gettime(libc::CLOCK_MONOTONIC, &raw mut ts) };
     Duration::new(ts.tv_sec as u64, ts.tv_nsec as u32)
 }
 
@@ -642,10 +679,14 @@ impl Timeline {
         let expected = self.anchor + frames_to_duration(self.frames);
         let (pad, skip, repeat) = if start > expected + TOLERANCE {
             (self.drift_ns, self.since_fix) = (0.0, 0);
-            (duration_to_frames(start - expected), 0, 0)
+            (duration_to_frames(start.saturating_sub(expected)), 0, 0)
         } else if start + TOLERANCE < expected {
             (self.drift_ns, self.since_fix) = (0.0, 0);
-            (0, duration_to_frames(expected - start).min(len), 0)
+            (
+                0,
+                duration_to_frames(expected.saturating_sub(start)).min(len),
+                0,
+            )
         } else if len == 0 {
             (0, 0, 0)
         } else {
@@ -677,7 +718,9 @@ impl Timeline {
 fn apply_gain(samples: &mut [f32], from: f32, to: f32) {
     if from == to {
         if to != 1.0 {
-            samples.iter_mut().for_each(|s| *s *= to);
+            for s in &mut *samples {
+                *s *= to;
+            }
         }
         return;
     }
@@ -685,7 +728,9 @@ fn apply_gain(samples: &mut [f32], from: f32, to: f32) {
     let frames = samples.len() / ch;
     for (i, frame) in samples.chunks_mut(ch).enumerate() {
         let g = from + (to - from) * (i + 1) as f32 / frames as f32;
-        frame.iter_mut().for_each(|s| *s *= g);
+        for s in &mut *frame {
+            *s *= g;
+        }
     }
 }
 
@@ -700,7 +745,7 @@ fn emit(ready: &mut Vec<f32>, skip: &mut usize, samples: &[f32]) {
 
 /// Feeds samples to the encoder 20 ms at a time and tracks the peak.
 struct Encoder<F> {
-    encoder: OpusEncoder,
+    codec: OpusEncoder,
     /// Where libopus writes each packet, allocated once.
     packet: Vec<u8>,
     pending: Vec<f32>,
@@ -741,7 +786,7 @@ struct Encoder<F> {
 impl<F: FnMut(EncodedPacket)> Encoder<F> {
     fn new(encoder: OpusEncoder, anchor: Duration, shared: Arc<Shared>, on_packet: F) -> Self {
         Self {
-            encoder,
+            codec: encoder,
             packet: vec![0; MAX_OPUS_PACKET_BYTES],
             pending: Vec::new(),
             block: Vec::with_capacity(FRAME * usize::from(CHANNELS)),
@@ -982,7 +1027,7 @@ impl<F: FnMut(EncodedPacket)> Encoder<F> {
         let block_pts_frames = self.sent;
         self.sent += FRAME as i64;
         match self
-            .encoder
+            .codec
             .encoder
             .encode_float(&self.block, &mut self.packet)
         {
@@ -1025,7 +1070,7 @@ impl<F: FnMut(EncodedPacket)> Encoder<F> {
         // libavcodec's convention, kept from Vesper's FFmpeg encoder: the
         // first packet starts `pre_skip` samples early (negative pts), so
         // decoded audio lands on `anchor`.
-        let packet_pts_frames = block_pts_frames - i64::from(self.encoder.pre_skip);
+        let packet_pts_frames = block_pts_frames - i64::from(self.codec.pre_skip);
         let pts_ns = i128::from(packet_pts_frames) * 1_000_000_000 / i128::from(SAMPLE_RATE);
         let pts = self.anchor.as_nanos() as i128 + pts_ns;
         (self.on_packet)(EncodedPacket::new(
@@ -1064,14 +1109,10 @@ impl<F: FnMut(EncodedPacket)> Encoder<F> {
             // wrapper did at its end of stream: the last captured samples
             // come out of the decoder, past its pre-skip.
             let silence = vec![0.0; len];
-            for _ in 0..usize::from(self.encoder.pre_skip).div_ceil(FRAME) {
+            for _ in 0..usize::from(self.codec.pre_skip).div_ceil(FRAME) {
                 let block_pts_frames = self.sent;
                 self.sent += FRAME as i64;
-                match self
-                    .encoder
-                    .encoder
-                    .encode_float(&silence, &mut self.packet)
-                {
+                match self.codec.encoder.encode_float(&silence, &mut self.packet) {
                     Ok(packet_length) => self.emit(block_pts_frames, packet_length),
                     Err(e) => error!("opus flush failed: {e}"),
                 }
@@ -1227,7 +1268,10 @@ fn encode_loop(mut enc: Encoder<impl FnMut(EncodedPacket)>, mut rx: ring::Reader
                 break;
             }
             if waited < wait {
-                rx.wait(FRAME.saturating_sub(enc.pending_frames()), wait - waited);
+                rx.wait(
+                    FRAME.saturating_sub(enc.pending_frames()),
+                    wait.saturating_sub(waited),
+                );
                 continue;
             }
             // Stalled source (no device, suspended, nothing playing to an
@@ -1580,13 +1624,13 @@ mod tests {
         }
         drop(chunk_tx);
         let enc = Encoder::new(encoder, anchor, Arc::default(), move |p| {
-            tx.send(p).unwrap()
+            tx.send(p).unwrap();
         });
         encode_loop(enc, chunk_rx, false);
         let packets: Vec<_> = rx.iter().collect();
         assert!(packets.len() >= 50, "{} packets", packets.len());
         for w in packets.windows(2) {
-            assert_eq!(w[1].pts - w[0].pts, Duration::from_millis(20));
+            assert_eq!(w[1].pts.saturating_sub(w[0].pts), Duration::from_millis(20));
         }
         assert!(packets[0].pts <= anchor);
     }
@@ -1612,7 +1656,7 @@ mod tests {
         let encoder = open_encoder().unwrap();
         let head = opus_head(&encoder).unwrap();
         let enc = Encoder::new(encoder, anchor, Arc::default(), move |p| {
-            tx.send(p).unwrap()
+            tx.send(p).unwrap();
         });
         encode_loop(enc, chunk_rx, false);
         producer.join().unwrap();
@@ -1620,7 +1664,7 @@ mod tests {
         // 50 blocks and the encoder's padding, back to back.
         assert!((51..=53).contains(&packets.len()), "{}", packets.len());
         for w in packets.windows(2) {
-            assert_eq!(w[1].pts - w[0].pts, Duration::from_millis(20));
+            assert_eq!(w[1].pts.saturating_sub(w[0].pts), Duration::from_millis(20));
         }
         // No hole: the tone is in every 20 ms of the second (the last fades
         // out in the codec).
@@ -1645,7 +1689,7 @@ mod tests {
         });
         let (tx, rx) = mpsc::channel();
         let enc = Encoder::new(open_encoder().unwrap(), anchor, Arc::default(), move |p| {
-            tx.send(p).unwrap()
+            tx.send(p).unwrap();
         });
         encode_loop(enc, chunk_rx, false);
         stopper.join().unwrap();
@@ -1654,7 +1698,7 @@ mod tests {
         assert!(
             end >= anchor + Duration::from_millis(680),
             "{:?}",
-            end - anchor
+            end.saturating_sub(anchor)
         );
     }
 
@@ -1670,7 +1714,7 @@ mod tests {
         });
         let (tx, rx) = mpsc::channel();
         let enc = Encoder::new(open_encoder().unwrap(), anchor, Arc::default(), move |p| {
-            tx.send((monotonic_now(), p.pts)).unwrap()
+            tx.send((monotonic_now(), p.pts)).unwrap();
         });
         encode_loop(enc, chunk_rx, input);
         stopper.join().unwrap();
@@ -1691,7 +1735,7 @@ mod tests {
         let (chunk_tx, chunk_rx) = ring::ring();
         let (tx, rx) = mpsc::channel();
         let enc = Encoder::new(open_encoder().unwrap(), anchor, Arc::default(), move |_| {
-            tx.send(monotonic_now()).unwrap()
+            tx.send(monotonic_now()).unwrap();
         });
         let encoder = std::thread::spawn(move || encode_loop(enc, chunk_rx, false));
         std::thread::sleep(Duration::from_millis(50));
@@ -1710,7 +1754,7 @@ mod tests {
         assert!(
             first < pushed + STALL + STALL_FILL + margin,
             "first packet {:?} after the buffer",
-            first - pushed
+            first.saturating_sub(pushed)
         );
     }
 
@@ -1781,7 +1825,7 @@ mod tests {
         let encoder = open_encoder().unwrap();
         let head = opus_head(&encoder).unwrap();
         let mut enc = Encoder::new(encoder, anchor, Arc::default(), move |p| {
-            tx.send(p).unwrap()
+            tx.send(p).unwrap();
         });
         // Delayed by RNNoise's 20 ms and the limiter's lookahead (the
         // expander is left out: its attack would blur the onset).
@@ -1799,9 +1843,9 @@ mod tests {
         let onset = decoded.iter().position(|s| s.abs() > 0.05).unwrap();
         // The decoder drops the pre-skip: its first sample is at the anchor.
         let pre_skip = usize::from(u16::from_le_bytes([head[10], head[11]]));
-        let heard = packets[0].pts + frames_to_duration(pre_skip + onset);
+        let onset_heard = packets[0].pts + frames_to_duration(pre_skip + onset);
         let truth = anchor + frames_to_duration(at);
-        let error_ms = (heard.as_secs_f64() - truth.as_secs_f64()) * 1e3;
+        let error_ms = (onset_heard.as_secs_f64() - truth.as_secs_f64()) * 1e3;
         assert!(error_ms.abs() < 0.1, "burst {error_ms} ms off");
         // Nothing lost at the end: the delay was flushed.
         assert!(packets.len() >= 50, "{} packets", packets.len());
@@ -1927,7 +1971,9 @@ mod tests {
         // Ramps from 1.0 towards -6 dB during the first block only.
         enc.push(&vec![0.5; FRAME * 2]);
         enc.process = Some(Box::new(|s: &mut [f32]| {
-            s.iter_mut().for_each(|x| *x *= 2.0);
+            for x in &mut *s {
+                *x *= 2.0;
+            }
             0
         }));
         peak(&shared);
@@ -1983,7 +2029,7 @@ mod tests {
             .collect()
     }
 
-    /// A LibriSpeech utterance (vesper-dsp's test data, 4.8 s) at 48 kHz
+    /// A `LibriSpeech` utterance (vesper-dsp's test data, 4.8 s) at 48 kHz
     /// (linear upsampling) over a -65 dB hiss: block `k` of it, stereo, the
     /// clip starting at block 50 (1 s).
     fn speech_block(k: usize) -> Vec<f32> {
@@ -2171,7 +2217,7 @@ mod tests {
         let key = Arc::new(VoiceKey::default());
         let anchor = Duration::from_secs(5);
         let mut mic = voice_track(&key, anchor, true, DuckSettings::default());
-        let early = anchor - Duration::from_millis(500);
+        let early = anchor.saturating_sub(Duration::from_millis(500));
         let mut music = voice_track(&key, early, false, DUCK_12);
         let levels = tap_levels(&mut music);
         run_voice(&mut mic, &mut music, 25, |_, _| {});
@@ -2187,7 +2233,7 @@ mod tests {
         let key = Arc::new(VoiceKey::default());
         let anchor = Duration::from_secs(5);
         let mut mic = voice_track(&key, anchor, true, DuckSettings::default());
-        let early = anchor - Duration::from_millis(500);
+        let early = anchor.saturating_sub(Duration::from_millis(500));
         let mut music = voice_track(&key, early, false, DUCK_12);
         let levels = tap_levels(&mut music);
         // Song block `k + 25` (on the mic's block `k`) comes with mic

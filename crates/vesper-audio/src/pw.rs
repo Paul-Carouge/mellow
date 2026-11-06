@@ -294,7 +294,7 @@ pub fn run(
             Some(ex) => ex.apps(),
             None => Vec::new(),
         };
-        *reopen.apps.borrow_mut() = except.clone();
+        reopen.apps.borrow_mut().clone_from(&except);
         let except = if reopen.monitor.get() {
             Vec::new()
         } else {
@@ -531,8 +531,7 @@ impl Session {
         let (name, target) = match &source {
             Source::Desktop => ("vesper-desktop-audio", None),
             Source::Microphone => ("vesper-microphone", None),
-            Source::Output(node) => ("vesper-device-audio", Some(node)),
-            Source::Input(node) => ("vesper-device-audio", Some(node)),
+            Source::Output(node) | Source::Input(node) => ("vesper-device-audio", Some(node)),
             Source::App(_) => ("vesper-app-audio", None),
         };
         let wanted = match source {
@@ -1046,7 +1045,7 @@ impl AppLinks {
                             match s.watch_default_sink(global, &state, &core, &stream) {
                                 Ok(m) => s.metadata = Some(m),
                                 Err(e) => {
-                                    (s.fallback)(&format!("cannot follow the default sink: {e}"))
+                                    (s.fallback)(&format!("cannot follow the default sink: {e}"));
                                 }
                             }
                             return;
@@ -1066,10 +1065,10 @@ impl AppLinks {
                         ObjectType::Node if s.wanted.matches(props, &s.own_pid) => {
                             match s.wanted {
                                 Wanted::App(_) => {
-                                    info!("{}: following stream node {}", s.wanted, global.id)
+                                    info!("{}: following stream node {}", s.wanted, global.id);
                                 }
                                 Wanted::SinkExcept { .. } => {
-                                    debug!("{}: following stream node {}", s.wanted, global.id)
+                                    debug!("{}: following stream node {}", s.wanted, global.id);
                                 }
                             }
                             s.nodes.insert(global.id);
@@ -1458,7 +1457,7 @@ mod tests {
         assert_eq!(r.lost(Some(two)), retry(two, false, true));
         assert_eq!(r.lost(Some(two / 2)), retry(two, false, false));
         // Just short of healthy: still the same outage at full backoff.
-        let almost = Some(HEALTHY - Duration::from_millis(1));
+        let almost = Some(HEALTHY.saturating_sub(Duration::from_millis(1)));
         assert_eq!(r.lost(almost), retry(two, false, true));
         // A healthy run ends it: a real unplug retries fast and warns again.
         assert_eq!(r.lost(Some(HEALTHY)), retry(BACKOFF_FIRST, true, true));
@@ -1553,7 +1552,7 @@ mod tests {
         assert_eq!(link_targets("MONO"), ["FL", "FR"]);
         assert_eq!(link_targets("FC"), ["FC"]);
         assert_eq!(link_targets("AUX0"), ["FL", "FR"]);
-        assert!(link_targets("LFE").is_empty());
+        assert_eq!(link_targets("LFE").len(), 0);
         // Every target is one of our ports.
         let names = ["FL", "FR", "FC", "LFE", "RL", "RR", "SL", "SR"];
         for c in ["FL", "FRC", "TC", "RLC", "TRR", "SL", "SR", "RC", "MONO"] {

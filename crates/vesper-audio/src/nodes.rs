@@ -134,9 +134,18 @@ pub struct NodeWatch {
     thread: Option<JoinHandle<()>>,
 }
 
+impl std::fmt::Debug for NodeWatch {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("NodeWatch").finish_non_exhaustive()
+    }
+}
+
 impl NodeWatch {
     /// `on_change` runs on the watch thread with the full list, once it is
     /// known and after every change.
+    ///
+    /// # Errors
+    /// When the watch thread cannot be spawned or PipeWire cannot be reached.
     pub fn start(on_change: impl Fn(Vec<Node>) + Send + 'static) -> Result<Self> {
         let (stop, stop_rx) = pw::channel::channel();
         let (ready_tx, ready_rx) = mpsc::channel();

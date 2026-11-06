@@ -276,7 +276,7 @@ impl Reader {
         out.clear();
         unsafe {
             ring.samples
-                .pop(frames as usize * usize::from(CHANNELS), out)
+                .pop(frames as usize * usize::from(CHANNELS), out);
         };
         Some((Duration::from_nanos(start), Duration::from_nanos(pushed)))
     }
@@ -497,7 +497,7 @@ mod tests {
         }
         let pushed = producer.join().unwrap();
         assert_eq!(got, pushed);
-        assert!(!pushed.is_empty());
+        assert_ne!(pushed.len(), 0);
         let dropped: usize = (0..N)
             .filter(|k| pushed.binary_search(k).is_err())
             .map(frames)
