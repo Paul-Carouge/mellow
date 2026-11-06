@@ -4707,6 +4707,7 @@ dependencies = [
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
+ "sys-locale",
  "tokio",
  "tracing",
  "tracing-subscriber",
