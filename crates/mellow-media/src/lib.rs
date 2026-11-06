@@ -7,11 +7,18 @@
 //! Threads: a network thread owns the UDP socket, the peer and the connection's state machine
 //! (a new socket and peer per offer); an audio thread owns the codecs,
 //! the processing and the engine's end of the devices' ring buffers; device callbacks only move
-//! samples through wait-free ring buffers. Video lines are in the offer, as the server requires,
-//! but carry nothing yet.
+//! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
+//! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
+//! and one decoding thread per watched slot turns received frames into pictures for the
+//! interface.
 
 mod audio_engine;
 mod audio_format;
+mod camera;
+// AVFoundation is reached only through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod camera_macos;
 mod codec;
 mod connection;
 mod devices;
@@ -26,11 +33,19 @@ mod playback;
 mod processing;
 mod resampling;
 mod session;
+mod simulcast;
 mod sound_player;
 mod soundboard;
 mod sounds;
 mod transport;
+mod video_frame;
+mod video_receiver;
+mod video_sender;
+mod vp8;
 
+pub use camera::{
+    CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
+};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
@@ -57,11 +72,15 @@ pub use resampling::ResamplingError;
 pub use session::{
     AudioDirection, GOOD_ROUND_TRIP, LatencyQuality, MEDIUM_ROUND_TRIP, VoiceSession,
     VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions, VoiceSignalling, VoiceToggles,
-    latency_quality,
+    WatchedVideo, latency_quality,
 };
+pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;
 pub use soundboard::{
     DEFAULT_SOUNDBOARD_VOLUME, MAXIMUM_SOUND_FILE_BYTES, MAXIMUM_SOUNDBOARD_VOLUME, SoundCache,
     SoundboardError, decode_canonical_wav, download_sound, soundboard_gain,
 };
 pub use sounds::{LocalSound, VoiceCue, render_notification_chime};
+pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
+pub use video_receiver::VideoFrames;
+pub use video_sender::VideoInput;
