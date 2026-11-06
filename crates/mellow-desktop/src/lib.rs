@@ -1,6 +1,8 @@
 //! Mellow's native desktop client on GPUI (ADR-0051): the theme generated from the design tokens,
-//! the bridge to the Tokio runtime the network runs on, and the Dusk shell.
+//! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
+//! network runs on, and the Dusk shell.
 
+pub mod i18n;
 pub mod shell;
 pub mod theme;
 pub mod tokio_bridge;
@@ -33,8 +35,9 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
-    // shortcut: English menu label; the interface strings come from the web's catalogues later.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action("Quit Mellow", Quit)])]);
+    i18n::use_language(i18n::Language::from_operating_system(), cx);
+    let quit_label = i18n::strings(cx).desktop().quit_mellow();
+    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action(quit_label, Quit)])]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
