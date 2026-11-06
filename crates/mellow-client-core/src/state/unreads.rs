@@ -292,13 +292,13 @@ impl ClientState {
     /// Follows a message from `before` to `after` (`None`: not known here, or deleted).
     /// shortcut: a message this session never cached (counted in `Ready` only) cannot be
     /// followed, so its edits and deletion leave the count as it is until the next `Ready`;
-    /// upgrade if the gateway ever sends mention counts.
+    /// upgrade if the gateway ever sends mention counts. True when the count changed.
     pub(super) fn adjust_mention_count(
         &mut self,
         channel_id: Snowflake,
         before: Option<&Message>,
         after: Option<&Message>,
-    ) {
+    ) -> bool {
         let counts = |message: Option<&Message>| {
             message.is_some_and(|message| self.is_unread_mention_of_current_user(message))
         };
@@ -308,13 +308,14 @@ impl ClientState {
             (false, true) => count.saturating_add(1),
             // The server stops counting at the maximum: "at least 100" minus one is not 99.
             (true, false) if count < MAXIMUM_COUNTED_UNREAD_MENTIONS => count.saturating_sub(1),
-            _ => return,
+            _ => return false,
         };
         if next == 0 {
             self.reads.mention_count_by_channel.remove(&channel_id);
         } else {
             self.reads.mention_count_by_channel.insert(channel_id, next);
         }
+        next != count
     }
 }
 
@@ -395,8 +396,24 @@ mod tests {
         assert_eq!(state.mention_count(GENERAL), 0);
         let mut edited = mentioning_me(11);
         edited.edited_at_unix_milliseconds = Some(NOW);
-        state.apply_event(GatewayEvent::MessageUpdate(edited), NOW);
+        assert_eq!(
+            state.apply_event(GatewayEvent::MessageUpdate(edited.clone()), NOW),
+            StateChange::Messages {
+                channel_id: GENERAL
+            },
+            "the badge moved: the whole channel refreshes"
+        );
         assert_eq!(state.mention_count(GENERAL), 1);
+        edited.content = "still mentioning".into();
+        edited.edited_at_unix_milliseconds = Some(NOW + 1);
+        assert_eq!(
+            state.apply_event(GatewayEvent::MessageUpdate(edited), NOW),
+            StateChange::Message {
+                channel_id: GENERAL,
+                message_id: Snowflake::from_raw(11)
+            },
+            "the badge stays: only the message refreshes"
+        );
 
         state.apply_event(
             GatewayEvent::RelationshipAdd(mellow_protocol::Relationship {

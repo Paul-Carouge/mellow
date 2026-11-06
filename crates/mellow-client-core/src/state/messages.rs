@@ -112,13 +112,19 @@ impl ClientState {
             return StateChange::Nothing;
         }
         let merged = merged_update(&previous, updated);
-        self.adjust_mention_count(channel_id, Some(&previous), Some(&merged));
+        let is_mention_count_changed =
+            self.adjust_mention_count(channel_id, Some(&previous), Some(&merged));
         if let Some(cached) = self.cached_history_message_mut(channel_id, message_id) {
             *cached = merged;
         }
-        StateChange::Message {
-            channel_id,
-            message_id,
+        // An edit that adds or removes `@me` moves the channel's badge, which `Messages` covers.
+        if is_mention_count_changed {
+            StateChange::Messages { channel_id }
+        } else {
+            StateChange::Message {
+                channel_id,
+                message_id,
+            }
         }
     }
 
