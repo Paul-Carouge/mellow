@@ -126,6 +126,11 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<SoundPlayerCommand>) {
                 }
             }
         }
+        // A dead output never wants frames, so it would never idle out: close it now and let the
+        // next sound reopen one.
+        if sounds.is_empty() && playback.has_failed() {
+            playback.close();
+        }
         if !sounds.is_empty() && (!playback.is_open() || playback.has_failed()) {
             if let Err(error) = playback.open(devices, output_device_id.as_deref()) {
                 tracing::warn!(%error, "no audio output for sounds");
@@ -161,10 +166,15 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<SoundPlayerCommand>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
     use std::time::Instant;
 
     use super::*;
-    use crate::devices::{StreamFormat, SyntheticAudioDevices, SyntheticSound};
+    use crate::devices::{
+        AudioDeviceDescription, AudioDeviceError, CaptureStream, PlaybackStream, RunningStream,
+        StreamFormat, SyntheticAudioDevices, SyntheticSound,
+    };
 
     #[test]
     fn a_chime_reaches_the_output() {
@@ -183,6 +193,75 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         player.play_notification_chime();
+        drop(player);
+    }
+
+    /// An output that never plays its samples and reports when the player drops it.
+    struct DeadOutput {
+        has_failed: Arc<AtomicBool>,
+        closed_streams: Arc<AtomicUsize>,
+    }
+
+    struct CountedStream {
+        _samples: rtrb::Consumer<f32>,
+        closed_streams: Arc<AtomicUsize>,
+    }
+
+    impl RunningStream for CountedStream {}
+
+    impl Drop for CountedStream {
+        fn drop(&mut self) {
+            self.closed_streams.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    impl AudioDevices for DeadOutput {
+        fn input_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError> {
+            Ok(Vec::new())
+        }
+
+        fn output_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError> {
+            Ok(Vec::new())
+        }
+
+        fn open_capture(&self, _: Option<&str>) -> Result<CaptureStream, AudioDeviceError> {
+            Err(AudioDeviceError::NoDevice)
+        }
+
+        fn open_playback(&self, _: Option<&str>) -> Result<PlaybackStream, AudioDeviceError> {
+            let (samples, consumer) = rtrb::RingBuffer::new(48_000);
+            Ok(PlaybackStream {
+                format: StreamFormat {
+                    sample_rate: 48_000,
+                    channels: 1,
+                },
+                samples,
+                has_failed: self.has_failed.clone(),
+                running: Box::new(CountedStream {
+                    _samples: consumer,
+                    closed_streams: self.closed_streams.clone(),
+                }),
+            })
+        }
+    }
+
+    #[test]
+    fn an_output_that_fails_while_idle_is_closed() {
+        let has_failed = Arc::new(AtomicBool::new(false));
+        let closed_streams = Arc::new(AtomicUsize::new(0));
+        let player = SoundPlayer::new(Box::new(DeadOutput {
+            has_failed: has_failed.clone(),
+            closed_streams: closed_streams.clone(),
+        }))
+        .unwrap();
+        player.play(vec![0.5; 480].into(), 1.0);
+        // The unplugged device stops draining its ring buffer, so it never idles out.
+        has_failed.store(true, Ordering::Relaxed);
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while closed_streams.load(Ordering::Relaxed) == 0 {
+            assert!(Instant::now() < deadline, "the dead output stayed open");
+            std::thread::sleep(Duration::from_millis(10));
+        }
         drop(player);
     }
 }
