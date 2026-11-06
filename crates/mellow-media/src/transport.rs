@@ -1,7 +1,9 @@
 //! The network thread: drives the `str0m` peer over its own UDP socket, as the server's media
-//! loop does on its side. It writes the encoded voice with its RFC 6464 level, and hands the
-//! received audio packets to the audio thread.
+//! loop does on its side. It writes the encoded voice with its RFC 6464 level and the camera's
+//! or screen's simulcast layers, hands the received audio packets to the audio thread and the
+//! received video frames to their decoding threads, and passes keyframe requests both ways.
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -10,16 +12,21 @@ use std::time::{Duration, Instant};
 
 use str0m::change::{SdpAnswer, SdpPendingOffer};
 use str0m::format::Codec;
-use str0m::media::{Frequency, MediaTime, Mid, Pt};
+use str0m::media::{Frequency, KeyframeRequestKind, MediaTime, Mid, Pt, Rid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 
 use crate::audio_engine::AudioCommand;
 use crate::offer::MediaLines;
 use crate::session::VoiceSessionEvent;
+use crate::simulcast::{LAYERS, rid_of};
+use crate::video_receiver::VideoReceivers;
+use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
 
 /// The longest the thread sleeps on its socket, so outgoing voice never waits longer to leave.
 const MAXIMUM_SOCKET_WAIT: Duration = Duration::from_millis(5);
+/// The server accepts one keyframe request a second from a watcher; more would be dropped.
+const MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS: Duration = Duration::from_secs(1);
 /// Larger than any datagram the server sends (it drops anything over 1 500 bytes itself).
 const RECEIVE_BUFFER_BYTES: usize = 2_000;
 
@@ -63,6 +70,12 @@ pub(crate) struct Transport {
     pub(crate) events: Sender<VoiceSessionEvent>,
     /// To stop the microphone when the connection is lost, before saying so.
     pub(crate) audio_commands: Sender<AudioCommand>,
+    pub(crate) outgoing_video: Receiver<OutgoingVideoFrame>,
+    /// Told about the server's keyframe requests for the camera or screen.
+    pub(crate) video_encoder: Arc<VideoEncoderControl>,
+    pub(crate) video_receivers: VideoReceivers,
+    /// Receive slots whose decoder needs a keyframe.
+    pub(crate) keyframe_requests: Receiver<Mid>,
 }
 
 impl std::fmt::Debug for Transport {
@@ -87,14 +100,17 @@ impl Transport {
 
     fn run_until_stopped(&mut self) -> Result<(), String> {
         let mut buffer = vec![0_u8; RECEIVE_BUFFER_BYTES];
-        let mut voice_payload_type: Option<Pt> = None;
+        let mut payload_types = PayloadTypes::default();
+        let mut keyframe_requested_at: HashMap<Mid, Instant> = HashMap::new();
         loop {
             match self.commands.try_recv() {
                 Ok(TransportCommand::ApplyAnswer(answer)) => self.apply_answer(*answer)?,
                 Ok(TransportCommand::Stop) | Err(TryRecvError::Disconnected) => return Ok(()),
                 Err(TryRecvError::Empty) => {}
             }
-            self.send_voice(voice_payload_type)?;
+            self.send_voice(payload_types.voice)?;
+            self.send_video(payload_types.video);
+            self.request_keyframes(&mut keyframe_requested_at);
             let timeout = loop {
                 match self.rtc.poll_output().map_err(|error| error.to_string())? {
                     Output::Timeout(at) => break at,
@@ -105,7 +121,7 @@ impl Transport {
                             .send_to(&transmit.contents, transmit.destination);
                     }
                     Output::Event(event) => {
-                        self.handle_event(event, &mut voice_payload_type)?;
+                        self.handle_event(event, &mut payload_types)?;
                     }
                 }
             };
@@ -159,24 +175,41 @@ impl Transport {
             .map_err(|error| error.to_string())
     }
 
+    fn payload_type(&mut self, mid: Mid, codec: Codec) -> Option<Pt> {
+        self.rtc.writer(mid).and_then(|writer| {
+            writer
+                .payload_params()
+                .find(|params| params.spec().codec == codec)
+                .map(str0m::format::PayloadParams::pt)
+        })
+    }
+
     fn handle_event(
         &mut self,
         event: Event,
-        voice_payload_type: &mut Option<Pt>,
+        payload_types: &mut PayloadTypes,
     ) -> Result<(), String> {
         match event {
             // `Connected`, not the ICE state: DTLS is done and media can flow.
             Event::Connected => {
-                *voice_payload_type =
-                    self.rtc
-                        .writer(self.media_lines.voice_send)
-                        .and_then(|writer| {
-                            writer
-                                .payload_params()
-                                .find(|params| params.spec().codec == Codec::Opus)
-                                .map(str0m::format::PayloadParams::pt)
-                        });
+                payload_types.voice = self.payload_type(self.media_lines.voice_send, Codec::Opus);
+                payload_types.video = self.payload_type(self.media_lines.camera_send, Codec::Vp8);
+                // Pictures encoded before now were dropped: start every layer afresh.
+                self.video_encoder.request_keyframe(None);
                 let _ = self.events.send(VoiceSessionEvent::Connected);
+            }
+            Event::KeyframeRequest(request) if request.mid == self.media_lines.camera_send => {
+                let layer = request
+                    .rid
+                    .and_then(|rid| LAYERS.into_iter().find(|layer| *rid == *rid_of(*layer)));
+                // A request naming an unknown RID asks for nothing this client sends.
+                if request.rid.is_none() || layer.is_some() {
+                    self.video_encoder.request_keyframe(layer);
+                }
+            }
+            Event::MediaData(data) if self.media_lines.camera_receive.contains(&data.mid) => {
+                self.video_receivers
+                    .deliver(data.mid, data.data, data.contiguous);
             }
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                 return Err("the server stopped answering".into());
@@ -198,6 +231,50 @@ impl Transport {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Writes the video layers the encoding thread produced; before the connection they are
+    /// dropped (a keyframe of each follows the connection). A frame that cannot be written is
+    /// lost, not the call: the server asks for a keyframe when its watchers need one.
+    fn send_video(&mut self, video_payload_type: Option<Pt>) {
+        while let Ok(frame) = self.outgoing_video.try_recv() {
+            let Some(payload_type) = video_payload_type else {
+                continue;
+            };
+            let Some(writer) = self.rtc.writer(self.media_lines.camera_send) else {
+                continue;
+            };
+            let written = writer.rid(Rid::from(rid_of(frame.layer))).write(
+                payload_type,
+                Instant::now(),
+                MediaTime::new(frame.rtp_timestamp, Frequency::NINETY_KHZ),
+                frame.bytes,
+            );
+            if let Err(error) = written {
+                tracing::warn!(%error, "a video frame could not be sent");
+            }
+        }
+    }
+
+    /// Asks the server for a keyframe on the receive slots whose decoder lost track, at most
+    /// once a second each.
+    fn request_keyframes(&mut self, requested_at: &mut HashMap<Mid, Instant>) {
+        let now = Instant::now();
+        while let Ok(mid) = self.keyframe_requests.try_recv() {
+            if requested_at.get(&mid).is_some_and(|at| {
+                now.saturating_duration_since(*at) < MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS
+            }) {
+                continue;
+            }
+            // Before the connection the request fails: the decoder asks again later.
+            if let Some(mut writer) = self.rtc.writer(mid)
+                && writer
+                    .request_keyframe(None, KeyframeRequestKind::Pli)
+                    .is_ok()
+            {
+                requested_at.insert(mid, now);
+            }
+        }
     }
 
     /// Writes the voice packets the audio thread encoded; before the connection they are
@@ -224,4 +301,11 @@ impl Transport {
         }
         Ok(())
     }
+}
+
+/// The payload types the server answered, known once connected.
+#[derive(Debug, Default, Clone, Copy)]
+struct PayloadTypes {
+    voice: Option<Pt>,
+    video: Option<Pt>,
 }

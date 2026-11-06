@@ -5,11 +5,18 @@
 //!
 //! Threads: a network thread owns the UDP socket and the peer; an audio thread owns the codecs,
 //! the processing and the engine's end of the devices' ring buffers; device callbacks only move
-//! samples through wait-free ring buffers. Video lines are in the offer, as the server requires,
-//! but carry nothing yet.
+//! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
+//! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
+//! and one decoding thread per watched slot turns received frames into pictures for the
+//! interface.
 
 mod audio_engine;
 mod audio_format;
+mod camera;
+// AVFoundation is reached only through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod camera_macos;
 mod codec;
 mod devices;
 mod input_gate;
@@ -20,8 +27,16 @@ mod offer;
 mod processing;
 mod resampling;
 mod session;
+mod simulcast;
 mod transport;
+mod video_frame;
+mod video_receiver;
+mod video_sender;
+mod vp8;
 
+pub use camera::{
+    CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
+};
 pub use codec::CodecError;
 pub use devices::{
     AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, PlaybackProbe,
@@ -39,5 +54,9 @@ pub use processing::{NoiseSuppressionMode, ProcessingSettings};
 pub use resampling::ResamplingError;
 pub use session::{
     AudioDirection, VoiceSession, VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions,
-    VoiceSignalling, VoiceToggles,
+    VoiceSignalling, VoiceToggles, WatchedVideo,
 };
+pub use simulcast::{ScreenShareQuality, VideoSourceKind};
+pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
+pub use video_receiver::VideoFrames;
+pub use video_sender::VideoInput;

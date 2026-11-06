@@ -33,6 +33,8 @@ pub enum ReceiveSlotKind {
 pub(crate) struct MediaLines {
     pub(crate) voice_send: Mid,
     pub(crate) voice_receive: Vec<Mid>,
+    /// The camera or shared screen, simulcast `q`, `l`, `h`.
+    pub(crate) camera_send: Mid,
     pub(crate) camera_receive: Vec<Mid>,
     pub(crate) screen_sound_receive: Vec<Mid>,
 }
@@ -122,9 +124,9 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
     for rid in SIMULCAST_RIDS {
         simulcast.add_send_layer(SimulcastLayer::new(rid));
     }
-    // The camera and screen-sound send lines carry nothing until video comes; the server
-    // requires them for the receive lines after them.
-    change.add_media(
+    // The screen-sound send line carries nothing yet; the server requires it for the receive
+    // lines after it.
+    let camera_send = change.add_media(
         MediaKind::Video,
         Direction::SendOnly,
         None,
@@ -160,6 +162,7 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
         media_lines: MediaLines {
             voice_send,
             voice_receive,
+            camera_send,
             camera_receive,
             screen_sound_receive,
         },
@@ -257,6 +260,7 @@ mod tests {
             Some(ReceiveSlotKind::ScreenSound)
         );
         assert_eq!(lines.receive_slot_kind(lines.voice_send), None);
+        assert_eq!(lines.receive_slot_kind(lines.camera_send), None);
         assert_eq!(lines.audio_receive().count(), 19);
     }
 }
