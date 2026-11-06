@@ -287,7 +287,7 @@
     requestCamera: () => (call === "starting" ? new Promise<MediaStream>(() => {}) : Promise.resolve(canvasCamera(200))),
     listCameras: () => Promise.resolve(galleryCameras.map(({ deviceId, label }) => ({ deviceId, label }))),
     requestSoundSource: () => Promise.resolve(oscillatorMicrophone()),
-    codecPreferences: () => (hasVideo ? { audio: [], video: [] } : null),
+    codecPreferences: () => (hasVideo ? { audio: [], video: [], receivedVideo: [], receivesH264: false } : null),
   });
 
   const people = [

@@ -101,6 +101,12 @@
     return client.speakingUserIds.has(userId) || (userId === ownUserId && voice.isSelfSpeaking);
   }
 
+  /** Their camera or screen comes in a codec this browser does not decode (ADR-0052): the instance sends it no picture. */
+  function isUndecodable(person: CallPerson): boolean {
+    const state = states.find((candidate) => candidate.user_id === person.userId);
+    return person.video !== null && person.userId !== ownUserId && !voice.canShowVideoIn(state?.video_codec);
+  }
+
   function isMicrophoneOff(userId: Snowflake): boolean {
     if (userId === ownUserId) {
       return voice.isMicrophoneMuted;
@@ -191,7 +197,7 @@
     isSpeaking={isSpeaking(person.userId)}
     isMicrophoneOff={isMicrophoneOff(person.userId)}
     isPaused={!isOwn && voice.pausedVideoUserIds.has(person.userId)}
-    sentence={isOwn && voice.isCameraStarting ? strings.call.startingCamera : ""}
+    sentence={isOwn && voice.isCameraStarting ? strings.call.startingCamera : isUndecodable(person) ? strings.call.undecodable : ""}
     {isSmall}
     {isInStrip}
     action={actionOf(person)}

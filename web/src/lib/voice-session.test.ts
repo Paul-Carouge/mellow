@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-import { type ClientFrame, SCREEN_SOUND_RECEIVE_SLOTS, VIDEO_RECEIVE_SLOTS, VOICE_RECEIVE_SLOTS } from "./protocol";
+import { type ClientFrame, SCREEN_SOUND_RECEIVE_SLOTS, type VideoCodec, VIDEO_RECEIVE_SLOTS, VOICE_RECEIVE_SLOTS } from "./protocol";
 import type { EqualizerDecibels } from "./voice-settings";
 import type { MicrophoneProcessing, NoiseSuppressorProblem } from "./voice-processing";
 import { type AudioDevice, DEFAULT_VOICE_SETTINGS, PERSON_VOICE_SETTINGS_STORAGE_KEY, VOICE_SETTINGS_STORAGE_KEY } from "./voice-settings";
@@ -148,9 +148,17 @@ function fakeScreen(hasSound = true) {
   return { track, sound, stream: { getVideoTracks: () => [track], getAudioTracks: () => sounds, getTracks: () => [track, ...sounds] } };
 }
 
+const VP8 = { mimeType: "video/VP8", clockRate: 90_000 };
+const H264_CONSTRAINED_BASELINE = {
+  mimeType: "video/H264",
+  clockRate: 90_000,
+  sdpFmtpLine: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f",
+};
 const OPUS_AND_VP8 = {
   audio: [{ mimeType: "audio/opus", clockRate: 48_000 }],
-  video: [{ mimeType: "video/VP8", clockRate: 90_000 }],
+  video: [VP8],
+  receivedVideo: [VP8, H264_CONSTRAINED_BASELINE],
+  receivesH264: true,
 };
 
 function harness({
@@ -1227,11 +1235,28 @@ describe("VoiceSession screen sharing (ADR-0037)", () => {
     ]);
     expect(peer.sendEncodings.get(cameraIndex)?.map((encoding) => encoding.rid)).toEqual(["q", "l", "h"]);
     expect(peer.codecs.size).toBe(peer.transceivers.length);
+    expect(peer.codecs.get(cameraIndex)).toEqual([VP8]);
+    expect(peer.codecs.get(cameraIndex + 1)).toEqual([VP8, H264_CONSTRAINED_BASELINE]);
 
     const audioOnly = harness();
     await audioOnly.session.join(CHANNEL);
     expect(audioOnly.lastPeer().transceivers).toHaveLength(1 + VOICE_RECEIVE_SLOTS);
     expect(audioOnly.session.canShareScreen).toBe(false);
+  });
+
+  it("shows H.264 pictures only once its receive slots take H.264 (ADR-0052)", async () => {
+    const { session } = harness({ canShowVideo: true });
+    expect(session.canShowVideoIn("h264")).toBe(false);
+    expect(session.canShowVideoIn(undefined)).toBe(true);
+    await session.join(CHANNEL);
+    expect(session.canShowVideoIn("h264")).toBe(true);
+    expect(session.canShowVideoIn("vp8")).toBe(true);
+    expect(session.canShowVideoIn(null)).toBe(true);
+    expect(session.canShowVideoIn("av1" as VideoCodec)).toBe(false);
+
+    const audioOnly = harness();
+    await audioOnly.session.join(CHANNEL);
+    expect(audioOnly.session.canShowVideoIn("h264")).toBe(false);
   });
 
   it("shares the chosen screen as a detailed picture and stops with the browser's button", async () => {

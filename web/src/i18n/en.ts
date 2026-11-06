@@ -392,6 +392,8 @@ export const en = {
     /** The picture is late, paused by the instance, or the stream's sound. */
     slow: (person: string) => `${person}'s picture isn't coming through. Check your connection, or close and reopen their screen.`,
     paused: "Your connection is too slow for this picture. It comes back as soon as it can.",
+    /** The screen is sent in H.264 (ADR-0052), which this browser does not decode. */
+    undecodable: "This browser can't play this screen's picture (H.264). Watch it from another browser.",
     streamVolume: "Stream volume",
     muteStream: "Mute the stream",
     hasSound: "With sound",
@@ -491,6 +493,8 @@ export const en = {
     you: (person: string) => `${person} (you)`,
     startingCamera: "Starting your camera…",
     paused: "Connection too slow",
+    /** The picture is sent in H.264 (ADR-0052), which this browser does not decode. */
+    undecodable: "Picture not supported by this browser",
     overflow: (people: number) => `${count(people)} more in the call`,
     controls: "Call controls",
     shareScreen: "Share your screen",

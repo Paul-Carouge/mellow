@@ -30,7 +30,7 @@ pub use gateway::{
     MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SOUND_DURATION_MILLISECONDS, MAXIMUM_SOUND_SAMPLES,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MessageReaction, PollVote, Presence, PresenceStatus,
-    Ready, SOUND_SAMPLE_RATE_HERTZ, ServerFrame, SimulcastLayer, VideoTileSize,
+    Ready, SOUND_SAMPLE_RATE_HERTZ, ServerFrame, SimulcastLayer, VideoCodec, VideoTileSize,
     VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 pub use gifs::{GifSettings, MAXIMUM_GIF_FAVOURITES};

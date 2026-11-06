@@ -9,6 +9,8 @@ members = [
     "crates/mellow-update",
     "xtask",
 ]
+# A patched dependency, not a member: neither linted nor formatted as Mellow code.
+exclude = ["vendor/str0m"]
 
 [workspace.package]
 version = "0.48.0"
@@ -143,3 +145,9 @@ opt-level = 3
 
 [profile.dev.package.nnnoiseless]
 opt-level = 3
+
+# str0m 0.24.1 with its H.264 FU-A reassembly bounded (ADR-0052): upstream keeps every fragment
+# until an end fragment arrives, so a sender could grow server memory without limit. Drop the
+# patch once an upstream release bounds it.
+[patch.crates-io]
+str0m = { path = "vendor/str0m" }

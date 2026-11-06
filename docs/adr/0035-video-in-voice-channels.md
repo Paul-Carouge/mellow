@@ -2,6 +2,7 @@
 
 - Status: Proposed (2026-11-02). Measured on the owner's server the same day; the defaults below follow the recommendations given to the owner, who may still change them before stage 16.5 ships.
 - Date: 2026-11-02
+- Amended by: [ADR-0052](0052-h264-next-to-vp8-in-the-voice-sfu.md) (H.264 Constrained Baseline next to VP8, one codec per sender)
 - Builds on [ADR-0030](0030-voice-channels-with-an-sfu-in-the-server-binary.md), which decided and measured audio only. What it decided still holds: `str0m` 0.24 inside the server binary, one UDP port, ICE-lite, no TURN, signalling over the gateway, one media thread, the server never decodes media.
 
 ## Context
