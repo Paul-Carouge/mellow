@@ -6,27 +6,21 @@
 use std::collections::VecDeque;
 
 use mellow_client_core::{ClientError, Download, DownloadableFile, RestClient};
-use mellow_protocol::Snowflake;
+use mellow_protocol::{
+    CANONICAL_SOUND_FORMAT_CHUNK, MAXIMUM_SOUND_SAMPLES, SOUND_SAMPLE_RATE_HERTZ, Snowflake,
+};
 
 use crate::audio_format::VOICE_SAMPLE_RATE;
 use crate::mixer::clamped_volume;
 use crate::sounds::LocalSound;
 
-/// Discord's limit, which the instance enforces on upload: 5.2 seconds.
-const MAXIMUM_SOUND_DURATION_MILLISECONDS: usize = 5_200;
-const MAXIMUM_SOUND_SAMPLES: usize =
-    VOICE_SAMPLE_RATE as usize / 1_000 * MAXIMUM_SOUND_DURATION_MILLISECONDS;
 const CANONICAL_WAV_HEADER_BYTES: usize = 44;
 const BYTES_PER_SAMPLE: usize = 2;
 /// The most a sound download reads: a canonical WAV of the longest sound.
 pub const MAXIMUM_SOUND_FILE_BYTES: usize =
-    CANONICAL_WAV_HEADER_BYTES + MAXIMUM_SOUND_SAMPLES * BYTES_PER_SAMPLE;
-/// `fmt ` chunk of 16 bytes: PCM, one channel, 48 kHz, 96 000 bytes per second, 2-byte blocks,
-/// 16 bits (the server's `CANONICAL_FORMAT_CHUNK`).
-const CANONICAL_FORMAT_CHUNK: [u8; 24] = [
-    b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0x00, 0x77, 0x01, 0, 2, 0,
-    16, 0,
-];
+    CANONICAL_WAV_HEADER_BYTES + MAXIMUM_SOUND_SAMPLES as usize * BYTES_PER_SAMPLE;
+// The voice engine plays sounds at their stored rate, without resampling.
+const _: () = assert!(SOUND_SAMPLE_RATE_HERTZ == VOICE_SAMPLE_RATE);
 /// The soundboard slider stops at 100 %, as Discord's: a sound is never louder than its file.
 pub const MAXIMUM_SOUNDBOARD_VOLUME: f32 = 1.0;
 /// The web client's default soundboard volume.
@@ -59,7 +53,7 @@ pub fn decode_canonical_wav(file: &[u8]) -> Result<LocalSound, SoundboardError> 
     let samples_bytes = file.len().saturating_sub(CANONICAL_WAV_HEADER_BYTES);
     let is_canonical = file.starts_with(b"RIFF")
         && file.get(8..12) == Some(b"WAVE")
-        && file.get(12..36) == Some(&CANONICAL_FORMAT_CHUNK)
+        && file.get(12..36) == Some(&CANONICAL_SOUND_FORMAT_CHUNK)
         && file.get(36..40) == Some(b"data")
         && read_u32(4) == Some(file.len() - 8)
         && read_u32(40) == Some(samples_bytes)
@@ -147,7 +141,7 @@ mod tests {
         file.extend_from_slice(b"RIFF");
         file.extend_from_slice(&(36 + data_bytes).to_le_bytes());
         file.extend_from_slice(b"WAVE");
-        file.extend_from_slice(&CANONICAL_FORMAT_CHUNK);
+        file.extend_from_slice(&CANONICAL_SOUND_FORMAT_CHUNK);
         file.extend_from_slice(b"data");
         file.extend_from_slice(&data_bytes.to_le_bytes());
         for sample in samples {
@@ -169,7 +163,7 @@ mod tests {
         trailing.push(0);
         let mut stereo = valid.clone();
         stereo[22] = 2;
-        let too_long = canonical_wav(&vec![0; MAXIMUM_SOUND_SAMPLES + 1]);
+        let too_long = canonical_wav(&vec![0; MAXIMUM_SOUND_SAMPLES as usize + 1]);
         for file in [
             &b""[..],
             &valid[..20],
@@ -180,7 +174,9 @@ mod tests {
         ] {
             assert!(decode_canonical_wav(file).is_err());
         }
-        assert!(decode_canonical_wav(&canonical_wav(&vec![0; MAXIMUM_SOUND_SAMPLES])).is_ok());
+        assert!(
+            decode_canonical_wav(&canonical_wav(&vec![0; MAXIMUM_SOUND_SAMPLES as usize])).is_ok()
+        );
     }
 
     #[test]
