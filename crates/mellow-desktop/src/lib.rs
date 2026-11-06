@@ -26,7 +26,7 @@ const QUIT_KEYSTROKE: &str = "ctrl-q";
 /// When the embedded fonts cannot be registered or the window cannot open.
 pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     // Its behaviour (text input, overlays, focus) is what Mellow takes from it; it also reads the
-    // OS reduced-motion setting into `App::reduce_motion` and follows it.
+    // OS reduced-motion setting into `App::reduce_motion`, but follows it live on Linux only.
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
     tokio_bridge::install_network_runtime(network_runtime, cx);
@@ -45,7 +45,15 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
 
     cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
         theme::follow_window_appearance(window, cx);
-        cx.new(|_| DuskShell::default())
+        cx.new(|cx| {
+            // macOS and Windows post no reduced-motion change gpui-base can follow, so the
+            // setting is read again whenever the window comes back to the front.
+            cx.observe_window_activation(window, |_, _, cx| {
+                gpui_base::apply_system_reduce_motion(cx);
+            })
+            .detach();
+            DuskShell::default()
+        })
     })
     .context("cannot open the main window")?;
     cx.activate(true);

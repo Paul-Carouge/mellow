@@ -80,7 +80,7 @@ pub fn window_width_at_default_zoom(window: &Window) -> f32 {
 }
 
 /// How long an animation runs: nothing under reduced motion (DESIGN.md §2.8). `gpui_component::init`
-/// reads the OS setting into `App::reduce_motion` and follows it.
+/// reads the OS setting into `App::reduce_motion`; `start` re-reads it when the window is activated.
 #[must_use]
 pub fn animation_duration(token: AnimationDuration, cx: &App) -> Duration {
     if cx.reduce_motion() {

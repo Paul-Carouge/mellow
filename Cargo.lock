@@ -4702,6 +4702,7 @@ name = "mellow-desktop"
 version = "0.48.0"
 dependencies = [
  "anyhow",
+ "gpui-base",
  "gpui-component",
  "gpui-pre",
  "gpui-pre-platform",
