@@ -1,9 +1,12 @@
 //! macOS cameras through `AVFoundation` (`objc2` bindings, the same family as GPUI's own): a
 //! capture session delivering NV12 (video range) pictures on a dispatch queue, copied into the
-//! session's [`VideoInput`]. The system asks the user for camera access the first time.
+//! session's [`VideoInput`]. The first `open` asks the user for camera access and waits.
 
 use objc2::rc::Retained;
-use objc2::runtime::{AnyObject, ProtocolObject};
+use std::sync::mpsc;
+
+use block2::RcBlock;
+use objc2::runtime::{AnyObject, Bool, ProtocolObject};
 use objc2::{AllocAnyThread as _, DefinedClass as _, define_class, msg_send};
 use objc2_av_foundation::{
     AVAuthorizationStatus, AVCaptureConnection, AVCaptureDevice, AVCaptureDeviceInput,
@@ -161,6 +164,31 @@ fn all_cameras() -> Result<Vec<Retained<AVCaptureDevice>>, CameraError> {
     Ok(devices.to_vec())
 }
 
+/// Asks for camera access when the user has not decided yet, and waits for the answer: without
+/// it, a refusal would leave a camera that never sends, which the server turns off after 10 s.
+fn ensure_camera_access(media_type: &objc2_av_foundation::AVMediaType) -> Result<(), CameraError> {
+    // SAFETY: a plain class method with a valid media type.
+    let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) };
+    if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
+        return Err(CameraError::PermissionDenied);
+    }
+    if status != AVAuthorizationStatus::NotDetermined {
+        return Ok(());
+    }
+    let (answer, answered) = mpsc::channel();
+    let handler = RcBlock::new(move |is_granted: Bool| {
+        // `open` stopped waiting only if it is gone.
+        let _ = answer.send(is_granted.as_bool());
+    });
+    // SAFETY: a valid media type; the block is retained by AVFoundation until it is called
+    // (once, on an arbitrary queue), and only sends on a channel.
+    unsafe { AVCaptureDevice::requestAccessForMediaType_completionHandler(media_type, &handler) };
+    match answered.recv() {
+        Ok(true) => Ok(()),
+        _ => Err(CameraError::PermissionDenied),
+    }
+}
+
 impl Cameras for SystemCameras {
     fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
         Ok(all_cameras()?
@@ -179,11 +207,7 @@ impl Cameras for SystemCameras {
         frames: VideoInput,
     ) -> Result<Box<dyn RunningCapture>, CameraError> {
         let media_type = video_media_type()?;
-        // SAFETY: a plain class method with a valid media type.
-        let status = unsafe { AVCaptureDevice::authorizationStatusForMediaType(media_type) };
-        if status == AVAuthorizationStatus::Denied || status == AVAuthorizationStatus::Restricted {
-            return Err(CameraError::PermissionDenied);
-        }
+        ensure_camera_access(media_type)?;
         // SAFETY: plain class methods; the id is a valid string.
         let device = device_id
             .and_then(|id| unsafe { AVCaptureDevice::deviceWithUniqueID(&NSString::from_str(id)) })
