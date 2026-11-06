@@ -1,0 +1,23 @@
+[package]
+name = "vesper-encode"
+description = "Vesper's zero-copy hardware video encoder on Linux: DMA-BUF frames to H.264, HEVC or AV1 through FFmpeg's VAAPI encoders."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# No doc-tests: skips an empty rustdoc run per `cargo test`.
+doctest = false
+
+# Linux only: on other systems the crate is empty (ADR-0051).
+[target.'cfg(target_os = "linux")'.dependencies]
+libc.workspace = true
+rusty_ffmpeg.workspace = true
+tracing.workspace = true
+vesper-core.workspace = true
+
+[lints]
+workspace = true

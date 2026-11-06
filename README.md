@@ -16,7 +16,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development.
 
 ## Development
-Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), `cmake` (it builds libopus, which encodes audio attachments: `brew install cmake` on macOS, `apt install cmake` on Debian and Ubuntu), the ALSA headers on Linux for the desktop voice engine's audio devices (`apt install libasound2-dev` on Debian and Ubuntu), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows.
+Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), `cmake` (it builds libopus, which encodes audio attachments: `brew install cmake` on macOS, `apt install cmake` on Debian and Ubuntu), the ALSA headers on Linux for the desktop voice engine's audio devices (`apt install libasound2-dev` on Debian and Ubuntu), on Linux the PipeWire, VA-API and FFmpeg headers and libclang for Vesper's capture and encoder crates (`apt install libpipewire-0.3-dev libva-dev libclang-dev libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev`), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows.
 
 ```bash
 cargo test --workspace
@@ -88,3 +88,5 @@ Back up the master key file separately from the data directory; without it the d
 
 ## License
 AGPL-3.0-or-later.
+
+The `crates/vesper-*` crates (`vesper-audio`, `vesper-capture`, `vesper-core`, `vesper-dsp`, `vesper-encode`) are copied from [Vesper](https://github.com/Paul-Carouge/vesper) by permission of its author, Paul Carouge, who licenses these copies under AGPL-3.0-or-later as part of Mellow (ADR-0051); each crate's `NOTICE` records the grant and the commit.

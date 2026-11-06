@@ -161,6 +161,10 @@ skip = [
     { crate = "winnow@0.7.15", reason = "toml_edit 0.22" },
     { crate = "zune-core@0.4.12", reason = "zune-jpeg 0.4" },
     { crate = "zune-jpeg@0.4.21", reason = "resvg 0.45" },
+    # Vesper's Linux capture and encoder (ADR-0051): bindgen 0.72 under pipewire-sys, libspa-sys
+    # and rusty_ffmpeg pins the older majors; cc and serde-saphyr use the newer ones.
+    { crate = "annotate-snippets@0.11.5", reason = "bindgen 0.72" },
+    { crate = "shlex@1.3.0", reason = "bindgen 0.72" },
 ]
 
 [sources]
