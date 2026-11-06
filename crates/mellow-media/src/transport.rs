@@ -20,6 +20,7 @@ use crate::audio_engine::AudioCommand;
 use crate::offer::MediaLines;
 use crate::session::VoiceSessionEvent;
 use crate::simulcast::{LAYERS, rid_of};
+use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
 use crate::video_receiver::VideoReceivers;
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
 
@@ -76,6 +77,8 @@ pub(crate) struct Transport {
     pub(crate) video_receivers: VideoReceivers,
     /// Receive slots whose decoder needs a keyframe.
     pub(crate) keyframe_requests: Receiver<Mid>,
+    /// The layers the uplink carries, from the server's loss feedback each second.
+    pub(crate) uplink: UplinkLayerCeiling,
 }
 
 impl std::fmt::Debug for Transport {
@@ -205,6 +208,15 @@ impl Transport {
                 // A request naming an unknown RID asks for nothing this client sends.
                 if request.rid.is_none() || layer.is_some() {
                     self.video_encoder.request_keyframe(layer);
+                }
+            }
+            Event::PeerStats(stats) => {
+                let previous = self.uplink.ceiling();
+                let loss_percent = stats.egress_loss_fraction.map(loss_percent_of);
+                let ceiling = self.uplink.after_report(loss_percent, Instant::now());
+                if ceiling != previous {
+                    tracing::debug!(?ceiling, "the uplink's video layers changed");
+                    self.video_encoder.set_layer_ceiling(ceiling);
                 }
             }
             Event::MediaData(data) if self.media_lines.camera_receive.contains(&data.mid) => {

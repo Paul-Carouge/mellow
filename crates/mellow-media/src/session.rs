@@ -26,6 +26,7 @@ use crate::offer::{MediaLines, OfferError, ReceiveSlotKind, new_peer};
 use crate::processing::ProcessingSettings;
 use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
 use crate::transport::{Transport, TransportCommand};
+use crate::uplink::UplinkLayerCeiling;
 use crate::video_frame::DecodedPixelFormat;
 use crate::video_receiver::{VideoFrames, VideoReceivers};
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
@@ -332,6 +333,7 @@ impl VoiceSession {
             video_encoder: Arc::clone(&video_encoder),
             video_receivers: VideoReceivers::new(video_frames.clone(), keyframe_requests),
             keyframe_requests: keyframe_request_receiver,
+            uplink: UplinkLayerCeiling::default(),
         };
         let transport_thread = std::thread::Builder::new()
             .name("mellow-voice-network".into())

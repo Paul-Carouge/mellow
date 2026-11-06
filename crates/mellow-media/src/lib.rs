@@ -29,6 +29,7 @@ mod resampling;
 mod session;
 mod simulcast;
 mod transport;
+mod uplink;
 mod video_frame;
 mod video_receiver;
 mod video_sender;

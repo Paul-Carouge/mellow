@@ -5,7 +5,7 @@
 //! of each group are kept here.
 
 use std::net::SocketAddr;
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use mellow_protocol::{
     MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
@@ -17,6 +17,8 @@ use str0m::{Candidate, Rtc};
 
 /// Opus's payload type in every browser's offer, which the server answers with (ADR-0030).
 pub(crate) const OPUS_PAYLOAD_TYPE: u8 = 111;
+/// How often the uplink's loss is judged (the server's `LINK_REPORT_INTERVAL`).
+const UPLINK_REPORT_INTERVAL: Duration = Duration::from_secs(1);
 /// The camera's simulcast RIDs, lowest first, as the web client declares them.
 const SIMULCAST_RIDS: [&str; 3] = ["q", "l", "h"];
 
@@ -90,7 +92,11 @@ pub struct OfferError(String);
 /// candidate: no STUN or TURN is needed), and its offer.
 pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<PendingPeer, OfferError> {
     str0m::crypto::from_feature_flags().install_process_default();
-    let mut builder = Rtc::builder().clear_codecs().enable_vp8(true);
+    let mut builder = Rtc::builder()
+        .clear_codecs()
+        .enable_vp8(true)
+        // A `PeerStats` a second carries the uplink's loss, from which video layers go and come.
+        .set_stats_interval(Some(UPLINK_REPORT_INTERVAL));
     builder.codec_config().add_config(
         Pt::new_with_value(OPUS_PAYLOAD_TYPE),
         None,
