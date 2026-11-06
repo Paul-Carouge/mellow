@@ -81,6 +81,13 @@ skip = [
     # The voice SFU (str0m's DTLS crate dimpl) and the axum WebSocket upgrade still use the
     # RustCrypto 0.10 generation, rand 0.9 and tungstenite 0.29; sqlx-core 0.9 uses sha2 0.10.
     { crate = "crypto-common@0.1.6", reason = "cipher 0.4, aead 0.5 and digest 0.10" },
+    # The desktop's keyring (secret-service 5, ADR-0051) is on RustCrypto 0.11; dimpl and GPUI's
+    # oo7 are still on 0.10.
+    { crate = "aes@0.8.4", reason = "dimpl 0.7 (str0m) and oo7 0.6 (gpui-pre-linux)" },
+    { crate = "cbc@0.1.2", reason = "oo7 0.6, under gpui-pre-linux" },
+    { crate = "cipher@0.4.4", reason = "aes 0.8, cbc 0.1 and ccm, see above" },
+    { crate = "inout@0.1.4", reason = "cipher 0.4, see above" },
+    { crate = "block-padding@0.3.3", reason = "inout 0.1, see above" },
     { crate = "cpufeatures@0.2.17", reason = "aes 0.8, sha1 0.10 and sha2 0.10" },
     { crate = "digest@0.10.7", reason = "sha1 0.10 (axum, tungstenite 0.29) and sha2 0.10 (sqlx-core 0.9)" },
     { crate = "block-buffer@0.10.4", reason = "digest 0.10, see above" },

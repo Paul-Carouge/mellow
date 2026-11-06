@@ -1,7 +1,17 @@
 //! Mellow's native desktop client on GPUI (ADR-0051): the theme generated from the design tokens,
-//! the bridge to the Tokio runtime the network runs on, and the Dusk shell.
+//! the bridge to the Tokio runtime the network runs on, the session and its sign-in screens, and
+//! the Dusk shell.
 
+pub mod connection_banner;
+mod local_widgets;
+pub mod main_window;
+pub mod preferences;
+pub mod session;
+pub mod session_store;
 pub mod shell;
+pub mod sign_in_form;
+pub mod sign_in_screen;
+pub mod strings_pending_i18n;
 pub mod theme;
 pub mod tokio_bridge;
 pub mod window_chrome;
@@ -10,10 +20,12 @@ use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, actions};
 use tokio::runtime::Handle;
 
-use crate::shell::DuskShell;
+use crate::main_window::MainWindow;
+use crate::session::Session;
+use crate::strings_pending_i18n::{ActiveStrings, Language};
 use crate::window_chrome::WINDOW_TITLE;
 
-actions!(mellow, [Quit]);
+actions!(mellow, [Quit, SignOut]);
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
@@ -30,11 +42,23 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
     tokio_bridge::install_network_runtime(network_runtime, cx);
+    let strings = Language::of_the_system().strings();
+    cx.set_global(ActiveStrings(strings));
+    let session = cx.new(Session::new_restoring_stored_session);
+    Session::end_connection_when_the_app_quits(&session, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
+    let session_to_sign_out = session.clone();
+    cx.on_action(move |_: &SignOut, cx| {
+        session_to_sign_out.update(cx, Session::sign_out);
+    });
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
-    // shortcut: English menu label; the interface strings come from the web's catalogues later.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action("Quit Mellow", Quit)])]);
+    // shortcut: English menu labels and "Sign out" in the menu bar until the user card's menu and
+    // the catalogues land.
+    cx.set_menus([Menu::new(WINDOW_TITLE).items([
+        MenuItem::action(strings.sign_out, SignOut),
+        MenuItem::action("Quit Mellow", Quit),
+    ])]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
@@ -52,7 +76,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
                 gpui_base::apply_system_reduce_motion(cx);
             })
             .detach();
-            DuskShell::default()
+            MainWindow::new(session, window, cx)
         })
     })
     .context("cannot open the main window")?;

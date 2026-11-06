@@ -1,0 +1,584 @@
+//! The signed-in session as one GPUI entity (ADR-0051 "Threads"): it owns the client state, the
+//! REST client, the gateway handle and the pump that brings gateway updates to the main thread.
+//!
+//! Network calls run on the Tokio runtime (`tokio_bridge`); their answers come back here, and an
+//! answer that left under an earlier session (a sign-out or a new sign-in since) is dropped
+//! (`generation`). Gateway updates arrive through a bounded channel and are applied a burst at a
+//! time, with one `notify` per burst, so a flood of events costs one repaint.
+
+use std::future::Future;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use gpui::{App, Context, Entity, EventEmitter, Task};
+use mellow_client_core::state::{ClientState, StateChange};
+use mellow_client_core::{
+    ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce,
+    run_gateway,
+};
+use mellow_protocol::{Message, SendMessageRequest, Snowflake};
+use tokio::sync::mpsc;
+use tokio::task::JoinError;
+use zeroize::Zeroizing;
+
+use crate::session_store;
+use crate::sign_in_form::describe_error;
+use crate::strings_pending_i18n::strings;
+use crate::tokio_bridge::spawn_on_network_runtime;
+
+/// Bounds what a stalled UI lets the gateway buffer; the gateway task waits when it is full.
+const GATEWAY_UPDATE_QUEUE_CAPACITY: usize = 256;
+/// Quitting waits this long at most for a sign-out to reach the instance.
+const LOGOUT_ON_EXIT_TIMEOUT: Duration = Duration::from_secs(3);
+
+/// Where the app stands with its session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SessionPhase {
+    /// Reading the secret store at launch: no screen yet, so the sign-in card does not flash.
+    RestoringStoredSession,
+    SignedOut,
+    SignedIn,
+}
+
+/// What the gateway connection is doing (the web's `ConnectionStatus`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConnectionStatus {
+    SignedOut,
+    /// Until the first `Ready` of the session.
+    Connecting,
+    Connected,
+    /// The connection dropped; the gateway reconnects with backoff.
+    Reconnecting,
+}
+
+/// What a burst of gateway updates touched, so views refresh only that.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StateChanged(pub Vec<StateChange>);
+
+struct Connection {
+    rest: RestClient,
+    gateway: GatewayHandle,
+    /// Dropping it aborts the gateway task on the network runtime.
+    _gateway_task: Task<Result<(), JoinError>>,
+    /// Ends when the gateway task drops its sender.
+    _gateway_pump: Task<()>,
+    /// False until the secret store took it, or when it refused: such a session ends with the app.
+    is_session_stored: bool,
+}
+
+pub struct Session {
+    phase: SessionPhase,
+    status: ConnectionStatus,
+    /// Bumped whenever a session starts or ends, so late answers of an earlier session (a 401 after
+    /// signing out, buffered gateway updates) never act on the current one.
+    generation: u64,
+    connection: Option<Connection>,
+    state: ClientState,
+    /// The instance of the current or last session, for the sign-in card after a sign-out.
+    last_instance: Option<InstanceAddress>,
+    /// The instance ended the session (expired, revoked elsewhere), not a sign-out from here: the
+    /// sign-in card says so.
+    has_ended_by_itself: bool,
+    is_signing_out: bool,
+    /// Built with `describe_error`; `None` hides it.
+    sign_out_error: Option<String>,
+    /// False in tests: nothing goes to the secret store or the preferences file of the machine.
+    is_kept_on_this_device: bool,
+}
+
+impl std::fmt::Debug for Session {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("Session")
+            .field("phase", &self.phase)
+            .field("status", &self.status)
+            .field("generation", &self.generation)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventEmitter<StateChanged> for Session {}
+
+impl Session {
+    /// A session that first looks for one kept in the secret store.
+    pub fn new_restoring_stored_session(cx: &mut Context<Self>) -> Self {
+        let session = Self::signed_out(true);
+        let load = spawn_on_network_runtime(cx, session_store::load_stored_session());
+        cx.spawn(async move |this, cx| {
+            let stored_session = load.await.ok().flatten();
+            let _ = this.update(cx, |session, cx| {
+                match stored_session
+                    .map(|stored| Self::authenticated_client(stored.instance, stored.token))
+                {
+                    Some(Ok(rest)) => session.connect(rest, true, cx),
+                    Some(Err(error)) => {
+                        tracing::warn!(%error, "cannot resume the stored session");
+                        session.phase = SessionPhase::SignedOut;
+                    }
+                    None => session.phase = SessionPhase::SignedOut,
+                }
+                cx.notify();
+            });
+        })
+        .detach();
+        Self {
+            phase: SessionPhase::RestoringStoredSession,
+            ..session
+        }
+    }
+
+    /// A signed-out session that keeps nothing on the machine: no stored session, no preferences.
+    #[must_use]
+    pub fn signed_out_kept_in_memory_only() -> Self {
+        Self::signed_out(false)
+    }
+
+    fn signed_out(is_kept_on_this_device: bool) -> Self {
+        Self {
+            phase: SessionPhase::SignedOut,
+            status: ConnectionStatus::SignedOut,
+            generation: 0,
+            connection: None,
+            state: ClientState::default(),
+            last_instance: None,
+            has_ended_by_itself: false,
+            is_signing_out: false,
+            sign_out_error: None,
+            is_kept_on_this_device,
+        }
+    }
+
+    /// Whether the sign-in may remember things on this machine (the instance address).
+    #[must_use]
+    pub fn is_kept_on_this_device(&self) -> bool {
+        self.is_kept_on_this_device
+    }
+
+    fn authenticated_client(
+        instance: InstanceAddress,
+        token: Zeroizing<String>,
+    ) -> Result<RestClient, ClientError> {
+        let mut rest = RestClient::new(instance)?;
+        rest.set_token(token);
+        Ok(rest)
+    }
+
+    #[must_use]
+    pub fn phase(&self) -> SessionPhase {
+        self.phase
+    }
+
+    #[must_use]
+    pub fn status(&self) -> ConnectionStatus {
+        self.status
+    }
+
+    #[must_use]
+    pub fn state(&self) -> &ClientState {
+        &self.state
+    }
+
+    #[must_use]
+    pub fn last_instance(&self) -> Option<&InstanceAddress> {
+        self.last_instance.as_ref()
+    }
+
+    #[must_use]
+    pub fn has_ended_by_itself(&self) -> bool {
+        self.has_ended_by_itself
+    }
+
+    #[must_use]
+    pub fn sign_out_error(&self) -> Option<&str> {
+        self.sign_out_error.as_deref()
+    }
+
+    /// Starts the session `rest` signed in to, and keeps it in the secret store for the next launch.
+    pub fn begin_signed_in_session(&mut self, rest: RestClient, cx: &mut Context<Self>) {
+        let instance = rest.instance().clone();
+        let token = rest.token().map(|token| Zeroizing::new(token.to_owned()));
+        self.connect(rest, false, cx);
+        let Some(token) = token.filter(|_| self.is_kept_on_this_device) else {
+            return;
+        };
+        let generation = self.generation;
+        let store = spawn_on_network_runtime(cx, session_store::store_session(instance, token));
+        cx.spawn(async move |this, cx| {
+            let is_session_stored = store.await.unwrap_or(false);
+            let _ = this.update(cx, |session, _| {
+                if session.generation == generation
+                    && let Some(connection) = &mut session.connection
+                {
+                    connection.is_session_stored = is_session_stored;
+                }
+            });
+        })
+        .detach();
+        cx.notify();
+    }
+
+    fn connect(&mut self, rest: RestClient, is_session_stored: bool, cx: &mut Context<Self>) {
+        self.generation += 1;
+        let generation = self.generation;
+        self.last_instance = Some(rest.instance().clone());
+        self.state = ClientState::default();
+        self.phase = SessionPhase::SignedIn;
+        self.status = ConnectionStatus::Connecting;
+        self.has_ended_by_itself = false;
+        self.sign_out_error = None;
+        let (gateway, commands) = GatewayHandle::new();
+        let (sender, mut updates) = mpsc::channel(GATEWAY_UPDATE_QUEUE_CAPACITY);
+        let token = Zeroizing::new(rest.token().unwrap_or_default().to_owned());
+        let gateway_task = spawn_on_network_runtime(
+            cx,
+            run_gateway(rest.instance().clone(), token, sender, commands),
+        );
+        // Tokio's receiver wakes any executor, so the pump runs on GPUI's main thread.
+        let gateway_pump = cx.spawn(async move |this, cx| {
+            while let Some(first_update) = updates.recv().await {
+                let mut burst = vec![first_update];
+                while let Ok(update) = updates.try_recv() {
+                    burst.push(update);
+                }
+                let is_entity_gone = this
+                    .update(cx, |session, cx| {
+                        session.apply_gateway_updates(generation, burst, cx);
+                    })
+                    .is_err();
+                if is_entity_gone {
+                    break;
+                }
+            }
+        });
+        // Replacing the previous connection drops its tasks, which aborts its gateway.
+        self.connection = Some(Connection {
+            rest,
+            gateway,
+            _gateway_task: gateway_task,
+            _gateway_pump: gateway_pump,
+            is_session_stored,
+        });
+    }
+
+    fn apply_gateway_updates(
+        &mut self,
+        generation: u64,
+        burst: Vec<GatewayUpdate>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.generation != generation {
+            return;
+        }
+        let mut changes: Vec<StateChange> = Vec::new();
+        let mut should_resend_failed_messages = false;
+        let now = now_unix_milliseconds();
+        for update in burst {
+            let change = match update {
+                GatewayUpdate::Ready(ready) => {
+                    self.status = ConnectionStatus::Connected;
+                    should_resend_failed_messages = true;
+                    self.state.apply_ready(*ready)
+                }
+                GatewayUpdate::Event(event) => self.state.apply_event(event, now),
+                GatewayUpdate::Resumed => {
+                    self.status = ConnectionStatus::Connected;
+                    should_resend_failed_messages = true;
+                    StateChange::Nothing
+                }
+                GatewayUpdate::Disconnected => {
+                    self.status = ConnectionStatus::Reconnecting;
+                    StateChange::Nothing
+                }
+                GatewayUpdate::SignedOut => {
+                    self.end_session(true, cx);
+                    return;
+                }
+            };
+            if change != StateChange::Nothing && !changes.contains(&change) {
+                changes.push(change);
+            }
+        }
+        if should_resend_failed_messages {
+            self.resend_failed_messages(cx);
+        }
+        if !changes.is_empty() {
+            cx.emit(StateChanged(changes));
+        }
+        cx.notify();
+    }
+
+    /// Skips the gateway's backoff wait (the banner's "Retry now").
+    pub fn reconnect_now(&self) {
+        if let Some(connection) = &self.connection {
+            connection.gateway.reconnect_now();
+        }
+    }
+
+    /// Runs `request` on the network runtime, then `on_done` here with its answer, unless the
+    /// session changed in between.
+    fn run_request<T: Send + 'static>(
+        &self,
+        cx: &mut Context<Self>,
+        request: impl Future<Output = Result<T, ClientError>> + Send + 'static,
+        on_done: impl FnOnce(&mut Self, Result<T, ClientError>, &mut Context<Self>) + 'static,
+    ) {
+        let generation = self.generation;
+        let task = spawn_on_network_runtime(cx, request);
+        cx.spawn(async move |this, cx| {
+            let answer = task.await;
+            let _ = this.update(cx, |session, cx| {
+                if session.generation != generation {
+                    return;
+                }
+                match answer {
+                    Ok(answer) => on_done(session, answer, cx),
+                    Err(error) => tracing::error!(%error, "a network task failed"),
+                }
+            });
+        })
+        .detach();
+    }
+
+    /// Ends the session when the instance no longer accepts it; otherwise only logs.
+    fn report_request_error(&mut self, error: &ClientError, action: &str, cx: &mut Context<Self>) {
+        if error.needs_new_login() {
+            self.end_session(true, cx);
+        } else {
+            tracing::warn!(%error, action, "request failed");
+        }
+    }
+
+    /// Signs out here and on the instance. As on the web, an instance that cannot be reached keeps
+    /// the session (signing out locally would leave it valid there) and the error says so.
+    pub fn sign_out(&mut self, cx: &mut Context<Self>) {
+        let Some(connection) = &self.connection else {
+            return;
+        };
+        if self.is_signing_out {
+            return;
+        }
+        self.is_signing_out = true;
+        self.sign_out_error = None;
+        let mut rest = connection.rest.clone();
+        self.run_request(
+            cx,
+            async move { rest.logout().await },
+            |session, answer, cx| {
+                session.is_signing_out = false;
+                match answer {
+                    Ok(()) => session.end_session(false, cx),
+                    // A session the instance already refuses is as good as revoked.
+                    Err(error) if error.needs_new_login() => session.end_session(false, cx),
+                    Err(error) => {
+                        let strings = strings(cx);
+                        session.sign_out_error =
+                            Some(describe_error(&error, strings.sign_out_failed, strings));
+                        cx.notify();
+                    }
+                }
+            },
+        );
+        cx.notify();
+    }
+
+    /// Back to the sign-in screen, forgetting the stored session: the instance no longer accepts
+    /// it, or the user signed out.
+    fn end_session(&mut self, has_ended_by_itself: bool, cx: &mut Context<Self>) {
+        // Drops the gateway task (aborting it) and the pump.
+        self.connection = None;
+        self.generation += 1;
+        self.state = ClientState::default();
+        self.phase = SessionPhase::SignedOut;
+        self.status = ConnectionStatus::SignedOut;
+        self.has_ended_by_itself = has_ended_by_itself;
+        self.is_signing_out = false;
+        self.sign_out_error = None;
+        if self.is_kept_on_this_device {
+            spawn_on_network_runtime(cx, session_store::forget_stored_session()).detach();
+        }
+        cx.notify();
+    }
+
+    /// Queues `content` in the outbox, shows it at once and sends it. Nothing is queued when the
+    /// app cannot make a nonce; the caller keeps the text then.
+    ///
+    /// # Errors
+    /// `RandomGeneratorFailed`, or `NotSignedIn` without a session.
+    pub fn send_message(
+        &mut self,
+        channel_id: Snowflake,
+        content: String,
+        reply_to_id: Option<Snowflake>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), ClientError> {
+        if self.connection.is_none() {
+            return Err(ClientError::NotSignedIn);
+        }
+        let nonce = generate_message_nonce()?;
+        let request = self
+            .state
+            .queue_message(channel_id, content, reply_to_id, nonce.clone());
+        cx.emit(StateChanged(vec![StateChange::Messages { channel_id }]));
+        cx.notify();
+        let Some(rest) = self
+            .connection
+            .as_ref()
+            .map(|connection| connection.rest.clone())
+        else {
+            return Err(ClientError::NotSignedIn);
+        };
+        self.run_request(
+            cx,
+            async move { rest.send_message(channel_id, &request).await },
+            move |session, answer, cx| {
+                session.apply_send_answer(channel_id, &nonce, answer, cx);
+            },
+        );
+        Ok(())
+    }
+
+    /// After a reconnect, sends every failed message again, one after another so they keep their
+    /// order. The first failure the instance does not refuse stops the batch: the rest stay failed.
+    fn resend_failed_messages(&mut self, cx: &mut Context<Self>) {
+        let batch = self.state.retry_failed_messages();
+        if batch.is_empty() {
+            return;
+        }
+        let mut channel_ids: Vec<Snowflake> =
+            batch.iter().map(|(channel_id, _, _)| *channel_id).collect();
+        channel_ids.dedup();
+        cx.emit(StateChanged(
+            channel_ids
+                .into_iter()
+                .map(|channel_id| StateChange::Messages { channel_id })
+                .collect(),
+        ));
+        self.resend_next_message(batch.into_iter(), cx);
+    }
+
+    /// One request at a time, each through `run_request`, so a sign-out stops the rest of the batch.
+    fn resend_next_message(
+        &mut self,
+        mut remaining: std::vec::IntoIter<(Snowflake, String, SendMessageRequest)>,
+        cx: &mut Context<Self>,
+    ) {
+        let Some((channel_id, nonce, request)) = remaining.next() else {
+            return;
+        };
+        let Some(rest) = self
+            .connection
+            .as_ref()
+            .map(|connection| connection.rest.clone())
+        else {
+            return;
+        };
+        self.run_request(
+            cx,
+            async move { rest.send_message(channel_id, &request).await },
+            move |session, answer, cx| {
+                let should_continue = answer
+                    .as_ref()
+                    .map_or_else(ClientError::refuses_message_for_good, |_| true);
+                session.apply_send_answer(channel_id, &nonce, answer, cx);
+                if should_continue {
+                    session.resend_next_message(remaining, cx);
+                    return;
+                }
+                let changes: Vec<StateChange> = remaining
+                    .map(|(_, nonce, _)| session.state.mark_send_failed(&nonce))
+                    .collect();
+                cx.emit(StateChanged(changes));
+                cx.notify();
+            },
+        );
+    }
+
+    /// shortcut: a refused message stays failed in the list; giving its text back to an empty
+    /// composer comes with the composer.
+    fn apply_send_answer(
+        &mut self,
+        channel_id: Snowflake,
+        nonce: &str,
+        answer: Result<Message, ClientError>,
+        cx: &mut Context<Self>,
+    ) {
+        let change = match answer {
+            Ok(message) => self.state.confirm_sent_message(nonce, message),
+            Err(error) => {
+                let change = self.state.mark_send_failed(nonce);
+                self.report_request_error(&error, "send message", cx);
+                change
+            }
+        };
+        if self.phase == SessionPhase::SignedIn {
+            let change = if change == StateChange::Nothing {
+                StateChange::Messages { channel_id }
+            } else {
+                change
+            };
+            cx.emit(StateChanged(vec![change]));
+            cx.notify();
+        }
+    }
+
+    /// Called as the app quits. A stored session stays open for the next launch; one the secret
+    /// store did not take is revoked, since nobody could use it again. Blocks the main thread for
+    /// at most `LOGOUT_ON_EXIT_TIMEOUT`: the window is already closing.
+    fn end_connection_before_exit(&mut self, cx: &App) {
+        let Some(connection) = self.connection.take() else {
+            return;
+        };
+        if connection.is_session_stored {
+            return;
+        }
+        let mut rest = connection.rest.clone();
+        drop(connection);
+        let logout = spawn_on_network_runtime(cx, async move {
+            tokio::time::timeout(LOGOUT_ON_EXIT_TIMEOUT, rest.logout()).await
+        });
+        let answer = cx
+            .foreground_executor()
+            .block_with_timeout(LOGOUT_ON_EXIT_TIMEOUT, logout);
+        if !matches!(answer, Ok(Ok(Ok(Ok(()))))) {
+            tracing::warn!("could not end the session on the instance before exiting");
+        }
+    }
+
+    /// Ends the connection when the app quits (see `end_connection_before_exit`).
+    pub fn end_connection_when_the_app_quits(session: &Entity<Self>, cx: &mut App) {
+        let session = session.downgrade();
+        cx.on_app_quit(move |cx| {
+            let _ = session.update(cx, |session, cx| session.end_connection_before_exit(cx));
+            std::future::ready(())
+        })
+        .detach();
+    }
+
+    /// The signed-in user's REST client, for the views that call the API themselves.
+    #[must_use]
+    pub fn rest_client(&self) -> Option<&RestClient> {
+        self.connection.as_ref().map(|connection| &connection.rest)
+    }
+
+    /// Tests stand in for the gateway with these.
+    #[cfg(test)]
+    pub(crate) fn state_mut(&mut self) -> &mut ClientState {
+        &mut self.state
+    }
+
+    #[cfg(test)]
+    pub(crate) fn apply_gateway_updates_of_this_session(
+        &mut self,
+        burst: Vec<GatewayUpdate>,
+        cx: &mut Context<Self>,
+    ) {
+        self.apply_gateway_updates(self.generation, burst, cx);
+    }
+}
+
+fn now_unix_milliseconds() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |elapsed| {
+            u64::try_from(elapsed.as_millis()).unwrap_or(u64::MAX)
+        })
+}
