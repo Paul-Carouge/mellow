@@ -83,9 +83,12 @@ struct InFlightEntry<'a> {
 
 impl InFlightEntry<'_> {
     fn finish(self) -> Vec<oneshot::Sender<FetchResult>> {
-        lock(&self.loader.in_flight)
+        let waiters = lock(&self.loader.in_flight)
             .remove(&self.file)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        // `Drop` must not run: by then another download of the file may own the entry.
+        std::mem::forget(self);
+        waiters
     }
 }
 
