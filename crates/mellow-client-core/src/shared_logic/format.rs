@@ -28,6 +28,10 @@ const MAXIMUM_KEPT_EXTENSION_LENGTH: usize = 8;
 const KEPT_CHARACTERS_BEFORE_EXTENSION: usize = 4;
 
 /// The languages dates and numbers are written in, as the web's `Intl` writes `en` and `fr`.
+///
+/// shortcut: en-US and fr-FR shapes only; the web follows the full region tag (en-GB, fr-CA), so
+/// a British desktop shows a 12-hour clock where the web shows 24 hours. Add region variants
+/// when the desktop reads the OS locale.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Locale {
     English,
