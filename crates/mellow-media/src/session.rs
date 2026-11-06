@@ -34,6 +34,7 @@ use crate::uplink::UplinkLayerCeiling;
 use crate::video_frame::DecodedPixelFormat;
 use crate::video_receiver::{VideoFrames, VideoReceivers};
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
+use crate::watch_list::WatchListPacing;
 
 /// Sends the session's gateway frames (`voice_join`, `voice_state`, `voice_leave`). Returns
 /// whether the frame went out: an offer the gateway could not carry is sent again on its next
@@ -348,6 +349,7 @@ impl VoiceSession {
             keyframe_requested_at: HashMap::new(),
             source: None,
             watched_cameras: Vec::new(),
+            watch_list_pacing: WatchListPacing::default(),
             uplink: UplinkLayerCeiling::default(),
         };
         let network = NetworkThread {
@@ -488,7 +490,8 @@ impl VoiceSession {
 
     /// The cameras and screens to show (at most `MAXIMUM_VIDEO_RECEIVE_SLOTS`, the rest is
     /// ignored), replacing the previous list. Only a change of people or tile sizes reaches the
-    /// server; drawn sizes apply at once.
+    /// server, at most every 400 ms (the latest change always arrives); drawn sizes apply at
+    /// once.
     pub fn watch_videos(&mut self, watched: &[WatchedVideo]) {
         let watched = &watched[..watched
             .len()

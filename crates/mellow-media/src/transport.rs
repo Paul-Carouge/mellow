@@ -29,6 +29,7 @@ use crate::simulcast::{LAYERS, VideoSourceKind, rid_of};
 use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
 use crate::video_receiver::VideoReceivers;
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
+use crate::watch_list::WatchListPacing;
 
 /// The longest the thread sleeps on its socket, so outgoing voice never waits longer to leave.
 const MAXIMUM_SOCKET_WAIT: Duration = Duration::from_millis(5);
@@ -393,6 +394,7 @@ pub(crate) struct VideoLink {
     pub(crate) source: Option<(VideoSourceKind, Instant)>,
     /// The last `voice_video_watch` list, sent again after each answer (a join forgets it).
     pub(crate) watched_cameras: Vec<WatchedCamera>,
+    pub(crate) watch_list_pacing: WatchListPacing,
     /// The layers the uplink carries, from the server's loss feedback.
     pub(crate) uplink: UplinkLayerCeiling,
 }
@@ -446,6 +448,11 @@ impl NetworkThread {
                 }
             }
             let now = Instant::now();
+            if let Some(cameras) = self.video.watch_list_pacing.take_due(now)
+                && !self.machine.is_stopped()
+            {
+                self.send_watch_list(cameras);
+            }
             if self
                 .machine
                 .next_deadline()
@@ -515,8 +522,10 @@ impl NetworkThread {
             }
             NetworkCommand::SetVideoSource(kind) => self.set_video_source(kind),
             NetworkCommand::WatchCameras(cameras) => {
-                self.video.watched_cameras = cameras;
-                self.send_watched_cameras();
+                self.video.watched_cameras.clone_from(&cameras);
+                if let Some(cameras) = self.video.watch_list_pacing.offer(cameras, now) {
+                    self.send_watch_list(cameras);
+                }
             }
             NetworkCommand::Leave => {
                 self.signalling.send_frame(ClientFrame::VoiceLeave);
@@ -547,7 +556,8 @@ impl NetworkThread {
                     Ok(()) => {
                         // The join forgot any earlier list.
                         if !self.video.watched_cameras.is_empty() {
-                            self.send_watched_cameras();
+                            self.video.watch_list_pacing.sent_now(now);
+                            self.send_watch_list(self.video.watched_cameras.clone());
                         }
                         ConnectionInput::AnswerApplied { offer_id }
                     }
@@ -676,10 +686,9 @@ impl NetworkThread {
         let _ = self.events.send(event);
     }
 
-    fn send_watched_cameras(&self) {
-        self.signalling.send_frame(ClientFrame::VoiceVideoWatch {
-            cameras: self.video.watched_cameras.clone(),
-        });
+    fn send_watch_list(&self, cameras: Vec<WatchedCamera>) {
+        self.signalling
+            .send_frame(ClientFrame::VoiceVideoWatch { cameras });
     }
 
     fn perform(&mut self, actions: Vec<ConnectionAction>) {
@@ -799,6 +808,7 @@ mod tests {
                 keyframe_requested_at: HashMap::new(),
                 source: None,
                 watched_cameras: Vec::new(),
+                watch_list_pacing: WatchListPacing::default(),
                 uplink: UplinkLayerCeiling::default(),
             },
             is_path_dropped: Arc::new(AtomicBool::new(false)),
@@ -894,13 +904,15 @@ mod tests {
     }
 
     #[test]
-    fn the_watch_list_goes_to_the_server() {
+    fn a_watch_list_goes_at_once_and_the_next_one_waits() {
         let (mut network, sent, _events) = network_without_peer();
         let cameras = vec![WatchedCamera {
             user_id: Snowflake::from_raw(7),
             size: VideoTileSize::Large,
         }];
         network.handle_command(NetworkCommand::WatchCameras(cameras.clone()));
+        // Right after: it waits for the network thread's next turns.
+        network.handle_command(NetworkCommand::WatchCameras(Vec::new()));
         let sent: Vec<ClientFrame> = sent.try_iter().collect();
         assert_eq!(sent, [ClientFrame::VoiceVideoWatch { cameras }]);
     }

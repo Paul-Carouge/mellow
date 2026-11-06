@@ -43,6 +43,7 @@ mod video_frame;
 mod video_receiver;
 mod video_sender;
 mod vp8;
+mod watch_list;
 
 pub use camera::{
     CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
