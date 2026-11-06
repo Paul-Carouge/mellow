@@ -212,6 +212,13 @@ impl PictureLoader {
         Ok(bytes)
     }
 
+    /// Stops disk writes before the cache directory is deleted; blocks on a write in progress.
+    pub(crate) fn close_disk_cache(&self) {
+        if let Some(disk_cache) = &self.disk_cache {
+            disk_cache.close();
+        }
+    }
+
     /// Drops a cached copy that did not decode, so the next view downloads it again.
     pub(crate) async fn forget(&self, file: DownloadableFile) {
         lock(&self.files_in_memory).remove(&file);

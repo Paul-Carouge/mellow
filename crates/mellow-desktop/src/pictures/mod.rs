@@ -18,11 +18,13 @@ mod limiter;
 mod loader;
 mod lru;
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use gpui::{App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, Window};
 use mellow_client_core::{DownloadableFile, RestClient};
+use tokio::sync::oneshot;
 
 use self::disk_cache::{DISK_CACHE_CAPACITY_BYTES, DiskCache, instance_directory_name};
 use self::loader::PictureLoader;
@@ -32,6 +34,12 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 /// Decoded pictures kept for views to draw again; each also holds a slot in GPUI's atlas until it
 /// is evicted from here.
 const DECODED_PICTURES_CAPACITY_BYTES: usize = 192 * 1024 * 1024;
+/// A picture that failed because the instance was unreachable or busy is asked again after this,
+/// when a view draws it: long enough that repaints do not hammer the instance.
+const FAILED_PICTURE_RETRY_AFTER: Duration = Duration::from_secs(30);
+/// Display sizes are rounded up to one of eight steps per doubling (at most 1/8 of the next power
+/// of two above), so resizing a window reuses decoded pictures instead of decoding at every pixel.
+const DISPLAY_SIZE_STEPS_PER_DOUBLING: u32 = 8;
 
 /// Whether animated pictures play: off follows the reduced-motion and picture-animation settings,
 /// and fetches the instance's still frame where it has one (`/still`).
@@ -47,6 +55,24 @@ pub enum Animation {
 pub struct DisplaySize {
     pub width: u32,
     pub height: u32,
+}
+
+/// `side` rounded up to the next step of its doubling.
+fn rounded_up_to_display_step(side: u32) -> u32 {
+    let Some(next_power_of_two) = side.checked_next_power_of_two() else {
+        return side;
+    };
+    let step = (next_power_of_two / DISPLAY_SIZE_STEPS_PER_DOUBLING).max(1);
+    side.div_ceil(step).saturating_mul(step)
+}
+
+impl DisplaySize {
+    fn rounded_up_to_display_step(self) -> Self {
+        Self {
+            width: rounded_up_to_display_step(self.width),
+            height: rounded_up_to_display_step(self.height),
+        }
+    }
 }
 
 /// One picture as one place shows it.
@@ -93,6 +119,26 @@ pub enum PictureLoadError {
     TooLarge,
 }
 
+/// How long a failed picture stays failed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PictureFailure {
+    /// Refused, too large or undecodable: asking again changes nothing this session.
+    Permanent,
+    /// The instance could not be reached or was busy: asked again after a while.
+    Transient { failed_at: Instant },
+}
+
+impl From<PictureLoadError> for PictureFailure {
+    fn from(error: PictureLoadError) -> Self {
+        match error {
+            PictureLoadError::Unavailable => Self::Transient {
+                failed_at: Instant::now(),
+            },
+            PictureLoadError::Refused | PictureLoadError::TooLarge => Self::Permanent,
+        }
+    }
+}
+
 /// The pictures of the signed-in session, as a GPUI global.
 #[derive(Default)]
 pub struct PictureStore {
@@ -102,8 +148,11 @@ pub struct PictureStore {
     pictures: Option<ByteBoundedLru<PictureRequest, Arc<RenderImage>>>,
     /// Pictures being fetched or decoded, with the views to notify when they are ready.
     loading: HashMap<PictureRequest, Vec<EntityId>>,
-    /// Pictures that failed after their retry: shown as failed until the next session.
-    failed: HashSet<PictureRequest>,
+    /// Pictures that failed after their retry, shown as failed until the failure expires.
+    failed: HashMap<PictureRequest, PictureFailure>,
+    /// Resolves once the last sign-out's deletion of the disk cache is over, so a new session
+    /// never opens its directory before an older deletion runs.
+    disk_cache_removal: Option<oneshot::Receiver<()>>,
     /// Evicted pictures whose atlas slots the next window that draws a picture frees.
     released: Vec<Arc<RenderImage>>,
 }
@@ -142,26 +191,55 @@ impl PictureStore {
             .extend(evicted.into_iter().map(|(_, picture)| picture));
     }
 
-    /// Forgets the session's pictures and returns the views that waited for some.
-    fn reset(&mut self) -> Vec<EntityId> {
+    /// Whether `request` still shows as failed at `now`; an expired failure is forgotten so the
+    /// picture loads again.
+    fn has_standing_failure(&mut self, request: &PictureRequest, now: Instant) -> bool {
+        match self.failed.get(request) {
+            None => false,
+            Some(PictureFailure::Permanent) => true,
+            Some(PictureFailure::Transient { failed_at })
+                if now.saturating_duration_since(*failed_at) < FAILED_PICTURE_RETRY_AFTER =>
+            {
+                true
+            }
+            Some(PictureFailure::Transient { .. }) => {
+                self.failed.remove(request);
+                false
+            }
+        }
+    }
+
+    /// Forgets the session's pictures; returns the views that waited for some and the session's
+    /// loader, whose downloads may still be running.
+    fn reset(&mut self) -> (Vec<EntityId>, Option<Arc<PictureLoader>>) {
         self.session += 1;
-        self.loader = None;
+        let loader = self.loader.take();
         self.failed.clear();
         let released = self.pictures().take_all();
         self.released
             .extend(released.into_iter().map(|(_, picture)| picture));
-        self.loading.drain().flat_map(|(_, views)| views).collect()
+        let waiting_views = self.loading.drain().flat_map(|(_, views)| views).collect();
+        (waiting_views, loader)
     }
 }
 
 /// Starts loading pictures for a signed-in session; `rest` carries its token. The disk cache is
 /// opened on the network runtime, and views asking before it is ready draw once it is.
 pub fn start_picture_session(rest: RestClient, cx: &mut App) {
-    let waiting_views = cx.default_global::<PictureStore>().reset();
-    let session = cx.global::<PictureStore>().session;
+    let store = cx.default_global::<PictureStore>();
+    let (waiting_views, previous_loader) = store.reset();
+    let session = store.session;
+    let disk_cache_removal = store.disk_cache_removal.take();
     let cache_directory = disk_cache::pictures_directory()
         .map(|directory| directory.join(instance_directory_name(rest.instance())));
     let opening = spawn_on_network_runtime(cx, async move {
+        if let Some(previous_loader) = previous_loader {
+            let _ = tokio::task::spawn_blocking(move || previous_loader.close_disk_cache()).await;
+        }
+        if let Some(disk_cache_removal) = disk_cache_removal {
+            // A closed channel means the deletion was cancelled with the runtime: nothing to wait.
+            let _ = disk_cache_removal.await;
+        }
         let disk_cache = match cache_directory {
             Some(directory) => tokio::task::spawn_blocking(move || {
                 DiskCache::open(directory, DISK_CACHE_CAPACITY_BYTES)
@@ -201,28 +279,49 @@ pub fn start_picture_session(rest: RestClient, cx: &mut App) {
 /// Signs the pictures out: memory caches emptied, and the disk cache deleted (every instance's)
 /// so the computer keeps no one's pictures.
 pub fn end_picture_session(cx: &mut App) {
-    let waiting_views = cx.default_global::<PictureStore>().reset();
+    let store = cx.default_global::<PictureStore>();
+    let (waiting_views, loader) = store.reset();
+    let previous_removal = store.disk_cache_removal.take();
+    let (removal_done, removal_done_receiver) = oneshot::channel();
+    store.disk_cache_removal = Some(removal_done_receiver);
     for view in waiting_views {
         cx.notify(view);
     }
-    if let Some(directory) = disk_cache::pictures_directory() {
-        spawn_on_network_runtime(cx, async move {
-            let removed = tokio::task::spawn_blocking(move || {
+    let directory = disk_cache::pictures_directory();
+    spawn_on_network_runtime(cx, async move {
+        if let Some(previous_removal) = previous_removal {
+            let _ = previous_removal.await;
+        }
+        let removed = tokio::task::spawn_blocking(move || {
+            // The old session's downloads run a moment longer: none may write after the deletion.
+            if let Some(loader) = loader {
+                loader.close_disk_cache();
+            }
+            directory.map_or(Ok(()), |directory| {
                 disk_cache::remove_pictures_directory(&directory)
             })
-            .await;
-            if !matches!(removed, Ok(Ok(()))) {
-                tracing::warn!("cannot delete the picture cache after signing out");
-            }
         })
-        .detach();
-    }
+        .await;
+        if !matches!(removed, Ok(Ok(()))) {
+            tracing::warn!("cannot delete the picture cache after signing out");
+        }
+        let _ = removal_done.send(());
+    })
+    .detach();
 }
 
 /// The source for `img(...)`: the picture once it is ready, nothing while it loads (the element
 /// shows its loading state), an error once it failed (its fallback).
+///
+/// Give the element an explicit size: the decoded picture's natural size is in device pixels
+/// (GPUI cannot be told its scale factor) and covers a display size rounded up a little, so an
+/// unsized `img` would draw too large on a high-density screen.
 #[must_use]
 pub fn picture_source(request: PictureRequest) -> ImageSource {
+    let request = PictureRequest {
+        display_size: request.display_size.rounded_up_to_display_step(),
+        ..request
+    };
     ImageSource::Custom(Arc::new(move |window, cx| picture(request, window, cx)))
 }
 
@@ -239,7 +338,7 @@ fn picture(
     if let Some(picture) = store.pictures().get(&request) {
         return Some(Ok(Arc::clone(picture)));
     }
-    if store.failed.contains(&request) {
+    if store.has_standing_failure(&request, Instant::now()) {
         return Some(Err(ImageCacheError::Asset("picture unavailable".into())));
     }
     let view = window.current_view();
@@ -261,7 +360,7 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
     let fetch_loader = Arc::clone(&loader);
     let download = spawn_on_network_runtime(cx, async move { fetch_loader.fetch(file).await });
     cx.spawn(async move |cx| {
-        let decoded = match download.await {
+        let decoded: Result<_, PictureFailure> = match download.await {
             Ok(Ok(bytes)) => {
                 let decoding = cx.background_executor().spawn(async move {
                     decode::decode_frames(&bytes, request.animation, request.display_size)
@@ -274,9 +373,11 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
                             .detach();
                     });
                 }
-                decoded.ok()
+                decoded.map_err(|_| PictureFailure::Permanent)
             }
-            Ok(Err(_)) | Err(_) => None,
+            Ok(Err(error)) => Err(error.into()),
+            // The download was cancelled with the runtime; ask again later like any outage.
+            Err(_) => Err(PictureLoadError::Unavailable.into()),
         };
         cx.update(|cx| {
             let store = cx.default_global::<PictureStore>();
@@ -285,9 +386,9 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
             }
             let waiting_views = store.loading.remove(&request).unwrap_or_default();
             match decoded {
-                Some(frames) => store.keep_decoded(request, Arc::new(RenderImage::new(frames))),
-                None => {
-                    store.failed.insert(request);
+                Ok(frames) => store.keep_decoded(request, Arc::new(RenderImage::new(frames))),
+                Err(failure) => {
+                    store.failed.insert(request, failure);
                 }
             }
             for view in waiting_views {
@@ -372,15 +473,62 @@ mod tests {
     }
 
     #[test]
+    fn an_unavailable_picture_loads_again_once_the_retry_delay_has_passed() {
+        let mut store = PictureStore::default();
+        let failed_at = Instant::now();
+        store
+            .failed
+            .insert(request(1), PictureFailure::Transient { failed_at });
+        store.failed.insert(request(2), PictureFailure::Permanent);
+        let soon = failed_at + FAILED_PICTURE_RETRY_AFTER.saturating_sub(Duration::from_secs(1));
+        let later = failed_at + FAILED_PICTURE_RETRY_AFTER;
+
+        assert!(store.has_standing_failure(&request(1), soon));
+        assert!(!store.has_standing_failure(&request(1), later));
+        assert!(
+            !store.failed.contains_key(&request(1)),
+            "the next draw loads it"
+        );
+        assert!(store.has_standing_failure(&request(2), later));
+        assert!(!store.has_standing_failure(&request(3), later));
+    }
+
+    #[test]
+    fn display_sizes_round_up_to_a_few_steps_per_doubling() {
+        assert_eq!(rounded_up_to_display_step(0), 0);
+        assert_eq!(rounded_up_to_display_step(1), 1);
+        assert_eq!(rounded_up_to_display_step(7), 7);
+        assert_eq!(rounded_up_to_display_step(48), 48);
+        assert_eq!(rounded_up_to_display_step(1_000), 1_024);
+        assert_eq!(rounded_up_to_display_step(1_025), 1_280);
+        for side in [1_100, 1_150, 1_200, 1_280] {
+            assert_eq!(
+                rounded_up_to_display_step(side),
+                1_280,
+                "one key while resizing"
+            );
+        }
+        assert_eq!(rounded_up_to_display_step(u32::MAX), u32::MAX);
+        for side in 1..5_000 {
+            let rounded = rounded_up_to_display_step(side);
+            assert!(
+                rounded >= side && rounded <= side + side / 4 + 1,
+                "{side} -> {rounded}"
+            );
+        }
+    }
+
+    #[test]
     fn a_new_session_drops_everything_of_the_previous_one() {
         let mut store = PictureStore::default();
         store.keep_decoded(request(1), picture_of_bytes(400));
-        store.failed.insert(request(2));
+        store.failed.insert(request(2), PictureFailure::Permanent);
         let view = EntityId::from(7_u64);
         store.loading.insert(request(3), vec![view]);
         let session = store.session;
 
-        assert_eq!(store.reset(), [view]);
+        let (waiting_views, _) = store.reset();
+        assert_eq!(waiting_views, [view]);
         assert_ne!(
             store.session, session,
             "late answers of the old session are dropped"

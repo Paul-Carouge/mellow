@@ -10,6 +10,7 @@
 use std::fs;
 use std::io::{self, Write as _};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Mutex, PoisonError};
 use std::time::SystemTime;
 
@@ -94,8 +95,10 @@ fn write_private_file(path: &Path, bytes: &[u8]) -> io::Result<()> {
 #[derive(Debug)]
 pub(crate) struct DiskCache {
     directory: PathBuf,
-    /// File names and sizes; the value carries nothing.
+    /// File names and sizes; the value carries nothing. Writes hold it, so `close` waits for them.
     index: Mutex<ByteBoundedLru<String, ()>>,
+    /// Set at sign-out before the directory is deleted: no write may land in it afterwards.
+    is_closed: AtomicBool,
 }
 
 impl DiskCache {
@@ -134,6 +137,7 @@ impl DiskCache {
         Ok(Self {
             directory,
             index: Mutex::new(index),
+            is_closed: AtomicBool::new(false),
         })
     }
 
@@ -160,17 +164,28 @@ impl DiskCache {
     /// Stores `bytes` under `name`, written aside first so a crash never leaves a torn file.
     ///
     /// # Errors
-    /// When the file cannot be written.
+    /// When the file cannot be written, or the cache is closed.
     pub(crate) fn write(&self, name: &str, bytes: &[u8]) -> io::Result<()> {
+        let mut index = self.index();
+        if self.is_closed.load(Ordering::Acquire) {
+            return Err(io::Error::other("the picture cache is closed"));
+        }
         let path = self.directory.join(name);
         let partial_path = self.directory.join(format!("{name}{PARTIAL_FILE_SUFFIX}"));
         write_private_file(&partial_path, bytes)?;
         fs::rename(&partial_path, &path)?;
-        let evicted = self.index().insert(name.to_owned(), (), bytes.len());
+        let evicted = index.insert(name.to_owned(), (), bytes.len());
         for (evicted_name, ()) in evicted {
             let _ = fs::remove_file(self.directory.join(evicted_name));
         }
         Ok(())
+    }
+
+    /// Refuses every later write, once the write in progress (if any) is done: the directory can
+    /// then be deleted without a file landing in it. Blocks on that write.
+    pub(crate) fn close(&self) {
+        let _index = self.index();
+        self.is_closed.store(true, Ordering::Release);
     }
 
     /// Forgets a file that turned out unreadable as a picture.
@@ -273,6 +288,17 @@ mod tests {
         let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
         assert_eq!(mode(&cache_directory), 0o700);
         assert_eq!(mode(&cache_directory.join("a")), 0o600);
+    }
+
+    #[test]
+    fn a_closed_cache_writes_nothing() {
+        let directory = tempfile::tempdir().unwrap();
+        let cache_directory = directory.path().join("instance");
+        let cache = DiskCache::open(cache_directory.clone(), 100).unwrap();
+        cache.close();
+        assert!(cache.write("a", b"1234").is_err());
+        assert!(!cache_directory.join("a").exists());
+        assert!(!cache_directory.join("a.partial").exists());
     }
 
     #[test]
