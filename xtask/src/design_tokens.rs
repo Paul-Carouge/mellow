@@ -102,7 +102,7 @@ impl DesignTokens {
     }
 }
 
-fn alias_target(text: &str) -> Option<&str> {
+pub(crate) fn alias_target(text: &str) -> Option<&str> {
     text.strip_prefix('{')?.strip_suffix('}')
 }
 

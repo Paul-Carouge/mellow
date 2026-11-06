@@ -1,5 +1,6 @@
-//! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons and the web app
-//! manifest from `design/tokens.json` and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
+//! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons, the web app
+//! manifest and the desktop client's token and icon modules from `design/tokens.json` and
+//! `design/icons`, and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 
 // A command-line program: its messages to the operator go to stderr.
 #![allow(clippy::print_stderr)]
@@ -8,6 +9,7 @@ mod app_icons;
 mod css_tokens;
 mod design_tokens;
 mod favicon;
+mod rust_tokens;
 mod web_manifest;
 
 use std::path::{Path, PathBuf};
@@ -22,6 +24,11 @@ const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
 const WEB_MANIFEST_OUTPUT_PATH: &str = "web/public/manifest.webmanifest";
+const RUST_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/src/theme/tokens.rs";
+const RUST_ICONS_OUTPUT_PATH: &str = "crates/mellow-desktop/src/theme/icons.rs";
+const ICONS_SOURCE_DIRECTORY: &str = "design/icons";
+/// `ICONS_SOURCE_DIRECTORY` as seen from `RUST_ICONS_OUTPUT_PATH`, for `include_bytes!`.
+const ICONS_DIRECTORY_FROM_RUST_ICONS: &str = "../../../../design/icons";
 /// Hand-written, except for its marked `theme-color` block.
 const WEB_INDEX_HTML_PATH: &str = "web/index.html";
 
@@ -71,6 +78,18 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
             favicon_svg.clone().into_bytes(),
         ),
     ];
+    outputs.push((
+        RUST_TOKENS_OUTPUT_PATH.to_owned(),
+        rust_tokens::generate_rust_tokens(&tokens)?.into_bytes(),
+    ));
+    outputs.push((
+        RUST_ICONS_OUTPUT_PATH.to_owned(),
+        rust_tokens::generate_icon_names(
+            &svg_file_names(&root.join(ICONS_SOURCE_DIRECTORY))?,
+            ICONS_DIRECTORY_FROM_RUST_ICONS,
+        )?
+        .into_bytes(),
+    ));
     outputs.push((
         WEB_MANIFEST_OUTPUT_PATH.to_owned(),
         web_manifest::generate_manifest(&tokens)?.into_bytes(),
@@ -125,6 +144,28 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         eprintln!("design tokens are up to date");
     }
     Ok(())
+}
+
+fn svg_file_names(directory: &Path) -> Result<Vec<String>> {
+    let mut names = Vec::new();
+    for entry in std::fs::read_dir(directory)
+        .with_context(|| format!("cannot read {}", directory.display()))?
+    {
+        let name = entry?.file_name();
+        let name = name.to_str().ok_or_else(|| {
+            anyhow!(
+                "{} holds a file name that is not UTF-8",
+                directory.display()
+            )
+        })?;
+        if Path::new(name)
+            .extension()
+            .is_some_and(|extension| extension == "svg")
+        {
+            names.push(name.to_owned());
+        }
+    }
+    Ok(names)
 }
 
 fn check_contrast_pairs(tokens: &DesignTokens) -> Result<()> {

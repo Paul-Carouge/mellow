@@ -9,7 +9,7 @@ use serde_json::Value;
 use crate::design_tokens::{DesignTokens, Theme};
 
 /// `ref.*` is the raw palette: components use semantic tokens only.
-const EXPORTED_GROUPS: [&str; 9] = [
+pub(crate) const EXPORTED_GROUPS: [&str; 9] = [
     "color",
     "component",
     "elevation",
