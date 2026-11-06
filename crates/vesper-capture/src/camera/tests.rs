@@ -128,6 +128,9 @@ fn jpeg(rgb: u32, w: u32, h: u32, sampling: &str) -> Option<Vec<u8>> {
     let out = Command::new("ffmpeg")
         .args(["-v", "error", "-f", "lavfi", "-i"])
         .arg(format!("color=c=0x{rgb:06x}:s={w}x{h}"))
+        // FFmpeg 6.1's color source rounds odd sizes down; scaling a solid
+        // colour back to the asked size keeps it solid.
+        .args(["-vf", &format!("scale={w}:{h}")])
         .args(["-frames:v", "1", "-pix_fmt", sampling, "-q:v", "2"])
         .args(["-c:v", "mjpeg", "-f", "image2pipe", "-"])
         .output()
