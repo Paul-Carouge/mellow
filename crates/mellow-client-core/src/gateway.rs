@@ -3,7 +3,7 @@
 
 use std::hash::{BuildHasher as _, Hasher as _};
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt as _, StreamExt as _};
@@ -60,6 +60,8 @@ pub enum GatewayUpdate {
 struct SharedConnectionState {
     /// `Ready` or `Resumed` came back on the current socket: frames may be sent.
     is_session_attached: AtomicBool,
+    /// Bumped each time a session goes: a frame queued under an older one is never sent.
+    session_generation: AtomicU64,
     /// The app asked to retry now (the network came back or changed).
     reconnect_requested: Notify,
 }
@@ -68,14 +70,21 @@ struct SharedConnectionState {
 /// reconnection now. Cheap to clone.
 #[derive(Debug, Clone)]
 pub struct GatewayHandle {
-    frames: mpsc::Sender<ClientFrame>,
+    frames: mpsc::Sender<SessionFrame>,
     shared: Arc<SharedConnectionState>,
+}
+
+/// A frame from the app, tagged with the session it was sent on.
+#[derive(Debug)]
+struct SessionFrame {
+    session_generation: u64,
+    frame: ClientFrame,
 }
 
 /// The connection task's side of a `GatewayHandle`, given to `run_gateway`.
 #[derive(Debug)]
 pub struct GatewayCommands {
-    frames: mpsc::Receiver<ClientFrame>,
+    frames: mpsc::Receiver<SessionFrame>,
     shared: Arc<SharedConnectionState>,
 }
 
@@ -107,13 +116,26 @@ impl GatewayHandle {
             frame,
             ClientFrame::Identify { .. } | ClientFrame::Resume { .. } | ClientFrame::Heartbeat
         );
-        !is_owned_by_the_task && self.is_session_attached() && self.frames.try_send(frame).is_ok()
+        if is_owned_by_the_task {
+            return false;
+        }
+        // Generation first: if a detach slips in after this read, the frame carries the old
+        // generation and the task drops it (`SeqCst` orders it against the attached flag).
+        let session_generation = self.shared.session_generation.load(Ordering::SeqCst);
+        self.shared.is_session_attached.load(Ordering::SeqCst)
+            && self
+                .frames
+                .try_send(SessionFrame {
+                    session_generation,
+                    frame,
+                })
+                .is_ok()
     }
 
     /// Whether `Ready` or `Resumed` came back on the current connection.
     #[must_use]
     pub fn is_session_attached(&self) -> bool {
-        self.shared.is_session_attached.load(Ordering::Acquire)
+        self.shared.is_session_attached.load(Ordering::SeqCst)
     }
 
     /// The network came back or changed: a task waiting out its backoff reconnects now, with the
@@ -130,14 +152,32 @@ impl GatewayCommands {
     fn detach_session(&mut self) {
         self.shared
             .is_session_attached
-            .store(false, Ordering::Release);
+            .store(false, Ordering::SeqCst);
+        self.shared
+            .session_generation
+            .fetch_add(1, Ordering::SeqCst);
         while self.frames.try_recv().is_ok() {}
     }
 
     fn attach_session(&self) {
         self.shared
             .is_session_attached
-            .store(true, Ordering::Release);
+            .store(true, Ordering::SeqCst);
+    }
+}
+
+/// The next frame the app sent on the current session; `None` once every handle is gone.
+/// Takes the fields apart so the select loop can still borrow `shared` alongside it.
+async fn next_frame_for_current_session(
+    frames: &mut mpsc::Receiver<SessionFrame>,
+    shared: &SharedConnectionState,
+) -> Option<ClientFrame> {
+    loop {
+        let queued = frames.recv().await?;
+        // Queued by a `send` that raced the last detach: meant for a session that is gone.
+        if queued.session_generation == shared.session_generation.load(Ordering::SeqCst) {
+            return Some(queued.frame);
+        }
     }
 }
 
@@ -339,7 +379,8 @@ async fn run_connection(
                 continue;
             }
             () = &mut handshake_deadline, if !is_connected => return lost,
-            command = commands.frames.recv(), if is_connected && are_commands_open => {
+            command = next_frame_for_current_session(&mut commands.frames, &commands.shared),
+                if is_connected && are_commands_open => {
                 match command {
                     Some(frame) => {
                         if send_frame(&mut sink, &frame).await.is_err() {
@@ -705,7 +746,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn frames_go_out_only_on_an_attached_session_and_never_to_a_later_one() {
+    async fn frames_go_out_only_on_an_attached_session() {
         // The longest heartbeat, so every frame the server reads is one the app sent.
         let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
         assert!(
@@ -785,6 +826,40 @@ mod tests {
             other => panic!("expected a resume, got {other:?}"),
         }
         client.abort();
+    }
+
+    #[test]
+    fn frames_queued_on_a_session_are_dropped_when_it_goes() {
+        let (handle, mut commands) = GatewayHandle::new();
+        commands.attach_session();
+        assert!(handle.send(play_sound(1)));
+        commands.detach_session();
+        commands.attach_session();
+        assert!(
+            commands.frames.try_recv().is_err(),
+            "the old session's frame never reaches the new one"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_frame_queued_after_the_detach_drain_is_not_sent_on_the_next_session() {
+        let (handle, mut commands) = GatewayHandle::new();
+        commands.attach_session();
+        let generation_seen_by_a_racing_send =
+            commands.shared.session_generation.load(Ordering::SeqCst);
+        commands.detach_session();
+        // What `send` enqueues when it read the attached flag just before the detach.
+        handle
+            .frames
+            .try_send(SessionFrame {
+                session_generation: generation_seen_by_a_racing_send,
+                frame: play_sound(1),
+            })
+            .unwrap();
+        commands.attach_session();
+        assert!(handle.send(LEAVE.clone()));
+        let next = next_frame_for_current_session(&mut commands.frames, &commands.shared);
+        assert_eq!(timeout(STEP_TIMEOUT, next).await.unwrap(), Some(LEAVE));
     }
 
     /// Opens a session and returns the server's socket for it.
