@@ -241,24 +241,24 @@ impl Decoder {
                 ff::av_hwframe_map(drm.0, rgb.0, ff::AV_HWFRAME_MAP_READ as c_int),
                 "export the RGB surface",
             )?;
-            let desc = &*((*drm.0).data[0] as *const ff::AVDRMFrameDescriptor);
+            let drm_descriptor = &*((*drm.0).data[0] as *const ff::AVDRMFrameDescriptor);
             // One RGB layer in one buffer object; more than one plane only
             // for the modifier's metadata (DCC), in that same object.
-            let layer = &desc.layers[0];
+            let layer = &drm_descriptor.layers[0];
             let planes_ok = (1..=4).contains(&layer.nb_planes)
                 && layer.planes[..layer.nb_planes as usize]
                     .iter()
                     .all(|p| p.object_index == 0);
-            if desc.nb_layers != 1 || desc.nb_objects != 1 || !planes_ok {
+            if drm_descriptor.nb_layers != 1 || drm_descriptor.nb_objects != 1 || !planes_ok {
                 return Err(format!(
                     "unexpected RGB export: {} layers, {} objects, {} planes",
-                    desc.nb_layers, desc.nb_objects, layer.nb_planes
+                    drm_descriptor.nb_layers, drm_descriptor.nb_objects, layer.nb_planes
                 )
                 .into());
             }
             let mut planes = Vec::with_capacity(layer.nb_planes as usize);
             for p in &layer.planes[..layer.nb_planes as usize] {
-                let object = &desc.objects[0];
+                let object = &drm_descriptor.objects[0];
                 // The mapping closes its fds when `drm` drops: keep our own.
                 let fd = BorrowedFd::borrow_raw(object.fd)
                     .try_clone_to_owned()
@@ -275,7 +275,7 @@ impl Decoder {
                 width: (*rgb.0).width as u32,
                 height: (*rgb.0).height as u32,
                 fourcc: layer.format,
-                modifier: desc.objects[0].format_modifier,
+                modifier: drm_descriptor.objects[0].format_modifier,
                 planes,
                 buffer_id,
                 pool_generation: self.generation,
@@ -378,7 +378,6 @@ unsafe fn vpp_graph(dec: *const ff::AVFrame, key: (*mut u8, c_int, c_int)) -> Re
 /// A software-decoded picture as NV12 (4:2:0) or YUY2 (4:2:2): the planes
 /// interleaved, the samples untouched.
 unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
-    use ff::AVPixelFormat as P;
     let (w, h) = (f.width as usize, f.height as usize);
     if w == 0 || h == 0 {
         return Err("empty JPEG picture".into());
@@ -399,7 +398,7 @@ unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
         )
     };
     let (cw, ch) = (w.div_ceil(2), h.div_ceil(2));
-    let (layout, data, planes) = if is(P::AV_PIX_FMT_YUVJ420P) || is(P::AV_PIX_FMT_YUV420P) {
+    let (layout, data, planes) = if is(ff::AV_PIX_FMT_YUVJ420P) || is(ff::AV_PIX_FMT_YUV420P) {
         let mut data = Vec::with_capacity(w * h + cw * 2 * ch);
         for y in 0..h {
             data.extend_from_slice(row(0, y, w));
@@ -420,7 +419,7 @@ unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
             },
         ];
         (CpuLayout::Nv12, data, planes)
-    } else if is(P::AV_PIX_FMT_YUVJ422P) || is(P::AV_PIX_FMT_YUV422P) {
+    } else if is(ff::AV_PIX_FMT_YUVJ422P) || is(ff::AV_PIX_FMT_YUV422P) {
         let stride = cw * 4;
         let mut data = Vec::with_capacity(stride * h);
         for y in 0..h {

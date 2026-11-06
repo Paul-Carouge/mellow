@@ -145,7 +145,7 @@ fn close(got: &[u8], want: &[u8], tolerance: u8) -> bool {
 }
 
 /// RGB (192, 48, 32) in BT.601 full range.
-const RGB: u32 = 0xc03020;
+const RGB: u32 = 0x00c0_3020;
 const YUV: [u8; 3] = [89, 96, 201];
 
 #[test]
