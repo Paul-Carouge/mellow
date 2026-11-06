@@ -9,7 +9,7 @@ use image::codecs::webp::WebPDecoder;
 use image::imageops::{self, FilterType};
 use image::{
     AnimationDecoder, Delay, DynamicImage, Frame, ImageDecoder, ImageFormat, ImageReader, Limits,
-    Rgba, RgbaImage,
+    Rgba, RgbaImage, metadata::Orientation,
 };
 
 use super::avif::{decode_avif, looks_like_avif};
@@ -25,6 +25,11 @@ const MAXIMUM_DECODER_ALLOCATION_BYTES: u64 = 256 * 1024 * 1024;
 const MAXIMUM_ANIMATION_FRAMES: usize = 500;
 /// The scaled-down frames of one animation, together; past it the animation stops early too.
 const MAXIMUM_ANIMATION_BYTES: usize = 128 * 1024 * 1024;
+/// Browsers play frames delayed this little (often 0, an unset delay) at the delay below instead,
+/// and animations found on the internet rely on it.
+const LONGEST_FRAME_DELAY_BROWSERS_RAISE_MILLISECONDS: u32 = 10;
+const BROWSER_FRAME_DELAY_FOR_UNSET_DELAYS_MILLISECONDS: u32 = 100;
+const OPAQUE_ALPHA: u8 = u8::MAX;
 
 fn decoder_limits() -> Limits {
     let mut limits = Limits::default();
@@ -48,19 +53,71 @@ fn scaled_size(width: u32, height: u32, display: DisplaySize) -> (u32, u32) {
     (scaled(width), scaled(height))
 }
 
+/// `channel × alpha / 255`, rounded; below 256, so it fits in a byte.
+#[allow(clippy::cast_possible_truncation)]
+fn premultiplied(channel: u8, alpha: u8) -> u8 {
+    ((u16::from(channel) * u16::from(alpha) + 127) / 255) as u8
+}
+
+/// `channel × 255 / alpha`, rounded and clamped to a byte.
+#[allow(clippy::cast_possible_truncation)]
+fn unpremultiplied(channel: u8, alpha: u8) -> u8 {
+    if alpha == 0 {
+        return 0;
+    }
+    let alpha = u16::from(alpha);
+    ((u16::from(channel) * 255 + alpha / 2) / alpha).min(255) as u8
+}
+
+/// Resizes with premultiplied alpha, as browsers do: `imageops::resize` takes its input as
+/// premultiplied, and straight alpha would let transparent (often black) pixels darken the edges.
+fn resize_with_premultiplied_alpha(picture: &mut RgbaImage, width: u32, height: u32) -> RgbaImage {
+    let is_opaque = picture.pixels().all(|pixel| pixel.0[3] == OPAQUE_ALPHA);
+    if !is_opaque {
+        for pixel in picture.pixels_mut() {
+            let alpha = pixel.0[3];
+            for channel in &mut pixel.0[..3] {
+                *channel = premultiplied(*channel, alpha);
+            }
+        }
+    }
+    let mut resized = imageops::resize(picture, width, height, FilterType::Triangle);
+    if !is_opaque {
+        for pixel in resized.pixels_mut() {
+            let alpha = pixel.0[3];
+            for channel in &mut pixel.0[..3] {
+                *channel = unpremultiplied(*channel, alpha);
+            }
+        }
+    }
+    resized
+}
+
 /// Scales `picture` down for `display` and swaps it to GPUI's BGRA order.
-fn bgra_for_display(picture: RgbaImage, display: DisplaySize) -> RgbaImage {
+fn bgra_for_display(mut picture: RgbaImage, display: DisplaySize) -> RgbaImage {
     let (width, height) = picture.dimensions();
     let (scaled_width, scaled_height) = scaled_size(width, height, display);
     let mut picture = if (scaled_width, scaled_height) == (width, height) {
         picture
     } else {
-        imageops::resize(&picture, scaled_width, scaled_height, FilterType::Triangle)
+        resize_with_premultiplied_alpha(&mut picture, scaled_width, scaled_height)
     };
     for pixel in picture.pixels_mut() {
         pixel.0.swap(0, 2);
     }
     picture
+}
+
+/// The delay a browser plays `delay` at.
+fn delay_as_browsers_play_it(delay: Delay) -> Delay {
+    let (numerator, denominator) = delay.numer_denom_ms();
+    if u64::from(numerator)
+        <= u64::from(LONGEST_FRAME_DELAY_BROWSERS_RAISE_MILLISECONDS) * u64::from(denominator)
+    {
+        Delay::from_numer_denom_ms(BROWSER_FRAME_DELAY_FOR_UNSET_DELAYS_MILLISECONDS, 1)
+    } else {
+        delay
+    }
 }
 
 fn frame_byte_count(frame: &RgbaImage) -> usize {
@@ -83,7 +140,7 @@ fn animation_frames<'a>(
         let Ok(frame) = frame else {
             break;
         };
-        let delay = frame.delay();
+        let delay = delay_as_browsers_play_it(frame.delay());
         let picture = bgra_for_display(frame.into_buffer(), display);
         byte_count += frame_byte_count(&picture);
         if byte_count > MAXIMUM_ANIMATION_BYTES && !decoded.is_empty() {
@@ -119,9 +176,12 @@ fn decode_still_raster(bytes: &[u8]) -> Result<RgbaImage, PictureDecodeError> {
         return Err(PictureDecodeError::TooLarge);
     }
     let icc_profile = decoder.icc_profile().ok().flatten();
-    let mut picture = DynamicImage::from_decoder(decoder)
-        .map_err(|_| PictureDecodeError::Undecodable)?
-        .into_rgba8();
+    // Attachments over 16 MP keep their JPEG with its orientation tag (ADR-0033); browsers honour it.
+    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let mut picture =
+        DynamicImage::from_decoder(decoder).map_err(|_| PictureDecodeError::Undecodable)?;
+    picture.apply_orientation(orientation);
+    let mut picture = picture.into_rgba8();
     if let Some(icc_profile) = icc_profile {
         convert_rgba_to_srgb_with_profile(&icc_profile, &mut picture);
     }
@@ -183,7 +243,7 @@ pub(crate) fn decode_frames(
 #[cfg(test)]
 mod tests {
     use image::codecs::gif::{GifEncoder, Repeat};
-    use image::{ImageEncoder as _, codecs::png::PngEncoder};
+    use image::{ImageEncoder as _, RgbImage, codecs::png::PngEncoder};
 
     use super::*;
 
@@ -300,6 +360,99 @@ mod tests {
             capped.len(),
             MAXIMUM_ANIMATION_BYTES / (side as usize * side as usize * 4)
         );
+    }
+
+    #[test]
+    fn frames_with_almost_no_delay_play_at_the_browsers_delay() {
+        let frame_with_delay = |milliseconds| {
+            Ok(Frame::from_parts(
+                RgbaImage::new(1, 1),
+                0,
+                0,
+                Delay::from_numer_denom_ms(milliseconds, 1),
+            ))
+        };
+        let frames = animation_frames(
+            [0, 10, 11, 50].into_iter().map(frame_with_delay),
+            Animation::Animate,
+            LARGE_DISPLAY,
+        )
+        .unwrap();
+        let delays: Vec<_> = frames.iter().map(Frame::delay).collect();
+        assert_eq!(
+            delays,
+            [
+                Delay::from_numer_denom_ms(BROWSER_FRAME_DELAY_FOR_UNSET_DELAYS_MILLISECONDS, 1),
+                Delay::from_numer_denom_ms(BROWSER_FRAME_DELAY_FOR_UNSET_DELAYS_MILLISECONDS, 1),
+                Delay::from_numer_denom_ms(11, 1),
+                Delay::from_numer_denom_ms(50, 1),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_transparent_picture_keeps_its_edge_colours_when_scaled_down() {
+        // An opaque red square in the middle of a transparent black picture.
+        let picture = RgbaImage::from_fn(64, 64, |x, y| {
+            if (16..48).contains(&x) && (16..48).contains(&y) {
+                Rgba([255, 0, 0, 255])
+            } else {
+                Rgba([0, 0, 0, 0])
+            }
+        });
+        let scaled = bgra_for_display(
+            picture,
+            DisplaySize {
+                width: 13,
+                height: 13,
+            },
+        );
+        let mut edge_pixel_count = 0;
+        for pixel in scaled.pixels() {
+            let [blue, green, red, alpha] = pixel.0;
+            if alpha > 0 {
+                assert_eq!((blue, green), (0, 0));
+                assert!(red >= 250, "edge darkened to {red} at alpha {alpha}");
+                if alpha < 255 {
+                    edge_pixel_count += 1;
+                }
+            }
+        }
+        assert!(edge_pixel_count > 0, "the test reaches the edges");
+    }
+
+    /// A JPEG of a picture wider than tall, tagged with EXIF orientation 6 (turn right).
+    fn jpeg_tagged_to_turn_right() -> Vec<u8> {
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(
+                RgbImage::from_pixel(40, 20, image::Rgb([0, 120, 255])).as_raw(),
+                40,
+                20,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        // Big-endian TIFF with one IFD entry: Orientation (0x0112), SHORT, count 1, value 6.
+        let exif: &[u8] =
+            b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+        let segment_length = u16::try_from(exif.len() + 2).unwrap();
+        let mut tagged = jpeg[..2].to_vec();
+        tagged.extend_from_slice(&[0xFF, 0xE1]);
+        tagged.extend_from_slice(&segment_length.to_be_bytes());
+        tagged.extend_from_slice(exif);
+        tagged.extend_from_slice(&jpeg[2..]);
+        tagged
+    }
+
+    #[test]
+    fn a_jpeg_is_turned_as_its_exif_orientation_says() {
+        let frames = decode_frames(
+            &jpeg_tagged_to_turn_right(),
+            Animation::Animate,
+            LARGE_DISPLAY,
+        )
+        .unwrap();
+        assert_eq!(frames[0].buffer().dimensions(), (20, 40));
     }
 
     #[test]
