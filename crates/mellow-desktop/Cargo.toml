@@ -38,7 +38,8 @@ mellow-client-core.workspace = true
 mellow-protocol.workspace = true
 # Compares the instance's version with the oldest one this app supports.
 semver.workspace = true
-# Already in the tree through GPUI's text stack; picks French or English from the OS (ADR-0051).
+# The OS's preferred languages; already in the tree through GPUI (same version), so nothing new
+# is built or audited.
 sys-locale = "0.3.2"
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }

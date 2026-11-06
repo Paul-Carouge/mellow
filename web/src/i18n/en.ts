@@ -2336,6 +2336,12 @@ export const en = {
     unreadable: "the picture couldn't be read. Choose another one.",
     currentIcon: (role: string) => `Icon of ${role}`,
   },
+
+  /** The desktop client's own words (ADR-0051), generated into its catalogue from this file. */
+  desktop: {
+    /** The application menu's item that ends the app. */
+    quitMellow: "Quit Mellow",
+  },
 };
 
 export type Catalogue = typeof en;
