@@ -1,8 +1,8 @@
-//! What the SFU reads of an H.264 keyframe (ADR-0052): the picture size its sequence parameter set
-//! (SPS) declares, so a keyframe larger than its simulcast layer reaches no one, as with VP8
-//! (ADR-0035). Only Constrained Baseline is accepted: it has no B-frames, which an SFU forwarding
-//! frames in arrival order needs, and every browser decodes it. The server never decodes the
-//! picture itself; it reads a few dozen bits of the SPS.
+//! What the SFU reads of H.264 frames (ADR-0052): the picture size every sequence parameter set
+//! (SPS) declares, so a frame declaring a picture larger than its simulcast layer reaches no one,
+//! as with VP8 (ADR-0035). Only Constrained Baseline is accepted: it has no B-frames, which an SFU
+//! forwarding frames in arrival order needs, and every browser decodes it. The server never
+//! decodes the picture itself; it reads a few dozen bits of each SPS.
 
 /// The NAL unit type of a sequence parameter set (ITU-T H.264, table 7-1).
 const SEQUENCE_PARAMETER_SET_NAL_UNIT_TYPE: u8 = 7;
@@ -19,47 +19,55 @@ const MAXIMUM_EXP_GOLOMB_LEADING_ZEROS: u32 = 31;
 /// `num_ref_frames_in_pic_order_cnt_cycle` is at most 255 (ITU-T H.264, 7.4.2.1.1).
 const MAXIMUM_REFERENCE_FRAMES_IN_ORDER_COUNT_CYCLE: u32 = 255;
 
-/// The picture size, in samples, declared by the first SPS of an access unit in Annex B form (the
-/// form `str0m` hands depacketised H.264 frames in), after cropping. `None` when the access unit
-/// has no SPS, when the SPS is not Constrained Baseline, or when it is malformed.
-#[must_use]
-pub(crate) fn constrained_baseline_picture_size(access_unit: &[u8]) -> Option<(u64, u64)> {
-    let sequence_parameter_set = nal_units(access_unit).find(|nal_unit| {
-        nal_unit.first().is_some_and(|header| {
-            header & NAL_UNIT_TYPE_MASK == SEQUENCE_PARAMETER_SET_NAL_UNIT_TYPE
+/// What starts each NAL unit of an Annex B access unit.
+const START_CODE: [u8; 3] = [0, 0, 1];
+
+/// The picture size, in samples after cropping, that each SPS of an access unit in Annex B form
+/// (the form `str0m` hands depacketised H.264 frames in) declares, in order: `None` for one that
+/// is not Constrained Baseline or is malformed. A decoder uses whichever SPS the picture
+/// parameter set of a slice names, not the first one, and an SPS may travel in any frame, so
+/// every one counts.
+pub(crate) fn picture_sizes_of_sequence_parameter_sets(
+    access_unit: &[u8],
+) -> impl Iterator<Item = Option<(u64, u64)>> {
+    nal_units(access_unit)
+        .filter(|nal_unit| {
+            nal_unit.first().is_some_and(|header| {
+                header & NAL_UNIT_TYPE_MASK == SEQUENCE_PARAMETER_SET_NAL_UNIT_TYPE
+            })
         })
-    })?;
-    let payload = without_emulation_prevention(sequence_parameter_set.get(1..)?);
-    picture_size_of_sequence_parameter_set(&payload)
+        .map(|sequence_parameter_set| {
+            let payload = without_emulation_prevention(sequence_parameter_set.get(1..)?);
+            picture_size_of_sequence_parameter_set(&payload)
+        })
 }
 
 /// The NAL units of an Annex B access unit: what follows each `00 00 01` start code (the four-byte
-/// form adds a zero, which ends the previous unit and is trimmed).
+/// form adds a zero, which ends the previous unit and is trimmed). Found as they are read, in one
+/// pass and without allocating: every H.264 frame a camera sends is scanned.
 fn nal_units(access_unit: &[u8]) -> impl Iterator<Item = &[u8]> {
-    const START_CODE: [u8; 3] = [0, 0, 1];
-    let starts: Vec<usize> = access_unit
+    let mut rest = after_next_start_code(access_unit);
+    std::iter::from_fn(move || {
+        let current = rest?;
+        let next_start = start_code_position(current);
+        rest = next_start.and_then(|position| current.get(position + START_CODE.len()..));
+        let nal_unit = next_start.map_or(Some(current), |position| current.get(..position))?;
+        let length = nal_unit
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1);
+        nal_unit.get(..length)
+    })
+}
+
+fn start_code_position(bytes: &[u8]) -> Option<usize> {
+    bytes
         .windows(START_CODE.len())
-        .enumerate()
-        .filter(|(_, window)| *window == START_CODE)
-        .map(|(index, _)| index + START_CODE.len())
-        .collect();
-    let ends: Vec<usize> = starts
-        .iter()
-        .skip(1)
-        .map(|next_start| next_start - START_CODE.len())
-        .chain(std::iter::once(access_unit.len()))
-        .collect();
-    starts
-        .into_iter()
-        .zip(ends)
-        .filter_map(move |(start, end)| {
-            let nal_unit = access_unit.get(start..end)?;
-            let length = nal_unit
-                .iter()
-                .rposition(|byte| *byte != 0)
-                .map_or(0, |last| last + 1);
-            nal_unit.get(..length)
-        })
+        .position(|window| window == START_CODE)
+}
+
+fn after_next_start_code(bytes: &[u8]) -> Option<&[u8]> {
+    bytes.get(start_code_position(bytes)? + START_CODE.len()..)
 }
 
 /// The raw bits of a NAL unit's payload: an encoder inserts `03` after two zero bytes so the
@@ -280,6 +288,29 @@ mod tests {
     use super::test_streams::{delta_frame, keyframe, sequence_parameter_set};
     use super::*;
 
+    fn size_of_first_sequence_parameter_set(access_unit: &[u8]) -> Option<(u64, u64)> {
+        picture_sizes_of_sequence_parameter_sets(access_unit)
+            .next()
+            .flatten()
+    }
+
+    #[test]
+    fn every_sequence_parameter_set_is_read_in_order() {
+        let mut access_unit = keyframe(320, 180, &[0xaa]);
+        access_unit.extend([0, 0, 0, 1]);
+        access_unit.extend(sequence_parameter_set(66, 0xe0, 16_384, 16_384));
+        access_unit.extend([0, 0, 1]);
+        access_unit.extend(sequence_parameter_set(100, 0x40, 320, 180));
+        assert_eq!(
+            picture_sizes_of_sequence_parameter_sets(&access_unit).collect::<Vec<_>>(),
+            vec![Some((320, 180)), Some((16_384, 16_384)), None]
+        );
+        assert_eq!(
+            picture_sizes_of_sequence_parameter_sets(&delta_frame(&[1])).count(),
+            0
+        );
+    }
+
     #[test]
     fn reads_the_cropped_size_of_a_constrained_baseline_keyframe() {
         for (width, height) in [
@@ -290,7 +321,7 @@ mod tests {
             (2_560, 1_440),
         ] {
             assert_eq!(
-                constrained_baseline_picture_size(&keyframe(width, height, &[0xaa])),
+                size_of_first_sequence_parameter_set(&keyframe(width, height, &[0xaa])),
                 Some((u64::from(width), u64::from(height))),
                 "{width} × {height}"
             );
@@ -303,7 +334,7 @@ mod tests {
         access_unit.extend(sequence_parameter_set(66, 0x40, 640, 360));
         access_unit.extend([0, 0, 1, 0x65, 0x88]);
         assert_eq!(
-            constrained_baseline_picture_size(&access_unit),
+            size_of_first_sequence_parameter_set(&access_unit),
             Some((640, 360))
         );
     }
@@ -321,18 +352,21 @@ mod tests {
             access_unit
         };
         assert_eq!(
-            constrained_baseline_picture_size(&with_profile(66, 0)),
+            size_of_first_sequence_parameter_set(&with_profile(66, 0)),
             None,
             "Baseline without its constraint may hold what Constrained Baseline forbids"
         );
         assert_eq!(
-            constrained_baseline_picture_size(&with_profile(100, 0x40)),
+            size_of_first_sequence_parameter_set(&with_profile(100, 0x40)),
             None,
             "High has B-frames"
         );
-        assert_eq!(constrained_baseline_picture_size(&delta_frame(&[1])), None);
-        assert_eq!(constrained_baseline_picture_size(&[]), None);
-        assert_eq!(constrained_baseline_picture_size(&[0, 0, 1, 0x67]), None);
+        assert_eq!(
+            size_of_first_sequence_parameter_set(&delta_frame(&[1])),
+            None
+        );
+        assert_eq!(size_of_first_sequence_parameter_set(&[]), None);
+        assert_eq!(size_of_first_sequence_parameter_set(&[0, 0, 1, 0x67]), None);
     }
 
     #[test]
@@ -342,7 +376,7 @@ mod tests {
             let mut access_unit = vec![0, 0, 1];
             access_unit.extend(whole.get(..length).unwrap());
             assert_eq!(
-                constrained_baseline_picture_size(&access_unit),
+                size_of_first_sequence_parameter_set(&access_unit),
                 None,
                 "{length} bytes"
             );
@@ -351,7 +385,7 @@ mod tests {
         let endless = [
             0, 0, 1, 0x67, 66, 0x40, 51, 0x00, 0x00, 0x03, 0x00, 0x00, 0x03, 0x00, 0x80,
         ];
-        assert_eq!(constrained_baseline_picture_size(&endless), None);
+        assert_eq!(size_of_first_sequence_parameter_set(&endless), None);
     }
 
     #[test]

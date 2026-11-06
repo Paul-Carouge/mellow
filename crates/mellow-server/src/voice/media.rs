@@ -23,7 +23,7 @@ use crate::domain::video_rules::{
     LinkReport, MAXIMUM_SILENCE_OF_A_CAMERA, MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS,
     MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS_OF_A_WATCHER, RecentRate, Throttle, TileDemand,
     active_layers, arriving_layer_at_most, camera_codec_of, codecs_decoded_on_every_line,
-    fair_share_of_upload, fit_tiles, is_keyframe_within_layer_size, is_layer_gone, layer_cost,
+    fair_share_of_upload, fit_tiles, is_frame_within_layer_size, is_layer_gone, layer_cost,
     loss_percent_of,
 };
 use crate::domain::voice_rules::{ReceiveSlots, SpeakingDetector, VideoLines};
@@ -164,16 +164,18 @@ const fn video_codec_of(codec: Codec) -> Option<VideoCodec> {
 }
 
 /// Whether a camera's frame on `layer` may reach watchers: in the codec its voice state announces,
-/// which its watchers were chosen for (ADR-0052), and for a keyframe, declaring a picture that
-/// fits the layer (ADR-0035).
+/// which its watchers were chosen for (ADR-0052), and declaring only pictures that fit the layer
+/// (ADR-0035).
 fn is_frame_in_announced_codec_and_size(
-    camera_codec: Option<VideoCodec>,
+    announced_codec: Option<VideoCodec>,
+    frame_codec: Codec,
     layer: SimulcastLayer,
-    frame: &MediaData,
+    frame: &[u8],
+    is_keyframe: bool,
 ) -> bool {
-    camera_codec.is_some_and(|codec| {
-        video_codec_of(frame.params.spec().codec) == Some(codec)
-            && (!frame.is_keyframe() || is_keyframe_within_layer_size(codec, layer, &frame.data))
+    announced_codec.is_some_and(|codec| {
+        video_codec_of(frame_codec) == Some(codec)
+            && is_frame_within_layer_size(codec, layer, frame, is_keyframe)
     })
 }
 
@@ -1500,7 +1502,13 @@ impl MediaLoop<'_> {
             return;
         };
         let is_keyframe = frame.is_keyframe();
-        if !is_frame_in_announced_codec_and_size(camera.video.codecs.camera, layer, frame) {
+        if !is_frame_in_announced_codec_and_size(
+            camera.video.codecs.camera,
+            frame.params.spec().codec,
+            layer,
+            &frame.data,
+            is_keyframe,
+        ) {
             return;
         }
         // Over its layer's budget, the frame reaches no one (ADR-0035): a client cannot send a
@@ -1865,6 +1873,52 @@ mod tests {
             ),
             current_participant: None,
         }
+    }
+
+    #[test]
+    fn frames_in_another_codec_than_the_announced_one_reach_no_one() {
+        use crate::domain::h264_sequence_parameter_sets::test_streams::{delta_frame, keyframe};
+        let h264_keyframe = keyframe(320, 180, &[1]);
+        let passes = |announced, frame_codec, frame: &[u8], is_keyframe| {
+            is_frame_in_announced_codec_and_size(
+                announced,
+                frame_codec,
+                SimulcastLayer::Quarter,
+                frame,
+                is_keyframe,
+            )
+        };
+        assert!(passes(
+            Some(VideoCodec::H264),
+            Codec::H264,
+            &h264_keyframe,
+            true
+        ));
+        assert!(passes(
+            Some(VideoCodec::H264),
+            Codec::H264,
+            &delta_frame(&[1]),
+            false
+        ));
+        assert!(!passes(
+            Some(VideoCodec::Vp8),
+            Codec::H264,
+            &h264_keyframe,
+            true
+        ));
+        assert!(!passes(
+            Some(VideoCodec::Vp8),
+            Codec::H264,
+            &delta_frame(&[1]),
+            false
+        ));
+        assert!(!passes(
+            Some(VideoCodec::H264),
+            Codec::Vp8,
+            &[0x11, 0, 0],
+            false
+        ));
+        assert!(!passes(None, Codec::H264, &delta_frame(&[1]), false));
     }
 
     #[test]

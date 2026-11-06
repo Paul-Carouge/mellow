@@ -23,7 +23,7 @@ use tokio_tungstenite::tungstenite::Message;
 
 use super::media::MediaEvent;
 use super::tests::{Fixture, HEARING_TIMEOUT, fixture, join, next_voice_state_update, pending_bot};
-use crate::domain::h264_keyframes::test_streams::{delta_frame, keyframe};
+use crate::domain::h264_sequence_parameter_sets::test_streams::{delta_frame, keyframe};
 use crate::gateway::tests::{ClientSocket, identified, receive_dispatch, send};
 
 const VIDEO_FRAME_INTERVAL: Duration = Duration::from_millis(33);

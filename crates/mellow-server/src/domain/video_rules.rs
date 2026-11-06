@@ -11,7 +11,7 @@ use std::time::{Duration, Instant};
 
 use mellow_protocol::{SimulcastLayer, Snowflake, VideoCodec, VideoTileSize, VoiceVideoRefusal};
 
-use crate::domain::h264_keyframes::constrained_baseline_picture_size;
+use crate::domain::h264_sequence_parameter_sets::picture_sizes_of_sequence_parameter_sets;
 
 /// Cameras on at once in one voice channel. The owner's server lost frames with 25 cameras and
 /// default socket buffers (ADR-0035): raised once a run with larger buffers shows it holds more.
@@ -645,28 +645,40 @@ pub(crate) const fn maximum_bytes_per_second_of(layer: SimulcastLayer) -> u32 {
     }
 }
 
-/// Whether a keyframe's picture fits its layer: at most twice the camera layer's size each way for
-/// `q` (640 × 360) and `l` (1280 × 720), and a 1440p screen for `h` (2560 × 1440, ADR-0037). A
-/// camera could otherwise send a tiny keyframe declaring a huge picture, which every watcher of
-/// that layer would have to allocate and decode. A VP8 keyframe without its start code does not
-/// fit, nor an H.264 one without a Constrained Baseline sequence parameter set (ADR-0052).
+/// Whether every picture size a frame declares fits its layer: at most twice the camera layer's
+/// size each way for `q` (640 × 360) and `l` (1280 × 720), and a 1440p screen for `h`
+/// (2560 × 1440, ADR-0037). A camera could otherwise send a tiny frame declaring a huge picture,
+/// which every watcher of that layer would have to allocate and decode.
+///
+/// VP8 declares a size only in keyframes, which must hold its start code. H.264 declares one in
+/// each sequence parameter set, which any frame may carry and which must all be Constrained
+/// Baseline and fit; a keyframe must carry at least one (ADR-0052). A codec this server does not
+/// know never fits.
 #[must_use]
-pub(crate) fn is_keyframe_within_layer_size(
+pub(crate) fn is_frame_within_layer_size(
     codec: VideoCodec,
     layer: SimulcastLayer,
-    keyframe: &[u8],
+    frame: &[u8],
+    is_keyframe: bool,
 ) -> bool {
-    let picture_size = match codec {
-        VideoCodec::Vp8 => vp8_keyframe_picture_size(keyframe),
-        VideoCodec::H264 => constrained_baseline_picture_size(keyframe),
-        VideoCodec::Unknown => None,
-    };
     let (maximum_width, maximum_height) = match layer {
         SimulcastLayer::Quarter => (640, 360),
         SimulcastLayer::Low => (1_280, 720),
         SimulcastLayer::High => (2_560, 1_440),
     };
-    picture_size.is_some_and(|(width, height)| width <= maximum_width && height <= maximum_height)
+    let fits = |picture_size: Option<(u64, u64)>| {
+        picture_size
+            .is_some_and(|(width, height)| width <= maximum_width && height <= maximum_height)
+    };
+    match codec {
+        VideoCodec::Vp8 => !is_keyframe || fits(vp8_keyframe_picture_size(frame)),
+        VideoCodec::H264 => {
+            let mut picture_sizes = picture_sizes_of_sequence_parameter_sets(frame).peekable();
+            let has_sequence_parameter_set = picture_sizes.peek().is_some();
+            (has_sequence_parameter_set || !is_keyframe) && picture_sizes.all(fits)
+        }
+        VideoCodec::Unknown => false,
+    }
 }
 
 /// The picture size a VP8 keyframe declares after its start code (RFC 6386, 9.1).
@@ -1344,63 +1356,38 @@ mod tests {
             frame.extend(height.to_le_bytes());
             frame
         };
-        assert!(is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &keyframe(320, 180)
-        ));
-        assert!(is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &keyframe(640, 360)
-        ));
-        assert!(!is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &keyframe(641, 360)
-        ));
-        assert!(!is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &keyframe(16_383, 16_383)
-        ));
-        assert!(is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            High,
-            &keyframe(2_560, 1_440)
-        ));
-        assert!(!is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            High,
-            &keyframe(2_561, 1_440)
-        ));
+        let fits =
+            |layer, frame: &[u8]| is_frame_within_layer_size(VideoCodec::Vp8, layer, frame, true);
+        assert!(fits(Quarter, &keyframe(320, 180)));
+        assert!(fits(Quarter, &keyframe(640, 360)));
+        assert!(!fits(Quarter, &keyframe(641, 360)));
+        assert!(!fits(Quarter, &keyframe(16_383, 16_383)));
+        assert!(fits(High, &keyframe(2_560, 1_440)));
+        assert!(!fits(High, &keyframe(2_561, 1_440)));
         assert!(
-            is_keyframe_within_layer_size(
-                VideoCodec::Vp8,
-                Quarter,
-                &keyframe(0x0140 | 0xc000, 180)
-            ),
+            fits(Quarter, &keyframe(0x0140 | 0xc000, 180)),
             "the scaling bits are not part of the size"
         );
         let mut without_start_code = keyframe(320, 180);
         without_start_code[3] = 0;
-        assert!(!is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &without_start_code
-        ));
-        assert!(!is_keyframe_within_layer_size(
-            VideoCodec::Vp8,
-            Quarter,
-            &[0x10, 0, 0]
-        ));
+        assert!(!fits(Quarter, &without_start_code));
+        assert!(!fits(Quarter, &[0x10, 0, 0]));
+        assert!(
+            is_frame_within_layer_size(VideoCodec::Vp8, Quarter, &[0x11, 0, 0], false),
+            "a VP8 inter frame declares no size"
+        );
     }
 
     #[test]
     fn h264_keyframes_declare_at_most_twice_their_layer_size_too() {
-        use crate::domain::h264_keyframes::test_streams::keyframe;
+        use crate::domain::h264_sequence_parameter_sets::test_streams::keyframe;
         let fits = |layer, width, height| {
-            is_keyframe_within_layer_size(VideoCodec::H264, layer, &keyframe(width, height, &[1]))
+            is_frame_within_layer_size(
+                VideoCodec::H264,
+                layer,
+                &keyframe(width, height, &[1]),
+                true,
+            )
         };
         assert!(fits(Quarter, 320, 180));
         assert!(fits(Quarter, 640, 360));
@@ -1411,8 +1398,56 @@ mod tests {
         assert!(!fits(High, 3_840, 2_160));
         let vp8_keyframe = [0x10, 0, 0, 0x9d, 0x01, 0x2a, 0x40, 0x01, 0xb4, 0x00];
         assert!(
-            !is_keyframe_within_layer_size(VideoCodec::H264, Quarter, &vp8_keyframe),
+            !is_frame_within_layer_size(VideoCodec::H264, Quarter, &vp8_keyframe, true),
             "a frame of another codec never fits"
+        );
+        assert!(!is_frame_within_layer_size(
+            VideoCodec::Unknown,
+            Quarter,
+            &keyframe(320, 180, &[1]),
+            true
+        ));
+    }
+
+    #[test]
+    fn every_h264_sequence_parameter_set_of_every_frame_must_fit() {
+        use crate::domain::h264_sequence_parameter_sets::test_streams::{
+            delta_frame, keyframe, sequence_parameter_set,
+        };
+        let fits = |frame: &[u8], is_keyframe| {
+            is_frame_within_layer_size(VideoCodec::H264, Quarter, frame, is_keyframe)
+        };
+        let with_sequence_parameter_set = |width, height, rest: Vec<u8>| {
+            let mut frame = vec![0, 0, 0, 1];
+            frame.extend(sequence_parameter_set(66, 0xe0, width, height));
+            frame.extend(rest);
+            frame
+        };
+        assert!(
+            !fits(
+                &with_sequence_parameter_set(320, 180, keyframe(16_384, 16_384, &[1])),
+                true
+            ),
+            "a small SPS first, then a huge one the picture parameter set may name"
+        );
+        assert!(
+            !fits(
+                &with_sequence_parameter_set(16_384, 16_384, delta_frame(&[1])),
+                false
+            ),
+            "a huge SPS in a delta frame, for a later keyframe to name"
+        );
+        assert!(fits(
+            &with_sequence_parameter_set(320, 180, delta_frame(&[1])),
+            false
+        ));
+        assert!(
+            fits(&delta_frame(&[1]), false),
+            "most delta frames carry none"
+        );
+        assert!(
+            !fits(&delta_frame(&[1]), true),
+            "a keyframe carries its sequence parameter set"
         );
     }
 
