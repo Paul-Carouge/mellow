@@ -327,6 +327,10 @@ async fn run_connection(
         let frame = tokio::select! {
             frame = next_frame(&mut stream) => frame,
             _ = heartbeat.tick() => {
+                // A network-change check owns the deadline of the heartbeat it sent.
+                if is_checking_link {
+                    continue;
+                }
                 // No ack since the last beat: the connection is a zombie, start over.
                 if !is_heartbeat_acknowledged || send_frame(&mut sink, &ClientFrame::Heartbeat).await.is_err() {
                     return lost;
@@ -783,28 +787,90 @@ mod tests {
         client.abort();
     }
 
-    #[tokio::test]
-    async fn reconnect_now_checks_a_live_socket_with_a_heartbeat() {
-        let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
-        let mut socket = accept_with_heartbeat(&listener, 30_000).await;
+    /// Opens a session and returns the server's socket for it.
+    async fn ready_session(
+        listener: &TcpListener,
+        updates: &mut mpsc::Receiver<GatewayUpdate>,
+        heartbeat_interval_milliseconds: u64,
+    ) -> ServerSocket {
+        let mut socket = accept_with_heartbeat(listener, heartbeat_interval_milliseconds).await;
         assert!(matches!(
             receive(&mut socket).await,
             ClientFrame::Identify { .. }
         ));
         send(&mut socket, &ready("session-1")).await;
         assert!(matches!(
-            next_update(&mut updates).await,
+            next_update(updates).await,
             GatewayUpdate::Ready(_)
         ));
+        socket
+    }
+
+    /// Acknowledges every heartbeat until `duration` has passed; the socket must stay open.
+    async fn answer_heartbeats_for(socket: &mut ServerSocket, duration: Duration) {
+        let deadline = Instant::now() + duration;
+        while let Ok(message) = tokio::time::timeout_at(deadline, socket.next()).await {
+            let message = message
+                .expect("the client keeps the socket")
+                .expect("the socket stays healthy");
+            if let WebSocketMessage::Text(text) = message {
+                let frame: ClientFrame = serde_json::from_str(&text).unwrap();
+                assert_eq!(frame, ClientFrame::Heartbeat);
+                send(socket, &ServerFrame::HeartbeatAck).await;
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn a_slow_answer_to_the_link_check_keeps_the_session_across_regular_beats() {
+        let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
+        let mut socket = ready_session(&listener, &mut updates, 1_000).await;
+        answer_heartbeats_for(&mut socket, Duration::from_millis(1_500)).await;
+
         handle.reconnect_now();
-        // Well before the 30 s interval: the check's own beat.
+        // Slow round trips after a network change: the check's beat waits past regular ticks,
+        // well within the check's 10 s.
+        tokio::time::sleep(Duration::from_millis(2_500)).await;
+        // Past the check's deadline too: an answered check never fires it.
+        answer_heartbeats_for(
+            &mut socket,
+            NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT,
+        )
+        .await;
+        assert!(updates.try_recv().is_err(), "the session was never dropped");
+
+        assert!(handle.send(LEAVE.clone()));
+        loop {
+            match receive(&mut socket).await {
+                ClientFrame::Heartbeat => send(&mut socket, &ServerFrame::HeartbeatAck).await,
+                frame => {
+                    assert_eq!(frame, LEAVE);
+                    break;
+                }
+            }
+        }
+        client.abort();
+    }
+
+    #[tokio::test]
+    async fn an_unanswered_link_check_drops_the_socket_and_resumes() {
+        let (listener, mut updates, client, handle) = scripted_gateway_with_handle().await;
+        // The longest heartbeat, so only the check can end this socket.
+        let mut socket = ready_session(&listener, &mut updates, 30_000).await;
+        handle.reconnect_now();
         assert_eq!(receive(&mut socket).await, ClientFrame::Heartbeat);
-        send(&mut socket, &ServerFrame::HeartbeatAck).await;
-        assert!(
-            handle.send(LEAVE.clone()),
-            "an answered check keeps the session"
-        );
-        assert_eq!(receive(&mut socket).await, LEAVE);
+        let disconnected = timeout(
+            NETWORK_CHANGE_HEARTBEAT_ACKNOWLEDGEMENT_TIMEOUT + STEP_TIMEOUT,
+            updates.recv(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(disconnected, Some(GatewayUpdate::Disconnected));
+        let mut next = accept(&listener).await;
+        assert!(matches!(
+            receive(&mut next).await,
+            ClientFrame::Resume { .. }
+        ));
         client.abort();
     }
 
