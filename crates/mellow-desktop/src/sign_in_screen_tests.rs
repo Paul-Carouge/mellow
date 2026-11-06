@@ -170,6 +170,19 @@ fn wait_until_idle(harness: &Harness, cx: &mut VisualTestContext) {
     wait_until(cx, |cx| !harness.read_screen(cx, |screen| screen.is_busy));
 }
 
+#[test]
+fn the_instance_field_keeps_http_but_not_https() {
+    let loopback = InstanceAddress::parse("http://127.0.0.1:8080").unwrap();
+    let public = InstanceAddress::parse("chat.example.org").unwrap();
+    assert_eq!(instance_field_value(&loopback), "http://127.0.0.1:8080");
+    assert_eq!(instance_field_value(&public), "chat.example.org");
+    // What the field shows parses back to the same instance.
+    assert_eq!(
+        InstanceAddress::parse(instance_field_value(&loopback)).unwrap(),
+        loopback
+    );
+}
+
 fn is_on_credentials_step(screen: &SignInScreen) -> bool {
     matches!(screen.step, Step::Credentials { .. })
 }

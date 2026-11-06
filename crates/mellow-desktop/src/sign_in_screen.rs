@@ -101,6 +101,16 @@ fn instance_display_name(instance: &InstanceAddress) -> &str {
         .trim_end_matches('/')
 }
 
+/// The address as the instance field shows it: without `https://`, which the field adds back,
+/// but with `http://`, which a bare host would lose (a loopback development instance).
+fn instance_field_value(instance: &InstanceAddress) -> &str {
+    let address = instance.as_str();
+    address
+        .strip_prefix("https://")
+        .unwrap_or(address)
+        .trim_end_matches('/')
+}
+
 fn device_name() -> String {
     format!("Mellow desktop ({})", std::env::consts::OS)
 }
@@ -277,7 +287,7 @@ impl SignInScreen {
                 let input = screen.instance_address.clone();
                 if input.read(cx).value().is_empty() {
                     input.update(cx, |input, cx| {
-                        input.set_value(instance_display_name(&instance).to_owned(), window, cx);
+                        input.set_value(instance_field_value(&instance).to_owned(), window, cx);
                     });
                 }
             });
@@ -745,7 +755,7 @@ impl SignInScreen {
         let Step::Credentials { instance, .. } = &self.step else {
             return;
         };
-        let address = instance_display_name(instance).to_owned();
+        let address = instance_field_value(instance).to_owned();
         // Any request under way belongs to the instance being left.
         self.request = None;
         self.is_busy = false;
