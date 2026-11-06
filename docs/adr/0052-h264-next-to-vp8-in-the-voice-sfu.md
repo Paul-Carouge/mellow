@@ -24,7 +24,7 @@ Facts this decision relies on (checked in `str0m` 0.24.1, the version in `Cargo.
 
 ### Who receives what
 - **Receivers say what they decode in their offer**: the codecs their video receive m-lines negotiate. The server counts a codec as decoded when every receive line carries it, so any free slot can take a picture in it.
-- **The sender's codec is announced in its voice state**: `VoiceState.video_codec` (`"vp8"` or `"h264"`), an additive field, absent when the offer has no video lines and from older servers (meaning VP8). Released v1 clients ignore it.
+- **The sender's codec is announced in its voice state**: `VoiceState.video_codec` (`"vp8"` or `"h264"`), an additive field, absent when the offer has no video lines and from older servers (meaning VP8). Released v1 clients ignore it. Rust clients read a codec from a newer server as `unknown` (ADR-0044's convention), never as a broken voice state.
 - **The server never forwards a picture its watcher cannot decode.** A camera in a codec the watcher's lines do not carry gets no receive slot (no `VOICE_SLOT_ASSIGNED`, no frames, not counted in the watcher's allocation or in the camera's watched layers). When a camera reconnects, its watchers' slots are given again, so a codec change takes or gives slots back at once.
 - The clear reason is the voice state: a client seeing `video_codec` it does not decode shows that it cannot play this picture, instead of waiting for it. No new event is needed.
 

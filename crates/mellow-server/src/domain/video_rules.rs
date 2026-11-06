@@ -659,6 +659,7 @@ pub(crate) fn is_keyframe_within_layer_size(
     let picture_size = match codec {
         VideoCodec::Vp8 => vp8_keyframe_picture_size(keyframe),
         VideoCodec::H264 => constrained_baseline_picture_size(keyframe),
+        VideoCodec::Unknown => None,
     };
     let (maximum_width, maximum_height) = match layer {
         SimulcastLayer::Quarter => (640, 360),

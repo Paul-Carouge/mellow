@@ -140,6 +140,9 @@ pub enum VideoCodec {
     /// H.264 Constrained Baseline in packetisation mode 1 (ADR-0052): what hardware encoders
     /// send.
     H264,
+    /// A codec from a newer server, which this client does not decode. Servers never send it.
+    #[serde(other, rename = "unknown")]
+    Unknown,
 }
 
 /// The session token is never printed.
@@ -1026,6 +1029,17 @@ mod tests {
             "VP8, as before ADR-0052"
         );
         assert_eq!(serde_json::to_value(VideoCodec::Vp8).unwrap(), "vp8");
+    }
+
+    #[test]
+    fn video_codecs_of_newer_servers_read_as_unknown() {
+        let from_a_newer_server: VoiceState = serde_json::from_value(serde_json::json!({
+            "user_id": "3", "guild_id": "1", "channel_id": "2",
+            "self_mute": false, "self_deaf": false, "suppressed": false,
+            "self_video": true, "video_codec": "av1"
+        }))
+        .unwrap();
+        assert_eq!(from_a_newer_server.video_codec, Some(VideoCodec::Unknown));
     }
 
     #[test]
