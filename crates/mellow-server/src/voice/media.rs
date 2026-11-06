@@ -151,7 +151,7 @@ pub(crate) struct SessionVideoCodecs {
     /// The codec of the participant's camera or screen; `None` when they cannot send video.
     pub(crate) camera: Option<VideoCodec>,
     /// The codecs every one of their video receive lines carries: the cameras they may watch.
-    pub(crate) decoded: Vec<VideoCodec>,
+    pub(crate) decodable_on_every_receive_line: Vec<VideoCodec>,
 }
 
 /// The video codec of a payload, if it is one the SFU forwards.
@@ -211,7 +211,7 @@ pub(crate) fn session_video_codecs(rtc: &Rtc, lines: &VideoLines) -> SessionVide
             .send_mid
             .as_deref()
             .and_then(|mid| camera_codec_of(&negotiated_video_codecs(rtc, mid))),
-        decoded: codecs_decoded_on_every_line(&receive_lines),
+        decodable_on_every_receive_line: codecs_decoded_on_every_line(&receive_lines),
     }
 }
 
@@ -1032,7 +1032,7 @@ impl MediaLoop<'_> {
         let Some(decoded) = self
             .participants
             .get(&user_id)
-            .map(|watcher| watcher.video.codecs.decoded.clone())
+            .map(|watcher| watcher.video.codecs.decodable_on_every_receive_line.clone())
         else {
             return;
         };
