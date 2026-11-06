@@ -22,6 +22,9 @@ env:
   # linked into the server for audio attachments, is built from source by cmake (ADR-0045).
   # The desktop voice engine's audio devices go through ALSA's headers (ADR-0051).
   SERVER_BUILD_PACKAGES: nasm cmake libasound2-dev
+  # The desktop client's GPUI links xkbcommon, fontconfig and FreeType and builds its Wayland and
+  # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list.
+  DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
 
 jobs:
   lint:
@@ -34,7 +37,7 @@ jobs:
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
       - run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES}
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Design tokens are generated and pass their contrast pairs
@@ -63,20 +66,22 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           # shellcheck disable=SC2086 # the package list is split into words on purpose
-          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES}
+          sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES}
       # Every crate's tests run even when one fails, so one platform gap hides nothing else.
       - run: cargo test --workspace --locked --no-fail-fast
 
-  # The desktop voice engine talks to CoreAudio there (ADR-0051); only the build is checked.
-  media-macos:
-    name: Voice engine (macos-latest)
-    runs-on: macos-latest
+  desktop-macos:
+    name: Desktop client (macOS)
+    # The desktop client and its voice engine are first-class on macOS (ADR-0051): they must build
+    # there (CoreAudio, GPUI). Their tests run on Linux with the rest of the workspace; the default
+    # `runtime-shaders` feature needs no Xcode Metal toolchain.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build -p mellow-media --locked
+      - run: cargo build --locked -p mellow-desktop -p mellow-media
 
   web:
     name: Web client
