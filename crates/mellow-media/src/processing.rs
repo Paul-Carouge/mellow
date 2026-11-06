@@ -1,6 +1,6 @@
 //! Microphone processing, in the web client's order (ADR-0031): echo cancellation against what
 //! the speakers play, then noise suppression (WebRTC's, or `RNNoise` for "advanced"), automatic
-//! gain, then the input volume. WebRTC's processing is `sonora`, a pure Rust port of its APM.
+//! gain or the voice enhancement (which replaces it), then the input volume. WebRTC's processing is `sonora`, a pure Rust port of its APM.
 
 use nnnoiseless::DenoiseState;
 use sonora::config::{
@@ -9,6 +9,7 @@ use sonora::config::{
 use sonora::{AudioProcessing, Config, StreamConfig};
 
 use crate::audio_format::{Frame, SAMPLES_PER_FRAME, VOICE_SAMPLE_RATE};
+use crate::enhancement::{EqualizerDecibels, VoiceEnhancer};
 use crate::mixer::clamped_volume;
 
 /// `RNNoise` works on 16-bit sample values held in `f32`.
@@ -30,7 +31,10 @@ pub enum NoiseSuppressionMode {
 pub struct ProcessingSettings {
     pub is_echo_cancellation_on: bool,
     pub noise_suppression: NoiseSuppressionMode,
+    /// Ignored while the voice enhancement is on: its compressor sets the loudness.
     pub is_automatic_gain_on: bool,
+    /// The voice enhancement's equaliser; `None` while it is off (the web's default).
+    pub voice_enhancement: Option<EqualizerDecibels>,
     /// 0 to 2 (200 %), applied last.
     pub input_volume: f32,
 }
@@ -41,6 +45,7 @@ impl Default for ProcessingSettings {
             is_echo_cancellation_on: true,
             noise_suppression: NoiseSuppressionMode::default(),
             is_automatic_gain_on: true,
+            voice_enhancement: None,
             input_volume: 1.0,
         }
     }
@@ -51,6 +56,7 @@ pub(crate) struct VoiceProcessor {
     settings: ProcessingSettings,
     audio_processing: AudioProcessing,
     rnnoise: Option<Box<DenoiseState<'static>>>,
+    enhancer: Option<VoiceEnhancer>,
     scratch: Frame,
 }
 
@@ -76,12 +82,29 @@ impl VoiceProcessor {
             audio_processing,
             rnnoise: (settings.noise_suppression == NoiseSuppressionMode::Advanced)
                 .then(DenoiseState::new),
+            enhancer: settings.voice_enhancement.map(VoiceEnhancer::new),
             scratch: [0.0; SAMPLES_PER_FRAME],
         }
     }
 
-    pub(crate) fn settings(&self) -> ProcessingSettings {
-        self.settings
+    /// Moving a slider (equaliser, input volume) keeps the echo canceller's learned state; any
+    /// other change starts the chain over.
+    pub(crate) fn apply(&mut self, settings: ProcessingSettings) {
+        let is_slider_change = ProcessingSettings {
+            voice_enhancement: self.settings.voice_enhancement,
+            input_volume: self.settings.input_volume,
+            ..settings
+        } == self.settings
+            && settings.voice_enhancement.is_some() == self.settings.voice_enhancement.is_some();
+        if !is_slider_change {
+            *self = Self::new(settings);
+            return;
+        }
+        if let (Some(enhancer), Some(equalizer)) = (&mut self.enhancer, settings.voice_enhancement)
+        {
+            enhancer.set_equalizer(equalizer);
+        }
+        self.settings = settings;
     }
 
     /// The echo canceller's far end: the 10 ms the speakers are about to play.
@@ -127,6 +150,9 @@ impl VoiceProcessor {
                 *sample /= RNNOISE_SCALE;
             }
         }
+        if let Some(enhancer) = self.enhancer.as_mut() {
+            enhancer.process(frame);
+        }
         let input_volume = clamped_volume(self.settings.input_volume);
         if (input_volume - 1.0).abs() > f32::EPSILON {
             for sample in frame.iter_mut() {
@@ -144,10 +170,11 @@ fn sonora_config(settings: ProcessingSettings) -> Config {
             .then(EchoCanceller::default),
         noise_suppression: (settings.noise_suppression == NoiseSuppressionMode::Standard)
             .then(NoiseSuppression::default),
-        gain_controller2: settings.is_automatic_gain_on.then(|| GainController2 {
-            adaptive_digital: Some(AdaptiveDigital::default()),
-            ..GainController2::default()
-        }),
+        gain_controller2: (settings.is_automatic_gain_on && settings.voice_enhancement.is_none())
+            .then(|| GainController2 {
+                adaptive_digital: Some(AdaptiveDigital::default()),
+                ..GainController2::default()
+            }),
         ..Config::default()
     }
 }
@@ -192,6 +219,7 @@ mod tests {
         is_echo_cancellation_on: false,
         noise_suppression: NoiseSuppressionMode::Off,
         is_automatic_gain_on: false,
+        voice_enhancement: None,
         input_volume: 1.0,
     };
 
@@ -229,6 +257,20 @@ mod tests {
             &frames,
         );
         assert!((doubled / normal - 2.0).abs() < 0.01);
+    }
+
+    #[test]
+    fn the_voice_enhancement_lifts_a_quiet_voice() {
+        let frames = noise_frames(200, 0.01);
+        let untouched = output_rms(PLAIN, &frames);
+        let enhanced = output_rms(
+            ProcessingSettings {
+                voice_enhancement: Some(crate::VoiceEnhancementPreset::Natural.equalizer()),
+                ..PLAIN
+            },
+            &frames,
+        );
+        assert!(enhanced > untouched * 2.0, "{enhanced} against {untouched}");
     }
 
     #[test]
