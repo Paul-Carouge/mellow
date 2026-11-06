@@ -61,8 +61,7 @@ pub use session::{
 };
 pub use sound_player::SoundPlayer;
 pub use soundboard::{
-    DEFAULT_SOUNDBOARD_VOLUME, JoinCue, MAXIMUM_SOUND_FILE_BYTES, MAXIMUM_SOUNDBOARD_VOLUME,
-    SoundCache, SoundboardBlock, SoundboardError, SoundboardFacts, decode_canonical_wav,
-    download_sound, join_cue_of, should_hear_sound, soundboard_block, soundboard_gain,
+    DEFAULT_SOUNDBOARD_VOLUME, MAXIMUM_SOUND_FILE_BYTES, MAXIMUM_SOUNDBOARD_VOLUME, SoundCache,
+    SoundboardError, decode_canonical_wav, download_sound, soundboard_gain,
 };
 pub use sounds::{LocalSound, VoiceCue, render_notification_chime};

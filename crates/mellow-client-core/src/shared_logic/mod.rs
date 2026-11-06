@@ -18,4 +18,5 @@ pub mod role_mentions;
 pub mod search_query;
 pub mod search_suggestions;
 pub mod search_text;
+pub mod soundboard;
 mod unicode_classes;

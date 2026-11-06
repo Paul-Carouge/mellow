@@ -441,7 +441,8 @@ impl VoiceSession {
     }
 
     /// Plays a soundboard or join sound at the output volume times the soundboard volume; who
-    /// should hear it is [`crate::should_hear_sound`]'s call.
+    /// should hear it is
+    /// [`mellow_client_core::shared_logic::soundboard::should_hear_sound`]'s call.
     pub fn play_soundboard_sound(&self, sound: LocalSound) {
         self.command(AudioCommand::PlaySoundboardSound(sound));
     }
