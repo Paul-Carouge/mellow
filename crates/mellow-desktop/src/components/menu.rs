@@ -15,7 +15,10 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::search_text::fold_for_search;
 
-use super::{ActivationHandler, easing, icon, inset_focus_ring, shadow, with_type};
+use super::{
+    ActivationHandler, FocusNextControl, FocusPreviousControl, easing, icon, inset_focus_ring,
+    shadow, with_type,
+};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_CONTEXT_MENU_BORDER_WIDTH,
@@ -409,7 +412,7 @@ impl ContextMenu {
             return;
         }
         match keystroke.key.as_str() {
-            "escape" | "tab" => {
+            "escape" => {
                 cx.stop_propagation();
                 self.dismiss(window, cx);
                 return;
@@ -535,6 +538,13 @@ impl Render for ContextMenu {
             .track_focus(&self.focus_handle)
             .key_context("ContextMenu")
             .on_key_down(cx.listener(Self::on_key_down))
+            // Tab is bound to these actions, and bindings run before key-down listeners.
+            .on_action(cx.listener(|menu, _: &FocusNextControl, window, cx| {
+                menu.dismiss(window, cx);
+            }))
+            .on_action(cx.listener(|menu, _: &FocusPreviousControl, window, cx| {
+                menu.dismiss(window, cx);
+            }))
             .on_mouse_down_out(cx.listener(|menu, _, window, cx| menu.dismiss(window, cx)))
             // A right-click inside the menu must not reach what lies under it.
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())

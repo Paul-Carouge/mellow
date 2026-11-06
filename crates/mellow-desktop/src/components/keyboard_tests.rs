@@ -241,6 +241,21 @@ fn a_menu_wraps_jumps_types_ahead_chooses_and_gives_focus_back(cx: &mut TestAppC
         assert_eq!(harness.chosen.len(), 1, "without choosing");
     });
     assert!(cx.update(|window, _| opener.is_focused(window)));
+
+    // Tab is bound to focus navigation, so the menu must close on the action, not the raw key.
+    for key in ["tab", "shift-tab"] {
+        cx.update(|window, cx| harness.update(cx, |harness, cx| harness.open(window, cx)));
+        cx.run_until_parked();
+        press(cx, key);
+        harness.read_with(cx, |harness, _| {
+            assert!(harness.menu.is_none(), "{key} closes the menu");
+            assert_eq!(harness.chosen.len(), 1, "without choosing");
+        });
+        assert!(
+            cx.update(|window, _| opener.is_focused(window)),
+            "{key} gives focus back to the opener"
+        );
+    }
 }
 
 struct DialogHarness {
