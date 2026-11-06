@@ -526,6 +526,13 @@ impl NetworkThread {
         };
         let peer = match peer {
             Ok(peer) => peer,
+            Err(PeerError::Socket(error)) => {
+                // No route (Wi-Fi dropped): like an offer the gateway could not carry, wait for
+                // `BackOnline`, `READY` or `RESUMED` instead of using up the silent attempts.
+                tracing::debug!(%error, "no network for the voice offer, waiting for it");
+                self.machine.offer_sent(false, Instant::now());
+                return;
+            }
             Err(error) => {
                 tracing::warn!(%error, "the voice offer could not be made");
                 let actions = self

@@ -701,6 +701,25 @@ mod tests {
     }
 
     #[test]
+    fn an_offer_made_offline_waits_for_the_network_without_using_up_attempts() {
+        let start = Instant::now();
+        let mut machine = connected(start);
+        machine.handle(ConnectionInput::IceDisconnected { offer_id: 1 }, start);
+        let lost = start + ICE_DISCONNECTED_GRACE;
+        assert_eq!(offers(&machine.on_deadlines(lost)), vec![2]);
+        assert_eq!(machine.reconnect_attempts, 1);
+        // The transport found no route for the new peer.
+        machine.offer_sent(false, lost);
+        assert_eq!(machine.next_deadline(), None);
+        assert_eq!(
+            offers(&machine.handle(ConnectionInput::BackOnline, lost)),
+            vec![3]
+        );
+        assert_eq!(machine.reconnect_attempts, 1);
+        assert!(!machine.is_stopped());
+    }
+
+    #[test]
     fn moving_offers_with_a_new_id_and_plays_the_join_cue_again() {
         let start = Instant::now();
         let mut machine = connected(start);
