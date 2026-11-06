@@ -22,7 +22,7 @@ impl RestClient {
     /// Network errors; `UnexpectedResponse` when something other than a Mellow instance answers.
     pub async fn health(&self) -> Result<HealthResponse, ClientError> {
         let builder = self.request(Method::GET, "api/v1/health", false)?;
-        let response = Self::send_retrying_when_asked(builder).await?;
+        let response = builder.send().await.map_err(ClientError::Network)?;
         // A `503` still carries the health body: it says the database is unavailable.
         if !matches!(
             response.status(),
@@ -37,7 +37,7 @@ impl RestClient {
     }
 
     /// The second sign-in step (ADR-0049): the challenge's token from
-    /// [`ClientError::TwoFactorRequired`] with an authenticator code or a recovery code. The token
+    /// [`super::SignIn::TwoFactorRequired`] with an authenticator code or a recovery code. The token
     /// is kept for later calls.
     ///
     /// # Errors

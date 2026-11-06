@@ -24,6 +24,10 @@ const TRANSFER_BASE_TIMEOUT: Duration = Duration::from_secs(60);
 /// About 256 kbit/s: a transfer slower than this on average is taken as stalled. The same rule as
 /// the web client's `uploadTimeoutMilliseconds`.
 const SLOWEST_TRANSFER_BYTES_PER_MILLISECOND: u64 = 32;
+/// A download whose answer or next byte takes longer than this is given up: its deadline comes
+/// from the caller's cap, not the file's size, so it alone would let a dead connection hang for
+/// close to an hour.
+const STALLED_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(30);
 /// Small enough for smooth progress reports, large enough to keep the per-chunk cost negligible.
 const UPLOAD_CHUNK_BYTES: usize = 64 * 1024;
 const GENERIC_UPLOAD_CONTENT_TYPE: &str = "application/octet-stream";
@@ -146,7 +150,8 @@ impl RestClient {
     ///
     /// # Errors
     /// Network or API errors (`NotFound` also when the user may not see the file, `RateLimited`
-    /// past the instance's file request budget); `FileTooLarge` past `maximum_bytes`.
+    /// past the instance's file request budget); `FileTooLarge` past `maximum_bytes`;
+    /// `TransferStalled` when the answer or its body stops arriving.
     pub async fn download(
         &self,
         file: DownloadableFile,
@@ -159,7 +164,10 @@ impl RestClient {
         if let Some(entity_tag) = cached_entity_tag {
             builder = builder.header(IF_NONE_MATCH, entity_tag);
         }
-        let response = Self::send_retrying_when_asked(builder).await?;
+        let response = tokio::time::timeout(STALLED_DOWNLOAD_TIMEOUT, builder.send())
+            .await
+            .map_err(|_| ClientError::TransferStalled)?
+            .map_err(ClientError::Network)?;
         if response.status() == StatusCode::NOT_MODIFIED {
             return Ok(Download::NotModified);
         }
@@ -173,7 +181,7 @@ impl RestClient {
         };
         let content_type = header_text(CONTENT_TYPE);
         let entity_tag = header_text(ETAG);
-        let bytes = Self::body_within(response, maximum_bytes)
+        let bytes = Self::body_within(response, maximum_bytes, STALLED_DOWNLOAD_TIMEOUT)
             .await?
             .ok_or(ClientError::FileTooLarge)?;
         Ok(Download::Fetched(DownloadedFile {
@@ -428,6 +436,33 @@ mod tests {
             Duration::from_secs(60 + 1_000)
         );
         assert_eq!(transfer_timeout(1), Duration::from_millis(60_001));
+    }
+
+    #[tokio::test]
+    async fn a_body_that_stops_arriving_is_given_up_as_stalled() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = format!("http://{}", listener.local_addr().unwrap());
+        let (stop_server, server_stopped) = tokio::sync::oneshot::channel::<()>();
+        tokio::spawn(async move {
+            let (mut connection, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = connection.read(&mut request).await.unwrap();
+            // Promises 100 bytes, sends 10, then keeps the connection open without a word.
+            connection
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 100\r\n\r\n0123456789")
+                .await
+                .unwrap();
+            let _ = server_stopped.await;
+        });
+        let response = reqwest::Client::new().get(address).send().await.unwrap();
+        let outcome = RestClient::body_within(response, 1_000, Duration::from_millis(50)).await;
+        assert!(
+            matches!(outcome, Err(ClientError::TransferStalled)),
+            "{outcome:?}"
+        );
+        drop(stop_server);
     }
 
     #[tokio::test]

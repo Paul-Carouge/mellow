@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use mellow_client_core::{
-    ClientError, Download, DownloadableFile, InstanceAddress, RestClient, UploadProgress,
+    ClientError, Download, DownloadableFile, InstanceAddress, RestClient, SignIn, UploadProgress,
 };
 use mellow_protocol::{
     ApiErrorCode, BannerCropQuery, ChannelKind, ChannelPlacement, ChosenStatus,
@@ -346,7 +346,7 @@ async fn two_factor_sign_in_is_enrolled_completed_and_turned_off() {
         password: PASSWORD.into(),
         device_name: "phone".into(),
     };
-    let Err(ClientError::TwoFactorRequired(challenge)) = phone.login(&login).await else {
+    let Ok(SignIn::TwoFactorRequired(challenge)) = phone.login(&login).await else {
         panic!("the password alone must not sign in");
     };
     assert!(phone.token().is_none());
@@ -395,7 +395,10 @@ async fn two_factor_sign_in_is_enrolled_completed_and_turned_off() {
         .unwrap();
     assert!(!phone.two_factor_status().await.unwrap().is_enabled);
     let mut laptop = RestClient::new(instance.address.clone()).unwrap();
-    laptop.login(&login).await.unwrap();
+    assert!(matches!(
+        laptop.login(&login).await.unwrap(),
+        SignIn::SignedIn(_)
+    ));
     instance.stop().await;
 }
 
