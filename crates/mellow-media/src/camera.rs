@@ -1,5 +1,5 @@
-//! Cameras behind a trait: the system's (`AVFoundation` on macOS, V4L2 on Linux) or a synthetic
-//! one for tests and headless use. An open camera pushes its pictures into a session's
+//! Cameras behind a trait: the system's (`AVFoundation` on macOS; none yet on Linux or Windows)
+//! or a synthetic one for tests and headless use. An open camera pushes its pictures into a session's
 //! [`VideoInput`] from its own thread and stops when dropped or when the input closes.
 
 use std::sync::Arc;
@@ -156,11 +156,12 @@ impl Cameras for SyntheticCameras {
     }
 }
 
-/// The system's cameras: `AVFoundation` on macOS, V4L2 on Linux, none elsewhere yet.
+/// The system's cameras: `AVFoundation` on macOS. Elsewhere it lists none yet.
+// shortcut: no camera on Linux (V4L2) or Windows yet; add them when the desktop ships there.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemCameras;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(target_os = "macos"))]
 impl Cameras for SystemCameras {
     fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
         Ok(Vec::new())
@@ -189,5 +190,13 @@ mod tests {
         );
         assert_ne!(first, second);
         assert!(first.to_i420().is_some());
+    }
+
+    #[test]
+    fn the_system_s_cameras_exist_on_every_platform() {
+        let cameras: Box<dyn Cameras> = Box::new(SystemCameras);
+        if cfg!(not(target_os = "macos")) {
+            assert_eq!(cameras.cameras().unwrap(), []);
+        }
     }
 }
