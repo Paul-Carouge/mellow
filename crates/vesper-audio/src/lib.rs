@@ -1668,8 +1668,7 @@ mod tests {
         }
         // No hole: the tone is in every 20 ms of the second (the last fades
         // out in the codec).
-        let pre_skip = usize::from(u16::from_le_bytes([head[10], head[11]]));
-        let decoded = &decode(&head, &packets)[pre_skip..];
+        let decoded = decode(&head, &packets);
         for (i, block) in decoded.chunks(FRAME).take(49).enumerate() {
             let rms = (block.iter().map(|s| s * s).sum::<f32>() / FRAME as f32).sqrt();
             assert!(rms > 0.3, "block {i}: rms {rms}");
@@ -1779,7 +1778,7 @@ mod tests {
     }
 
     /// Decodes Opus packets back to channel 0's samples, the pre-skip
-    /// included (callers skip it).
+    /// dropped.
     pub(crate) fn decode(head: &[u8], packets: &[EncodedPacket]) -> Vec<f32> {
         assert_eq!(&head[..8], b"OpusHead");
         assert_eq!(head[9], CHANNELS as u8);
@@ -1796,7 +1795,10 @@ mod tests {
                     .step_by(usize::from(CHANNELS)),
             );
         }
-        out
+        // As FFmpeg's Opus decoder did: the pre-skip is dropped, so the first
+        // sample is the encoder's first input sample.
+        let pre_skip = usize::from(u16::from_le_bytes([head[10], head[11]]));
+        out.split_off(pre_skip.min(out.len()))
     }
 
     #[test]
