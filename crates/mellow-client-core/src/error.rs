@@ -45,6 +45,27 @@ impl ClientError {
         )
     }
 
+    /// True when the instance answered and refused the change: a guess shown before the answer
+    /// is undone (`state::ChangeOutcome::Undone`). Otherwise the answer may have been lost after
+    /// the instance kept the change, and its copy settles it.
+    #[must_use]
+    pub fn is_refused_by_instance(&self) -> bool {
+        matches!(self, Self::Api { .. })
+    }
+
+    /// True when the same request may succeed later: the instance was out of reach, too busy or
+    /// failing, never a refusal of the request itself.
+    #[must_use]
+    pub fn is_worth_retrying(&self) -> bool {
+        match self {
+            Self::Api { status, .. } => *status == 429 || *status >= 500,
+            Self::Network(_) | Self::UnexpectedResponse(_) => true,
+            Self::InvalidInstanceAddress(_)
+            | Self::NotSignedIn
+            | Self::RandomGeneratorFailed(_) => false,
+        }
+    }
+
     /// True when signing in again is the only way forward (expired or revoked session).
     #[must_use]
     pub fn needs_new_login(&self) -> bool {
@@ -82,5 +103,21 @@ mod tests {
             assert!(!api(retryable).refuses_message_for_good());
         }
         assert!(!ClientError::UnexpectedResponse("html".into()).refuses_message_for_good());
+    }
+
+    #[test]
+    fn only_a_busy_or_failing_instance_is_worth_retrying_and_any_answer_is_a_refusal() {
+        let api = |status, code| ClientError::Api {
+            status,
+            code,
+            message: String::new(),
+        };
+        assert!(api(429, ApiErrorCode::RateLimited).is_worth_retrying());
+        assert!(api(503, ApiErrorCode::ServerBusy).is_worth_retrying());
+        assert!(!api(404, ApiErrorCode::NotFound).is_worth_retrying());
+        assert!(!api(403, ApiErrorCode::MissingPermissions).is_worth_retrying());
+        assert!(ClientError::UnexpectedResponse("html".into()).is_worth_retrying());
+        assert!(api(403, ApiErrorCode::MissingPermissions).is_refused_by_instance());
+        assert!(!ClientError::UnexpectedResponse("html".into()).is_refused_by_instance());
     }
 }

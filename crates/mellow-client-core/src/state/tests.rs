@@ -1,15 +1,18 @@
-use mellow_protocol::{ChannelKind, OverwriteKind, PermissionOverwrite, PublicUser, ReadState};
+use mellow_protocol::{
+    Channel, ChannelKind, GuildSummary, Message, OverwriteKind, PermissionOverwrite,
+    PresenceStatus, PublicUser, ReadState, Role,
+};
 
 use super::*;
 
-const GUILD: Snowflake = Snowflake::from_raw(100);
-const CATEGORY: Snowflake = Snowflake::from_raw(101);
-const GENERAL: Snowflake = Snowflake::from_raw(102);
-const ME: Snowflake = Snowflake::from_raw(1);
-const OTHER: Snowflake = Snowflake::from_raw(2);
-const NOW: u64 = 1_000_000;
+pub(super) const GUILD: Snowflake = Snowflake::from_raw(100);
+pub(super) const CATEGORY: Snowflake = Snowflake::from_raw(101);
+pub(super) const GENERAL: Snowflake = Snowflake::from_raw(102);
+pub(super) const ME: Snowflake = Snowflake::from_raw(1);
+pub(super) const OTHER: Snowflake = Snowflake::from_raw(2);
+pub(super) const NOW: u64 = 1_000_000;
 
-fn channel(
+pub(super) fn channel(
     id: Snowflake,
     kind: ChannelKind,
     parent_id: Option<Snowflake>,
@@ -29,7 +32,7 @@ fn channel(
     }
 }
 
-fn user(id: Snowflake) -> PublicUser {
+pub(super) fn user(id: Snowflake) -> PublicUser {
     PublicUser {
         id,
         username: format!("user{}", id.raw()),
@@ -39,7 +42,7 @@ fn user(id: Snowflake) -> PublicUser {
     }
 }
 
-fn message(id: u64, author: Snowflake) -> Message {
+pub(super) fn message(id: u64, author: Snowflake) -> Message {
     Message {
         id: Snowflake::from_raw(id),
         channel_id: GENERAL,
@@ -61,7 +64,7 @@ fn message(id: u64, author: Snowflake) -> Message {
     }
 }
 
-fn ready_state() -> ClientState {
+pub(super) fn ready_state() -> ClientState {
     let mut state = ClientState::default();
     state.apply_ready(Ready {
         may_create_guilds: true,
