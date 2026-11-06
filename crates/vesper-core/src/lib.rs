@@ -5,6 +5,7 @@
 //! The muxer rebases them to the start of the recording.
 
 use std::fmt;
+#[cfg(unix)]
 use std::os::fd::OwnedFd;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -13,6 +14,7 @@ use std::time::Duration;
 
 /// One plane of a DMA-BUF. Several planes may share the same buffer object
 /// (e.g. AMD DCC modifiers), each with its own fd duplicate.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct DmaBufPlane {
     pub fd: OwnedFd,
@@ -49,6 +51,7 @@ impl fmt::Debug for ReleaseGuard {
 /// The producer does not reuse the underlying buffer until the frame is
 /// dropped (`release` fires). Consumers should copy it on the GPU (e.g.
 /// VA-VPP to NV12) and drop it quickly: the producer's pool is small.
+#[cfg(unix)]
 #[derive(Debug)]
 pub struct VideoFrame {
     pub width: u32,
