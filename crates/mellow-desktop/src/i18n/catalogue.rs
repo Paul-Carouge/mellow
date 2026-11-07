@@ -3434,6 +3434,13 @@ impl ChatStrings {
         }
     }
 
+    pub fn send_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Couldn't send the message",
+            Language::French => "Impossible d’envoyer le message",
+        }
+    }
+
     pub fn copy_failed(self) -> &'static str {
         match self.language {
             Language::English => "Couldn't copy the text. Select it and copy it by hand.",
@@ -7134,6 +7141,13 @@ impl ContextMenuStrings {
         }
     }
 
+    pub fn copy_message_id(self) -> &'static str {
+        match self.language {
+            Language::English => "Copy message ID",
+            Language::French => "Copier l’identifiant du message",
+        }
+    }
+
     pub fn copy_category_id(self) -> &'static str {
         match self.language {
             Language::English => "Copy category ID",
@@ -7159,6 +7173,13 @@ impl ContextMenuStrings {
         match self.language {
             Language::English => "Channel ID copied.",
             Language::French => "Identifiant du salon copié.",
+        }
+    }
+
+    pub fn message_id_copied(self) -> &'static str {
+        match self.language {
+            Language::English => "Message ID copied.",
+            Language::French => "Identifiant du message copié.",
         }
     }
 

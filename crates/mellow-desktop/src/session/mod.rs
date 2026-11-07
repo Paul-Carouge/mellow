@@ -13,13 +13,16 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use gpui::{App, Context, Entity, EventEmitter, Task};
 use mellow_client_core::state::{ClientState, StateChange};
 use mellow_client_core::{
-    ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce,
-    run_gateway,
+    ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, run_gateway,
 };
 use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
+
+mod messages;
+
+pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
 use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;
@@ -100,6 +103,8 @@ pub struct Session {
     /// Kept, not detached, so quitting can wait for it: a revoked token left in the secret store
     /// would greet the next launch with "your session ended".
     stored_session_forget_in_flight: Option<Task<Result<(), JoinError>>>,
+    /// History pages, read positions on their way (`messages`).
+    conversation: messages::ConversationRequests,
 }
 
 impl std::fmt::Debug for Session {
@@ -114,6 +119,7 @@ impl std::fmt::Debug for Session {
 }
 
 impl EventEmitter<StateChanged> for Session {}
+impl EventEmitter<SendRefused> for Session {}
 
 impl Session {
     /// A session that first looks for one kept in the secret store.
@@ -164,6 +170,7 @@ impl Session {
             status_error: None,
             is_kept_on_this_device,
             stored_session_forget_in_flight: None,
+            conversation: messages::ConversationRequests::default(),
         }
     }
 
@@ -247,6 +254,7 @@ impl Session {
         self.sign_out_error = None;
         self.member_loads.clear();
         self.status_error = None;
+        self.conversation = messages::ConversationRequests::default();
         // Nothing of the pictures may reach the disk of a session kept in memory only.
         if self.is_kept_on_this_device {
             start_picture_session(rest.clone(), cx);
@@ -302,8 +310,9 @@ impl Session {
                 GatewayUpdate::Ready(ready) => {
                     self.status = ConnectionStatus::Connected;
                     should_resend_failed_messages = true;
-                    // `Ready` emptied the member lists: the views ask again.
+                    // `Ready` emptied the member lists and the history: the views ask again.
                     self.member_loads.clear();
+                    self.conversation.forget_history();
                     self.state.apply_ready(*ready)
                 }
                 GatewayUpdate::Event(event) => self.state.apply_event(event, now),
@@ -422,6 +431,7 @@ impl Session {
         self.sign_out_error = None;
         self.member_loads.clear();
         self.status_error = None;
+        self.conversation = messages::ConversationRequests::default();
         if self.is_kept_on_this_device {
             end_picture_session(cx);
             // The previous forget keeps running when detached; only the latest matters at quit.
@@ -560,44 +570,6 @@ impl Session {
         );
     }
 
-    /// Queues `content` in the outbox, shows it at once and sends it. Nothing is queued when the
-    /// app cannot make a nonce; the caller keeps the text then.
-    ///
-    /// # Errors
-    /// `RandomGeneratorFailed`, or `NotSignedIn` without a session.
-    pub fn send_message(
-        &mut self,
-        channel_id: Snowflake,
-        content: String,
-        reply_to_id: Option<Snowflake>,
-        cx: &mut Context<Self>,
-    ) -> Result<(), ClientError> {
-        if self.connection.is_none() {
-            return Err(ClientError::NotSignedIn);
-        }
-        let nonce = generate_message_nonce()?;
-        let request = self
-            .state
-            .queue_message(channel_id, content, reply_to_id, nonce.clone());
-        cx.emit(StateChanged(vec![StateChange::Messages { channel_id }]));
-        cx.notify();
-        let Some(rest) = self
-            .connection
-            .as_ref()
-            .map(|connection| connection.rest.clone())
-        else {
-            return Err(ClientError::NotSignedIn);
-        };
-        self.run_request(
-            cx,
-            async move { rest.send_message(channel_id, &request).await },
-            move |session, answer, cx| {
-                session.apply_send_answer(channel_id, &nonce, answer, cx);
-            },
-        );
-        Ok(())
-    }
-
     /// After a reconnect, sends every failed message again, one after another so they keep their
     /// order. The first failure the instance does not refuse stops the batch: the rest stay failed.
     fn resend_failed_messages(&mut self, cx: &mut Context<Self>) {
@@ -654,8 +626,8 @@ impl Session {
         );
     }
 
-    /// shortcut: a refused message stays failed in the list; giving its text back to an empty
-    /// composer comes with the composer.
+    /// A refused message stays failed in the outbox until the view takes its text back
+    /// (`SendRefused`, `take_refused_message`), so nothing typed is lost.
     fn apply_send_answer(
         &mut self,
         channel_id: Snowflake,
@@ -668,6 +640,9 @@ impl Session {
             Err(error) => {
                 let change = self.state.mark_send_failed(nonce);
                 self.report_request_error(&error, "send message", cx);
+                if self.phase == SessionPhase::SignedIn && change != StateChange::Nothing {
+                    Self::report_refused_send(channel_id, nonce, &error, cx);
+                }
                 change
             }
         };
@@ -764,7 +739,7 @@ impl Session {
     }
 }
 
-fn now_unix_milliseconds() -> u64 {
+pub(crate) fn now_unix_milliseconds() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_or(0, |elapsed| {
