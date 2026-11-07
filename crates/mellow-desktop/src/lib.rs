@@ -11,6 +11,7 @@ pub mod column_widths;
 pub mod components;
 pub mod composer;
 pub mod connection_banner;
+pub mod conversation;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;

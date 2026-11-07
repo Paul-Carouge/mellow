@@ -23,7 +23,7 @@ use gpui::{App, ImageSource, Window};
 use mellow_client_core::DownloadableFile;
 
 pub use attachments::MessageAttachments;
-pub use body::{MessageBody, MessageBodyCache, MessageBodyKey};
+pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};

@@ -51,4 +51,4 @@ The rail's squircle settles (`component.rail.morph-duration`, settle curve) and 
 
 ## Not yet (named in the code with `shortcut:`)
 
-Group member sheet, profiles from the member sheet, the Friends space, Melli on the Home button, animated avatars and icons, `F6` region cycling and roving focus inside lists, joining voice from a row, the server header menu and its dialogs, custom status, Esc marking a channel read, and marking the open channel read (step 3).
+Group member sheet, profiles from the member sheet, the Friends space, Melli on the Home button, animated avatars and icons, `F6` region cycling and roving focus inside lists, joining voice from a row, the server header menu and its dialogs, custom status. Esc marking a channel read and marking the open channel read came with the conversation view ([desktop-conversation-view.md](desktop-conversation-view.md)).

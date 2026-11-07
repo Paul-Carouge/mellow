@@ -334,6 +334,52 @@ impl Composer {
         }
     }
 
+    /// A send the instance refused for good: its text comes back to the field when the field is
+    /// empty and still open on `channel_id`, and false leaves it with the caller (the outbox keeps
+    /// it as failed), so a message being written is never replaced.
+    pub fn give_back_refused_send(
+        &mut self,
+        channel_id: Snowflake,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let is_free = self.drafts.open_channel_id() == Some(channel_id)
+            && self.edit_session.is_none()
+            && self.text(cx).is_empty()
+            && self.can_send_messages;
+        if is_free {
+            self.set_text(text, window, cx);
+            self.focus(window, cx);
+            cx.notify();
+        }
+        is_free
+    }
+
+    /// A printable key pressed in the message list: the field takes focus and the text, as the
+    /// web lets typing anywhere in the chat go to the composer.
+    /// Types `text` into the field and focuses it; false where the reader cannot send.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if !self.can_send_messages {
+            return false;
+        }
+        self.input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.insert(text.to_owned(), window, cx);
+        });
+        self.note_typing(cx);
+        self.suggestions_read_at = None;
+        self.refresh_suggestions(cx);
+        cx.notify();
+        true
+    }
+
+    /// The field's text, for the conversation view's tests.
+    #[cfg(test)]
+    pub(crate) fn text_in_field(&self, cx: &App) -> String {
+        self.text(cx)
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
@@ -1124,8 +1170,6 @@ impl Render for Composer {
             .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
 
         // The base row is as tall as the user card; buttons sit centred on it.
-        let line_height = TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height;
-        let row_padding = (SIZE_DOCK_HEIGHT - line_height) / 2.0;
         let button_margin = (SIZE_DOCK_HEIGHT - COMPONENT_COMPOSER_ATTACH_BUTTON_SIZE) / 2.0;
         let base_row = if self.can_send_messages {
             let attach = entity.clone();
@@ -1159,7 +1203,12 @@ impl Render for Composer {
                     with_type(div(), TYPE_MESSAGE)
                         .flex_1()
                         .min_w_0()
-                        .py(length(row_padding))
+                        // Centred in a row as tall as the user card: the field's own line
+                        // height is the text input's, not the message type's.
+                        .min_h(length(SIZE_DOCK_HEIGHT))
+                        .flex()
+                        .flex_col()
+                        .justify_center()
                         .px(length(SPACE_2XS))
                         .text_color(color(tokens.component_composer_text))
                         .child(
@@ -1205,6 +1254,7 @@ impl Render for Composer {
         let hover_wash = color(tokens.color_state_hover);
         let composer_box = div()
             .id("composer-box")
+            .debug_selector(|| "composer".to_owned())
             .relative()
             .rounded(length(COMPONENT_COMPOSER_RADIUS))
             .bg(color(tokens.component_composer_background))
