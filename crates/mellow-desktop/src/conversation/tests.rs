@@ -216,6 +216,18 @@ fn the_new_divider_sits_above_the_first_unread_message_until_esc_in_the_composer
 }
 
 #[gpui::test]
+fn a_long_unread_run_opens_on_its_divider_and_stays_unread(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, many_messages(40), Some(10_005));
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |view, _| view.is_at_latest()));
+    assert_eq!(
+        last_read(&session, cx),
+        Some(Snowflake::from_raw(10_005)),
+        "the messages below the divider are not read yet"
+    );
+}
+
+#[gpui::test]
 fn esc_in_the_list_jumps_to_present_and_typing_there_goes_to_the_composer(cx: &mut TestAppContext) {
     let (view, _session, cx) = open_general(cx, many_messages(40), None);
     view.update(cx, |view, cx| {

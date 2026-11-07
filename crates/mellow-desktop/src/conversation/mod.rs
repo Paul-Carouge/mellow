@@ -486,7 +486,9 @@ impl ConversationView {
             // decides whether the latest message shows.
             self.visit.is_unread_marker_pending = false;
             self.visit.unread_marker = state.unread_marker(channel_id);
-            self.are_rows_stale = true;
+            // Now, not at the next render: a deferred read check could run first, while the
+            // list still follows the latest message, and mark the whole run read.
+            self.rebuild_rows(cx);
             cx.notify();
             return;
         }
