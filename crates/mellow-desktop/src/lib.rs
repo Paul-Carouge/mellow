@@ -9,6 +9,7 @@
 
 pub mod column_widths;
 pub mod components;
+pub mod composer;
 pub mod connection_banner;
 pub mod i18n;
 mod local_widgets;
@@ -55,6 +56,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     theme::register_embedded_fonts(cx)?;
     components::bind_tab_navigation(cx);
     shell::bind_shell_keys(cx);
+    composer::bind_composer_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
     preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();
