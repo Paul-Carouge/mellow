@@ -4,8 +4,9 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
 
-use gpui::Task;
+use gpui::{RenderImage, Task};
 use mellow_protocol::{Attachment, Snowflake};
 
 /// The instance links at most this many files to one message (ADR-0020).
@@ -21,6 +22,8 @@ pub struct TrayItem {
     pub file_name: String,
     pub size_bytes: u64,
     pub status: TrayItemStatus,
+    /// A small picture decoded from the file once read; its atlas slot is freed when it leaves.
+    pub preview: Option<Arc<RenderImage>>,
     /// The running upload; dropping it (removal, a cleared tray) stops the request.
     pub upload: Option<Task<()>>,
 }
@@ -103,6 +106,7 @@ impl ComposerDrafts {
             file_name,
             size_bytes,
             status: TrayItemStatus::Uploading,
+            preview: None,
             upload: None,
         });
         Some(key)
@@ -133,14 +137,16 @@ impl ComposerDrafts {
         Some(item)
     }
 
-    /// Removes a file from the open tray, stopping its upload.
-    pub fn remove_tray_item(&mut self, key: u64) {
-        self.tray.retain(|item| item.key != key);
+    /// Removes a file from the open tray, stopping its upload; returns it to free its preview.
+    pub fn remove_tray_item(&mut self, key: u64) -> Option<TrayItem> {
+        let index = self.tray.iter().position(|item| item.key == key)?;
+        Some(self.tray.remove(index))
     }
 
     /// Empties the open tray after a send, stopping what still uploads; other channels keep theirs.
-    pub fn clear_tray(&mut self) {
-        self.tray.clear();
+    /// Returns the files to free their previews.
+    pub fn clear_tray(&mut self) -> Vec<TrayItem> {
+        std::mem::take(&mut self.tray)
     }
 
     #[must_use]
@@ -278,7 +284,7 @@ mod tests {
         drafts.open(Some(channel(2)), String::new());
         attach(&mut drafts, "two.png");
 
-        drafts.clear_tray();
+        let _ = drafts.clear_tray();
 
         assert!(drafts.tray().is_empty());
         drafts.open(Some(channel(1)), String::new());
@@ -313,7 +319,7 @@ mod tests {
         drafts.restart_upload(failed);
 
         assert!(drafts.is_uploading());
-        drafts.remove_tray_item(failed);
+        let _ = drafts.remove_tray_item(failed);
         assert_eq!(names(&drafts), ["uploaded.png"]);
         assert_eq!(drafts.tray_room(), MAXIMUM_ATTACHMENTS_PER_MESSAGE - 1);
     }

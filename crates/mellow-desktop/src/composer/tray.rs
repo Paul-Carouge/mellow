@@ -2,18 +2,22 @@
 //! §5.5, §6.27): one card per file with its preview, its name cut in the middle, its state, Retry
 //! when it failed and Remove.
 
-use std::path::Path;
+use std::sync::Arc;
 
 use gpui::{
-    App, ElementId, Entity, InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, div, img,
-    prelude::FluentBuilder as _,
+    App, ElementId, Entity, ImageSource, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement as _, RenderImage, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::middle_truncate;
 
 use super::{Composer, TrayItem, TrayItemStatus, written_file_size};
-use crate::components::{IconButton, IconButtonTone, icon, shadow, with_type};
+use crate::components::{
+    IconButton, IconButtonTone, focus_ring, icon, is_focus_visible, remembered_focus_handle,
+    shadow, with_type,
+};
 use crate::i18n::Strings;
+use crate::pictures::{Animation, DisplaySize, decode_frames};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_ACTION_BAR_BUTTON_SIZE, COMPONENT_ACTION_BAR_ICON_SIZE, COMPONENT_ACTION_BAR_RADIUS,
@@ -22,25 +26,32 @@ use crate::theme::tokens::{
     COMPONENT_COMPOSER_TRAY_ITEM_PADDING, COMPONENT_COMPOSER_TRAY_ITEM_PREVIEW_HEIGHT,
     COMPONENT_COMPOSER_TRAY_ITEM_RADIUS, COMPONENT_COMPOSER_TRAY_ITEM_REMOVE_OFFSET,
     COMPONENT_COMPOSER_TRAY_ITEM_UPLOADING_OPACITY, COMPONENT_COMPOSER_TRAY_ITEM_WIDTH,
-    COMPONENT_COMPOSER_TRAY_PADDING, COMPONENT_MESSAGE_STATUS_ICON_SIZE, SIZE_HIT_DESKTOP_MIN,
-    TYPE_BODY, TYPE_BODY_SM,
+    COMPONENT_COMPOSER_TRAY_PADDING, COMPONENT_MESSAGE_STATUS_ICON_SIZE, RADIUS_SM,
+    SIZE_HIT_DESKTOP_MIN, TYPE_BODY, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
 
 /// An item's width fits about this many characters of its name.
 const FILE_NAME_MAXIMUM_CHARACTERS: usize = 16;
 
-/// What GPUI's own image loader draws: the tray previews these from the picked file itself.
-const PREVIEWABLE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+/// Previews decode at twice their layout size: sharp on high-density screens, small anyway.
+const PREVIEW_SCALE: f32 = 2.0;
 
-fn is_previewable(path: &Path) -> bool {
-    path.extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            PREVIEWABLE_EXTENSIONS
-                .iter()
-                .any(|previewable| extension.eq_ignore_ascii_case(previewable))
-        })
+/// The file's first frame scaled down to the preview box, with the picture pipeline's decoding
+/// limits; `None` for anything that is not a picture it decodes. Runs off the UI thread.
+pub(super) fn decode_preview(bytes: &[u8]) -> Option<Arc<RenderImage>> {
+    let width = (COMPONENT_COMPOSER_TRAY_ITEM_WIDTH - 2.0 * COMPONENT_COMPOSER_TRAY_ITEM_PADDING)
+        * PREVIEW_SCALE;
+    let height = COMPONENT_COMPOSER_TRAY_ITEM_PREVIEW_HEIGHT * PREVIEW_SCALE;
+    // Token sizes are small positive numbers.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let display = DisplaySize {
+        width: width.ceil() as u32,
+        height: height.ceil() as u32,
+    };
+    decode_frames(bytes, Animation::StillFrame, display)
+        .ok()
+        .map(|frames| Arc::new(RenderImage::new(frames)))
 }
 
 #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
@@ -48,7 +59,8 @@ pub(super) fn tray(
     items: &[TrayItem],
     composer: &Entity<Composer>,
     catalogue: Strings,
-    cx: &App,
+    window: &mut Window,
+    cx: &mut App,
 ) -> impl IntoElement {
     let tokens = theme(cx);
     let labels = catalogue.attachment_tray();
@@ -78,8 +90,8 @@ pub(super) fn tray(
                 .when(is_uploading, |preview| {
                     preview.opacity(COMPONENT_COMPOSER_TRAY_ITEM_UPLOADING_OPACITY)
                 })
-                .child(if is_previewable(&item.path) {
-                    img(item.path.clone())
+                .child(if let Some(preview) = &item.preview {
+                    img(ImageSource::Render(Arc::clone(preview)))
                         .size_full()
                         .object_fit(ObjectFit::Contain)
                         .into_any_element()
@@ -94,6 +106,9 @@ pub(super) fn tray(
             let status = match &item.status {
                 TrayItemStatus::Failed(reason) => {
                     let retry_target = composer.clone();
+                    let retry_id = ElementId::NamedInteger("tray-retry".into(), key);
+                    let retry_focus = remembered_focus_handle(&retry_id, window, cx);
+                    let is_retry_ring_shown = is_focus_visible(&retry_focus, window);
                     div()
                         .flex()
                         .flex_col()
@@ -113,9 +128,11 @@ pub(super) fn tray(
                         .child(
                             // The message row's Retry link: a failed file never blocks Send.
                             with_type(div(), TYPE_BODY_SM)
-                                .id(ElementId::NamedInteger("tray-retry".into(), key))
+                                .id(retry_id)
                                 .role(Role::Button)
                                 .aria_label(labels.retry(&item.file_name))
+                                .track_focus(&retry_focus)
+                                .relative()
                                 .min_h(length(SIZE_HIT_DESKTOP_MIN))
                                 .flex()
                                 .items_center()
@@ -127,7 +144,10 @@ pub(super) fn tray(
                                         composer.retry_upload(key, cx);
                                     });
                                 })
-                                .child(catalogue.messages().retry()),
+                                .child(catalogue.messages().retry())
+                                .when(is_retry_ring_shown, |retry| {
+                                    retry.child(focus_ring(RADIUS_SM, cx))
+                                }),
                         )
                 }
                 TrayItemStatus::Uploading => with_type(div(), TYPE_BODY_SM)
@@ -202,14 +222,28 @@ pub(super) fn tray(
 
 #[cfg(test)]
 mod tests {
+    use image::{ImageEncoder as _, codecs::png::PngEncoder};
+
     use super::*;
 
     #[test]
-    fn previews_only_the_pictures_gpui_draws_whatever_the_case() {
-        assert!(is_previewable(Path::new("/tmp/photo.PNG")));
-        assert!(is_previewable(Path::new("cat.webp")));
-        assert!(!is_previewable(Path::new("clip.mov")));
-        assert!(!is_previewable(Path::new("photo.avif")));
-        assert!(!is_previewable(Path::new("README")));
+    fn previews_pictures_scaled_down_and_nothing_else() {
+        let mut png = Vec::new();
+        PngEncoder::new(&mut png)
+            .write_image(
+                &vec![0; 2_000 * 2_000 * 3],
+                2_000,
+                2_000,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        let preview = decode_preview(&png).expect("a PNG previews");
+        let decoded = preview.size(0);
+        assert!(
+            decoded.width.0 <= 300 && decoded.height.0 <= 300,
+            "{decoded:?}"
+        );
+
+        assert!(decode_preview(b"%PDF-1.7 not a picture").is_none());
     }
 }

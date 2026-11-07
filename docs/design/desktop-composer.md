@@ -25,3 +25,4 @@ Enter sends, Shift+Enter writes a new line, the field grows up to half the windo
 - The reply bar has no "@ On/Off" toggle: the protocol has no field for it, and the web has none either.
 - A pasted picture (a screenshot, not a copied file) is pasted as nothing; videos upload as they are (compression is step 9).
 - Upload results go to a status node; GPUI has no polite live region yet, so screen readers may not speak them. The suggestion count is not announced, and the list is not tied to the field as an active descendant (GPUI needs the list inside the focused element for that).
+- Files are read at most up to the instance's limit (25 MiB, the server default, when `Ready` states none). The tray preview is decoded from those bytes by the picture pipeline (AVIF included), scaled to the card, and its atlas slot is freed when the file leaves the tray. Files chosen for a channel that is no longer open when they arrive are dropped.

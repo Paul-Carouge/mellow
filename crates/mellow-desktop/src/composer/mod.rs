@@ -10,7 +10,8 @@ mod editor;
 mod suggestions;
 mod tray;
 
-use std::path::PathBuf;
+use std::io::Read as _;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
@@ -51,6 +52,9 @@ use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
 
 /// Typing notices go out at most this often, as the web client sends them.
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(5);
+
+/// The most read from a file when the instance states no limit (older servers): their default.
+const UNSTATED_MAXIMUM_ATTACHMENT_BYTES: u64 = 25 * 1024 * 1024;
 
 /// The key context of the composer's root; its keys bind inside it.
 const COMPOSER_KEY_CONTEXT: &str = "Composer";
@@ -323,6 +327,8 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Never over a message being written: the text waits for the message's next edit instead.
+        let can_reopen = can_reopen && self.edit_session.is_none() && self.text(cx).is_empty();
         if let Some(text) = self.editor.give_back(message_id, text, can_reopen) {
             self.begin_edit_session(None, text, window, cx);
         }
@@ -339,7 +345,25 @@ impl Composer {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if !self.can_send_messages || !self.can_attach_files || paths.is_empty() {
+        let channel_id = self.drafts.open_channel_id();
+        self.attach_files_to(channel_id, paths, window, cx);
+    }
+
+    /// Files meant for `channel_id`, the channel open when they were chosen; dropped if another
+    /// one is open by the time they arrive, so a file never lands in a channel it was not meant for.
+    fn attach_files_to(
+        &mut self,
+        channel_id: Option<Snowflake>,
+        paths: Vec<PathBuf>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.can_send_messages
+            || !self.can_attach_files
+            || paths.is_empty()
+            || channel_id.is_none()
+            || channel_id != self.drafts.open_channel_id()
+        {
             return;
         }
         let room = self.drafts.tray_room();
@@ -362,6 +386,9 @@ impl Composer {
             let files = sizes.await;
             composer
                 .update(cx, |composer, cx| {
+                    if composer.drafts.open_channel_id() != channel_id {
+                        return;
+                    }
                     for (path, size_bytes) in files {
                         composer.add_to_tray(path, size_bytes, cx);
                     }
@@ -545,7 +572,14 @@ impl Composer {
         };
         self.has_tried_sending_too_long = false;
         self.notice = None;
-        self.drafts.clear_tray();
+        for preview in self
+            .drafts
+            .clear_tray()
+            .into_iter()
+            .filter_map(|item| item.preview)
+        {
+            let _ = window.drop_image(preview);
+        }
         self.set_text(String::new(), window, cx);
         cx.emit(ComposerEvent::Send(message));
         cx.notify();
@@ -585,7 +619,7 @@ impl Composer {
             .edit_session
             .as_ref()
             .and_then(|session| session.original_text.as_deref())
-            == Some(text.as_str());
+            .is_some_and(|original_text| original_text.trim() == text.trim());
         let is_too_long = message_characters_left(&text) < 0;
         let Some((message_id, text)) = self.editor.take_text_to_save(text, is_too_long) else {
             cx.notify();
@@ -605,7 +639,9 @@ impl Composer {
 
     // --- Attachments ------------------------------------------------------------------------------
 
-    fn open_file_picker(window: &mut Window, cx: &mut Context<Self>) {
+    fn open_file_picker(&self, window: &mut Window, cx: &mut Context<Self>) {
+        // The picker is not modal on macOS: the person may switch channels while it is open.
+        let channel_id = self.drafts.open_channel_id();
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
@@ -616,7 +652,7 @@ impl Composer {
             Ok(Ok(Some(paths))) => {
                 composer
                     .update_in(cx, |composer, window, cx| {
-                        composer.attach_files(paths, window, cx);
+                        composer.attach_files_to(channel_id, paths, window, cx);
                         composer.focus(window, cx);
                     })
                     .ok();
@@ -632,37 +668,56 @@ impl Composer {
             .file_name()
             .map(|name| name.to_string_lossy().into_owned())
             .unwrap_or_default();
-        let Some(key) = self.drafts.attach(path, file_name.clone(), size_bytes) else {
+        // Checked again here: two drops close together both saw the room left before either landed.
+        if self.drafts.tray_room() == 0 {
+            self.notice = Some(ComposerNotice::TooManyAttachments);
+            return;
+        }
+        let Some(key) = self.drafts.attach(path, file_name, size_bytes) else {
             return;
         };
-        let is_over_limit = self
-            .maximum_attachment_bytes
-            .is_some_and(|maximum| size_bytes > maximum);
-        if is_over_limit {
-            self.fail_upload(key, &ClientError::FileTooLarge, cx);
-        } else {
-            self.start_upload(key, cx);
-        }
+        self.start_upload(key, cx);
         cx.notify();
     }
 
+    /// Reads the file (never more than the limit), previews it and uploads it; Retry comes here
+    /// too, so a file refused for its size is refused again without being read.
     fn start_upload(&mut self, key: u64, cx: &mut Context<Self>) {
+        let maximum_bytes = self
+            .maximum_attachment_bytes
+            .unwrap_or(UNSTATED_MAXIMUM_ATTACHMENT_BYTES);
+        let Some(item) = self.drafts.tray_item_mut(key) else {
+            return;
+        };
+        if item.size_bytes > maximum_bytes {
+            self.fail_upload(key, &ClientError::FileTooLarge, cx);
+            return;
+        }
+        let wants_preview = item.preview.is_none();
+        let (path, file_name, channel_id) =
+            (item.path.clone(), item.file_name.clone(), item.channel_id);
         let Some(rest) = self.rest.clone() else {
             self.fail_upload(key, &ClientError::NotSignedIn, cx);
             return;
         };
-        let Some(item) = self.drafts.tray_item_mut(key) else {
-            return;
-        };
-        let (path, file_name, channel_id) =
-            (item.path.clone(), item.file_name.clone(), item.channel_id);
         let task = cx.spawn(async move |composer, cx| {
-            let bytes = cx
-                .background_spawn(async move { std::fs::read(path) })
+            let read = cx
+                .background_spawn(async move {
+                    let bytes = read_file_within(&path, maximum_bytes)?;
+                    let preview = bytes
+                        .as_deref()
+                        .filter(|_| wants_preview)
+                        .and_then(tray::decode_preview);
+                    Ok::<_, std::io::Error>((bytes, preview))
+                })
                 .await;
-            let answer = match bytes {
-                Ok(bytes) => {
-                    let upload = composer.update(cx, |_, cx| {
+            let answer = match read {
+                Ok((Some(bytes), preview)) => {
+                    let upload = composer.update(cx, |composer, cx| {
+                        if let Some(item) = composer.drafts.tray_item_mut(key) {
+                            item.preview = item.preview.take().or(preview);
+                            cx.notify();
+                        }
                         spawn_on_network_runtime(cx, async move {
                             rest.upload_attachment(channel_id, &file_name, bytes).await
                         })
@@ -675,6 +730,8 @@ impl Composer {
                         Err(_) => return,
                     }
                 }
+                // The file grew past the limit after its size was read.
+                Ok((None, _)) => Err(ClientError::FileTooLarge),
                 Err(error) => {
                     tracing::warn!(%error, "cannot read a file picked for upload");
                     Err(ClientError::UnexpectedResponse(
@@ -744,7 +801,14 @@ impl Composer {
     }
 
     fn remove_tray_item(&mut self, key: u64, window: &mut Window, cx: &mut Context<Self>) {
-        self.drafts.remove_tray_item(key);
+        if let Some(preview) = self
+            .drafts
+            .remove_tray_item(key)
+            .and_then(|item| item.preview)
+        {
+            // Only fails for a window without an atlas, which holds nothing to free.
+            let _ = window.drop_image(preview);
+        }
         // The Remove button is gone with its item.
         self.focus(window, cx);
         cx.notify();
@@ -789,6 +853,17 @@ impl Composer {
                 .update(cx, |input, cx| input.set_auto_grow(1, rows, cx));
         }
     }
+}
+
+/// The file's bytes, or `None` when it holds more than `maximum_bytes`: reads at most one byte
+/// past the limit, even from a file that grew since its size was read.
+fn read_file_within(path: &Path, maximum_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
+    let mut bytes = Vec::new();
+    std::fs::File::open(path)?
+        .take(maximum_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)?;
+    let is_within = u64::try_from(bytes.len()).is_ok_and(|length| length <= maximum_bytes);
+    Ok(is_within.then_some(bytes))
 }
 
 /// Why a file did not upload, naming it (DESIGN.md §8): the size and the instance for a file too
@@ -1046,7 +1121,7 @@ impl Render for Composer {
         };
 
         let tray = (self.can_send_messages && !self.drafts.tray().is_empty())
-            .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, cx));
+            .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
 
         // The base row is as tall as the user card; buttons sit centred on it.
         let line_height = TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height;
@@ -1073,8 +1148,8 @@ impl Render for Composer {
                                 COMPONENT_COMPOSER_ICON_SIZE,
                             )
                             .on_click(move |window, cx| {
-                                attach.update(cx, |_, cx| {
-                                    Self::open_file_picker(window, cx);
+                                attach.update(cx, |composer, cx| {
+                                    composer.open_file_picker(window, cx);
                                 });
                             }),
                         ),

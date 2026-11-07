@@ -4,9 +4,14 @@ use gpui::{
     AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
     Subscription, TestAppContext, VisualTestContext, Window, WindowAppearance, div,
 };
+use std::path::PathBuf;
+
 use mellow_protocol::{PublicUser, Snowflake};
 
-use super::{Cancelled, ComposedMessage, Composer, ComposerEvent, ReplyTarget, bind_composer_keys};
+use super::{
+    Cancelled, ComposedMessage, Composer, ComposerEvent, MAXIMUM_ATTACHMENTS_PER_MESSAGE,
+    ReplyTarget, TrayItemStatus, bind_composer_keys, read_file_within,
+};
 use crate::components::bind_tab_navigation;
 use crate::theme::ActiveTheme;
 
@@ -288,4 +293,183 @@ fn a_message_over_the_limit_is_not_sent(cx: &mut TestAppContext) {
     cx.simulate_keystrokes("enter");
     assert_eq!(without_typing(take_events(&harness, cx)), []);
     assert!(composer.read_with(cx, |composer, _| composer.has_tried_sending_too_long));
+}
+
+#[gpui::test]
+fn an_unchanged_edit_closes_without_saving_even_with_spaces_added(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let message_id = Snowflake::from_raw(42);
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.start_editing(message_id, "hello", window, cx);
+        });
+    });
+    cx.simulate_input("  ");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        take_events(&harness, cx),
+        [ComposerEvent::Cancel(Cancelled::Editing { message_id })]
+    );
+}
+
+#[gpui::test]
+fn a_refused_edit_waits_instead_of_taking_over_a_message_being_written(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let message_id = Snowflake::from_raw(42);
+    cx.simulate_input("next message");
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.give_back_refused_edit(message_id, "edited".into(), true, window, cx);
+        });
+    });
+    assert_eq!(text(&harness, cx), "next message");
+    assert!(composer.read_with(cx, |composer, _| composer.edit_session.is_none()));
+
+    // The typed edit comes back with the message's next edit.
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.start_editing(message_id, "original", window, cx);
+        });
+    });
+    assert_eq!(text(&harness, cx), "edited");
+}
+
+fn temporary_file(directory: &tempfile::TempDir, name: &str, byte_count: usize) -> PathBuf {
+    let path = directory.path().join(name);
+    std::fs::write(&path, vec![b'x'; byte_count]).unwrap();
+    path
+}
+
+fn tray_statuses(composer: &Entity<Composer>, cx: &mut VisualTestContext) -> Vec<TrayItemStatus> {
+    composer.read_with(cx, |composer, _| {
+        composer
+            .drafts
+            .tray()
+            .iter()
+            .map(|item| item.status.clone())
+            .collect()
+    })
+}
+
+fn attach(composer: &Entity<Composer>, paths: Vec<PathBuf>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| composer.attach_files(paths, window, cx));
+    });
+}
+
+#[gpui::test]
+fn a_file_over_the_limit_fails_before_upload_and_retry_refuses_it_again(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.set_uploads(None, Some(4), cx)));
+
+    attach(
+        &composer,
+        vec![temporary_file(&directory, "big.bin", 5)],
+        cx,
+    );
+    cx.run_until_parked();
+    let statuses = tray_statuses(&composer, cx);
+    assert!(
+        matches!(&statuses[..], [TrayItemStatus::Failed(sentence)] if sentence.contains("big.bin") && sentence.contains("5 bytes, more than")),
+        "{statuses:?}"
+    );
+
+    let key = composer.read_with(cx, |composer, _| composer.drafts.tray()[0].key);
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.retry_upload(key, cx)));
+    cx.run_until_parked();
+    assert_eq!(tray_statuses(&composer, cx), statuses);
+
+    // A failed file is never sent and does not block the text.
+    cx.simulate_input("hi");
+    cx.simulate_keystrokes("enter");
+    let sent = without_typing(take_events(&harness, cx));
+    assert!(
+        matches!(&sent[..], [ComposerEvent::Send(message)] if message.attachments.is_empty()),
+        "{sent:?}"
+    );
+}
+
+#[gpui::test]
+fn send_waits_for_uploads_and_removing_a_file_stops_its_upload(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let directory = tempfile::tempdir().unwrap();
+    cx.update(|_, cx| {
+        composer.update(cx, |composer, cx| composer.set_uploads(None, Some(100), cx));
+    });
+    attach(&composer, vec![temporary_file(&directory, "a.txt", 1)], cx);
+    cx.run_until_parked();
+    let key = composer.read_with(cx, |composer, _| composer.drafts.tray()[0].key);
+    // Holds the file as uploading, as a slow upload would.
+    cx.update(|_, cx| {
+        composer.update(cx, |composer, _| {
+            composer.drafts.restart_upload(key);
+        });
+    });
+    cx.simulate_input("hi");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(without_typing(take_events(&harness, cx)), []);
+    assert!(composer.read_with(cx, |composer, _| composer.notice
+        == Some(super::ComposerNotice::UploadsRunning)));
+
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.remove_tray_item(key, window, cx);
+        });
+    });
+    assert_eq!(tray_statuses(&composer, cx), []);
+    cx.simulate_keystrokes("enter");
+    assert!(matches!(
+        &without_typing(take_events(&harness, cx))[..],
+        [ComposerEvent::Send(_)]
+    ));
+}
+
+#[gpui::test]
+fn the_tray_never_holds_more_than_ten_files_even_from_two_quick_drops(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let directory = tempfile::tempdir().unwrap();
+    let paths: Vec<PathBuf> = (0..6)
+        .map(|index| temporary_file(&directory, &format!("{index}.txt"), 1))
+        .collect();
+
+    attach(&composer, paths.clone(), cx);
+    attach(&composer, paths, cx);
+    cx.run_until_parked();
+
+    assert_eq!(
+        tray_statuses(&composer, cx).len(),
+        MAXIMUM_ATTACHMENTS_PER_MESSAGE
+    );
+    assert!(composer.read_with(cx, |composer, _| {
+        composer.notice == Some(super::ComposerNotice::TooManyAttachments)
+    }));
+}
+
+#[gpui::test]
+fn files_chosen_for_a_channel_never_land_in_the_next_one(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let directory = tempfile::tempdir().unwrap();
+    attach(&composer, vec![temporary_file(&directory, "a.txt", 1)], cx);
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_channel(Some(channel(2)), "Message".into(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(tray_statuses(&composer, cx), []);
+}
+
+#[test]
+fn reads_a_file_only_up_to_the_limit() {
+    let directory = tempfile::tempdir().unwrap();
+    let path = temporary_file(&directory, "five.bin", 5);
+    assert_eq!(read_file_within(&path, 5).unwrap(), Some(vec![b'x'; 5]));
+    assert_eq!(read_file_within(&path, 4).unwrap(), None);
 }
