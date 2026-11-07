@@ -417,8 +417,16 @@ impl ConversationView {
         let permissions = state.my_channel_permissions(channel_id);
         let has =
             |permission: Permissions| permissions.is_none_or(|bits| bits.contains(permission));
-        let is_conversation = state.direct_message_channel(channel_id).is_some();
-        let can_send = has(Permissions::SEND_MESSAGES);
+        let conversation = state.direct_message_channel(channel_id);
+        let is_conversation = conversation.is_some();
+        let current_user_id = state.current_user().map(|user| user.id);
+        let is_locked_by_block = conversation.is_some_and(|conversation| {
+            rules::blocked_recipient_of(conversation, current_user_id, |user_id| {
+                state.is_blocked(user_id)
+            })
+            .is_some()
+        });
+        let can_send = has(Permissions::SEND_MESSAGES) && !is_locked_by_block;
         let can_read_history = has(Permissions::READ_MESSAGE_HISTORY);
         let can_manage_messages =
             permissions.is_some_and(|bits| bits.contains(Permissions::MANAGE_MESSAGES));

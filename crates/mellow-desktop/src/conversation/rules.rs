@@ -4,7 +4,29 @@
 
 use std::ops::Range;
 
+use mellow_protocol::{DirectMessageChannel, PublicUser, Snowflake};
+
 use crate::i18n::Strings;
+
+// ---- Who may write ----
+
+/// Who locks the composer: the other person of a one-to-one conversation the reader blocked
+/// (ADR-0025). A group never locks, whatever the relationships in it (ADR-0026): their messages
+/// fold. The web's `blockedRecipientOf`.
+pub fn blocked_recipient_of(
+    conversation: &DirectMessageChannel,
+    current_user_id: Option<Snowflake>,
+    is_blocked: impl Fn(Snowflake) -> bool,
+) -> Option<&PublicUser> {
+    if conversation.owner_id.is_some() {
+        return None;
+    }
+    conversation
+        .recipients
+        .iter()
+        .filter(|recipient| Some(recipient.id) != current_user_id)
+        .find(|recipient| is_blocked(recipient.id))
+}
 
 // ---- Message actions ----
 
@@ -249,6 +271,48 @@ pub fn should_load_older_history(
 mod tests {
     use super::*;
     use crate::i18n::Language;
+
+    fn conversation_with(recipients: &[PublicUser], owner_id: Option<u64>) -> DirectMessageChannel {
+        DirectMessageChannel {
+            id: Snowflake::from_raw(70),
+            recipients: recipients.to_vec(),
+            last_message_id: None,
+            owner_id: owner_id.map(Snowflake::from_raw),
+            name: String::new(),
+        }
+    }
+
+    fn someone(id: u64, name: &str) -> PublicUser {
+        PublicUser {
+            id: Snowflake::from_raw(id),
+            username: name.to_lowercase(),
+            display_name: name.to_owned(),
+            avatar: None,
+            banner: None,
+        }
+    }
+
+    #[test]
+    fn a_one_to_one_conversation_with_someone_you_blocked_is_locked() {
+        let me = Some(Snowflake::from_raw(1));
+        let (ana, bob) = (someone(30, "Ana"), someone(12, "Bob"));
+        let is_blocked = |user_id: Snowflake| user_id == bob.id;
+        let with_bob = conversation_with(std::slice::from_ref(&bob), None);
+        assert_eq!(blocked_recipient_of(&with_bob, me, is_blocked), Some(&bob));
+        let with_ana = conversation_with(std::slice::from_ref(&ana), None);
+        assert_eq!(blocked_recipient_of(&with_ana, me, is_blocked), None);
+    }
+
+    #[test]
+    fn a_group_never_locks_even_with_someone_you_blocked_in_it() {
+        let (ana, bob) = (someone(30, "Ana"), someone(12, "Bob"));
+        let group = conversation_with(&[ana, bob.clone()], Some(1));
+        let is_blocked = |user_id: Snowflake| user_id == bob.id;
+        assert_eq!(
+            blocked_recipient_of(&group, Some(Snowflake::from_raw(1)), is_blocked),
+            None
+        );
+    }
 
     const OTHERS_TEXT: MessageFacts = MessageFacts {
         is_own: false,
