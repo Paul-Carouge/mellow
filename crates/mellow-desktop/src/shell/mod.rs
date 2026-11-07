@@ -628,7 +628,10 @@ impl DuskShell {
             return;
         }
         let window_width = window_width_at_default_zoom(window);
-        let layout = self.column_layout(window_width, drag.column == ResizableColumn::Members, cx);
+        let is_members_docked =
+            ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx))
+                == ShellLayout::NavigatorSheetAndSideSheet;
+        let layout = self.column_layout(window_width, is_members_docked, cx);
         let bounds = match drag.column {
             ResizableColumn::Channels => layout.channels_bounds,
             ResizableColumn::Members => layout.members_bounds,

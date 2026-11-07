@@ -305,3 +305,41 @@ fn a_drawer_put_away_by_a_wider_window_leaves_focus_in_the_shell(cx: &mut TestAp
     press(cx, secondary("k"));
     assert!(shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
 }
+
+#[gpui::test]
+fn dragging_the_channel_edge_beside_docked_members_saves_the_width_drawn(cx: &mut TestAppContext) {
+    let window_width = 1100.0;
+    let (shell, cx) = open_shell(cx, sample_state(), window_width);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            if !shell.is_member_sheet_docked_open(cx) {
+                shell.toggle_member_sheet(window, cx);
+            }
+        });
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("side-sheet").is_some());
+    let start_x = 300.0;
+    shell.update(cx, |shell, _| {
+        shell.column_drag = Some(ColumnDrag {
+            column: ResizableColumn::Channels,
+            start_x,
+            start_width: SIZE_SIDEBAR_WIDTH,
+            width: SIZE_SIDEBAR_WIDTH,
+        });
+    });
+    cx.simulate_mouse_move(
+        gpui::point(px(start_x + 600.0), px(400.0)),
+        Some(gpui::MouseButton::Left),
+        gpui::Modifiers::none(),
+    );
+    cx.run_until_parked();
+    let (dragged, drawn) = cx.update(|window, cx| {
+        let shell = shell.read(cx);
+        let drawn = shell
+            .column_layout(window_width_at_default_zoom(window), true, cx)
+            .channels;
+        (shell.column_drag.map(|drag| drag.width), drawn)
+    });
+    assert_eq!(dragged, Some(drawn));
+}
