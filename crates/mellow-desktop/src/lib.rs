@@ -2,6 +2,11 @@
 //! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
 //! network runs on, the session and its sign-in screens, and the Dusk shell.
 
+// Upstream cause: macOS ld warns once the unit-test binary (which links the whole server for the
+// sign-in tests) holds more than 16 MB of `__eh_frame`, which its compact unwind table cannot
+// encode; only the speed of unwinding a panic in a test is affected.
+#![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
+
 pub mod column_widths;
 pub mod components;
 pub mod connection_banner;
