@@ -665,7 +665,8 @@ impl Session {
         }
     }
 
-    /// Called as the app quits. A stored session stays open for the next launch. One the secret
+    /// Called as the app quits. Read positions not sent yet go out first. A stored session stays
+    /// open for the next launch. One the secret
     /// store did not take is revoked, since nobody could use it again, and so is one whose sign-out
     /// was still in flight: the runtime drops unfinished tasks at exit, so that revocation might
     /// never leave, and the next launch would sign the user back in. A revoked session is also
@@ -674,12 +675,30 @@ impl Session {
     fn end_connection_before_exit(&mut self, cx: &App) {
         let pending_forget = self.stored_session_forget_in_flight.take();
         let is_signing_out = self.is_signing_out;
+        // Reads of the last second would otherwise stay unread on the user's other devices.
+        let read_states = self.state.take_read_states_to_send();
+        let acknowledge = self
+            .rest_client()
+            .cloned()
+            .filter(|_| !read_states.is_empty())
+            .map(|rest| {
+                spawn_on_network_runtime(cx, async move {
+                    for read_state in read_states {
+                        let sent = rest
+                            .acknowledge(read_state.channel_id, read_state.last_read_message_id)
+                            .await;
+                        if let Err(error) = sent {
+                            tracing::warn!(%error, "could not send a read position before exiting");
+                        }
+                    }
+                })
+            });
         let session_to_revoke = self
             .connection
             .take()
             .filter(|connection| is_signing_out || !connection.is_session_stored)
             .map(|connection| connection.rest);
-        if session_to_revoke.is_none() && pending_forget.is_none() {
+        if session_to_revoke.is_none() && pending_forget.is_none() && acknowledge.is_none() {
             return;
         }
         let is_kept_on_this_device = self.is_kept_on_this_device;
@@ -699,6 +718,9 @@ impl Session {
             })
         });
         let exit_work = async move {
+            if let Some(acknowledge) = acknowledge {
+                let _ = acknowledge.await;
+            }
             if let Some(pending_forget) = pending_forget {
                 let _ = pending_forget.await;
             }
