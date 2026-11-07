@@ -97,6 +97,13 @@ impl MessageBodyCache {
         roles: &HashMap<Snowflake, Role, S>,
         strings: Strings,
     ) -> SharedString {
+        // Their labels change without `edited_at`, and wording them costs nothing.
+        if original.poll.is_some()
+            || original.checklist.is_some()
+            || original.progress_bar.is_some()
+        {
+            return message_summary(original, roles, strings).into();
+        }
         let key = (original.id, original.edited_at_unix_milliseconds);
         if let Some(summary) = self.summaries.get(&key) {
             return summary.clone();
@@ -230,6 +237,28 @@ mod tests {
         assert_eq!(
             message_summary(&message, &HashMap::new(), strings),
             strings.messages().attachment_count(1)
+        );
+    }
+
+    #[test]
+    fn a_quoted_progress_bar_shows_its_latest_label() {
+        let strings = Strings::new(Language::English);
+        let mut message: Message = serde_json::from_value(serde_json::json!({
+            "id": "10", "channel_id": "2",
+            "author": {"id": "3", "username": "ana", "display_name": "Ana"},
+            "content": "", "reply_to_id": null, "edited_at_unix_milliseconds": null,
+            "progress_bar": {"label": "Upload", "value": 1, "maximum": 4, "revision": 1}
+        }))
+        .expect("a valid message");
+        let mut cache = MessageBodyCache::new();
+        let roles: HashMap<Snowflake, Role> = HashMap::new();
+        cache.summary(&message, &roles, strings);
+        if let Some(progress_bar) = &mut message.progress_bar {
+            progress_bar.label = "Encode".into();
+        }
+        assert_eq!(
+            cache.summary(&message, &roles, strings).as_ref(),
+            strings.progress_bars().summary("Encode")
         );
     }
 }
