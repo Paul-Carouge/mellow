@@ -459,3 +459,91 @@ fn failed_messages_are_sent_again_when_the_gateway_comes_back(cx: &mut TestAppCo
     });
     harness.stop();
 }
+
+#[gpui::test]
+fn a_signed_in_reader_opens_their_channel_writes_and_sends(cx: &mut TestAppContext) {
+    let (harness, cx) = start(cx);
+    cx.update(|window, cx| {
+        crate::components::bind_tab_navigation(cx);
+        crate::composer::bind_composer_keys(cx);
+        // Only a window in front marks what it shows as read.
+        window.activate_window();
+    });
+    let rest = harness.runtime.block_on(async {
+        let mut rest = RestClient::new(harness.instance.address.clone()).unwrap();
+        rest.register(&RegisterRequest {
+            username: "grace".into(),
+            display_name: None,
+            email: "grace@example.org".into(),
+            password: PASSWORD.into(),
+            device_name: "test".into(),
+        })
+        .await
+        .unwrap();
+        rest.create_guild("Home").await.unwrap();
+        rest
+    });
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(rest, cx));
+    let conversation = |cx: &mut VisualTestContext| {
+        harness.main_window.read_with(cx, |main_window, cx| {
+            main_window
+                .shell()
+                .map(|shell| shell.read(cx).conversation().clone())
+        })
+    };
+    // The shell opens the server's first text channel, whose history comes from the instance.
+    wait_until(cx, |cx| {
+        conversation(cx)
+            .is_some_and(|view| view.read_with(cx, |view, _| view.open_channel_id().is_some()))
+    });
+    let view = conversation(cx).unwrap();
+    let channel_id = view
+        .read_with(cx, |view, _| view.open_channel_id())
+        .unwrap();
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            !session.state().has_older_history(channel_id)
+        })
+    });
+
+    let composer = view.read_with(cx, |view, _| view.composer().clone());
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.type_text("hello from the desktop", window, cx);
+        });
+    });
+    cx.simulate_keystrokes("enter");
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            let state = session.state();
+            state.pending_messages(channel_id).next().is_none()
+                && state
+                    .messages(channel_id)
+                    .iter()
+                    .any(|message| message.content == "hello from the desktop")
+        })
+    });
+
+    // Shown at the latest message, the channel is read, and the position goes out once.
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session.is_read_state_send_scheduled()
+                || session.state().last_read_message_id(channel_id)
+                    == session
+                        .state()
+                        .messages(channel_id)
+                        .last()
+                        .map(|message| message.id)
+        })
+    });
+    cx.executor()
+        .advance_clock(crate::session::READ_STATE_SEND_DELAY);
+    wait_until(cx, |cx| {
+        harness
+            .session
+            .read_with(cx, |session, _| !session.is_read_state_send_scheduled())
+    });
+    harness.stop();
+}

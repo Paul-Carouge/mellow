@@ -34,6 +34,7 @@ use crate::column_widths::{
 };
 use crate::components::{ContextMenu, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
+use crate::conversation::ConversationView;
 use crate::local_widgets::error_line;
 use crate::navigation::{Direction, Navigation, Place};
 use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
@@ -173,6 +174,8 @@ struct ColumnLayout {
 pub struct DuskShell {
     session: Entity<Session>,
     banner: Entity<ConnectionBanner>,
+    /// The message list and composer of the open channel or conversation.
+    conversation: Entity<ConversationView>,
     navigation: Navigation,
     /// Kept while the shell lives, so collapsing survives the drawer closing (as on the web).
     collapsed_category_ids: HashSet<Snowflake>,
@@ -210,6 +213,7 @@ impl std::fmt::Debug for DuskShell {
 impl DuskShell {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
+        let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
         let subscriptions = vec![
             cx.subscribe(&session, |shell, _, changes: &StateChanged, cx| {
                 shell.follow_state(&changes.0, cx);
@@ -224,6 +228,7 @@ impl DuskShell {
         let mut shell = Self {
             session,
             banner,
+            conversation,
             navigation: Navigation::default(),
             collapsed_category_ids: HashSet::new(),
             is_navigation_drawer_open: false,
@@ -260,6 +265,12 @@ impl DuskShell {
         self.is_member_overlay_open
     }
 
+    /// The open channel's or conversation's messages and composer.
+    #[must_use]
+    pub fn conversation(&self) -> &Entity<ConversationView> {
+        &self.conversation
+    }
+
     #[must_use]
     pub fn is_quick_switcher_open(&self) -> bool {
         self.quick_switcher.is_some()
@@ -281,6 +292,7 @@ impl DuskShell {
         } else if changes.contains(&StateChange::Guilds) {
             self.load_members_of_open_server(cx);
         }
+        self.show_place_in_conversation(cx);
         cx.notify();
     }
 
@@ -299,7 +311,15 @@ impl DuskShell {
             });
         }
         self.load_members_of_open_server(cx);
+        self.show_place_in_conversation(cx);
         cx.notify();
+    }
+
+    /// The conversation view follows the place, with its names in the current language.
+    fn show_place_in_conversation(&mut self, cx: &mut Context<Self>) {
+        let place = self.open_conversation(cx);
+        self.conversation
+            .update(cx, |conversation, cx| conversation.set_place(place, cx));
     }
 
     fn load_members_of_open_server(&mut self, cx: &mut Context<Self>) {
@@ -533,8 +553,13 @@ impl DuskShell {
             } => {
                 self.quick_switcher = None;
                 self.open_place(*guild_id, *channel_id, window, cx);
-                // After a result, the conversation takes focus rather than the opener.
+                // After a result, the conversation's composer takes focus rather than the opener.
                 window.focus(&self.root_focus, cx);
+                if self.navigation.selected_channel_id().is_some() {
+                    self.conversation.update(cx, |conversation, cx| {
+                        conversation.focus_composer(window, cx);
+                    });
+                }
             }
             QuickSwitcherEvent::OpenConversationWith { user_id, failure } => {
                 let switcher = switcher.downgrade();
@@ -662,9 +687,7 @@ impl DuskShell {
 
     /// Esc closes the topmost layer the shell owns (menus, dialogs and the switcher handle their
     /// own first), then a docked member sheet that has focus. Esc during a drag puts the
-    /// remembered width back.
-    /// shortcut: Esc does not mark the channel as read yet (DESIGN.md §7.2); that comes with the
-    /// message list.
+    /// remembered width back. Esc in the composer marks the channel read (the conversation view).
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key != "escape" || event.keystroke.modifiers.modified() {
             return;

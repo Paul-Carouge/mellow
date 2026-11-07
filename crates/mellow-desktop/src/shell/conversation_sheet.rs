@@ -1,6 +1,7 @@
 //! The conversation sheet (`ChatPane.svelte`, ADR-0022 §2): the chat header (the place's name, a
-//! channel's topic, "Go to…" and the member sheet toggle), then [`DuskShell::conversation_slot`],
-//! where the message list and the composer go.
+//! channel's topic, "Go to…", the pinned messages and the member sheet toggle), then
+//! [`DuskShell::conversation_slot`]: the conversation view of the open channel or conversation, or
+//! the sentence a place without one opens with.
 
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
@@ -8,9 +9,12 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 
+use mellow_client_core::shared_logic::format::display_name;
+
 use super::channel_sidebar::{can_send_in, conversation_display_name};
 use super::{DuskShell, ShellLayout};
 use crate::components::{IconButton, icon, with_type};
+use crate::conversation::OpenConversation;
 use crate::i18n::strings;
 use crate::navigation::Place;
 use crate::theme::icons::IconName;
@@ -38,6 +42,73 @@ pub(super) struct SheetSubject {
 }
 
 impl DuskShell {
+    /// The open channel or conversation as the conversation view names it.
+    pub(super) fn open_conversation(&self, cx: &gpui::App) -> Option<OpenConversation> {
+        let strings = strings(cx);
+        let state = self.session.read(cx).state();
+        let current_user_id = state.current_user().map(|user| user.id);
+        match self.navigation.place()? {
+            Place::Server {
+                guild_id,
+                channel_id: Some(channel_id),
+            } => {
+                let channel = state
+                    .guild(guild_id)?
+                    .channels
+                    .iter()
+                    .find(|channel| channel.id == channel_id)?;
+                Some(OpenConversation {
+                    channel_id,
+                    guild_id: Some(guild_id),
+                    label: format!("#{}", channel.name),
+                    composer_label: strings.chat().composer_in_channel(&channel.name),
+                    hero_icon: IconName::Hash,
+                    hero_title: strings.chat().welcome_to_channel(&channel.name),
+                    hero_sentence: strings.chat().channel_start(&channel.name),
+                    topic: channel.topic.trim().to_owned(),
+                })
+            }
+            Place::Home {
+                conversation_id: Some(conversation_id),
+            } => {
+                let conversation = state.direct_message_channel(conversation_id)?;
+                let name = conversation_display_name(conversation, current_user_id, strings);
+                let is_group = conversation.owner_id.is_some();
+                let participant_names: Vec<&str> = conversation
+                    .recipients
+                    .iter()
+                    .filter(|recipient| Some(recipient.id) != current_user_id)
+                    .map(display_name)
+                    .collect();
+                Some(OpenConversation {
+                    channel_id: conversation_id,
+                    guild_id: None,
+                    label: name.clone(),
+                    composer_label: if is_group {
+                        strings.chat().composer_to_group(&name)
+                    } else {
+                        strings.chat().composer_to_person(&name)
+                    },
+                    hero_icon: if is_group {
+                        IconName::Users
+                    } else {
+                        IconName::At
+                    },
+                    hero_sentence: if is_group {
+                        strings
+                            .chat()
+                            .group_start(&strings.groups().participant_names(&participant_names))
+                    } else {
+                        strings.chat().conversation_start(&name)
+                    },
+                    hero_title: name,
+                    topic: String::new(),
+                })
+            }
+            _ => None,
+        }
+    }
+
     pub(super) fn sheet_subject(&self, cx: &gpui::App) -> SheetSubject {
         let strings = strings(cx);
         let state = self.session.read(cx).state();
@@ -145,7 +216,11 @@ impl DuskShell {
         let is_full_bleed = layout == ShellLayout::SheetAlone;
         let subject = self.sheet_subject(cx);
         let header = self.render_chat_header(&subject, is_full_bleed, window, cx);
-        let slot = Self::conversation_slot(&subject, cx);
+        let slot = if self.navigation.selected_channel_id().is_some() {
+            self.conversation.clone().into_any_element()
+        } else {
+            Self::conversation_slot(&subject, cx)
+        };
         div()
             .debug_selector(|| "sheet".to_owned())
             .id("sheet")
@@ -267,6 +342,23 @@ impl DuskShell {
                     entity.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
                 })
             })
+            .when(self.navigation.selected_channel_id().is_some(), |header| {
+                let conversation = self.conversation.clone();
+                let is_open = conversation.read(cx).is_pins_panel_open();
+                header.child(
+                    header_button(
+                        "pinned-messages",
+                        IconName::PushPin,
+                        strings.pins().pinned_messages(),
+                    )
+                    .toggled(is_open)
+                    .on_click(move |window, cx| {
+                        conversation.update(cx, |conversation, cx| {
+                            conversation.toggle_pins_panel(window, cx);
+                        });
+                    }),
+                )
+            })
             .when(subject.has_member_sheet, |header| {
                 header.child(
                     header_button(
@@ -282,9 +374,9 @@ impl DuskShell {
             })
     }
 
-    /// The slot the message list and the composer fill (M3 step 3): for now the sentence an
-    /// empty conversation opens with, and the composer's frame, so the dock lines up with the user
-    /// card (ADR-0022 §4). Replace the body and the frame; keep the slot's flex sizing.
+    /// A place without a conversation (loading, a server without channels, the Friends space):
+    /// the sentence it opens with, and the composer's frame, so the dock lines up with the user
+    /// card (ADR-0022 §4).
     fn conversation_slot(subject: &SheetSubject, cx: &gpui::App) -> AnyElement {
         let tokens = theme(cx);
         let composer_frame = div()

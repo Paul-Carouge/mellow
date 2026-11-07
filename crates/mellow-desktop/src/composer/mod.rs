@@ -334,6 +334,50 @@ impl Composer {
         }
     }
 
+    /// A send the instance refused for good: its text comes back to the field when the field is
+    /// empty and still open on `channel_id`, and false leaves it with the caller (the outbox keeps
+    /// it as failed), so a message being written is never replaced.
+    pub fn give_back_refused_send(
+        &mut self,
+        channel_id: Snowflake,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let is_free = self.drafts.open_channel_id() == Some(channel_id)
+            && self.edit_session.is_none()
+            && self.text(cx).is_empty()
+            && self.can_send_messages;
+        if is_free {
+            self.set_text(text, window, cx);
+            self.focus(window, cx);
+            cx.notify();
+        }
+        is_free
+    }
+
+    /// A printable key pressed in the message list: the field takes focus and the text, as the
+    /// web lets typing anywhere in the chat go to the composer.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.can_send_messages {
+            return;
+        }
+        self.input.update(cx, |input, cx| {
+            input.focus(window, cx);
+            input.insert(text.to_owned(), window, cx);
+        });
+        self.note_typing(cx);
+        self.suggestions_read_at = None;
+        self.refresh_suggestions(cx);
+        cx.notify();
+    }
+
+    /// The field's text, for the conversation view's tests.
+    #[cfg(test)]
+    pub(crate) fn text_in_field(&self, cx: &App) -> String {
+        self.text(cx)
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
