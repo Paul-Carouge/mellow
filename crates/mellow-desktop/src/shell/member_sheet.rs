@@ -5,9 +5,8 @@
 //! M3 step 4, so rows are read, not pressed, until then.
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
+    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::member_order::{
@@ -111,16 +110,26 @@ impl DuskShell {
                     let groups = member_list_groups(&sorted, &guild.roles, is_online);
                     let mut rows = Vec::new();
                     for group in groups {
-                        let heading = match group.kind {
-                            MemberListGroupKind::Role(role) => role.name.clone(),
-                            MemberListGroupKind::Online => strings.common().online().to_owned(),
-                            MemberListGroupKind::Offline => strings.common().offline().to_owned(),
+                        // The id follows the group, not its heading: two roles may share a name.
+                        let (heading, id) = match group.kind {
+                            MemberListGroupKind::Role(role) => (
+                                role.name.clone(),
+                                ElementId::NamedInteger("member-group-role".into(), role.id.raw()),
+                            ),
+                            MemberListGroupKind::Online => (
+                                strings.common().online().to_owned(),
+                                ElementId::from("member-group-online"),
+                            ),
+                            MemberListGroupKind::Offline => (
+                                strings.common().offline().to_owned(),
+                                ElementId::from("member-group-offline"),
+                            ),
                         };
                         let count = group.members.len();
                         // Sentence case, the count as its own number (ADR-0022 §3).
                         rows.push(
                             with_type(div(), TYPE_CATEGORY)
-                                .id(SharedString::from(format!("member-group-{heading}")))
+                                .id(id)
                                 .role(Role::Heading)
                                 .aria_level(3)
                                 .aria_label(strings.members().group_label(
