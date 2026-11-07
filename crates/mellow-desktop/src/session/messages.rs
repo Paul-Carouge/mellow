@@ -72,7 +72,7 @@ impl ConversationRequests {
 }
 
 impl Session {
-    fn rest_or_none(&self) -> Option<mellow_client_core::RestClient> {
+    fn cloned_rest_client(&self) -> Option<mellow_client_core::RestClient> {
         self.rest_client().cloned()
     }
 
@@ -124,7 +124,7 @@ impl Session {
 
     /// Asks for the newest page once per `Ready` (the web's `ensureHistoryLoaded`).
     pub fn ensure_history_loaded(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let requests = &mut self.conversation;
@@ -164,7 +164,7 @@ impl Session {
     /// The page before the oldest cached message, one request at a time; never retried by
     /// itself, or scrolling at the top would ask on every frame (the web's `loadOlderMessages`).
     pub fn load_older_messages(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let requests = &self.conversation;
@@ -291,7 +291,7 @@ impl Session {
     /// delay ended). A failure worth retrying keeps the channel for the next send.
     pub fn send_read_states(&mut self, cx: &mut Context<Self>) {
         self.conversation.read_state_send = None;
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         for read_state in self.state.take_read_states_to_send() {
@@ -331,7 +331,7 @@ impl Session {
         attachments: Vec<Attachment>,
         cx: &mut Context<Self>,
     ) -> Result<(), ClientError> {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return Err(ClientError::NotSignedIn);
         };
         let nonce = generate_message_nonce()?;
@@ -390,7 +390,7 @@ impl Session {
 
     /// A failed message's Retry: sent again with the same nonce, to the channel it was meant for.
     pub fn retry_message(&mut self, nonce: &str, cx: &mut Context<Self>) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let Some((channel_id, request)) = self.state.retry_pending_message(nonce) else {
@@ -415,7 +415,7 @@ impl Session {
 
     /// The composer's typing notice, throttled by the composer.
     pub fn start_typing(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         self.run_request(
@@ -441,7 +441,7 @@ impl Session {
         on_failed: impl FnOnce(String, &mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let request = EditMessageRequest { content };
@@ -466,7 +466,7 @@ impl Session {
         on_failed: impl FnOnce(String, &mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let request = async move {
@@ -514,7 +514,7 @@ impl Session {
         on_failed: impl FnOnce(String, &mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let Some((toggle, change)) = self
@@ -587,7 +587,7 @@ impl Session {
         on_failed: impl FnOnce(String, &mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         let (channel_id, message_id) = (message.channel_id, message.id);
@@ -615,7 +615,7 @@ impl Session {
 
     /// Asks for the channel's pins unless loaded or on their way; `force` is "Try again".
     pub fn load_pins(&mut self, channel_id: Snowflake, force: bool, cx: &mut Context<Self>) {
-        let Some(rest) = self.rest_or_none() else {
+        let Some(rest) = self.cloned_rest_client() else {
             return;
         };
         if !self.state.begin_loading_pins(channel_id, force) {

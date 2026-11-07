@@ -86,7 +86,7 @@ enum Confirmation {
 
 /// The words, people and roles messages are read against, rebuilt when they change.
 #[derive(Default)]
-struct Sources {
+struct MessageMarkupSources {
     generation: u64,
     people: MentionablePeople,
     custom_emojis: HashMap<Snowflake, CustomEmoji>,
@@ -99,9 +99,9 @@ struct Sources {
 pub struct ConversationView {
     session: Entity<Session>,
     composer: Entity<Composer>,
-    open: Option<OpenConversation>,
+    open_conversation: Option<OpenConversation>,
     /// Asked by the shell; applied by the next render.
-    wanted: Option<OpenConversation>,
+    requested_place: Option<OpenConversation>,
     list: ListState,
     entries: Vec<Entry>,
     /// Each entry's key and version, to splice and remeasure only what changed.
@@ -110,7 +110,7 @@ pub struct ConversationView {
     /// The open channel's loading state the rows were last built for.
     shown_history_status: Option<HistoryStatus>,
     are_sources_stale: bool,
-    sources: Sources,
+    sources: MessageMarkupSources,
     body_cache: MessageBodyCache,
     visit: Visit,
     /// The message row under the pointer: its hover bar shows.
@@ -140,7 +140,10 @@ impl std::fmt::Debug for ConversationView {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("ConversationView")
-            .field("open", &self.open.as_ref().map(|open| open.channel_id))
+            .field(
+                "open",
+                &self.open_conversation.as_ref().map(|open| open.channel_id),
+            )
             .field("entries", &self.entries.len())
             .finish_non_exhaustive()
     }
@@ -182,15 +185,15 @@ impl ConversationView {
         Self {
             session,
             composer,
-            open: None,
-            wanted: None,
+            open_conversation: None,
+            requested_place: None,
             list,
             entries: Vec::new(),
             entry_versions: Vec::new(),
             are_rows_stale: true,
             shown_history_status: None,
             are_sources_stale: true,
-            sources: Sources::default(),
+            sources: MessageMarkupSources::default(),
             body_cache: MessageBodyCache::new(),
             visit: Visit::default(),
             hovered_message_id: None,
@@ -212,7 +215,7 @@ impl ConversationView {
 
     #[must_use]
     pub fn open_channel_id(&self) -> Option<Snowflake> {
-        self.open.as_ref().map(|open| open.channel_id)
+        self.open_conversation.as_ref().map(|open| open.channel_id)
     }
 
     #[must_use]
@@ -226,9 +229,9 @@ impl ConversationView {
     }
 
     /// The place the shell shows; `None` when no channel or conversation is open.
-    pub fn set_place(&mut self, wanted: Option<OpenConversation>, cx: &mut Context<Self>) {
-        if self.wanted != wanted {
-            self.wanted = wanted;
+    pub fn set_place(&mut self, requested_place: Option<OpenConversation>, cx: &mut Context<Self>) {
+        if self.requested_place != requested_place {
+            self.requested_place = requested_place;
             cx.notify();
         }
     }
@@ -241,13 +244,13 @@ impl ConversationView {
 
     /// Applies the place the shell asked for: the previous channel's visit ends, the composer
     /// switches drafts and the new channel's history is asked for.
-    fn apply_wanted_place(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let wanted = self.wanted.clone();
-        if wanted == self.open {
+    fn apply_requested_place(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let requested_place = self.requested_place.clone();
+        if requested_place == self.open_conversation {
             return;
         }
         let previous_channel_id = self.open_channel_id();
-        let next_channel_id = wanted.as_ref().map(|open| open.channel_id);
+        let next_channel_id = requested_place.as_ref().map(|open| open.channel_id);
         if previous_channel_id != next_channel_id {
             if let Some(previous) = previous_channel_id {
                 self.session.update(cx, |session, cx| {
@@ -271,10 +274,10 @@ impl ConversationView {
             self.list.set_follow_mode(gpui::FollowMode::Tail);
             self.are_sources_stale = true;
         }
-        self.open = wanted;
+        self.open_conversation = requested_place;
         self.are_rows_stale = true;
         let label = self
-            .open
+            .open_conversation
             .as_ref()
             .map(|open| SharedString::from(open.composer_label.clone()))
             .unwrap_or_default();
@@ -298,7 +301,7 @@ impl ConversationView {
         let permissions = channel_id.map(|channel_id| self.permissions(channel_id, cx));
         let can_send = permissions.is_none_or(|permissions| permissions.can_send);
         let can_attach = permissions.is_none_or(|permissions| permissions.can_attach);
-        let people = match &self.open {
+        let people = match &self.open_conversation {
             Some(OpenConversation {
                 guild_id: Some(guild_id),
                 ..
@@ -325,7 +328,10 @@ impl ConversationView {
 
     fn follow_state(&mut self, changes: &[StateChange], cx: &mut Context<Self>) {
         let channel_id = self.open_channel_id();
-        let guild_id = self.open.as_ref().and_then(|open| open.guild_id);
+        let guild_id = self
+            .open_conversation
+            .as_ref()
+            .and_then(|open| open.guild_id);
         let mut have_rows_changed = false;
         for change in changes {
             match *change {
@@ -890,7 +896,7 @@ impl ConversationView {
     ) {
         let catalogue = strings(cx);
         let channel_label = self
-            .open
+            .open_conversation
             .as_ref()
             .map(|open| open.label.clone())
             .unwrap_or_default();

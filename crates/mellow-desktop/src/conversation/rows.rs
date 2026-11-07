@@ -26,7 +26,7 @@ use mellow_client_core::shared_logic::role_colors::{highest_coloured_role, reada
 use mellow_protocol::{Message, PublicUser, Snowflake};
 
 use super::rules::{HoverBarAction, hover_bar_actions};
-use super::{ConversationView, Sources};
+use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
     Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, icon,
     inset_focus_ring, shadow, with_type,
@@ -141,7 +141,7 @@ impl ConversationView {
         let state = session.state();
         let mut people: Vec<PublicUser> = current_user_as_author(session).into_iter().collect();
         let mut role_colours = HashMap::new();
-        match self.open.as_ref() {
+        match self.open_conversation.as_ref() {
             Some(super::OpenConversation {
                 guild_id: Some(guild_id),
                 ..
@@ -169,7 +169,7 @@ impl ConversationView {
             custom_emojis.extend(guild.emojis.iter().map(|emoji| (emoji.id, emoji.clone())));
             roles.extend(guild.roles.iter().map(|role| (role.id, role.clone())));
         }
-        self.sources = Sources {
+        self.sources = MessageMarkupSources {
             generation: self.sources.generation + 1,
             people: mentionable_people(&people),
             custom_emojis,
@@ -331,7 +331,7 @@ impl ConversationView {
     fn render_history_start(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let tokens = theme(cx);
         let catalogue = strings(cx);
-        let Some(open) = self.open.clone() else {
+        let Some(open) = self.open_conversation.clone() else {
             return div().into_any_element();
         };
         let session = self.session.read(cx);
@@ -532,7 +532,7 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let catalogue = strings(cx);
-        let Some(open) = self.open.clone() else {
+        let Some(open) = self.open_conversation.clone() else {
             return div().into_any_element();
         };
         let channel_id = open.channel_id;

@@ -241,7 +241,10 @@ impl ConversationView {
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let state = self.session.read(cx).state();
-        let guild_id = self.open.as_ref().and_then(|open| open.guild_id);
+        let guild_id = self
+            .open_conversation
+            .as_ref()
+            .and_then(|open| open.guild_id);
         let channel_id = self.open_channel_id();
         let names: Vec<String> = self
             .typing_user_ids(cx)
@@ -302,7 +305,7 @@ impl ConversationView {
 
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self
-            .open
+            .open_conversation
             .as_ref()
             .map(|open| strings(cx).messages().messages_in(&open.label))
             .unwrap_or_default();
@@ -329,7 +332,7 @@ impl Render for ConversationView {
         // Read here: modifier events only reach the focus path, so a Shift pressed or released
         // with focus outside the view would otherwise leave a stale value.
         self.is_shift_held = window.modifiers().shift;
-        self.apply_wanted_place(window, cx);
+        self.apply_requested_place(window, cx);
         if let Some((message_id, text, can_reopen)) = self.refused_edit.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.give_back_refused_edit(message_id, text, can_reopen, window, cx);
