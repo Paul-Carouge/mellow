@@ -32,7 +32,7 @@ use crate::session::Session;
 use crate::strings_pending_i18n::{ActiveStrings, Language};
 use crate::window_chrome::WINDOW_TITLE;
 
-actions!(mellow, [Quit, SignOut]);
+actions!(mellow, [Quit]);
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
@@ -49,6 +49,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
     components::bind_tab_navigation(cx);
+    shell::bind_shell_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
     preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();
@@ -57,18 +58,13 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     Session::end_connection_when_the_app_quits(&session, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
-    let session_to_sign_out = session.clone();
-    cx.on_action(move |_: &SignOut, cx| {
-        session_to_sign_out.update(cx, Session::sign_out);
-    });
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
     i18n::use_language(i18n::Language::from_operating_system(), cx);
     let catalogue = i18n::strings(cx);
-    // shortcut: "Sign out" sits in the menu bar until the user card's menu lands.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([
-        MenuItem::action(catalogue.settings().sign_out(), SignOut),
-        MenuItem::action(catalogue.desktop().quit_mellow(), Quit),
-    ])]);
+    // Signing out is in the user card's menu, as the web keeps it out of the menu bar.
+    cx.set_menus([
+        Menu::new(WINDOW_TITLE).items([MenuItem::action(catalogue.desktop().quit_mellow(), Quit)])
+    ]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
