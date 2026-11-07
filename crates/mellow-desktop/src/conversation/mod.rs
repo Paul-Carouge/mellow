@@ -1175,20 +1175,20 @@ impl ConversationView {
                 self.open_menu_of_focused_row(window, cx);
                 true
             }
-            _ => {
-                // A printable key goes to the composer, as typing anywhere in the chat does.
+            // A printable key goes to the composer, as typing anywhere in the chat does; only from
+            // the list itself, so Space still activates a focused button inside it.
+            _ if self.list_focus.is_focused(window) => {
                 let is_text = !modifiers.control && !modifiers.platform && !modifiers.alt;
                 match keystroke.key_char.as_deref().filter(|_| is_text) {
                     Some(text) if !text.chars().any(char::is_control) => {
                         let text = text.to_owned();
-                        self.composer.update(cx, |composer, cx| {
-                            composer.type_text(&text, window, cx);
-                        });
-                        true
+                        self.composer
+                            .update(cx, |composer, cx| composer.type_text(&text, window, cx))
                     }
                     _ => false,
                 }
             }
+            _ => false,
         };
         if handled {
             cx.stop_propagation();

@@ -358,9 +358,10 @@ impl Composer {
 
     /// A printable key pressed in the message list: the field takes focus and the text, as the
     /// web lets typing anywhere in the chat go to the composer.
-    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) {
+    /// Types `text` into the field and focuses it; false where the reader cannot send.
+    pub fn type_text(&mut self, text: &str, window: &mut Window, cx: &mut Context<Self>) -> bool {
         if !self.can_send_messages {
-            return;
+            return false;
         }
         self.input.update(cx, |input, cx| {
             input.focus(window, cx);
@@ -370,6 +371,7 @@ impl Composer {
         self.suggestions_read_at = None;
         self.refresh_suggestions(cx);
         cx.notify();
+        true
     }
 
     /// The field's text, for the conversation view's tests.

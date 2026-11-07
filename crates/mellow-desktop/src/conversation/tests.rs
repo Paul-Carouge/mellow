@@ -396,3 +396,31 @@ fn scrolling_and_unrelated_changes_do_not_rebuild_the_rows(cx: &mut TestAppConte
         assert!(view.are_rows_stale, "the open channel's messages do");
     });
 }
+
+#[gpui::test]
+fn space_on_a_control_inside_the_list_activates_it_instead_of_typing(cx: &mut TestAppContext) {
+    let mut reacted = message(10_001, &ana(), "hello");
+    reacted.reactions = vec![mellow_protocol::ReactionSummary {
+        emoji: "👍".to_owned(),
+        count: 1,
+        me: false,
+    }];
+    let (view, _session, cx) = open_general(cx, vec![reacted], None);
+    focus_list(&view, cx);
+    // The test window has no root to turn Tab into this.
+    cx.update(Window::focus_next);
+    cx.run_until_parked();
+    let is_list_itself_focused = cx.update(|window, cx| {
+        let list_focus = view.read(cx).list_focus.clone();
+        list_focus.is_focused(window)
+    });
+    assert!(!is_list_itself_focused, "Tab reaches the reaction pill");
+
+    press(cx, "space");
+
+    assert_eq!(
+        composer_text(&view, cx),
+        "",
+        "Space is not typed into the composer"
+    );
+}
