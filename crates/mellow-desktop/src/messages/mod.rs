@@ -16,6 +16,7 @@ mod markdown_view;
 mod reactions;
 mod reply;
 mod rich_text;
+pub(crate) mod samples;
 mod time;
 
 use gpui::{App, ImageSource, Window};

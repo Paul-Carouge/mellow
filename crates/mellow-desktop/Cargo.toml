@@ -65,6 +65,8 @@ rav1d = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+# The headless Metal or wgpu renderer, so the gallery can be drawn to a picture (`examples/gallery_picture.rs`).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
 # Authenticator codes for the two-factor test; already built for the server.
 aws-lc-rs.workspace = true
 # The sign-in tests run a real in-process server, as the client core's do.
