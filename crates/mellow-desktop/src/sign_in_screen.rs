@@ -18,7 +18,7 @@ use mellow_protocol::{
 use zeroize::{Zeroize as _, Zeroizing};
 
 use crate::local_widgets::{TextField, error_line, link_button, primary_button, text_style};
-use crate::preferences::Preferences;
+use crate::preferences::{Preferences, change_preferences};
 use crate::session::Session;
 use crate::sign_in_form::{
     FieldToCheck, MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH, SignInField,
@@ -684,10 +684,10 @@ impl SignInScreen {
             self.set_value(field, "", window, cx);
         }
         if self.session.read(cx).is_kept_on_this_device() {
-            Preferences {
-                last_instance_address: Some(rest.instance().clone()),
-            }
-            .save_in_background(cx);
+            let instance = rest.instance().clone();
+            change_preferences(cx, move |preferences| {
+                preferences.last_instance_address = Some(instance);
+            });
         }
         self.session
             .update(cx, |session, cx| session.begin_signed_in_session(rest, cx));

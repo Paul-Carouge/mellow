@@ -2,6 +2,12 @@
 //! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
 //! network runs on, the session and its sign-in screens, and the Dusk shell.
 
+// Upstream cause: macOS ld warns once the unit-test binary (which links the whole server for the
+// sign-in tests) holds more than 16 MB of `__eh_frame`, which its compact unwind table cannot
+// encode; only the speed of unwinding a panic in a test is affected.
+#![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
+
+pub mod column_widths;
 pub mod components;
 pub mod composer;
 pub mod connection_banner;
@@ -9,11 +15,14 @@ pub mod i18n;
 mod local_widgets;
 pub mod main_window;
 pub mod messages;
+pub mod navigation;
 pub mod pictures;
 pub mod preferences;
 pub mod session;
 pub mod session_store;
 pub mod shell;
+#[cfg(test)]
+mod shell_fixtures;
 pub mod sign_in_form;
 pub mod sign_in_screen;
 pub mod strings_pending_i18n;
@@ -30,7 +39,7 @@ use crate::session::Session;
 use crate::strings_pending_i18n::{ActiveStrings, Language};
 use crate::window_chrome::WINDOW_TITLE;
 
-actions!(mellow, [Quit, SignOut]);
+actions!(mellow, [Quit]);
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
@@ -47,26 +56,23 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
     components::bind_tab_navigation(cx);
+    shell::bind_shell_keys(cx);
     composer::bind_composer_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
+    preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();
     cx.set_global(ActiveStrings(strings));
     let session = cx.new(Session::new_restoring_stored_session);
     Session::end_connection_when_the_app_quits(&session, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
-    let session_to_sign_out = session.clone();
-    cx.on_action(move |_: &SignOut, cx| {
-        session_to_sign_out.update(cx, Session::sign_out);
-    });
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
     i18n::use_language(i18n::Language::from_operating_system(), cx);
     let catalogue = i18n::strings(cx);
-    // shortcut: "Sign out" sits in the menu bar until the user card's menu lands.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([
-        MenuItem::action(catalogue.settings().sign_out(), SignOut),
-        MenuItem::action(catalogue.desktop().quit_mellow(), Quit),
-    ])]);
+    // Signing out is in the user card's menu, as the web keeps it out of the menu bar.
+    cx.set_menus([
+        Menu::new(WINDOW_TITLE).items([MenuItem::action(catalogue.desktop().quit_mellow(), Quit)])
+    ]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {

@@ -11,13 +11,13 @@ use gpui::{
     Animation, AnimationExt as _, App, Context, DismissEvent, ElementId, EventEmitter, FocusHandle,
     Focusable, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton,
     ParentElement as _, Pixels, Point, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    Styled as _, Toggled, Window, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
 };
 use mellow_client_core::shared_logic::search_text::fold_for_search;
 
 use super::{
-    ActivationHandler, FocusNextControl, FocusPreviousControl, easing, icon, inset_focus_ring,
-    shadow, with_type,
+    ActivationHandler, FocusNextControl, FocusPreviousControl, ShownStatus, StatusIndicator,
+    easing, icon, inset_focus_ring, shadow, with_type,
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -28,7 +28,8 @@ use crate::theme::tokens::{
     COMPONENT_CONTEXT_MENU_PADDING, COMPONENT_CONTEXT_MENU_RADIUS,
     COMPONENT_CONTEXT_MENU_SEPARATOR_HEIGHT, COMPONENT_CONTEXT_MENU_SEPARATOR_MARGIN_BLOCK,
     COMPONENT_CONTEXT_MENU_SEPARATOR_MARGIN_INLINE, COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN,
-    MOTION_DURATION_FAST, MOTION_EASING_ENTER, SPACE_2XS, SPACE_XS, TYPE_MENU_ITEM, ThemeTokens,
+    COMPONENT_STATUS_SIZE_MENU, MOTION_DURATION_FAST, MOTION_EASING_ENTER, SPACE_2XS, SPACE_XS,
+    TYPE_MENU_ITEM, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
 
@@ -241,10 +242,21 @@ pub enum MenuItemTone {
     Danger,
 }
 
+/// A choice among several in a menu (the user card's statuses): the status shape leads, a check
+/// marks the current one, and screen readers hear a radio item.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MenuChoice {
+    pub status: ShownStatus,
+    pub is_checked: bool,
+}
+
 #[derive(Clone)]
 pub struct MenuItem {
     pub label: SharedString,
     pub icon: IconName,
+    pub choice: Option<MenuChoice>,
+    /// Said after the label by screen readers ("You won't get notifications").
+    pub description: Option<SharedString>,
     pub tone: MenuItemTone,
     /// The action's own shortcut, for screen readers ("Control+K").
     pub key_shortcuts: Option<SharedString>,
@@ -263,11 +275,33 @@ impl MenuItem {
         Self {
             label: label.into(),
             icon,
+            choice: None,
+            description: None,
             tone: MenuItemTone::Normal,
             key_shortcuts: None,
             is_disabled: false,
             on_select: Arc::new(on_select),
         }
+    }
+
+    /// One of a set of choices, the current one checked.
+    #[must_use]
+    pub fn choice(
+        label: impl Into<SharedString>,
+        status: ShownStatus,
+        is_checked: bool,
+        on_select: impl Fn(&mut Window, &mut App) + 'static,
+    ) -> Self {
+        Self {
+            choice: Some(MenuChoice { status, is_checked }),
+            ..Self::new(label, IconName::Check, on_select)
+        }
+    }
+
+    #[must_use]
+    pub fn description(mut self, description: impl Into<SharedString>) -> Self {
+        self.description = Some(description.into());
+        self
     }
 
     #[must_use]
@@ -482,10 +516,25 @@ impl Render for ContextMenu {
                     let is_highlighted = self.highlighted_index == Some(index);
                     let is_active = is_highlighted || self.hovered_index == Some(index);
                     let (text, fill) = item_colours(item.tone, is_active, tokens);
+                    let choice = item.choice;
                     with_type(div(), TYPE_MENU_ITEM)
                         .id(ElementId::named_usize("menu-item", index))
-                        .role(Role::MenuItem)
+                        .role(if choice.is_some() {
+                            Role::MenuItemRadio
+                        } else {
+                            Role::MenuItem
+                        })
                         .aria_label(item.label.clone())
+                        .when_some(item.description.clone(), |row, description| {
+                            row.aria_description(description)
+                        })
+                        .when_some(choice, |row, choice| {
+                            row.aria_toggled(if choice.is_checked {
+                                Toggled::True
+                            } else {
+                                Toggled::False
+                            })
+                        })
                         .when_some(item.key_shortcuts.clone(), |row, shortcuts| {
                             row.aria_keyshortcuts(shortcuts)
                         })
@@ -519,8 +568,25 @@ impl Render for ContextMenu {
                         .on_click(cx.listener(move |menu, _, window, cx| {
                             menu.choose(index, window, cx);
                         }))
-                        .child(item.label.clone())
-                        .child(icon(item.icon, COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE, text))
+                        .when_some(choice, |row, choice| {
+                            row.child(
+                                div()
+                                    .flex_none()
+                                    .size(length(COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE))
+                                    .flex()
+                                    .items_center()
+                                    .justify_center()
+                                    .child(StatusIndicator::new(
+                                        choice.status,
+                                        COMPONENT_STATUS_SIZE_MENU,
+                                    )),
+                            )
+                        })
+                        .child(div().flex_1().min_w_0().child(item.label.clone()))
+                        // The check says which choice is current without relying on colour.
+                        .when(choice.is_none_or(|choice| choice.is_checked), |row| {
+                            row.child(icon(item.icon, COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE, text))
+                        })
                         .when(is_highlighted && is_keyboard_focus, |row| {
                             row.child(inset_focus_ring(COMPONENT_CONTEXT_MENU_ITEM_RADIUS, cx))
                         })

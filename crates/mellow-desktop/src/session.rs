@@ -6,6 +6,7 @@
 //! (`generation`). Gateway updates arrive through a bounded channel and are applied a burst at a
 //! time, with one `notify` per burst, so a flood of events costs one repaint.
 
+use std::collections::HashMap;
 use std::future::Future;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -15,11 +16,12 @@ use mellow_client_core::{
     ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, generate_message_nonce,
     run_gateway,
 };
-use mellow_protocol::{Message, SendMessageRequest, Snowflake};
+use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
+use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings;
@@ -48,6 +50,13 @@ pub enum ConnectionStatus {
     Connected,
     /// The connection dropped; the gateway reconnects with backoff.
     Reconnecting,
+}
+
+/// A server's member list on its way, or refused (the member sheet offers "Try again").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MembersLoad {
+    Loading,
+    Failed,
 }
 
 /// What a burst of gateway updates touched, so views refresh only that.
@@ -81,6 +90,11 @@ pub struct Session {
     is_signing_out: bool,
     /// Built with `describe_error`; `None` hides it.
     sign_out_error: Option<String>,
+    /// Member lists asked for in this `Ready` (the web's `requestedMembers` and
+    /// `failedMemberGuildIds`); a loaded list is in the state.
+    member_loads: HashMap<Snowflake, MembersLoad>,
+    /// Why the last status change failed, shown in the user card until the next try.
+    status_error: Option<String>,
     /// False in tests: nothing goes to the secret store or the preferences file of the machine.
     is_kept_on_this_device: bool,
     /// Kept, not detached, so quitting can wait for it: a revoked token left in the secret store
@@ -146,6 +160,8 @@ impl Session {
             has_ended_by_itself: false,
             is_signing_out: false,
             sign_out_error: None,
+            member_loads: HashMap::new(),
+            status_error: None,
             is_kept_on_this_device,
             stored_session_forget_in_flight: None,
         }
@@ -229,6 +245,12 @@ impl Session {
         self.status = ConnectionStatus::Connecting;
         self.has_ended_by_itself = false;
         self.sign_out_error = None;
+        self.member_loads.clear();
+        self.status_error = None;
+        // Nothing of the pictures may reach the disk of a session kept in memory only.
+        if self.is_kept_on_this_device {
+            start_picture_session(rest.clone(), cx);
+        }
         let (gateway, commands) = GatewayHandle::new();
         let (sender, mut updates) = mpsc::channel(GATEWAY_UPDATE_QUEUE_CAPACITY);
         let token = Zeroizing::new(rest.token().unwrap_or_default().to_owned());
@@ -280,6 +302,8 @@ impl Session {
                 GatewayUpdate::Ready(ready) => {
                     self.status = ConnectionStatus::Connected;
                     should_resend_failed_messages = true;
+                    // `Ready` emptied the member lists: the views ask again.
+                    self.member_loads.clear();
                     self.state.apply_ready(*ready)
                 }
                 GatewayUpdate::Event(event) => self.state.apply_event(event, now),
@@ -396,7 +420,10 @@ impl Session {
         self.has_ended_by_itself = has_ended_by_itself;
         self.is_signing_out = false;
         self.sign_out_error = None;
+        self.member_loads.clear();
+        self.status_error = None;
         if self.is_kept_on_this_device {
+            end_picture_session(cx);
             // The previous forget keeps running when detached; only the latest matters at quit.
             if let Some(previous_forget) = self.stored_session_forget_in_flight.take() {
                 previous_forget.detach();
@@ -407,6 +434,130 @@ impl Session {
             ));
         }
         cx.notify();
+    }
+
+    /// Where a server's member list stands; `None` once loaded or before it is asked for.
+    #[must_use]
+    pub fn members_load(&self, guild_id: Snowflake) -> Option<MembersLoad> {
+        self.member_loads.get(&guild_id).copied()
+    }
+
+    /// Asks for a server's member list once per `Ready`, as the web's `ensureMembersLoaded`;
+    /// `retry` asks again after a failure ("Try again").
+    /// shortcut: a join or a role change while the list is on its way is not asked again
+    /// (the web's `membersChangedWhileLoading`); the next `Ready` brings it.
+    pub fn load_members(&mut self, guild_id: Snowflake, retry: bool, cx: &mut Context<Self>) {
+        let Some(rest) = self.rest_client().cloned() else {
+            return;
+        };
+        match self.member_loads.get(&guild_id) {
+            Some(MembersLoad::Loading) => return,
+            Some(MembersLoad::Failed) if !retry => return,
+            None if !self.state.members(guild_id).is_empty() => return,
+            _ => {}
+        }
+        self.member_loads.insert(guild_id, MembersLoad::Loading);
+        let history_generation = self.state.history_generation();
+        self.run_request(
+            cx,
+            async move { rest.list_members(guild_id).await },
+            move |session, answer, cx| {
+                // A `Ready` or a removal meanwhile: the answer belongs to a state that is gone.
+                if session.state.history_generation() != history_generation
+                    || session.state.guild(guild_id).is_none()
+                {
+                    return;
+                }
+                match answer {
+                    Ok(members) => {
+                        session.member_loads.remove(&guild_id);
+                        let change = session.state.set_members(guild_id, members);
+                        cx.emit(StateChanged(vec![change]));
+                    }
+                    Err(error) => {
+                        session.member_loads.insert(guild_id, MembersLoad::Failed);
+                        session.report_request_error(&error, "load members", cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    /// Why the last status change failed, in words.
+    #[must_use]
+    pub fn status_error(&self) -> Option<&str> {
+        self.status_error.as_deref()
+    }
+
+    /// Shows `status` to others, keeping the custom status (the user card's menu).
+    pub fn choose_status(
+        &mut self,
+        status: ChosenStatus,
+        failure_summary: &str,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            return;
+        };
+        let custom_status = self
+            .state
+            .current_user()
+            .and_then(|user| user.custom_status.clone());
+        self.status_error = None;
+        let failure_summary = failure_summary.to_owned();
+        self.run_request(
+            cx,
+            async move { rest.update_presence(status, custom_status).await },
+            move |session, answer, cx| {
+                match answer {
+                    Ok(user) => {
+                        let change = session.state.apply_current_user(user);
+                        cx.emit(StateChanged(vec![change]));
+                    }
+                    Err(error) => {
+                        session.status_error =
+                            Some(describe_error(&error, &failure_summary, strings(cx)));
+                        session.report_request_error(&error, "change status", cx);
+                    }
+                }
+                cx.notify();
+            },
+        );
+        cx.notify();
+    }
+
+    /// Opens the one-to-one conversation with `user_id` (creating it on the instance if needed),
+    /// then hands its id, or what went wrong in words, to `on_done`.
+    pub fn open_direct_message(
+        &mut self,
+        user_id: Snowflake,
+        failure_summary: String,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<Snowflake, String>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            return;
+        };
+        self.run_request(
+            cx,
+            async move { rest.open_direct_message(user_id).await },
+            move |session, answer, cx| match answer {
+                Ok(conversation) => {
+                    let conversation_id = conversation.id;
+                    let change = session.state.upsert_direct_message_channel(conversation);
+                    cx.emit(StateChanged(vec![change]));
+                    cx.notify();
+                    on_done(Ok(conversation_id), cx);
+                }
+                Err(error) => {
+                    let message = describe_error(&error, &failure_summary, strings(cx));
+                    session.report_request_error(&error, "open conversation", cx);
+                    on_done(Err(message), cx);
+                }
+            },
+        );
     }
 
     /// Queues `content` in the outbox, shows it at once and sends it. Nothing is queued when the
