@@ -424,3 +424,44 @@ fn space_on_a_control_inside_the_list_activates_it_instead_of_typing(cx: &mut Te
         "Space is not typed into the composer"
     );
 }
+
+#[gpui::test]
+fn an_older_page_landing_at_the_history_start_keeps_the_rows_read_in_place(
+    cx: &mut TestAppContext,
+) {
+    // A full page: the channel has older history.
+    let page: Vec<Message> = (101..=150)
+        .map(|id| {
+            message(
+                10_000 + id,
+                &ana(),
+                "A message long enough to take its own line",
+            )
+        })
+        .collect();
+    let (view, session, cx) = open_general(cx, page, None);
+    view.update(cx, |view, cx| {
+        view.list.scroll_to(ListOffset::default());
+        view.visit.has_reader_scrolled = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let older: Vec<Message> = (91..=100)
+        .map(|id| message(10_000 + id, &ana(), "An older message"))
+        .collect();
+    session.update(cx, |session, cx| {
+        let change = session.state_mut().insert_history_page(RUST_GENERAL, older);
+        cx.emit(StateChanged(vec![change]));
+    });
+    cx.run_until_parked();
+
+    view.read_with(cx, |view, _| {
+        let top = view.list.logical_scroll_top();
+        assert_eq!(
+            top.item_ix,
+            1 + 10,
+            "the first row read stays at the top, below the ten new ones"
+        );
+    });
+}
