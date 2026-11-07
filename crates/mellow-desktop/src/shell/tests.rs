@@ -10,8 +10,8 @@ use crate::components::bind_tab_navigation;
 use crate::navigation::Place;
 use crate::preferences::change_preferences;
 use crate::shell_fixtures::{
-    BOOKS_READING, GUILD_BOOKS, GUILD_RUST, RUST_ANNOUNCEMENTS, RUST_GENERAL, RUST_HELP,
-    sample_state, sample_state_with_unreads,
+    BOOKS_READING, CONVERSATION_ANA, GUILD_BOOKS, GUILD_RUST, RUST_ANNOUNCEMENTS, RUST_GENERAL,
+    RUST_HELP, sample_state, sample_state_with_unreads,
 };
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
@@ -250,4 +250,58 @@ fn the_quick_switcher_opens_what_is_typed_and_closes_with_its_shortcut(cx: &mut 
     press(cx, secondary("k"));
     press(cx, "escape");
     assert!(!is_open(&shell, cx));
+}
+
+#[gpui::test]
+fn a_conversation_opened_from_the_switcher_keeps_the_shortcuts_working(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, secondary("k"));
+    let switcher = shell.read_with(cx, |shell, _| {
+        shell
+            .quick_switcher
+            .as_ref()
+            .map(|(switcher, _)| switcher.downgrade())
+            .expect("the switcher is open")
+    });
+    // The instance's answer: the conversation now exists in the state.
+    cx.update(|_, cx| open_conversation_chosen_in_switcher(&switcher, CONVERSATION_ANA, cx));
+    cx.run_until_parked();
+    assert!(!shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
+    assert_eq!(selected_channel(&shell, cx), Some(CONVERSATION_ANA));
+    press(cx, secondary("k"));
+    assert!(shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
+}
+
+#[gpui::test]
+fn closing_the_drawer_for_the_switcher_gives_focus_back_to_the_shell(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.open_navigation_drawer(window, cx));
+    });
+    cx.run_until_parked();
+    press(cx, secondary("k"));
+    assert!(!shell.read_with(cx, |shell, _| shell.is_navigation_drawer_open()));
+    press(cx, "escape");
+    press(cx, secondary("k"));
+    assert!(shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
+}
+
+#[gpui::test]
+fn a_drawer_put_away_by_a_wider_window_leaves_focus_in_the_shell(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.open_navigation_drawer(window, cx));
+    });
+    cx.run_until_parked();
+    cx.simulate_resize(size(px(1280.0), px(800.0)));
+    cx.run_until_parked();
+    assert!(!shell.read_with(cx, |shell, _| shell.is_navigation_drawer_open()));
+    let focus_is_in_the_shell = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| shell.read(cx).root_focus.contains_focused(window, cx))
+    };
+    assert!(focus_is_in_the_shell(cx));
+    press(cx, "tab");
+    assert!(focus_is_in_the_shell(cx));
+    press(cx, secondary("k"));
+    assert!(shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
 }

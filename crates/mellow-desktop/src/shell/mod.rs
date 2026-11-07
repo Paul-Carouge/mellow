@@ -21,8 +21,8 @@ use std::rc::Rc;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, ImageSource,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, Styled as _, Subscription, Task, Window, actions, div,
-    prelude::FluentBuilder as _,
+    ParentElement as _, Pixels, Render, Styled as _, Subscription, Task, WeakEntity, Window,
+    actions, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::state::{ClientState, StateChange};
@@ -417,7 +417,8 @@ impl DuskShell {
         } else if self.is_member_overlay_open {
             self.close_member_overlay(window, cx);
         } else {
-            self.is_navigation_drawer_open = false;
+            // Closed first, so the overlay records the drawer's opener, not the drawer.
+            self.close_navigation_drawer(window, cx);
             self.open_overlay(window, cx);
             self.is_member_overlay_open = true;
         }
@@ -475,6 +476,25 @@ impl DuskShell {
         }
     }
 
+    /// Puts away a drawer or member overlay the window or the place no longer has room for. Its
+    /// opener may be gone with the layout too (the narrow header's "Open navigation"), so focus
+    /// goes to the shell, where shortcuts and Tab keep working.
+    fn close_obsolete_layers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let window_width = window_width_at_default_zoom(window);
+        let layout =
+            ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx));
+        let is_member_overlay_obsolete =
+            window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id().is_none();
+        if self.is_navigation_drawer_open && layout != ShellLayout::SheetAlone {
+            self.overlay_opener = None;
+            self.close_navigation_drawer(window, cx);
+        }
+        if self.is_member_overlay_open && is_member_overlay_obsolete {
+            self.overlay_opener = None;
+            self.close_member_overlay(window, cx);
+        }
+    }
+
     // ---- The quick switcher ----
 
     /// Ctrl+K and the header's "Go to…": opens it, or closes it when open.
@@ -487,7 +507,8 @@ impl DuskShell {
         if self.is_member_overlay_open {
             return;
         }
-        self.is_navigation_drawer_open = false;
+        // Closed first, so the switcher records the drawer's opener, not the drawer.
+        self.close_navigation_drawer(window, cx);
         let switcher = cx.new(|cx| QuickSwitcher::new(self.session.clone(), window, cx));
         let subscription = cx.subscribe_in(&switcher, window, Self::follow_quick_switcher);
         self.quick_switcher = Some((switcher, subscription));
@@ -516,7 +537,6 @@ impl DuskShell {
                 window.focus(&self.root_focus, cx);
             }
             QuickSwitcherEvent::OpenConversationWith { user_id, failure } => {
-                let shell = cx.entity().downgrade();
                 let switcher = switcher.downgrade();
                 let user_id = *user_id;
                 let failure = failure.clone();
@@ -527,16 +547,11 @@ impl DuskShell {
                         cx,
                         move |answer, cx| match answer {
                             Ok(conversation_id) => {
-                                let _ = shell.update(cx, |shell, cx| {
-                                    shell.quick_switcher = None;
-                                    let state = shell.session.read(cx).state();
-                                    shell.navigation.select_guild(
-                                        state,
-                                        None,
-                                        Some(conversation_id),
-                                    );
-                                    shell.after_navigation(cx);
-                                });
+                                open_conversation_chosen_in_switcher(
+                                    &switcher,
+                                    conversation_id,
+                                    cx,
+                                );
                             }
                             Err(message) => {
                                 let _ = switcher.update(cx, |switcher, cx| {
@@ -689,6 +704,22 @@ impl DuskShell {
     }
 }
 
+/// The conversation the switcher asked for now exists: it opens through the switcher's `Open`
+/// event, whose handler has the window to put focus on the conversation (the switcher's input
+/// goes away with it). Nothing opens when the switcher was closed meanwhile.
+fn open_conversation_chosen_in_switcher(
+    switcher: &WeakEntity<QuickSwitcher>,
+    conversation_id: Snowflake,
+    cx: &mut App,
+) {
+    let _ = switcher.update(cx, |_, cx| {
+        cx.emit(QuickSwitcherEvent::Open {
+            guild_id: None,
+            channel_id: Some(conversation_id),
+        });
+    });
+}
+
 /// A window x position in logical pixels at 100 % zoom, as the column widths are.
 fn logical_x(x: Pixels, window: &Window) -> f32 {
     let viewport_width = f32::from(window.viewport_size().width);
@@ -734,11 +765,14 @@ impl Render for DuskShell {
             ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx));
         // A drawer or overlay left open while the window widens would come back on the next
         // shrink; Home, or a server without channels, has no members to show.
-        if layout != ShellLayout::SheetAlone && self.is_navigation_drawer_open {
-            self.is_navigation_drawer_open = false;
-        }
-        if window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id().is_none() {
-            self.is_member_overlay_open = false;
+        let is_drawer_obsolete =
+            self.is_navigation_drawer_open && layout != ShellLayout::SheetAlone;
+        let is_member_overlay_obsolete = self.is_member_overlay_open
+            && (window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id().is_none());
+        if is_drawer_obsolete || is_member_overlay_obsolete {
+            cx.defer_in(window, |shell, window, cx| {
+                shell.close_obsolete_layers(window, cx);
+            });
         }
         let is_full_bleed = layout == ShellLayout::SheetAlone;
         let is_members_docked = layout == ShellLayout::NavigatorSheetAndSideSheet;
