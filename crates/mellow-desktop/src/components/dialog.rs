@@ -13,7 +13,8 @@ use gpui::{
 };
 
 use super::{
-    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, easing, icon, shadow, with_type,
+    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, easing, focus_next_inside,
+    focus_previous_inside, icon, shadow, with_type,
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -167,39 +168,6 @@ impl ModalDialog {
         }
     }
 
-    /// Tab: the next control, back to the first after the last.
-    fn focus_next_inside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_next(cx);
-        if !self.container_focus.contains_focused(window, cx) {
-            window.focus(&self.container_focus, cx);
-            window.focus_next(cx);
-        }
-    }
-
-    /// Shift+Tab: the previous control, round to the last from the first.
-    fn focus_previous_inside(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        window.focus_prev(cx);
-        if self.container_focus.contains_focused(window, cx)
-            && !self.container_focus.is_focused(window)
-        {
-            return;
-        }
-        // Walks the dialog's own Tab stops to its last one.
-        window.focus(&self.container_focus, cx);
-        let mut last_inside = None;
-        loop {
-            window.focus_next(cx);
-            let focused = window.focused(cx);
-            if !self.container_focus.contains_focused(window, cx) || focused == last_inside {
-                break;
-            }
-            last_inside = focused;
-        }
-        if let Some(last_inside) = last_inside {
-            window.focus(&last_inside, cx);
-        }
-    }
-
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "escape" && !event.keystroke.modifiers.modified() {
             cx.stop_propagation();
@@ -332,10 +300,10 @@ impl Render for ModalDialog {
             .key_context("ModalDialog")
             .on_key_down(cx.listener(Self::on_key_down))
             .on_action(cx.listener(|dialog, _: &FocusNextControl, window, cx| {
-                dialog.focus_next_inside(window, cx);
+                focus_next_inside(&dialog.container_focus, window, cx);
             }))
             .on_action(cx.listener(|dialog, _: &FocusPreviousControl, window, cx| {
-                dialog.focus_previous_inside(window, cx);
+                focus_previous_inside(&dialog.container_focus, window, cx);
             }))
             // Clicks on the card stay on the card; only the scrim closes.
             .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())

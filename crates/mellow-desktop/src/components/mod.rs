@@ -53,8 +53,8 @@ pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonTone};
 pub use choice::{ChoiceGroup, ChoiceOption, next_choice_index};
 pub use dialog::{ModalDialog, ModalDialogEvent};
 pub use menu::{
-    ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
+    ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
     popover_position_beside_anchor, typeahead_menu_item_index,
 };
 pub use progress::ProgressMeter;
@@ -214,4 +214,35 @@ pub fn with_tab_navigation<E: InteractiveElement>(element: E, root_focus: &Focus
         .track_focus(root_focus)
         .on_action(|_: &FocusNextControl, window, cx| window.focus_next(cx))
         .on_action(|_: &FocusPreviousControl, window, cx| window.focus_prev(cx))
+}
+
+/// Tab inside a modal layer (dialog, drawer): the next control, back to the first after the last.
+pub fn focus_next_inside(container: &FocusHandle, window: &mut Window, cx: &mut App) {
+    window.focus_next(cx);
+    if !container.contains_focused(window, cx) {
+        window.focus(container, cx);
+        window.focus_next(cx);
+    }
+}
+
+/// Shift+Tab inside a modal layer: the previous control, round to the last from the first.
+pub fn focus_previous_inside(container: &FocusHandle, window: &mut Window, cx: &mut App) {
+    window.focus_prev(cx);
+    if container.contains_focused(window, cx) && !container.is_focused(window) {
+        return;
+    }
+    // Walks the layer's own Tab stops to its last one.
+    window.focus(container, cx);
+    let mut last_inside = None;
+    loop {
+        window.focus_next(cx);
+        let focused = window.focused(cx);
+        if !container.contains_focused(window, cx) || focused == last_inside {
+            break;
+        }
+        last_inside = focused;
+    }
+    if let Some(last_inside) = last_inside {
+        window.focus(&last_inside, cx);
+    }
 }
