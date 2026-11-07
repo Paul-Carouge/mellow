@@ -326,6 +326,9 @@ impl ConversationView {
 
 impl Render for ConversationView {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // Read here: modifier events only reach the focus path, so a Shift pressed or released
+        // with focus outside the view would otherwise leave a stale value.
+        self.is_shift_held = window.modifiers().shift;
         self.apply_wanted_place(window, cx);
         if let Some((message_id, text, can_reopen)) = self.refused_edit.take() {
             self.composer.update(cx, |composer, cx| {
