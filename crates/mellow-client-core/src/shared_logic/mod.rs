@@ -8,6 +8,8 @@
 pub mod channel_order;
 pub mod code_blocks;
 pub mod custom_emoji;
+pub mod emoji_catalogue;
+pub mod emoji_suggestions;
 pub mod format;
 pub mod markdown;
 pub mod mentions;

@@ -26,6 +26,7 @@ use gpui::{App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, Win
 use mellow_client_core::{DownloadableFile, RestClient};
 use tokio::sync::oneshot;
 
+pub(crate) use self::decode::decode_frames;
 use self::disk_cache::{DISK_CACHE_CAPACITY_BYTES, DiskCache, instance_directory_name};
 use self::loader::PictureLoader;
 use self::lru::ByteBoundedLru;
