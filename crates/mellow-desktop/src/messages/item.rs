@@ -43,6 +43,9 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, delay, length, theme};
 
+/// The author header is an `<h3>` on the web; Markdown headings sit below it, at 4 to 6.
+pub(crate) const MESSAGE_HEADER_HEADING_LEVEL: usize = 3;
+
 /// Who wrote the message, as its header shows them.
 #[derive(Clone)]
 pub struct MessageAuthor {
@@ -254,6 +257,7 @@ impl RenderOnce for MessageItem {
             div()
                 .id(child_id(&id, "header"))
                 .role(Role::Heading)
+                .aria_level(MESSAGE_HEADER_HEADING_LEVEL)
                 .flex()
                 .flex_wrap()
                 .items_baseline()
@@ -341,6 +345,7 @@ impl RenderOnce for MessageItem {
             .child(MessageMarkdown::new(id.clone(), content.body.clone()).edited(edited));
         let attachments = (!content.attachments.is_empty()).then(|| {
             MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
+                .pending(content.pending.is_some())
         });
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)
@@ -361,7 +366,6 @@ impl RenderOnce for MessageItem {
             let failed_text = color(tokens.component_message_failed_status_text);
             with_type(div(), TYPE_MESSAGE_SUBTEXT)
                 .id(child_id(&id, "failure"))
-                .role(Role::Alert)
                 .flex()
                 .flex_wrap()
                 .items_center()

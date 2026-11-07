@@ -89,6 +89,7 @@ pub(crate) fn file_size_label(bytes: u64, strings: Strings) -> String {
 pub struct MessageAttachments {
     id: ElementId,
     attachments: Vec<Attachment>,
+    is_pending: bool,
 }
 
 impl MessageAttachments {
@@ -97,7 +98,15 @@ impl MessageAttachments {
         Self {
             id: id.into(),
             attachments,
+            is_pending: false,
         }
+    }
+
+    /// A message not sent yet: its files show as cards, since nothing can be fetched yet.
+    #[must_use]
+    pub fn pending(mut self, is_pending: bool) -> Self {
+        self.is_pending = is_pending;
+        self
     }
 }
 
@@ -153,7 +162,9 @@ impl RenderOnce for MessageAttachments {
             .attachments
             .iter()
             .map(|attachment| {
-                if !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str()) {
+                if self.is_pending
+                    || !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str())
+                {
                     return file_card(attachment, tokens, strings);
                 }
                 let (width, height) = picture_box(attachment.width, attachment.height);
@@ -175,7 +186,8 @@ impl RenderOnce for MessageAttachments {
                     .aria_label(name.clone())
                     .max_w_full()
                     .w(length(width))
-                    .h(length(height))
+                    // Scales down with a narrow column instead of cropping, as the web's `h-auto`.
+                    .aspect_ratio(width / height)
                     .overflow_hidden()
                     .rounded(length(COMPONENT_ATTACHMENT_IMAGE_RADIUS))
                     .bg(color(tokens.component_attachment_image_placeholder))
@@ -226,6 +238,7 @@ impl std::fmt::Debug for MessageAttachments {
             .debug_struct("MessageAttachments")
             .field("id", &self.id)
             .field("attachments", &self.attachments.len())
+            .field("is_pending", &self.is_pending)
             .finish()
     }
 }
