@@ -1,37 +1,54 @@
-//! A voice session: one channel joined through the gateway, with its network and audio threads.
+//! A voice session: one channel joined through the gateway, with its network, audio and video
+//! threads. The participant's one video source (a camera or a screen, never both) goes in
+//! through [`VideoInput`]; the cameras and screens it watches come out through [`VideoFrames`].
 //! Signalling goes through [`VoiceSignalling`] (frames out) and
 //! [`VoiceSession::handle_gateway_event`] (events in), so the desktop wires it to the client
-//! core's gateway and tests to a plain WebSocket.
+//! core's gateway and tests to a plain WebSocket. The session reconnects by itself as the web
+//! client does: a fresh offer after a lost path, a gateway `READY` or `RESUMED`, or the network
+//! coming back, and it says why it stopped.
 
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
+use std::collections::HashMap;
+use std::net::Ipv4Addr;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::thread::JoinHandle;
-use std::time::Instant;
+use std::time::Duration;
 
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal,
+    ClientFrame, GatewayEvent, Snowflake, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
+    VoiceVideoRefusal, WatchedCamera,
 };
-use str0m::change::SdpAnswer;
-use str0m::media::Mid;
 
 use crate::audio_engine::{AudioCommand, AudioEngine, AudioEngineChannels, AudioSettings};
+use crate::connection::{ConnectionInput, ConnectionMachine, ConnectionProblem, VoicePhase};
 use crate::devices::AudioDevices;
 use crate::input_gate::InputMode;
-use crate::offer::{MediaLines, OfferError, ReceiveSlotKind, new_peer};
+use crate::offer::OfferError;
+use crate::person_settings::{PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore};
 use crate::processing::ProcessingSettings;
-use crate::transport::{Transport, TransportCommand};
+use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
+use crate::sounds::{LocalSound, VoiceCue};
+use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError, VideoLink};
+use crate::uplink::UplinkLayerCeiling;
+use crate::video_frame::DecodedPixelFormat;
+use crate::video_receiver::{VideoFrames, VideoReceivers};
+use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
+use crate::watch_list::WatchListPacing;
 
-/// Sends the session's gateway frames (`voice_join`, `voice_state`, `voice_leave`).
+/// Sends the session's gateway frames (`voice_join`, `voice_state`, `voice_leave`). Returns
+/// whether the frame went out: an offer the gateway could not carry is sent again on its next
+/// `READY` or `RESUMED`.
 pub trait VoiceSignalling: Send {
-    fn send_frame(&self, frame: ClientFrame);
+    fn send_frame(&self, frame: ClientFrame) -> bool;
 }
 
 impl<F> VoiceSignalling for F
 where
-    F: Fn(ClientFrame) + Send,
+    F: Fn(ClientFrame) -> bool + Send,
 {
-    fn send_frame(&self, frame: ClientFrame) {
-        self(frame);
+    fn send_frame(&self, frame: ClientFrame) -> bool {
+        self(frame)
     }
 }
 
@@ -45,21 +62,68 @@ pub enum AudioDirection {
 /// What the session tells the interface.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum VoiceSessionEvent {
-    /// Media flows: play the join cue.
+    /// Media flows for the first time in this channel: play the join cue.
     Connected,
+    /// Connecting, connected, or reconnecting in silence.
+    PhaseChanged(VoicePhase),
+    /// The server refused the offer; the session has stopped.
     JoinRefused(VoiceJoinRefusal),
     /// The server ended the session; it has stopped.
     Disconnected(VoiceDisconnectReason),
-    /// The media connection failed or stopped answering; its threads have stopped (the microphone
-    /// is closed). Drop the session or call [`VoiceSession::leave`]; rejoining makes a new
-    /// session.
-    MediaConnectionLost,
+    /// The media connection could not be made or brought back; the session has stopped (after
+    /// telling the server).
+    ConnectionFailed(ConnectionProblem),
+    /// The round trip to the instance, every 2 seconds while connected (the voice panel's
+    /// latency: [`crate::latency_quality`]).
+    RoundTrip(Duration),
     /// The user's own speaking ring (the server never reports a user to themselves).
     SelfSpeaking(bool),
     /// A device could not be opened, or failed and could not be reopened.
     DeviceUnavailable(AudioDirection),
+    /// The server refused the camera or screen, or took it away (`STREAM` lost): the source is
+    /// off; stop its capture.
+    VideoRefused(VoiceVideoRefusal),
+    /// The server turned the camera or screen off (nothing came from it for too long): stop
+    /// its capture.
+    VideoStoppedByServer,
+    /// This session's connection is too slow for `user_id`'s video even at its lowest layer
+    /// (`is_paused`), or it flows again: show their avatar meanwhile.
+    VideoPaused { user_id: Snowflake, is_paused: bool },
 }
 
+/// A camera or screen this session shows, and how large its tile is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchedVideo {
+    pub user_id: Snowflake,
+    /// Decides the layer the server sends (ADR-0035).
+    pub tile_size: VideoTileSize,
+    /// The tile's size in physical pixels: pictures arrive at most this large.
+    pub display_width: u32,
+    pub display_height: u32,
+}
+
+/// At most this round trip reads as good, then medium; above, poor (`web/src/lib/voice.ts`).
+pub const GOOD_ROUND_TRIP: Duration = Duration::from_millis(100);
+pub const MEDIUM_ROUND_TRIP: Duration = Duration::from_millis(250);
+
+/// The latency indicator's three levels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LatencyQuality {
+    Good,
+    Medium,
+    Poor,
+}
+
+#[must_use]
+pub fn latency_quality(round_trip: Duration) -> LatencyQuality {
+    if round_trip <= GOOD_ROUND_TRIP {
+        LatencyQuality::Good
+    } else if round_trip <= MEDIUM_ROUND_TRIP {
+        LatencyQuality::Medium
+    } else {
+        LatencyQuality::Poor
+    }
+}
 /// The user's mute and deafen, with the web client's rules (`web/src/lib/voice-toggles.ts`):
 /// deafening also mutes, undeafening restores the microphone as it was, unmuting undeafens.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -120,6 +184,8 @@ impl VoiceToggles {
 #[derive(Debug, Clone)]
 pub struct VoiceSessionOptions {
     pub channel_id: Snowflake,
+    /// The signed-in user: the server dropping their own voice state means offering again.
+    pub own_user_id: Snowflake,
     /// The instance's IPv4 address (its media socket listens on IPv4 only): the local interface
     /// facing it becomes the ICE candidate.
     pub server_address: Ipv4Addr,
@@ -128,23 +194,30 @@ pub struct VoiceSessionOptions {
     pub processing: ProcessingSettings,
     /// 0 to 2 (200 %).
     pub output_volume: f32,
+    /// 0 to 1 (100 %), on top of the output volume.
+    pub soundboard_volume: f32,
     pub input_device_id: Option<String>,
     pub output_device_id: Option<String>,
+    /// How received pictures are handed to the interface.
+    pub decoded_pixel_format: DecodedPixelFormat,
 }
 
 impl VoiceSessionOptions {
     /// Default settings, unmuted.
     #[must_use]
-    pub fn new(channel_id: Snowflake, server_address: Ipv4Addr) -> Self {
+    pub fn new(channel_id: Snowflake, own_user_id: Snowflake, server_address: Ipv4Addr) -> Self {
         Self {
             channel_id,
+            own_user_id,
             server_address,
             toggles: VoiceToggles::default(),
             input_mode: InputMode::default(),
             processing: ProcessingSettings::default(),
             output_volume: 1.0,
+            soundboard_volume: crate::soundboard::DEFAULT_SOUNDBOARD_VOLUME,
             input_device_id: None,
             output_device_id: None,
+            decoded_pixel_format: DecodedPixelFormat::default(),
         }
     }
 }
@@ -159,18 +232,42 @@ pub enum VoiceSessionError {
     Audio(String),
 }
 
+impl From<PeerError> for VoiceSessionError {
+    fn from(error: PeerError) -> Self {
+        match error {
+            PeerError::Socket(error) => Self::Socket(error),
+            PeerError::Offer(error) => Self::Offer(error),
+        }
+    }
+}
+
 /// One joined voice channel. Dropping it stops its threads (send `voice_leave` with
 /// [`VoiceSession::leave`] to tell the server).
 pub struct VoiceSession {
     channel_id: Snowflake,
-    offer_id: u32,
+    own_user_id: Snowflake,
     toggles: VoiceToggles,
-    signalling: Box<dyn VoiceSignalling>,
-    media_lines: MediaLines,
-    events: Sender<VoiceSessionEvent>,
+    settings_store: Arc<dyn PersonVoiceSettingsStore>,
     audio_commands: Sender<AudioCommand>,
-    transport_commands: Sender<TransportCommand>,
+    network_commands: Sender<NetworkCommand>,
+    is_path_dropped: Arc<AtomicBool>,
+    video_encoder: Arc<VideoEncoderControl>,
+    video_frames: VideoFrames,
+    /// The last list sent to the network thread: only a change goes again.
+    watched_cameras: Vec<WatchedCamera>,
     threads: Vec<JoinHandle<()>>,
+}
+
+/// The video encoding thread, idle until a source starts, and where its frames come out.
+fn spawn_video_encoder(
+    control: &Arc<VideoEncoderControl>,
+) -> std::io::Result<(JoinHandle<()>, Receiver<OutgoingVideoFrame>)> {
+    let (outgoing, outgoing_receiver) = mpsc::channel();
+    let control = Arc::clone(control);
+    let thread = std::thread::Builder::new()
+        .name("mellow-video-encode".into())
+        .spawn(move || control.run(&outgoing))?;
+    Ok((thread, outgoing_receiver))
 }
 
 impl std::fmt::Debug for VoiceSession {
@@ -178,23 +275,14 @@ impl std::fmt::Debug for VoiceSession {
         formatter
             .debug_struct("VoiceSession")
             .field("channel_id", &self.channel_id)
-            .field("offer_id", &self.offer_id)
             .field("toggles", &self.toggles)
             .finish_non_exhaustive()
     }
 }
 
-/// The local address the system routes to `server` from, found without sending anything.
-fn local_address_towards(server: Ipv4Addr) -> std::io::Result<IpAddr> {
-    let probe = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-    // Port 9 (discard): connecting a UDP socket only picks the route.
-    probe.connect((server, 9))?;
-    Ok(probe.local_addr()?.ip())
-}
-
 impl VoiceSession {
-    /// Opens the devices, makes the offer and sends `voice_join` (offer 1). Events arrive on the
-    /// returned receiver; feed the gateway's events to [`VoiceSession::handle_gateway_event`].
+    /// Opens the devices, makes the offer and sends `voice_join`. Events arrive on the returned
+    /// receiver; feed the gateway's events to [`VoiceSession::handle_gateway_event`].
     ///
     /// # Errors
     /// The UDP socket, the offer or the audio engine could not be set up. A missing device is
@@ -203,18 +291,12 @@ impl VoiceSession {
         options: VoiceSessionOptions,
         devices: Box<dyn AudioDevices>,
         signalling: Box<dyn VoiceSignalling>,
+        settings_store: Arc<dyn PersonVoiceSettingsStore>,
     ) -> Result<(Self, Receiver<VoiceSessionEvent>), VoiceSessionError> {
-        // Bound to every interface so the system picks the source per destination (the server
-        // may answer from another of its addresses); only the candidate names one interface.
-        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
-        let local_candidate = SocketAddr::new(
-            local_address_towards(options.server_address)?,
-            socket.local_addr()?.port(),
-        );
-        let peer = new_peer(local_candidate, Instant::now())?;
+        let first_peer = PeerConnection::new(options.server_address, 1)?;
         let (events, event_receiver) = mpsc::channel();
         let (audio_commands, audio_command_receiver) = mpsc::channel();
-        let (transport_commands, transport_command_receiver) = mpsc::channel();
+        let (network_commands, network_command_receiver) = mpsc::channel();
         let (outgoing, outgoing_receiver) = mpsc::channel();
         let (incoming, incoming_receiver) = mpsc::channel();
         let settings = AudioSettings {
@@ -223,10 +305,10 @@ impl VoiceSession {
             input_mode: options.input_mode,
             processing: options.processing,
             output_volume: options.output_volume,
+            soundboard_volume: options.soundboard_volume,
             input_device_id: options.input_device_id,
             output_device_id: options.output_device_id,
         };
-        let receive_slots: Vec<(Mid, ReceiveSlotKind)> = peer.media_lines.audio_receive().collect();
         let (started, has_started) = mpsc::channel();
         let audio_channels = AudioEngineChannels {
             commands: audio_command_receiver,
@@ -234,12 +316,12 @@ impl VoiceSession {
             outgoing,
             events: events.clone(),
         };
-        // The engine is built on its own thread: its codecs and device streams never move.
+        // The engine is built on its own thread: its codecs and device streams never move. Its
+        // slots come with the first offer's `NewMediaSession`.
         let audio_thread = std::thread::Builder::new()
             .name("mellow-voice-audio".into())
             .spawn(move || {
-                match AudioEngine::new(devices, audio_channels, settings, receive_slots.into_iter())
-                {
+                match AudioEngine::new(devices, audio_channels, settings, std::iter::empty()) {
                     Ok(engine) => {
                         let _ = started.send(Ok(()));
                         engine.run();
@@ -254,41 +336,54 @@ impl VoiceSession {
             Ok(Err(reason)) => return Err(VoiceSessionError::Audio(reason)),
             Err(_) => return Err(VoiceSessionError::Audio("the audio thread ended".into())),
         }
-        let media_lines = peer.media_lines.clone();
-        let sdp_offer = peer.sdp_offer;
-        let transport = Transport {
-            rtc: peer.rtc,
-            pending_offer: Some(peer.pending),
-            socket,
-            local_candidate,
-            media_lines: peer.media_lines,
-            commands: transport_command_receiver,
-            outgoing: outgoing_receiver,
-            incoming,
-            events: events.clone(),
-            audio_commands: audio_commands.clone(),
+        let is_path_dropped = Arc::new(AtomicBool::new(false));
+        let video_encoder = Arc::new(VideoEncoderControl::default());
+        let video_frames = VideoFrames::new(options.decoded_pixel_format);
+        let (video_thread, outgoing_video) = spawn_video_encoder(&video_encoder)?;
+        let (keyframe_requests, keyframe_request_receiver) = mpsc::channel();
+        let video = VideoLink {
+            encoder: Arc::clone(&video_encoder),
+            outgoing: outgoing_video,
+            receivers: VideoReceivers::new(video_frames.clone(), keyframe_requests),
+            keyframe_requests: keyframe_request_receiver,
+            keyframe_requested_at: HashMap::new(),
+            source: None,
+            watched_cameras: Vec::new(),
+            watch_list_pacing: WatchListPacing::default(),
+            uplink: UplinkLayerCeiling::default(),
         };
-        let transport_thread = std::thread::Builder::new()
-            .name("mellow-voice-network".into())
-            .spawn(move || transport.run())?;
-        let session = Self {
-            channel_id: options.channel_id,
-            offer_id: 1,
+        let network = NetworkThread {
+            machine: ConnectionMachine::new(options.channel_id),
+            peer: Some(first_peer),
+            server_address: options.server_address,
+            own_user_id: options.own_user_id,
             toggles: options.toggles,
             signalling,
-            media_lines,
+            settings_store: settings_store.clone(),
+            commands: network_command_receiver,
+            outgoing: outgoing_receiver,
+            incoming,
             events,
-            audio_commands,
-            transport_commands,
-            threads: vec![audio_thread, transport_thread],
+            audio_commands: audio_commands.clone(),
+            video,
+            is_path_dropped: is_path_dropped.clone(),
         };
-        session.signalling.send_frame(ClientFrame::VoiceJoin {
-            channel_id: session.channel_id,
-            offer_id: session.offer_id,
-            sdp_offer,
-            self_mute: session.toggles.is_muted(),
-            self_deaf: session.toggles.is_deafened(),
-        });
+        let network_thread = std::thread::Builder::new()
+            .name("mellow-voice-network".into())
+            .spawn(move || network.run())?;
+        let session = Self {
+            channel_id: options.channel_id,
+            own_user_id: options.own_user_id,
+            toggles: options.toggles,
+            settings_store,
+            audio_commands,
+            network_commands,
+            is_path_dropped,
+            video_encoder,
+            video_frames,
+            watched_cameras: Vec::new(),
+            threads: vec![audio_thread, network_thread, video_thread],
+        };
         Ok((session, event_receiver))
     }
 
@@ -302,56 +397,46 @@ impl VoiceSession {
         self.toggles
     }
 
-    /// Applies the gateway events meant for this session; ignores the others.
-    pub fn handle_gateway_event(&mut self, event: &GatewayEvent) {
-        match event {
-            GatewayEvent::VoiceSessionDescription {
-                channel_id,
-                offer_id,
-                sdp_answer,
-            } if *channel_id == self.channel_id && *offer_id == self.offer_id => {
-                match SdpAnswer::from_sdp_string(sdp_answer) {
-                    Ok(answer) => {
-                        let _ = self
-                            .transport_commands
-                            .send(TransportCommand::ApplyAnswer(Box::new(answer)));
-                    }
-                    Err(error) => {
-                        tracing::warn!(%error, "the server's voice answer does not parse");
-                        self.stop_with(VoiceSessionEvent::MediaConnectionLost);
-                    }
-                }
-            }
-            GatewayEvent::VoiceJoinRefused {
-                channel_id,
-                offer_id,
-                reason,
-            } if *channel_id == self.channel_id && *offer_id == self.offer_id => {
-                self.stop_with(VoiceSessionEvent::JoinRefused(*reason));
-            }
-            GatewayEvent::VoiceSlotAssigned {
-                channel_id,
-                mid,
-                user_id,
-            } if *channel_id == self.channel_id => {
-                let mid = Mid::from(mid.as_str());
-                if matches!(
-                    self.media_lines.receive_slot_kind(mid),
-                    Some(ReceiveSlotKind::Voice | ReceiveSlotKind::ScreenSound)
-                ) {
-                    self.command(AudioCommand::AssignSlot {
-                        mid,
-                        user_id: *user_id,
-                    });
-                }
-            }
-            GatewayEvent::VoiceDisconnected { channel_id, reason }
-                if *channel_id == self.channel_id =>
-            {
-                self.stop_with(VoiceSessionEvent::Disconnected(*reason));
-            }
-            _ => {}
+    /// Passes on the gateway's voice events; ignores the others without copying them.
+    pub fn handle_gateway_event(&self, event: &GatewayEvent) {
+        let is_for_voice = match event {
+            GatewayEvent::VoiceSessionDescription { .. }
+            | GatewayEvent::VoiceJoinRefused { .. }
+            | GatewayEvent::VoiceSlotAssigned { .. }
+            | GatewayEvent::VoiceVideoLayers { .. }
+            | GatewayEvent::VoiceVideoRefused { .. }
+            | GatewayEvent::VoiceVideoPaused { .. }
+            | GatewayEvent::VoiceDisconnected { .. } => true,
+            GatewayEvent::VoiceStateDelete { user_id, .. } => *user_id == self.own_user_id,
+            _ => false,
+        };
+        if is_for_voice {
+            self.network(NetworkCommand::Gateway(Box::new(event.clone())));
         }
+    }
+
+    /// The gateway identified again (a new session): it knows nothing of this voice.
+    pub fn note_gateway_ready(&self) {
+        self.network(NetworkCommand::Connection(ConnectionInput::GatewayReady));
+    }
+
+    /// The gateway resumed: voice is offered again unless media still flows.
+    pub fn note_gateway_resumed(&self) {
+        self.network(NetworkCommand::Connection(ConnectionInput::GatewayResumed));
+    }
+
+    /// The system is back online (a network change): voice is offered again unless media
+    /// still flows.
+    pub fn note_back_online(&self) {
+        self.network(NetworkCommand::Connection(ConnectionInput::BackOnline));
+    }
+
+    /// Joins another channel with the same microphone: a new offer, announced as a move.
+    pub fn move_to(&mut self, channel_id: Snowflake) {
+        self.channel_id = channel_id;
+        self.network(NetworkCommand::Connection(ConnectionInput::MoveTo {
+            channel_id,
+        }));
     }
 
     pub fn set_self_muted(&mut self, is_muted: bool) {
@@ -367,32 +452,106 @@ impl VoiceSession {
     fn apply_toggles(&self) {
         self.command(AudioCommand::SetMuted(self.toggles.is_muted()));
         self.command(AudioCommand::SetDeafened(self.toggles.is_deafened()));
-        // Always the full state: the server drops `voice_state` frames over its rate limit.
-        self.signalling.send_frame(ClientFrame::VoiceState {
-            self_mute: self.toggles.is_muted(),
-            self_deaf: self.toggles.is_deafened(),
-            self_video: false,
-            self_stream: false,
+        self.network(NetworkCommand::SetToggles(self.toggles));
+    }
+
+    /// Turns the camera or a screen on, replacing the other (never both), and tells the
+    /// server; capture pushes its pictures into the returned input. The server answers with
+    /// [`VoiceSessionEvent::VideoRefused`] when it does not allow it.
+    #[must_use]
+    pub fn start_video(&self, kind: VideoSourceKind) -> VideoInput {
+        let input = self.video_encoder.start(kind);
+        self.network(NetworkCommand::SetVideoSource(Some(kind)));
+        input
+    }
+
+    /// A new quality for the shared screen: only bit rates change, as on the web.
+    pub fn change_screen_share_quality(&self, quality: ScreenShareQuality) {
+        if matches!(self.video_source(), Some(VideoSourceKind::Screen(_))) {
+            let kind = VideoSourceKind::Screen(quality);
+            self.video_encoder.change_kind(kind);
+            self.network(NetworkCommand::SetVideoSource(Some(kind)));
+        }
+    }
+
+    /// Turns the camera or screen off and tells the server; its input stops taking pictures.
+    pub fn stop_video(&self) {
+        if self.video_source().is_some() {
+            self.video_encoder.stop_source();
+            self.network(NetworkCommand::SetVideoSource(None));
+        }
+    }
+
+    /// The source on, if any (the server may have turned it off: see the session's events).
+    #[must_use]
+    pub fn video_source(&self) -> Option<VideoSourceKind> {
+        self.video_encoder.source()
+    }
+
+    /// The cameras and screens to show (at most `MAXIMUM_VIDEO_RECEIVE_SLOTS`, the rest is
+    /// ignored), replacing the previous list. Only a change of people or tile sizes reaches the
+    /// server, at most every 400 ms (the latest change always arrives); drawn sizes apply at
+    /// once.
+    pub fn watch_videos(&mut self, watched: &[WatchedVideo]) {
+        let watched = &watched[..watched
+            .len()
+            .min(mellow_protocol::MAXIMUM_VIDEO_RECEIVE_SLOTS)];
+        self.video_frames.set_display_sizes(
+            watched
+                .iter()
+                .map(|video| {
+                    (
+                        video.user_id,
+                        (video.display_width.max(1), video.display_height.max(1)),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+        let cameras: Vec<WatchedCamera> = watched
+            .iter()
+            .map(|video| WatchedCamera {
+                user_id: video.user_id,
+                size: video.tile_size,
+            })
+            .collect();
+        if cameras != self.watched_cameras {
+            self.watched_cameras.clone_from(&cameras);
+            self.network(NetworkCommand::WatchCameras(cameras));
+        }
+    }
+
+    /// The decoded pictures of the watched cameras and screens, for the interface.
+    #[must_use]
+    pub fn video_frames(&self) -> VideoFrames {
+        self.video_frames.clone()
+    }
+
+    /// One person's volume and local mute, for their voice or their screen's sound: applied at
+    /// once and remembered in the settings store.
+    pub fn set_person_setting(
+        &self,
+        source: PersonSoundSource,
+        user_id: Snowflake,
+        setting: PersonVoiceSetting,
+    ) {
+        let setting = setting.clamped();
+        self.settings_store
+            .write_person_setting(source, user_id, setting);
+        self.command(AudioCommand::SetPersonSetting {
+            source,
+            user_id,
+            setting,
         });
     }
 
-    /// 0 to 2 (200 %) for one person's voice.
-    pub fn set_person_volume(&self, user_id: Snowflake, volume: f32) {
-        self.command(AudioCommand::SetPersonVolume { user_id, volume });
-    }
-
-    /// Silences one person for this user only.
-    pub fn set_person_locally_muted(&self, user_id: Snowflake, is_muted: bool) {
-        self.command(AudioCommand::SetPersonLocallyMuted { user_id, is_muted });
-    }
-
-    /// 0 to 2 (200 %) for the sound of one person's shared screen.
-    pub fn set_stream_volume(&self, user_id: Snowflake, volume: f32) {
-        self.command(AudioCommand::SetStreamVolume { user_id, volume });
-    }
-
+    /// 0 to 2 (200 %).
     pub fn set_output_volume(&self, volume: f32) {
         self.command(AudioCommand::SetOutputVolume(volume));
+    }
+
+    /// 0 to 1 (100 %), for soundboard and join sounds.
+    pub fn set_soundboard_volume(&self, volume: f32) {
+        self.command(AudioCommand::SetSoundboardVolume(volume));
     }
 
     pub fn set_input_mode(&self, mode: InputMode) {
@@ -418,9 +577,28 @@ impl VoiceSession {
         self.command(AudioCommand::SetOutputDevice(device_id));
     }
 
+    /// Plays a cue on the voice output, where the echo canceller hears it.
+    pub fn play_cue(&self, cue: VoiceCue) {
+        self.command(AudioCommand::PlayCue(cue));
+    }
+
+    /// Plays a soundboard or join sound at the output volume times the soundboard volume; who
+    /// should hear it is
+    /// [`mellow_client_core::shared_logic::soundboard::should_hear_sound`]'s call.
+    pub fn play_soundboard_sound(&self, sound: LocalSound) {
+        self.command(AudioCommand::PlaySoundboardSound(sound));
+    }
+
+    /// Loses the current network path, as a Wi-Fi drop would: the session must notice and
+    /// reconnect on a new one. For tests only.
+    #[doc(hidden)]
+    pub fn drop_network_path_for_tests(&self) {
+        self.is_path_dropped.store(true, Ordering::Relaxed);
+    }
+
     /// Tells the server and stops.
     pub fn leave(self) {
-        self.signalling.send_frame(ClientFrame::VoiceLeave);
+        self.network(NetworkCommand::Leave);
     }
 
     fn command(&self, command: AudioCommand) {
@@ -428,14 +606,17 @@ impl VoiceSession {
         let _ = self.audio_commands.send(command);
     }
 
-    fn stop_with(&mut self, event: VoiceSessionEvent) {
-        self.stop_threads();
-        let _ = self.events.send(event);
+    fn network(&self, command: NetworkCommand) {
+        // A stopped network thread means the session already ended and said so.
+        let _ = self.network_commands.send(command);
     }
+}
 
-    fn stop_threads(&mut self) {
+impl Drop for VoiceSession {
+    fn drop(&mut self) {
+        let _ = self.network_commands.send(NetworkCommand::Stop);
         let _ = self.audio_commands.send(AudioCommand::Stop);
-        let _ = self.transport_commands.send(TransportCommand::Stop);
+        self.video_encoder.shut_down();
         for thread in self.threads.drain(..) {
             if thread.join().is_err() {
                 tracing::error!("a voice thread panicked");
@@ -444,15 +625,10 @@ impl VoiceSession {
     }
 }
 
-impl Drop for VoiceSession {
-    fn drop(&mut self) {
-        self.stop_threads();
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::person_settings::InMemoryPersonVoiceSettings;
 
     #[test]
     fn deafening_mutes_and_undeafening_restores_the_microphone() {
@@ -491,107 +667,165 @@ mod tests {
     fn session_without_threads() -> (
         VoiceSession,
         Receiver<AudioCommand>,
-        Receiver<TransportCommand>,
-        Receiver<VoiceSessionEvent>,
+        Receiver<NetworkCommand>,
+        Arc<InMemoryPersonVoiceSettings>,
     ) {
-        let peer = new_peer(
-            SocketAddr::new(Ipv4Addr::LOCALHOST.into(), 9),
-            Instant::now(),
-        )
-        .unwrap();
-        let (events, event_receiver) = mpsc::channel();
         let (audio_commands, audio_command_receiver) = mpsc::channel();
-        let (transport_commands, transport_command_receiver) = mpsc::channel();
+        let (network_commands, network_command_receiver) = mpsc::channel();
+        let store = Arc::new(InMemoryPersonVoiceSettings::default());
         let session = VoiceSession {
             channel_id: Snowflake::from_raw(1),
-            offer_id: 1,
+            own_user_id: Snowflake::from_raw(5),
             toggles: VoiceToggles::default(),
-            signalling: Box::new(|_| {}),
-            media_lines: peer.media_lines,
-            events,
+            settings_store: store.clone(),
             audio_commands,
-            transport_commands,
+            network_commands,
+            is_path_dropped: Arc::new(AtomicBool::new(false)),
+            video_encoder: Arc::new(VideoEncoderControl::default()),
+            video_frames: VideoFrames::new(DecodedPixelFormat::Bgra),
+            watched_cameras: Vec::new(),
             threads: Vec::new(),
         };
         (
             session,
             audio_command_receiver,
-            transport_command_receiver,
-            event_receiver,
+            network_command_receiver,
+            store,
         )
     }
 
     #[test]
-    fn events_for_another_channel_or_offer_are_ignored() {
-        let (mut session, audio, transport, events) = session_without_threads();
-        let other_channel = Snowflake::from_raw(2);
-        session.handle_gateway_event(&GatewayEvent::VoiceSessionDescription {
-            channel_id: session.channel_id,
-            offer_id: 2,
-            sdp_answer: "not even sdp".into(),
-        });
-        session.handle_gateway_event(&GatewayEvent::VoiceJoinRefused {
-            channel_id: other_channel,
-            offer_id: 1,
-            reason: VoiceJoinRefusal::ChannelFull,
-        });
-        session.handle_gateway_event(&GatewayEvent::VoiceDisconnected {
-            channel_id: other_channel,
-            reason: VoiceDisconnectReason::ChannelDeleted,
-        });
-        let voice_mid = session.media_lines.voice_receive[0];
-        session.handle_gateway_event(&GatewayEvent::VoiceSlotAssigned {
-            channel_id: other_channel,
-            mid: voice_mid.to_string(),
-            user_id: Snowflake::from_raw(3),
-        });
-        assert!(audio.try_recv().is_err());
-        assert!(transport.try_recv().is_err());
-        assert!(events.try_recv().is_err());
+    fn only_voice_events_and_the_user_s_own_departure_reach_the_network_thread() {
+        let (session, _audio, network, _store) = session_without_threads();
+        let voice_events = [
+            GatewayEvent::VoiceDisconnected {
+                channel_id: Snowflake::from_raw(1),
+                reason: VoiceDisconnectReason::ChannelDeleted,
+            },
+            GatewayEvent::VoiceStateDelete {
+                guild_id: Snowflake::from_raw(9),
+                channel_id: Snowflake::from_raw(1),
+                user_id: Snowflake::from_raw(5),
+            },
+        ];
+        let other_events = [
+            GatewayEvent::VoiceStateDelete {
+                guild_id: Snowflake::from_raw(9),
+                channel_id: Snowflake::from_raw(1),
+                user_id: Snowflake::from_raw(6),
+            },
+            GatewayEvent::TypingStart {
+                guild_id: None,
+                channel_id: Snowflake::from_raw(1),
+                user_id: Snowflake::from_raw(6),
+            },
+        ];
+        for event in voice_events.iter().chain(&other_events) {
+            session.handle_gateway_event(event);
+        }
+        let forwarded: Vec<NetworkCommand> = network.try_iter().collect();
+        assert_eq!(forwarded.len(), voice_events.len());
+        assert!(forwarded.iter().zip(&voice_events).all(
+            |(command, event)| matches!(command, NetworkCommand::Gateway(sent) if **sent == *event)
+        ));
     }
 
     #[test]
-    fn only_audio_slots_are_assigned_to_the_audio_thread() {
-        let (mut session, audio, _transport, _events) = session_without_threads();
-        let camera_mid = session.media_lines.camera_receive[0];
-        let voice_mid = session.media_lines.voice_receive[0];
-        let user_id = Snowflake::from_raw(3);
-        for mid in [camera_mid, voice_mid] {
-            session.handle_gateway_event(&GatewayEvent::VoiceSlotAssigned {
-                channel_id: session.channel_id,
-                mid: mid.to_string(),
-                user_id,
-            });
-        }
+    fn toggles_reach_the_audio_and_network_threads() {
+        let (mut session, audio, network, _store) = session_without_threads();
+        session.set_self_deafened(true);
+        assert!(matches!(audio.try_recv(), Ok(AudioCommand::SetMuted(true))));
         assert!(matches!(
             audio.try_recv(),
-            Ok(AudioCommand::AssignSlot { mid, user_id: assigned })
-                if mid == voice_mid && assigned == user_id
+            Ok(AudioCommand::SetDeafened(true))
         ));
-        assert!(audio.try_recv().is_err(), "the camera slot is not audio");
+        assert!(matches!(
+            network.try_recv(),
+            Ok(NetworkCommand::SetToggles(toggles)) if toggles.is_deafened()
+        ));
     }
 
     #[test]
-    fn a_refusal_of_this_offer_stops_the_session() {
-        let (mut session, audio, transport, events) = session_without_threads();
-        session.handle_gateway_event(&GatewayEvent::VoiceJoinRefused {
-            channel_id: session.channel_id,
-            offer_id: 1,
-            reason: VoiceJoinRefusal::ChannelFull,
-        });
-        assert!(matches!(audio.try_recv(), Ok(AudioCommand::Stop)));
-        assert!(matches!(transport.try_recv(), Ok(TransportCommand::Stop)));
+    fn a_person_setting_is_applied_and_remembered() {
+        let (session, audio, _network, store) = session_without_threads();
+        let user_id = Snowflake::from_raw(8);
+        let setting = PersonVoiceSetting {
+            volume: 3.0,
+            is_locally_muted: true,
+        };
+        session.set_person_setting(PersonSoundSource::Voice, user_id, setting);
+        let remembered = store.person_setting(PersonSoundSource::Voice, user_id);
+        assert!(remembered.is_locally_muted && (remembered.volume - 2.0).abs() < f32::EPSILON);
+        assert!(matches!(
+            audio.try_recv(),
+            Ok(AudioCommand::SetPersonSetting { setting, .. }) if setting == remembered
+        ));
+    }
+
+    #[test]
+    fn a_screen_replaces_the_camera_and_the_network_thread_hears_of_each() {
+        let (session, _audio, network, _store) = session_without_threads();
+        let camera = session.start_video(VideoSourceKind::Camera);
+        let screen = session.start_video(VideoSourceKind::Screen(ScreenShareQuality::High));
+        assert!(!camera.is_open() && screen.is_open(), "never both");
+        session.stop_video();
+        assert!(!screen.is_open() && session.video_source().is_none());
+        let sources: Vec<Option<VideoSourceKind>> = network
+            .try_iter()
+            .filter_map(|command| match command {
+                NetworkCommand::SetVideoSource(kind) => Some(kind),
+                _ => None,
+            })
+            .collect();
         assert_eq!(
-            events.try_recv(),
-            Ok(VoiceSessionEvent::JoinRefused(
-                VoiceJoinRefusal::ChannelFull
-            ))
+            sources,
+            [
+                Some(VideoSourceKind::Camera),
+                Some(VideoSourceKind::Screen(ScreenShareQuality::High)),
+                None
+            ]
         );
     }
 
     #[test]
-    fn the_loopback_server_is_reached_from_the_loopback_interface() {
-        let local = local_address_towards(Ipv4Addr::LOCALHOST).unwrap();
-        assert!(local.is_loopback());
+    fn only_a_change_of_people_or_tile_sizes_sends_a_watch_list() {
+        let (mut session, _audio, network, _store) = session_without_threads();
+        let watched = WatchedVideo {
+            user_id: Snowflake::from_raw(7),
+            tile_size: VideoTileSize::Large,
+            display_width: 1_280,
+            display_height: 720,
+        };
+        session.watch_videos(&[watched]);
+        session.watch_videos(&[WatchedVideo {
+            display_width: 640,
+            ..watched
+        }]);
+        assert_eq!(network.try_iter().count(), 1, "only the drawn size changed");
+        session.watch_videos(&[WatchedVideo {
+            tile_size: VideoTileSize::Small,
+            ..watched
+        }]);
+        assert_eq!(network.try_iter().count(), 1);
+    }
+
+    #[test]
+    fn latency_reads_as_the_web_s_three_levels() {
+        assert_eq!(
+            latency_quality(Duration::from_millis(100)),
+            LatencyQuality::Good
+        );
+        assert_eq!(
+            latency_quality(Duration::from_millis(101)),
+            LatencyQuality::Medium
+        );
+        assert_eq!(
+            latency_quality(Duration::from_millis(250)),
+            LatencyQuality::Medium
+        );
+        assert_eq!(
+            latency_quality(Duration::from_millis(251)),
+            LatencyQuality::Poor
+        );
     }
 }

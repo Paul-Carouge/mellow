@@ -26,11 +26,12 @@ pub use direct_messages::{
     UpdateGroupConversationRequest,
 };
 pub use gateway::{
-    ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
+    CANONICAL_SOUND_FORMAT_CHUNK, ClientFrame, GATEWAY_VERSION, GatewayEvent, Hello,
+    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SOUND_DURATION_MILLISECONDS, MAXIMUM_SOUND_SAMPLES,
     MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_OFFER_BYTES, MAXIMUM_VOICE_RECEIVE_SLOTS,
     MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MessageReaction, PollVote, Presence, PresenceStatus,
-    Ready, ServerFrame, SimulcastLayer, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
-    VoiceState, VoiceVideoRefusal, WatchedCamera,
+    Ready, SOUND_SAMPLE_RATE_HERTZ, ServerFrame, SimulcastLayer, VideoCodec, VideoTileSize,
+    VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 pub use gifs::{GifSettings, MAXIMUM_GIF_FAVOURITES};
 pub use guilds::{

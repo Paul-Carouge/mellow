@@ -276,10 +276,45 @@ export function screenShareProblemOf(error: unknown): ScreenShareProblem {
   return name === "NotAllowedError" || name === "AbortError" ? "denied" : "unsupported";
 }
 
-/** The codecs every offer keeps when it carries video (ADR-0035): Opus, then VP8 and its retransmissions. */
+/**
+ * The codecs every offer keeps when it carries video (ADR-0035): Opus, then VP8 and its
+ * retransmissions to send; to receive, H.264 Constrained Baseline too where the browser decodes it
+ * (ADR-0052), so pictures from hardware encoders reach this browser.
+ */
 export interface CodecPreferences {
   readonly audio: readonly RTCRtpCodec[];
+  /** Your camera or screen: VP8 and its retransmissions only. */
   readonly video: readonly RTCRtpCodec[];
+  /** The video receive slots: VP8, then H.264 if decoded, then retransmissions. */
+  readonly receivedVideo: readonly RTCRtpCodec[];
+  readonly receivesH264: boolean;
+}
+
+/** `profile_idc` 66 with `constraint_set1_flag` and no flag of a higher profile (RFC 6184, 8.1). */
+const CONSTRAINED_BASELINE_PROFILE_IDC = 0x42;
+const CONSTRAINED_BASELINE_IOP_MASK = 0x4f;
+const CONSTRAINED_BASELINE_IOP = 0x40;
+
+/** H.264 as the instance forwards it (ADR-0052): Constrained Baseline in packetisation mode 1. */
+export function isConstrainedBaselineInPacketizationMode1(codec: RTCRtpCodec): boolean {
+  if (codec.mimeType.toLowerCase() !== "video/h264") {
+    return false;
+  }
+  const parameters = new Map(
+    (codec.sdpFmtpLine ?? "").split(";").map((parameter) => {
+      const [name = "", value = ""] = parameter.split("=");
+      return [name.trim().toLowerCase(), value.trim().toLowerCase()] as const;
+    }),
+  );
+  const profileLevelId = parameters.get("profile-level-id") ?? "";
+  const profileIdc = Number.parseInt(profileLevelId.slice(0, 2), 16);
+  const profileIop = Number.parseInt(profileLevelId.slice(2, 4), 16);
+  return (
+    parameters.get("packetization-mode") === "1" &&
+    /^[0-9a-f]{6}$/.test(profileLevelId) &&
+    profileIdc === CONSTRAINED_BASELINE_PROFILE_IDC &&
+    (profileIop & CONSTRAINED_BASELINE_IOP_MASK) === CONSTRAINED_BASELINE_IOP
+  );
 }
 
 export function preferredCodecs(
@@ -288,6 +323,14 @@ export function preferredCodecs(
 ): CodecPreferences | null {
   const opus = audio.filter((codec) => codec.mimeType.toLowerCase() === "audio/opus");
   const vp8 = video.filter((codec) => codec.mimeType.toLowerCase() === "video/vp8");
+  const h264 = video.filter(isConstrainedBaselineInPacketizationMode1);
   const retransmissions = video.filter((codec) => codec.mimeType.toLowerCase() === "video/rtx");
-  return opus.length === 0 || vp8.length === 0 ? null : { audio: opus, video: [...vp8, ...retransmissions] };
+  return opus.length === 0 || vp8.length === 0
+    ? null
+    : {
+        audio: opus,
+        video: [...vp8, ...retransmissions],
+        receivedVideo: [...vp8, ...h264, ...retransmissions],
+        receivesH264: h264.length > 0,
+      };
 }

@@ -1,7 +1,19 @@
 //! Mellow's native desktop client on GPUI (ADR-0051): the theme generated from the design tokens,
-//! the bridge to the Tokio runtime the network runs on, and the Dusk shell.
+//! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
+//! network runs on, the session and its sign-in screens, and the Dusk shell.
 
+pub mod components;
+pub mod connection_banner;
+pub mod i18n;
+mod local_widgets;
+pub mod main_window;
+pub mod preferences;
+pub mod session;
+pub mod session_store;
 pub mod shell;
+pub mod sign_in_form;
+pub mod sign_in_screen;
+pub mod strings_pending_i18n;
 pub mod theme;
 pub mod tokio_bridge;
 pub mod window_chrome;
@@ -10,10 +22,12 @@ use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, actions};
 use tokio::runtime::Handle;
 
-use crate::shell::DuskShell;
+use crate::main_window::MainWindow;
+use crate::session::Session;
+use crate::strings_pending_i18n::{ActiveStrings, Language};
 use crate::window_chrome::WINDOW_TITLE;
 
-actions!(mellow, [Quit]);
+actions!(mellow, [Quit, SignOut]);
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
@@ -29,12 +43,26 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     // OS reduced-motion setting into `App::reduce_motion`, but follows it live on Linux only.
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
+    components::bind_tab_navigation(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
+    let strings = Language::of_the_system().strings();
+    cx.set_global(ActiveStrings(strings));
+    let session = cx.new(Session::new_restoring_stored_session);
+    Session::end_connection_when_the_app_quits(&session, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
+    let session_to_sign_out = session.clone();
+    cx.on_action(move |_: &SignOut, cx| {
+        session_to_sign_out.update(cx, Session::sign_out);
+    });
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
-    // shortcut: English menu label; the interface strings come from the web's catalogues later.
-    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action("Quit Mellow", Quit)])]);
+    i18n::use_language(i18n::Language::from_operating_system(), cx);
+    let catalogue = i18n::strings(cx);
+    // shortcut: "Sign out" sits in the menu bar until the user card's menu lands.
+    cx.set_menus([Menu::new(WINDOW_TITLE).items([
+        MenuItem::action(catalogue.settings().sign_out(), SignOut),
+        MenuItem::action(catalogue.desktop().quit_mellow(), Quit),
+    ])]);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {
@@ -43,6 +71,15 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     })
     .detach();
 
+    if let Some(forced_appearance) = components::gallery::gallery_requested() {
+        cx.open_window(
+            components::gallery::gallery_window_options(cx),
+            |window, cx| components::gallery::open_gallery(forced_appearance, window, cx),
+        )
+        .context("cannot open the component gallery")?;
+        cx.activate(true);
+        return Ok(());
+    }
     cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
         theme::follow_window_appearance(window, cx);
         cx.new(|cx| {
@@ -52,7 +89,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
                 gpui_base::apply_system_reduce_motion(cx);
             })
             .detach();
-            DuskShell::default()
+            MainWindow::new(session, window, cx)
         })
     })
     .context("cannot open the main window")?;

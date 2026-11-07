@@ -16,8 +16,8 @@ use std::sync::{Arc, Weak};
 use std::time::Instant;
 
 use mellow_protocol::{
-    GatewayEvent, MAXIMUM_VIDEO_RECEIVE_SLOTS, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal,
-    VoiceState, VoiceVideoRefusal, WatchedCamera,
+    GatewayEvent, MAXIMUM_VIDEO_RECEIVE_SLOTS, Snowflake, VideoCodec, VoiceDisconnectReason,
+    VoiceJoinRefusal, VoiceState, VoiceVideoRefusal, WatchedCamera,
 };
 use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
@@ -30,7 +30,7 @@ use crate::domain::voice_rules::{
 use crate::events::{EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
 use address::{HostResolutions, announced_address, host_from_header};
-use media::{MediaCommand, MediaEvent, MediaJoin, ScreenSoundMids};
+use media::{MediaCommand, MediaEvent, MediaJoin, ScreenSoundMids, SessionVideoCodecs};
 
 /// A `voice_join` frame, with what the gateway knows of its sender.
 #[derive(Debug)]
@@ -86,6 +86,7 @@ struct PreparedJoin {
     /// The offer has video m-lines: the participant may turn a camera on and watch others.
     has_video: bool,
     screen_sound: Option<ScreenSoundMids>,
+    video_codecs: SessionVideoCodecs,
 }
 
 /// What a join is allowed, read again under the participants lock.
@@ -111,6 +112,8 @@ struct Participant {
     suppressed: bool,
     /// Their offer has video m-lines.
     has_video: bool,
+    /// The codec of their camera or screen (ADR-0052), `None` when they cannot send video.
+    video_codec: Option<VideoCodec>,
     /// When they last played a soundboard sound, for the minimum gap between two.
     last_sound_played_at: Option<Instant>,
 }
@@ -126,6 +129,7 @@ impl Participant {
             suppressed: self.suppressed,
             self_video: self.self_state.video == Some(VideoSource::Camera),
             self_stream: self.self_state.video == Some(VideoSource::Screen),
+            video_codec: self.video_codec,
             // Only the arrival announces it (`VoiceShared::announce_join`), so state changes
             // never replay it (ADR-0032).
             join_sound_id: None,
@@ -356,6 +360,11 @@ impl VoiceService {
         let Ok(Some((rtc, sdp_answer))) = answered else {
             return Err(VoiceJoinRefusal::InvalidOffer);
         };
+        let video_codecs = offer_shape
+            .video_lines
+            .as_ref()
+            .map(|lines| media::session_video_codecs(&rtc, lines))
+            .unwrap_or_default();
         Ok(PreparedJoin {
             candidate_address,
             rtc,
@@ -370,6 +379,7 @@ impl VoiceService {
                     .map(|mid| mid.as_str().into())
                     .collect(),
             }),
+            video_codecs,
         })
     }
 
@@ -441,6 +451,7 @@ impl VoiceService {
             member_join_sound_id,
             has_video,
             screen_sound,
+            video_codecs,
         } = prepared;
         let Some(media) = &shared.media else {
             return refuse(VoiceJoinRefusal::VoiceUnavailable);
@@ -481,6 +492,7 @@ impl VoiceService {
             },
             suppressed: !may_speak,
             has_video,
+            video_codec: video_codecs.camera,
             last_sound_played_at: previous
                 .as_ref()
                 .and_then(|previous| previous.last_sound_played_at),
@@ -495,6 +507,7 @@ impl VoiceService {
             is_deafened: participant.self_state.self_deaf,
             may_speak: !participant.suppressed,
             screen_sound,
+            video_codecs,
         };
         if media
             .commands

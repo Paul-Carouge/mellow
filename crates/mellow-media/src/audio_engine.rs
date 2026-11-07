@@ -2,7 +2,7 @@
 //! only owner of the devices' ring buffers on the engine's side; device callbacks only touch the
 //! other end of those buffers.
 
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::VecDeque;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -11,24 +11,26 @@ use str0m::media::Mid;
 
 use crate::audio_format::{Frame, SAMPLES_PER_FRAME, SAMPLES_PER_PACKET, VOICE_SAMPLE_RATE};
 use crate::codec::{VoiceDecoder, VoiceEncoder, packet_duration_samples};
-use crate::devices::{AudioDevices, CaptureStream, PlaybackStream, has_failed};
+use crate::devices::{AudioDevices, CaptureStream, has_failed};
+use crate::enhancement::PeakLimiter;
 use crate::input_gate::{InputGate, InputMode, SelfSpeakingDetector};
 use crate::jitter_buffer::{DriftSteering, JitterBuffer, MAXIMUM_STEERING_RATIO};
 use crate::level::{
     SILENT_AUDIO_LEVEL, audio_level_attenuation, decibels_full_scale, root_mean_square,
 };
-use crate::mixer::{limit_to_full_scale, mix_into, playback_gain};
+use crate::mixer::{mix_into, playback_gain};
 use crate::offer::ReceiveSlotKind;
+use crate::person_settings::{PersonSoundSource, PersonVoiceSetting};
+use crate::playback::Playback;
 use crate::processing::{ProcessingSettings, VoiceProcessor};
 use crate::resampling::{Interpolation, ResamplingError, StreamResampler};
 use crate::session::{AudioDirection, VoiceSessionEvent};
+use crate::soundboard::soundboard_gain;
+use crate::sounds::{LocalSound, PlayingSounds, VoiceCue};
 use crate::transport::{IncomingAudioPacket, OutgoingVoicePacket};
 
 /// How often the thread looks at its devices when no command wakes it: well under a frame.
 const WORK_PERIOD: Duration = Duration::from_millis(5);
-/// How much mixed audio waits in the output ring buffer: enough to ride over the thread's
-/// scheduling, little enough to keep the delay low.
-const OUTPUT_QUEUE_MILLISECONDS: u32 = 30;
 /// The echo canceller's first guess of the speaker-to-microphone path beyond the queued output;
 /// it refines the delay itself.
 const ASSUMED_DEVICE_LATENCY_MILLISECONDS: u32 = 20;
@@ -36,13 +38,25 @@ const ASSUMED_DEVICE_LATENCY_MILLISECONDS: u32 = 20;
 /// What the session asks of the audio thread.
 #[derive(Debug)]
 pub(crate) enum AudioCommand {
-    AssignSlot { mid: Mid, user_id: Snowflake },
+    /// A new media session (a new offer): its receive lines, none assigned yet.
+    NewMediaSession(Vec<(Mid, ReceiveSlotKind)>),
+    AssignSlot {
+        mid: Mid,
+        user_id: Snowflake,
+        setting: PersonVoiceSetting,
+    },
     SetMuted(bool),
     SetDeafened(bool),
-    SetPersonVolume { user_id: Snowflake, volume: f32 },
-    SetPersonLocallyMuted { user_id: Snowflake, is_muted: bool },
-    SetStreamVolume { user_id: Snowflake, volume: f32 },
+    SetPersonSetting {
+        source: PersonSoundSource,
+        user_id: Snowflake,
+        setting: PersonVoiceSetting,
+    },
     SetOutputVolume(f32),
+    SetSoundboardVolume(f32),
+    PlayCue(VoiceCue),
+    /// A soundboard or join sound, at the output volume times the soundboard volume.
+    PlaySoundboardSound(LocalSound),
     SetInputMode(InputMode),
     SetPushToTalkPressed(bool),
     SetProcessing(ProcessingSettings),
@@ -59,6 +73,7 @@ pub(crate) struct AudioSettings {
     pub(crate) input_mode: InputMode,
     pub(crate) processing: ProcessingSettings,
     pub(crate) output_volume: f32,
+    pub(crate) soundboard_volume: f32,
     pub(crate) input_device_id: Option<String>,
     pub(crate) output_device_id: Option<String>,
 }
@@ -69,6 +84,8 @@ struct ReceiveSlot {
     mid: Mid,
     kind: ReceiveSlotKind,
     user_id: Option<Snowflake>,
+    /// The assigned person's volume and local mute for this slot's source.
+    setting: PersonVoiceSetting,
     jitter_buffer: JitterBuffer,
     steering: DriftSteering,
     decoder: VoiceDecoder,
@@ -82,6 +99,7 @@ impl ReceiveSlot {
             mid,
             kind,
             user_id: None,
+            setting: PersonVoiceSetting::default(),
             jitter_buffer: JitterBuffer::default(),
             steering: DriftSteering::default(),
             decoder: VoiceDecoder::new()?,
@@ -153,29 +171,6 @@ struct Capture {
     rtp_timestamp: u64,
 }
 
-/// The speakers side.
-#[derive(Debug)]
-struct Playback {
-    stream: Option<PlaybackStream>,
-    /// 48 kHz to the device rate, for the open stream.
-    resampler: Option<StreamResampler>,
-    at_device_rate: VecDeque<f32>,
-}
-
-impl Playback {
-    /// Milliseconds of audio queued for the device.
-    fn queued_milliseconds(&self) -> u32 {
-        let Some(stream) = self.stream.as_ref() else {
-            return 0;
-        };
-        let queued = stream.samples.buffer().capacity() - stream.samples.slots();
-        let per_millisecond =
-            u64::from(stream.format.sample_rate) * u64::from(stream.format.channels) / 1_000;
-        u32::try_from(u64::try_from(queued).unwrap_or(u64::MAX) / per_millisecond.max(1))
-            .unwrap_or(u32::MAX)
-    }
-}
-
 /// The audio thread's state.
 pub(crate) struct AudioEngine {
     devices: Box<dyn AudioDevices>,
@@ -184,12 +179,11 @@ pub(crate) struct AudioEngine {
     outgoing: Sender<OutgoingVoicePacket>,
     events: Sender<VoiceSessionEvent>,
     settings: AudioSettings,
-    person_volumes: HashMap<Snowflake, f32>,
-    locally_muted: HashSet<Snowflake>,
-    stream_volumes: HashMap<Snowflake, f32>,
     slots: Vec<ReceiveSlot>,
     capture: Capture,
     playback: Playback,
+    sounds: PlayingSounds,
+    limiter: PeakLimiter,
     clock_origin: Instant,
     mix: Frame,
     slot_frame: Frame,
@@ -241,15 +235,10 @@ impl AudioEngine {
                 packet: Vec::with_capacity(SAMPLES_PER_PACKET),
                 rtp_timestamp: 0,
             },
-            playback: Playback {
-                stream: None,
-                resampler: None,
-                at_device_rate: VecDeque::new(),
-            },
+            playback: Playback::default(),
+            sounds: PlayingSounds::default(),
+            limiter: PeakLimiter::default(),
             settings,
-            person_volumes: HashMap::new(),
-            locally_muted: HashSet::new(),
-            stream_volumes: HashMap::new(),
             slots,
             clock_origin: Instant::now(),
             mix: [0.0; SAMPLES_PER_FRAME],
@@ -288,29 +277,55 @@ impl AudioEngine {
 
     fn handle_command(&mut self, command: AudioCommand) {
         match command {
-            AudioCommand::AssignSlot { mid, user_id } => {
+            AudioCommand::NewMediaSession(lines) => {
+                match lines
+                    .into_iter()
+                    .map(|(mid, kind)| ReceiveSlot::new(mid, kind))
+                    .collect()
+                {
+                    Ok(slots) => self.slots = slots,
+                    Err(error) => {
+                        tracing::warn!(%error, "the new media session's decoders could not start");
+                        self.slots.clear();
+                    }
+                }
+            }
+            AudioCommand::AssignSlot {
+                mid,
+                user_id,
+                setting,
+            } => {
                 if let Some(slot) = self.slots.iter_mut().find(|slot| slot.mid == mid) {
                     // The server reuses the slot's stream with another speaker's timestamps.
                     slot.reset();
                     slot.user_id = Some(user_id);
+                    slot.setting = setting;
                 }
             }
             AudioCommand::SetMuted(is_muted) => self.settings.is_muted = is_muted,
             AudioCommand::SetDeafened(is_deafened) => self.settings.is_deafened = is_deafened,
-            AudioCommand::SetPersonVolume { user_id, volume } => {
-                self.person_volumes.insert(user_id, volume);
-            }
-            AudioCommand::SetPersonLocallyMuted { user_id, is_muted } => {
-                if is_muted {
-                    self.locally_muted.insert(user_id);
-                } else {
-                    self.locally_muted.remove(&user_id);
+            AudioCommand::SetPersonSetting {
+                source,
+                user_id,
+                setting,
+            } => {
+                let kind = match source {
+                    PersonSoundSource::Voice => ReceiveSlotKind::Voice,
+                    PersonSoundSource::ScreenSound => ReceiveSlotKind::ScreenSound,
+                };
+                for slot in &mut self.slots {
+                    if slot.kind == kind && slot.user_id == Some(user_id) {
+                        slot.setting = setting;
+                    }
                 }
             }
-            AudioCommand::SetStreamVolume { user_id, volume } => {
-                self.stream_volumes.insert(user_id, volume);
-            }
             AudioCommand::SetOutputVolume(volume) => self.settings.output_volume = volume,
+            AudioCommand::SetSoundboardVolume(volume) => self.settings.soundboard_volume = volume,
+            AudioCommand::PlayCue(cue) => self.sounds.play(cue.render(), 1.0),
+            AudioCommand::PlaySoundboardSound(sound) => self.sounds.play(
+                sound,
+                soundboard_gain(self.settings.output_volume, self.settings.soundboard_volume),
+            ),
             AudioCommand::SetInputMode(mode) => {
                 self.settings.input_mode = mode;
                 self.capture.gate.set_mode(mode);
@@ -319,10 +334,8 @@ impl AudioEngine {
                 self.capture.gate.set_push_to_talk_pressed(is_pressed);
             }
             AudioCommand::SetProcessing(processing) => {
-                if processing != self.capture.processor.settings() {
-                    self.settings.processing = processing;
-                    self.capture.processor = VoiceProcessor::new(processing);
-                }
+                self.settings.processing = processing;
+                self.capture.processor.apply(processing);
             }
             AudioCommand::SetInputDevice(device_id) => {
                 self.settings.input_device_id = device_id;
@@ -372,35 +385,14 @@ impl AudioEngine {
     }
 
     fn open_playback(&mut self) {
-        self.playback.stream = None;
-        self.playback.resampler = None;
-        self.playback.at_device_rate.clear();
-        let opened = self
-            .devices
-            .open_playback(self.settings.output_device_id.as_deref())
-            .map_err(|error| error.to_string())
-            .and_then(|stream| {
-                StreamResampler::new(
-                    VOICE_SAMPLE_RATE,
-                    stream.format.sample_rate,
-                    SAMPLES_PER_FRAME,
-                    Interpolation::Sinc,
-                    1.0,
-                )
-                .map(|resampler| (stream, resampler))
-                .map_err(|error| error.to_string())
-            });
-        match opened {
-            Ok((stream, resampler)) => {
-                self.playback.stream = Some(stream);
-                self.playback.resampler = Some(resampler);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "no audio output");
-                let _ = self
-                    .events
-                    .send(VoiceSessionEvent::DeviceUnavailable(AudioDirection::Output));
-            }
+        if let Err(error) = self
+            .playback
+            .open(&*self.devices, self.settings.output_device_id.as_deref())
+        {
+            tracing::warn!(%error, "no audio output");
+            let _ = self
+                .events
+                .send(VoiceSessionEvent::DeviceUnavailable(AudioDirection::Output));
         }
     }
 
@@ -414,12 +406,7 @@ impl AudioEngine {
         {
             self.open_capture();
         }
-        if self
-            .playback
-            .stream
-            .as_ref()
-            .is_some_and(|stream| has_failed(&stream.has_failed))
-        {
+        if self.playback.has_failed() {
             self.open_playback();
         }
     }
@@ -531,29 +518,10 @@ impl AudioEngine {
     }
 
     fn play_received_audio(&mut self) -> Result<(), AudioEngineError> {
-        while self.playback.stream.is_some()
-            && self.playback.queued_milliseconds() < OUTPUT_QUEUE_MILLISECONDS
-        {
+        while self.playback.wants_frame() {
             self.mix_one_frame();
             self.capture.processor.analyze_playback(&self.mix);
-            let (Some(stream), Some(resampler)) = (
-                self.playback.stream.as_mut(),
-                self.playback.resampler.as_mut(),
-            ) else {
-                return Ok(());
-            };
-            resampler.process(&self.mix, &mut self.playback.at_device_rate)?;
-            let channels = usize::from(stream.format.channels).max(1);
-            while stream.samples.slots() >= channels {
-                let Some(sample) = self.playback.at_device_rate.pop_front() else {
-                    break;
-                };
-                for _ in 0..channels {
-                    // Room for `channels` samples was checked just above.
-                    let _ = stream.samples.push(sample);
-                }
-            }
-            if stream.samples.slots() < channels {
+            if !self.playback.write(&self.mix)? {
                 break;
             }
         }
@@ -574,29 +542,21 @@ impl AudioEngine {
                     continue;
                 }
             }
-            // Audio may come before its slot assignment: play it at the default volume.
-            let user_id = slot.user_id;
+            // Audio may come before its slot assignment: it plays at the default setting.
             let gain = match slot.kind {
-                ReceiveSlotKind::Voice => playback_gain(
+                ReceiveSlotKind::Voice | ReceiveSlotKind::ScreenSound => playback_gain(
                     self.settings.output_volume,
-                    user_id
-                        .and_then(|user_id| self.person_volumes.get(&user_id).copied())
-                        .unwrap_or(1.0),
-                    self.settings.is_deafened
-                        || user_id.is_some_and(|user_id| self.locally_muted.contains(&user_id)),
-                ),
-                ReceiveSlotKind::ScreenSound => playback_gain(
-                    self.settings.output_volume,
-                    user_id
-                        .and_then(|user_id| self.stream_volumes.get(&user_id).copied())
-                        .unwrap_or(1.0),
-                    self.settings.is_deafened,
+                    slot.setting.volume,
+                    self.settings.is_deafened || slot.setting.is_locally_muted,
                 ),
                 ReceiveSlotKind::Camera => 0.0,
             };
             mix_into(&mut self.mix, &self.slot_frame, gain);
         }
-        limit_to_full_scale(&mut self.mix);
+        // Mixed before the echo canceller reads its far end: a soundboard sound coming back
+        // through the microphone is cancelled like a voice.
+        self.sounds.mix_into(&mut self.mix);
+        self.limiter.process(&mut self.mix);
     }
 }
 
@@ -646,6 +606,7 @@ mod tests {
                 ..ProcessingSettings::default()
             },
             output_volume: 1.0,
+            soundboard_volume: 0.5,
             input_device_id: None,
             output_device_id: None,
         };
@@ -744,6 +705,7 @@ mod tests {
             driven.engine.handle_command(AudioCommand::AssignSlot {
                 mid,
                 user_id: speaker(),
+                setting: PersonVoiceSetting::default(),
             });
         };
         let mut driven = driven_engine();
@@ -751,9 +713,13 @@ mod tests {
         assert!(loudest_played_frame(&mut driven) > TONE_AMPLITUDE / 2.0);
         let silencers = [
             AudioCommand::SetDeafened(true),
-            AudioCommand::SetPersonLocallyMuted {
+            AudioCommand::SetPersonSetting {
+                source: PersonSoundSource::Voice,
                 user_id: speaker(),
-                is_muted: true,
+                setting: PersonVoiceSetting {
+                    volume: 1.0,
+                    is_locally_muted: true,
+                },
             },
         ];
         for silencer in silencers {
@@ -762,5 +728,87 @@ mod tests {
             driven.engine.handle_command(silencer);
             assert!(loudest_played_frame(&mut driven) < f32::EPSILON);
         }
+    }
+
+    #[test]
+    fn a_person_s_volume_scales_their_voice_and_a_screen_setting_does_not() {
+        let mut driven = driven_engine();
+        let mid = driven.voice_mid;
+        driven.engine.handle_command(AudioCommand::AssignSlot {
+            mid,
+            user_id: speaker(),
+            setting: PersonVoiceSetting::default(),
+        });
+        let full = loudest_played_frame(&mut driven);
+        let mut driven = driven_engine();
+        driven.engine.handle_command(AudioCommand::AssignSlot {
+            mid,
+            user_id: speaker(),
+            setting: PersonVoiceSetting::default(),
+        });
+        for source in [PersonSoundSource::ScreenSound, PersonSoundSource::Voice] {
+            driven
+                .engine
+                .handle_command(AudioCommand::SetPersonSetting {
+                    source,
+                    user_id: speaker(),
+                    setting: PersonVoiceSetting {
+                        volume: if source == PersonSoundSource::Voice {
+                            0.5
+                        } else {
+                            0.0
+                        },
+                        is_locally_muted: false,
+                    },
+                });
+        }
+        let halved = loudest_played_frame(&mut driven);
+        assert!(
+            (halved / full - 0.5).abs() < 0.05,
+            "{halved} against {full}"
+        );
+    }
+
+    #[test]
+    fn cues_and_soundboard_sounds_are_mixed_into_the_output() {
+        let mut driven = driven_engine();
+        driven
+            .engine
+            .handle_command(AudioCommand::PlaySoundboardSound(
+                vec![0.4; SAMPLES_PER_FRAME].into(),
+            ));
+        driven.engine.mix_one_frame();
+        // Output volume 1 times soundboard volume 0.5.
+        assert!((driven.engine.mix[100] - 0.2).abs() < 1e-3);
+        driven
+            .engine
+            .handle_command(AudioCommand::PlayCue(VoiceCue::Mute));
+        driven.engine.mix_one_frame();
+        driven.engine.mix_one_frame();
+        assert!(
+            root_mean_square(&driven.engine.mix) > 0.001,
+            "the cue plays"
+        );
+    }
+
+    #[test]
+    fn a_new_media_session_forgets_who_each_slot_carried() {
+        let mut driven = driven_engine();
+        let mid = driven.voice_mid;
+        driven.engine.handle_command(AudioCommand::AssignSlot {
+            mid,
+            user_id: speaker(),
+            setting: PersonVoiceSetting::default(),
+        });
+        let new_mid = Mid::from("v2");
+        driven
+            .engine
+            .handle_command(AudioCommand::NewMediaSession(vec![(
+                new_mid,
+                ReceiveSlotKind::Voice,
+            )]));
+        assert_eq!(driven.engine.slots.len(), 1);
+        assert_eq!(driven.engine.slots[0].mid, new_mid);
+        assert_eq!(driven.engine.slots[0].user_id, None);
     }
 }

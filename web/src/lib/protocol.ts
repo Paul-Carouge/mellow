@@ -934,7 +934,15 @@ export interface VoiceState {
   self_video?: boolean;
   /** They share a screen, relayed like a camera (ADR-0037); never with `self_video`. Absent from older servers. */
   self_stream?: boolean;
+  /**
+   * The codec of their camera or screen, fixed for their media session (ADR-0052). Absent when
+   * their offer has no video, and from older servers: VP8.
+   */
+  video_codec?: VideoCodec | null;
 }
+
+/** A camera's or a screen's codec (ADR-0052). A newer server may send another one. */
+export type VideoCodec = "vp8" | "h264";
 
 /** Why the server refused to turn this session's camera on. A newer server may send another reason. */
 export type VoiceVideoRefusal = "missing_permissions" | "too_many_cameras" | "video_unavailable";

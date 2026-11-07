@@ -10,6 +10,8 @@ publish.workspace = true
 
 [dependencies]
 cpal.workspace = true
+# Soundboard sounds are downloaded through the client core's REST client.
+mellow-client-core.workspace = true
 mellow-protocol.workspace = true
 nnnoiseless.workspace = true
 opus.workspace = true
@@ -19,11 +21,25 @@ sonora.workspace = true
 str0m.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+yuv.workspace = true
+
+# Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
+[target.'cfg(target_os = "macos")'.dependencies]
+block2 = "0.6.2"
+dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
+objc2 = "0.6.5"
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"] }
+objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSDictionary", "NSError", "NSObject", "NSString", "NSValue"] }
+
+[build-dependencies]
+cc.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 anyhow.workspace = true
 futures-util.workspace = true
-mellow-client-core.workspace = true
 # Integration tests run a real in-process server; the engine never depends on it otherwise.
 mellow-server = { path = "../mellow-server" }
 serde_json.workspace = true

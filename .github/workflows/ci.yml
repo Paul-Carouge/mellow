@@ -18,8 +18,10 @@ concurrency:
 env:
   CARGO_TERM_COLOR: always
   RUSTFLAGS: -D warnings
-  # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033); libopus,
+  # The server's AVIF encoder (rav1e) and the desktop's libvpx (built from source by
+  # mellow-media's build.rs, ADR-0051) assemble their x86-64 code with nasm (ADR-0033); libopus,
   # linked into the server for audio attachments, is built from source by cmake (ADR-0045).
+  # libvpx also needs make, curl and tar, which the runner image has.
   # The desktop voice engine's audio devices go through ALSA's headers (ADR-0051).
   SERVER_BUILD_PACKAGES: nasm cmake libasound2-dev
   # The desktop client's GPUI links xkbcommon, fontconfig and FreeType and builds its Wayland and
@@ -48,6 +50,8 @@ jobs:
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - name: Design tokens are generated and pass their contrast pairs
         run: cargo xtask tokens --check
+      - name: The desktop string catalogue is generated from the web's
+        run: cargo xtask i18n --check
       - name: The Docker kit carries the release public key
         run: cmp release/minisign.pub deploy/docker/minisign.pub
       - name: Shell scripts pass shellcheck

@@ -1411,7 +1411,8 @@ export const readySamples = [
         "self_stream": false,
         "self_video": true,
         "suppressed": false,
-        "user_id": "10"
+        "user_id": "10",
+        "video_codec": "h264"
       },
       {
         "channel_id": "30",
@@ -1458,7 +1459,8 @@ export const voiceStateSamples = [
     "self_stream": false,
     "self_video": true,
     "suppressed": false,
-    "user_id": "10"
+    "user_id": "10",
+    "video_codec": "h264"
   },
   {
     "channel_id": "30",
@@ -2389,7 +2391,8 @@ export const gatewayEventSamples = [
         "self_stream": false,
         "self_video": true,
         "suppressed": false,
-        "user_id": "10"
+        "user_id": "10",
+        "video_codec": "h264"
       }
     },
     "t": "VOICE_STATE_UPDATE"
@@ -2689,7 +2692,8 @@ export const serverFrameSamples = [
           "self_stream": false,
           "self_video": true,
           "suppressed": false,
-          "user_id": "10"
+          "user_id": "10",
+          "video_codec": "h264"
         },
         {
           "channel_id": "30",
@@ -2812,10 +2816,12 @@ export const sharedConstants = {
   "MAXIMUM_SEARCH_QUERY_LENGTH": 256,
   "MAXIMUM_SEARCH_QUERY_PARTS": 16,
   "MAXIMUM_SEARCH_RESULTS_PER_PAGE": 25,
+  "MAXIMUM_SOUND_SAMPLES": 249600,
   "MAXIMUM_VOICE_USER_LIMIT": 25,
   "MINIMUM_MILLISECONDS_BETWEEN_SOUNDS": 2000,
   "MINIMUM_POLL_ANSWERS": 2,
   "SCREEN_SOUND_RECEIVE_SLOTS": 3,
+  "SOUND_SAMPLE_RATE": 48000,
   "VIDEO_RECEIVE_SLOTS": 9,
   "VOICE_RECEIVE_SLOTS": 16
 } as const;
