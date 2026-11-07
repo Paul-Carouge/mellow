@@ -7,6 +7,7 @@
 
 pub mod channel_order;
 pub mod code_blocks;
+pub mod custom_emoji;
 pub mod format;
 pub mod markdown;
 pub mod mentions;

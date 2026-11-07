@@ -123,6 +123,8 @@ tempfile = "3.27.0"
 tracing = "0.1.44"
 # Account names (ADR-0048): NFC to store, NFKC and NFKD for the folded key (std has no Unicode normalization; already in Cargo.lock).
 unicode-normalization = "0.1.26"
+# Already in the tree through GPUI; grapheme clusters, as the web's `Intl.Segmenter` reads them (jumbo emoji).
+unicode-segmentation = "1.13.3"
 zeroize = { version = "1.9.1", features = ["zeroize_derive"] }
 tracing-subscriber = { version = "0.3.23", default-features = false, features = ["fmt", "std"] }
 thiserror = "2.0.21"
