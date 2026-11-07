@@ -319,6 +319,14 @@ impl Session {
                 GatewayUpdate::Resumed => {
                     self.status = ConnectionStatus::Connected;
                     should_resend_failed_messages = true;
+                    // Pages that failed while the link was down are asked again (the web's
+                    // `retryFailedLoads`): their views hear it and ask.
+                    for channel_id in self.conversation.forget_failed_history() {
+                        let change = StateChange::Messages { channel_id };
+                        if !changes.contains(&change) {
+                            changes.push(change);
+                        }
+                    }
                     StateChange::Nothing
                 }
                 GatewayUpdate::Disconnected => {

@@ -340,6 +340,12 @@ impl ConversationView {
         if self.are_sources_stale {
             self.feed_composer(cx);
         }
+        // `Ready` emptied the history: the open channel asks again (once per `Ready`).
+        if let Some(channel_id) = channel_id {
+            self.session.update(cx, |session, cx| {
+                session.ensure_history_loaded(channel_id, cx);
+            });
+        }
         self.are_rows_stale = true;
         cx.notify();
     }

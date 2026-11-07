@@ -545,5 +545,43 @@ fn a_signed_in_reader_opens_their_channel_writes_and_sends(cx: &mut TestAppConte
             .session
             .read_with(cx, |session, _| !session.is_read_state_send_scheduled())
     });
+
+    // A reconnection past the resume window ends in a fresh `Ready`, which empties the cache:
+    // the open channel asks for its history again instead of loading forever.
+    let ready = harness.session.read_with(cx, |session, _| {
+        fresh_ready(&harness.runtime, session.rest_client().unwrap())
+    });
+    harness.session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(vec![ready], cx);
+    });
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session
+                .state()
+                .messages(channel_id)
+                .iter()
+                .any(|message| message.content == "hello from the desktop")
+        })
+    });
     harness.stop();
+}
+
+/// The `Ready` a new gateway session of `rest`'s account receives, as after a server restart.
+fn fresh_ready(runtime: &Runtime, rest: &RestClient) -> GatewayUpdate {
+    let instance = rest.instance().clone();
+    let token = zeroize::Zeroizing::new(rest.token().unwrap().to_owned());
+    runtime.block_on(async move {
+        let (updates, mut received) = tokio::sync::mpsc::channel(8);
+        let (_handle, commands) = mellow_client_core::GatewayHandle::new();
+        let gateway = tokio::spawn(mellow_client_core::run_gateway(
+            instance, token, updates, commands,
+        ));
+        let ready = tokio::time::timeout(STEP_DEADLINE, received.recv())
+            .await
+            .unwrap()
+            .unwrap();
+        gateway.abort();
+        assert!(matches!(ready, GatewayUpdate::Ready(_)));
+        ready
+    })
 }

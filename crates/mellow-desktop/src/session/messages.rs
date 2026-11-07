@@ -64,6 +64,11 @@ impl ConversationRequests {
         self.history_failed.clear();
         self.loading_older_channel_id = None;
     }
+
+    /// The link is back: failed pages may be asked again. Returns the channels they were in.
+    pub(super) fn forget_failed_history(&mut self) -> Vec<Snowflake> {
+        self.history_failed.drain().collect()
+    }
 }
 
 impl Session {
