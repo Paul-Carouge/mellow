@@ -1,0 +1,27 @@
+[package]
+name = "vesper-capture"
+description = "Vesper's screen, window and camera capture on Linux: xdg-desktop-portal, PipeWire DMA-BUFs, VAAPI MJPEG decode."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# No doc-tests: skips an empty rustdoc run per `cargo test`.
+doctest = false
+
+# Linux only: on other systems the crate is empty (ADR-0051).
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd.workspace = true
+async-io.workspace = true
+futures-lite.workspace = true
+libc.workspace = true
+pipewire = { workspace = true, features = ["v0_3_33"] }
+rusty_ffmpeg.workspace = true
+tracing.workspace = true
+vesper-core.workspace = true
+
+[lints]
+workspace = true

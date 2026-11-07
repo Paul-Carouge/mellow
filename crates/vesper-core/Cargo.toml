@@ -1,0 +1,16 @@
+[package]
+name = "vesper-core"
+description = "Types shared by Vesper's capture, encoder and audio crates: GPU frames, encoded packets, codecs, render nodes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish.workspace = true
+
+[lib]
+# No doc-tests: skips an empty rustdoc run per `cargo test`.
+doctest = false
+
+[lints]
+workspace = true

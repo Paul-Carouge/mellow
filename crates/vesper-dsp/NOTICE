@@ -1,0 +1,5 @@
+Copied from Vesper 9eb82070e908a521c94560fe647b84bce2120232 by permission of its author, Paul Carouge, who licenses these copies under AGPL-3.0-or-later as part of Mellow, 2026-11-06.
+
+Source: https://github.com/Paul-Carouge/vesper/tree/9eb82070e908a521c94560fe647b84bce2120232/crates/vesper-dsp
+Vesper itself stays under its own licence; only this copy is covered by Mellow's LICENSE (ADR-0051).
+Changes made in Mellow are in Mellow's git history.
