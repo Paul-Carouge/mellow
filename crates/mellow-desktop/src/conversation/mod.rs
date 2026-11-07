@@ -32,7 +32,7 @@ use crate::components::{
 use crate::composer::{Cancelled, Composer, ComposerEvent, ReplyTarget};
 use crate::i18n::strings;
 use crate::messages::MessageBodyCache;
-use crate::session::{SendRefused, Session, StateChanged};
+use crate::session::{HistoryStatus, SendRefused, Session, StateChanged};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
 
@@ -107,6 +107,8 @@ pub struct ConversationView {
     /// Each entry's key and version, to splice and remeasure only what changed.
     entry_versions: Vec<(String, u64)>,
     are_rows_stale: bool,
+    /// The open channel's loading state the rows were last built for.
+    shown_history_status: Option<HistoryStatus>,
     are_sources_stale: bool,
     sources: Sources,
     body_cache: MessageBodyCache,
@@ -165,8 +167,15 @@ impl ConversationView {
             cx.observe_window_activation(window, |view, window, cx| {
                 view.follow_reading(window, cx);
             }),
-            cx.observe(&session, |view, _, cx| {
-                view.are_rows_stale = true;
+            // Loading and failures only notify: the history start is drawn again when they move.
+            cx.observe(&session, |view, session, cx| {
+                let status = view
+                    .open_channel_id()
+                    .map(|channel_id| session.read(cx).history_status(channel_id));
+                if status != view.shown_history_status {
+                    view.shown_history_status = status;
+                    view.are_rows_stale = true;
+                }
                 cx.notify();
             }),
         ];
@@ -179,6 +188,7 @@ impl ConversationView {
             entries: Vec::new(),
             entry_versions: Vec::new(),
             are_rows_stale: true,
+            shown_history_status: None,
             are_sources_stale: true,
             sources: Sources::default(),
             body_cache: MessageBodyCache::new(),
@@ -316,10 +326,12 @@ impl ConversationView {
     fn follow_state(&mut self, changes: &[StateChange], cx: &mut Context<Self>) {
         let channel_id = self.open_channel_id();
         let guild_id = self.open.as_ref().and_then(|open| open.guild_id);
+        let mut have_rows_changed = false;
         for change in changes {
             match *change {
                 StateChange::Guilds
                 | StateChange::DirectMessages
+                | StateChange::Relationships
                 | StateChange::UserRenamed { .. }
                 | StateChange::GuildEmojis { .. } => {
                     self.are_sources_stale = true;
@@ -329,6 +341,16 @@ impl ConversationView {
                 } if Some(changed_guild_id) == guild_id => {
                     self.are_sources_stale = true;
                 }
+                StateChange::Messages {
+                    channel_id: changed_channel_id,
+                }
+                | StateChange::Message {
+                    channel_id: changed_channel_id,
+                    ..
+                } if Some(changed_channel_id) == channel_id => {
+                    have_rows_changed = true;
+                }
+                StateChange::ReadStates => have_rows_changed = true,
                 StateChange::Typing {
                     channel_id: changed_channel_id,
                 } if Some(changed_channel_id) == channel_id => {
@@ -346,7 +368,9 @@ impl ConversationView {
                 session.ensure_history_loaded(channel_id, cx);
             });
         }
-        self.are_rows_stale = true;
+        if have_rows_changed || self.are_sources_stale {
+            self.are_rows_stale = true;
+        }
         cx.notify();
     }
 
@@ -458,7 +482,9 @@ impl ConversationView {
                     .update(cx, |session, cx| session.trim_history(channel_id, cx));
             }
             // The unread messages were scrolled through down to the latest: the bar goes.
-            self.visit.unread_marker = None;
+            if self.visit.unread_marker.take().is_some() {
+                self.are_rows_stale = true;
+            }
         } else if self.visit.latest_id_when_leaving_present.is_none() {
             self.visit.latest_id_when_leaving_present = channel_id.and_then(|channel_id| {
                 self.session
@@ -469,7 +495,6 @@ impl ConversationView {
                     .map(|message| message.id)
             });
         }
-        self.are_rows_stale = true;
         cx.notify();
     }
 

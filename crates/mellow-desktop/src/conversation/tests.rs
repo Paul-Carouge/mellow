@@ -10,7 +10,7 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::*;
 use crate::components::bind_tab_navigation;
 use crate::composer::bind_composer_keys;
-use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, person, sample_state};
+use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person, sample_state};
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
 
@@ -367,4 +367,32 @@ fn copy_message_id_puts_the_id_on_the_clipboard_and_says_so(cx: &mut TestAppCont
         view.read_with(cx, |view, _| view.announcement.to_string()),
         "Message ID copied."
     );
+}
+
+#[gpui::test]
+fn scrolling_and_unrelated_changes_do_not_rebuild_the_rows(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, many_messages(40), None);
+    view.update(cx, |view, cx| {
+        view.note_reader_scrolled(false, cx);
+        assert!(!view.are_rows_stale, "a scroll leaves the rows as they are");
+        view.follow_state(
+            &[
+                StateChange::Typing {
+                    channel_id: RUST_GENERAL,
+                },
+                StateChange::Messages {
+                    channel_id: RUST_HELP,
+                },
+            ],
+            cx,
+        );
+        assert!(!view.are_rows_stale, "nor does typing or another channel");
+        view.follow_state(
+            &[StateChange::Messages {
+                channel_id: RUST_GENERAL,
+            }],
+            cx,
+        );
+        assert!(view.are_rows_stale, "the open channel's messages do");
+    });
 }
