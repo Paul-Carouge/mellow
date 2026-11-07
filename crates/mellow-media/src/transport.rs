@@ -1,8 +1,11 @@
 //! The network thread: drives the `str0m` peer of the current offer over its own UDP socket, as
 //! the server's media loop does on its side, and runs the connection's state machine
 //! ([`crate::connection`]): it sends every gateway frame of the session, makes a new peer for each
-//! offer, and reports what happened as session events.
+//! offer, and reports what happened as session events. It writes the camera's or screen's
+//! simulcast layers, hands received video frames to their decoding threads, passes keyframe
+//! requests both ways, and keeps the video signalling (`voice_state`'s video, the watch list).
 
+use std::collections::HashMap;
 use std::io::ErrorKind;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, UdpSocket};
 use std::sync::Arc;
@@ -10,10 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use mellow_protocol::{ClientFrame, GatewayEvent, Snowflake};
+use mellow_protocol::{ClientFrame, GatewayEvent, Snowflake, WatchedCamera};
 use str0m::change::{SdpAnswer, SdpPendingOffer};
 use str0m::format::Codec;
-use str0m::media::{Frequency, MediaTime, Mid, Pt};
+use str0m::media::{Frequency, KeyframeRequestKind, MediaTime, Mid, Pt, Rid};
 use str0m::net::{Protocol, Receive};
 use str0m::{Event, IceConnectionState, Input, Output, Rtc};
 
@@ -22,11 +25,21 @@ use crate::connection::{ConnectionAction, ConnectionInput, ConnectionMachine};
 use crate::offer::{MediaLines, OfferError, ReceiveSlotKind, new_peer};
 use crate::person_settings::{PersonSoundSource, PersonVoiceSettingsStore};
 use crate::session::{VoiceSessionEvent, VoiceSignalling, VoiceToggles};
+use crate::simulcast::{LAYERS, VideoSourceKind, rid_of};
+use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
+use crate::video_receiver::VideoReceivers;
+use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
+use crate::watch_list::WatchListPacing;
 
 /// The longest the thread sleeps on its socket, so outgoing voice never waits longer to leave.
 const MAXIMUM_SOCKET_WAIT: Duration = Duration::from_millis(5);
 /// Larger than any datagram the server sends (it drops anything over 1 500 bytes itself).
 const RECEIVE_BUFFER_BYTES: usize = 2_000;
+/// The server accepts one keyframe request a second from a watcher; more would be dropped.
+const MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS: Duration = Duration::from_secs(1);
+/// An empty `VOICE_VIDEO_LAYERS` this soon after a source started is the previous source's
+/// ending, not this one's (the web's `VIDEO_RESTART_GRACE_MILLISECONDS`).
+const VIDEO_RESTART_GRACE: Duration = Duration::from_secs(2);
 
 /// 20 ms of voice ready to send.
 #[derive(Debug)]
@@ -55,6 +68,10 @@ pub(crate) enum NetworkCommand {
     Connection(ConnectionInput),
     /// New mute and deafen: tell the server.
     SetToggles(VoiceToggles),
+    /// The camera or a screen turned on (replacing the other), or off: tell the server.
+    SetVideoSource(Option<VideoSourceKind>),
+    /// The cameras and screens to receive, and their tile sizes.
+    WatchCameras(Vec<WatchedCamera>),
     /// Send `voice_leave` and stop.
     Leave,
     Stop,
@@ -79,6 +96,7 @@ pub(crate) struct PeerConnection {
     local_candidate: SocketAddr,
     pub(crate) media_lines: MediaLines,
     voice_payload_type: Option<Pt>,
+    video_payload_type: Option<Pt>,
     /// DTLS is done: ICE coming back to `connected` means media flows again.
     is_media_connected: bool,
 }
@@ -121,6 +139,7 @@ impl PeerConnection {
             local_candidate,
             media_lines: peer.media_lines,
             voice_payload_type: None,
+            video_payload_type: None,
             is_media_connected: false,
         })
     }
@@ -136,17 +155,21 @@ impl PeerConnection {
             .map_err(|error| error.to_string())
     }
 
-    /// Sends the queued voice, then runs the peer until its next timer or datagram (at most
-    /// [`MAXIMUM_SOCKET_WAIT`]). `is_path_dropped` silences the socket both ways (tests).
+    /// Sends the queued voice and video, then runs the peer until its next timer or datagram
+    /// (at most [`MAXIMUM_SOCKET_WAIT`]). `is_path_dropped` silences the socket both ways
+    /// (tests).
     fn step(
         &mut self,
         outgoing: &Receiver<OutgoingVoicePacket>,
         incoming: &Sender<IncomingAudioPacket>,
+        video: &mut VideoLink,
         reports: &mut Vec<PeerReport>,
         is_path_dropped: bool,
         buffer: &mut [u8],
     ) -> Result<(), String> {
         self.send_voice(outgoing)?;
+        self.send_video(video);
+        self.request_keyframes(video);
         let timeout = loop {
             match self.rtc.poll_output().map_err(|error| error.to_string())? {
                 Output::Timeout(at) => break at,
@@ -158,7 +181,7 @@ impl PeerConnection {
                             .send_to(&transmit.contents, transmit.destination);
                     }
                 }
-                Output::Event(event) => self.handle_event(event, incoming, reports),
+                Output::Event(event) => self.handle_event(event, incoming, video, reports),
             }
         };
         let wait = timeout
@@ -202,22 +225,34 @@ impl PeerConnection {
         &mut self,
         event: Event,
         incoming: &Sender<IncomingAudioPacket>,
+        video: &mut VideoLink,
         reports: &mut Vec<PeerReport>,
     ) {
         match event {
             // `Connected`, not the ICE state: DTLS is done and media can flow.
             Event::Connected => {
                 self.voice_payload_type =
-                    self.rtc
-                        .writer(self.media_lines.voice_send)
-                        .and_then(|writer| {
-                            writer
-                                .payload_params()
-                                .find(|params| params.spec().codec == Codec::Opus)
-                                .map(str0m::format::PayloadParams::pt)
-                        });
+                    self.payload_type(self.media_lines.voice_send, Codec::Opus);
+                self.video_payload_type =
+                    self.payload_type(self.media_lines.camera_send, Codec::Vp8);
                 self.is_media_connected = true;
+                // Pictures encoded before now were dropped: start every layer afresh.
+                video.encoder.request_keyframe(None);
                 reports.push(PeerReport::MediaConnected);
+            }
+            Event::KeyframeRequest(request) if request.mid == self.media_lines.camera_send => {
+                let layer = request
+                    .rid
+                    .and_then(|rid| LAYERS.into_iter().find(|layer| *rid == *rid_of(*layer)));
+                // A request naming an unknown RID asks for nothing this client sends.
+                if request.rid.is_none() || layer.is_some() {
+                    video.encoder.request_keyframe(layer);
+                }
+            }
+            Event::MediaData(data) if self.media_lines.camera_receive.contains(&data.mid) => {
+                video
+                    .receivers
+                    .deliver(data.mid, data.data, data.contiguous);
             }
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                 reports.push(PeerReport::IceDisconnected);
@@ -226,6 +261,13 @@ impl PeerConnection {
                 IceConnectionState::Connected | IceConnectionState::Completed,
             ) if self.is_media_connected => reports.push(PeerReport::MediaConnected),
             Event::PeerStats(stats) => {
+                let previous = video.uplink.ceiling();
+                let loss_percent = stats.egress_loss_fraction.map(loss_percent_of);
+                let ceiling = video.uplink.after_report(loss_percent, Instant::now());
+                if ceiling != previous {
+                    tracing::debug!(?ceiling, "the uplink's video layers changed");
+                    video.encoder.set_layer_ceiling(ceiling);
+                }
                 if let Some(round_trip) = stats
                     .selected_candidate_pair
                     .and_then(|pair| pair.current_round_trip_time)
@@ -248,6 +290,59 @@ impl PeerConnection {
                 });
             }
             _ => {}
+        }
+    }
+
+    fn payload_type(&mut self, mid: Mid, codec: Codec) -> Option<Pt> {
+        self.rtc.writer(mid).and_then(|writer| {
+            writer
+                .payload_params()
+                .find(|params| params.spec().codec == codec)
+                .map(str0m::format::PayloadParams::pt)
+        })
+    }
+
+    /// Writes the video layers the encoding thread produced; before the connection they are
+    /// dropped (a keyframe of each follows the connection). A frame that cannot be written is
+    /// lost, not the call: the server asks for a keyframe when its watchers need one.
+    fn send_video(&mut self, video: &VideoLink) {
+        while let Ok(frame) = video.outgoing.try_recv() {
+            let Some(payload_type) = self.video_payload_type else {
+                continue;
+            };
+            let Some(writer) = self.rtc.writer(self.media_lines.camera_send) else {
+                continue;
+            };
+            let written = writer.rid(Rid::from(rid_of(frame.layer))).write(
+                payload_type,
+                Instant::now(),
+                MediaTime::new(frame.rtp_timestamp, Frequency::NINETY_KHZ),
+                frame.bytes,
+            );
+            if let Err(error) = written {
+                tracing::warn!(%error, "a video frame could not be sent");
+            }
+        }
+    }
+
+    /// Asks the server for a keyframe on the receive slots whose decoder lost track, at most
+    /// once a second each.
+    fn request_keyframes(&mut self, video: &mut VideoLink) {
+        let now = Instant::now();
+        while let Ok(mid) = video.keyframe_requests.try_recv() {
+            if video.keyframe_requested_at.get(&mid).is_some_and(|at| {
+                now.saturating_duration_since(*at) < MINIMUM_INTERVAL_BETWEEN_KEYFRAME_REQUESTS
+            }) {
+                continue;
+            }
+            // Before the connection the request fails: the decoder asks again later.
+            if let Some(mut writer) = self.rtc.writer(mid)
+                && writer
+                    .request_keyframe(None, KeyframeRequestKind::Pli)
+                    .is_ok()
+            {
+                video.keyframe_requested_at.insert(mid, now);
+            }
         }
     }
 
@@ -285,6 +380,25 @@ enum PeerReport {
     RoundTrip(Duration),
 }
 
+/// The network thread's video, kept across peers.
+#[derive(Debug)]
+pub(crate) struct VideoLink {
+    /// Told about the server's keyframe requests and watched layers.
+    pub(crate) encoder: Arc<VideoEncoderControl>,
+    pub(crate) outgoing: Receiver<OutgoingVideoFrame>,
+    pub(crate) receivers: VideoReceivers,
+    /// Receive slots whose decoder needs a keyframe.
+    pub(crate) keyframe_requests: Receiver<Mid>,
+    pub(crate) keyframe_requested_at: HashMap<Mid, Instant>,
+    /// The source on, and when it started.
+    pub(crate) source: Option<(VideoSourceKind, Instant)>,
+    /// The last `voice_video_watch` list, sent again after each answer (a join forgets it).
+    pub(crate) watched_cameras: Vec<WatchedCamera>,
+    pub(crate) watch_list_pacing: WatchListPacing,
+    /// The layers the uplink carries, from the server's loss feedback.
+    pub(crate) uplink: UplinkLayerCeiling,
+}
+
 /// Everything the network thread owns.
 pub(crate) struct NetworkThread {
     pub(crate) machine: ConnectionMachine,
@@ -299,6 +413,7 @@ pub(crate) struct NetworkThread {
     pub(crate) incoming: Sender<IncomingAudioPacket>,
     pub(crate) events: Sender<VoiceSessionEvent>,
     pub(crate) audio_commands: Sender<AudioCommand>,
+    pub(crate) video: VideoLink,
     /// Set by tests to lose the current network path; a new peer takes a new one.
     pub(crate) is_path_dropped: Arc<AtomicBool>,
 }
@@ -333,6 +448,11 @@ impl NetworkThread {
                 }
             }
             let now = Instant::now();
+            if let Some(cameras) = self.video.watch_list_pacing.take_due(now)
+                && !self.machine.is_stopped()
+            {
+                self.send_watch_list(cameras);
+            }
             if self
                 .machine
                 .next_deadline()
@@ -343,8 +463,9 @@ impl NetworkThread {
             }
             let is_path_dropped = self.is_path_dropped.load(Ordering::Relaxed);
             let Some(peer) = self.peer.as_mut() else {
-                // Between peers: voice has nowhere to go.
+                // Between peers: voice and video have nowhere to go.
                 while self.outgoing.try_recv().is_ok() {}
+                while self.video.outgoing.try_recv().is_ok() {}
                 std::thread::sleep(MAXIMUM_SOCKET_WAIT);
                 continue;
             };
@@ -352,6 +473,7 @@ impl NetworkThread {
             let stepped = peer.step(
                 &self.outgoing,
                 &self.incoming,
+                &mut self.video,
                 &mut reports,
                 is_path_dropped,
                 &mut buffer,
@@ -398,6 +520,13 @@ impl NetworkThread {
                 self.toggles = toggles;
                 self.send_voice_state();
             }
+            NetworkCommand::SetVideoSource(kind) => self.set_video_source(kind),
+            NetworkCommand::WatchCameras(cameras) => {
+                self.video.watched_cameras.clone_from(&cameras);
+                if let Some(cameras) = self.video.watch_list_pacing.offer(cameras, now) {
+                    self.send_watch_list(cameras);
+                }
+            }
             NetworkCommand::Leave => {
                 self.signalling.send_frame(ClientFrame::VoiceLeave);
                 self.machine.leave();
@@ -424,7 +553,14 @@ impl NetworkThread {
                     .map_err(|error| error.to_string())
                     .and_then(|answer| peer.apply_answer(answer));
                 match applied {
-                    Ok(()) => ConnectionInput::AnswerApplied { offer_id },
+                    Ok(()) => {
+                        // The join forgot any earlier list.
+                        if !self.video.watched_cameras.is_empty() {
+                            self.video.watch_list_pacing.sent_now(now);
+                            self.send_watch_list(self.video.watched_cameras.clone());
+                        }
+                        ConnectionInput::AnswerApplied { offer_id }
+                    }
                     Err(error) => {
                         tracing::warn!(%error, "the server's voice answer was refused");
                         ConnectionInput::MediaFailed { offer_id }
@@ -456,6 +592,35 @@ impl NetworkThread {
                 self.assign_slot(channel_id, &mid, user_id);
                 return;
             }
+            GatewayEvent::VoiceVideoLayers { channel_id, active }
+                if channel_id == self.machine.channel_id() =>
+            {
+                let Some((_, started_at)) = self.video.source else {
+                    return;
+                };
+                if !active.is_empty() {
+                    self.video.encoder.set_active_layers(active);
+                } else if now.saturating_duration_since(started_at) >= VIDEO_RESTART_GRACE {
+                    self.end_video(VoiceSessionEvent::VideoStoppedByServer);
+                }
+                return;
+            }
+            GatewayEvent::VoiceVideoRefused { channel_id, reason }
+                if channel_id == self.machine.channel_id() =>
+            {
+                self.end_video(VoiceSessionEvent::VideoRefused(reason));
+                return;
+            }
+            GatewayEvent::VoiceVideoPaused {
+                channel_id,
+                user_id,
+                is_paused,
+            } if channel_id == self.machine.channel_id() => {
+                let _ = self
+                    .events
+                    .send(VoiceSessionEvent::VideoPaused { user_id, is_paused });
+                return;
+            }
             _ => return,
         };
         let actions = self.machine.handle(input, now);
@@ -474,7 +639,11 @@ impl NetworkThread {
         let source = match peer.media_lines.receive_slot_kind(mid) {
             Some(ReceiveSlotKind::Voice) => PersonSoundSource::Voice,
             Some(ReceiveSlotKind::ScreenSound) => PersonSoundSource::ScreenSound,
-            Some(ReceiveSlotKind::Camera) | None => return,
+            Some(ReceiveSlotKind::Camera) => {
+                self.video.receivers.assign_slot(mid, user_id);
+                return;
+            }
+            None => return,
         };
         let setting = self.settings_store.person_setting(source, user_id);
         let _ = self.audio_commands.send(AudioCommand::AssignSlot {
@@ -485,14 +654,41 @@ impl NetworkThread {
     }
 
     fn send_voice_state(&mut self) {
+        let source = self.video.source.map(|(kind, _)| kind);
         // Always the full state: the server drops `voice_state` frames over its rate limit.
         let is_sent = self.signalling.send_frame(ClientFrame::VoiceState {
             self_mute: self.toggles.is_muted(),
             self_deaf: self.toggles.is_deafened(),
-            self_video: false,
-            self_stream: false,
+            self_video: source.is_some(),
+            self_stream: matches!(source, Some(VideoSourceKind::Screen(_))),
         });
         self.machine.voice_state_sent(is_sent);
+    }
+
+    fn set_video_source(&mut self, kind: Option<VideoSourceKind>) {
+        // A new screen quality changes nothing the server knows of: keep the start.
+        if let (
+            Some((VideoSourceKind::Screen(_), started_at)),
+            Some(kind @ VideoSourceKind::Screen(_)),
+        ) = (self.video.source, kind)
+        {
+            self.video.source = Some((kind, started_at));
+        } else {
+            self.video.source = kind.map(|kind| (kind, Instant::now()));
+            self.send_voice_state();
+        }
+    }
+
+    /// The server refused or turned off the camera or screen: it already knows.
+    fn end_video(&mut self, event: VoiceSessionEvent) {
+        self.video.source = None;
+        self.video.encoder.stop_source();
+        let _ = self.events.send(event);
+    }
+
+    fn send_watch_list(&self, cameras: Vec<WatchedCamera>) {
+        self.signalling
+            .send_frame(ClientFrame::VoiceVideoWatch { cameras });
     }
 
     fn perform(&mut self, actions: Vec<ConnectionAction>) {
@@ -543,6 +739,8 @@ impl NetworkThread {
             }
         };
         self.is_path_dropped.store(false, Ordering::Relaxed);
+        self.video.receivers.new_media_session();
+        self.video.keyframe_requested_at.clear();
         let _ = self.audio_commands.send(AudioCommand::NewMediaSession(
             peer.media_lines.audio_receive().collect(),
         ));
@@ -555,5 +753,167 @@ impl NetworkThread {
         });
         self.peer = Some(peer);
         self.machine.offer_sent(is_sent, Instant::now());
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use mellow_protocol::{SimulcastLayer, VideoTileSize, VoiceVideoRefusal};
+
+    use super::*;
+    use crate::person_settings::InMemoryPersonVoiceSettings;
+    use crate::simulcast::ScreenShareQuality;
+    use crate::video_frame::DecodedPixelFormat;
+    use crate::video_receiver::VideoFrames;
+
+    const CHANNEL: Snowflake = Snowflake::from_raw(1);
+
+    /// A network thread without a peer, its gateway frames and events kept.
+    fn network_without_peer() -> (
+        NetworkThread,
+        Receiver<ClientFrame>,
+        Receiver<VoiceSessionEvent>,
+    ) {
+        let (frames, sent) = mpsc::channel();
+        let (events, event_receiver) = mpsc::channel();
+        let (_commands, command_receiver) = mpsc::channel();
+        let (_outgoing, outgoing_receiver) = mpsc::channel();
+        let (incoming, _incoming_receiver) = mpsc::channel();
+        let (audio_commands, _audio_receiver) = mpsc::channel();
+        let (_video_out, video_out_receiver) = mpsc::channel();
+        let (keyframe_requests, keyframe_request_receiver) = mpsc::channel();
+        let network = NetworkThread {
+            machine: ConnectionMachine::new(CHANNEL),
+            peer: None,
+            server_address: Ipv4Addr::LOCALHOST,
+            own_user_id: Snowflake::from_raw(5),
+            toggles: VoiceToggles::default(),
+            signalling: Box::new(move |frame| frames.send(frame).is_ok()),
+            settings_store: Arc::new(InMemoryPersonVoiceSettings::default()),
+            commands: command_receiver,
+            outgoing: outgoing_receiver,
+            incoming,
+            events,
+            audio_commands,
+            video: VideoLink {
+                encoder: Arc::new(VideoEncoderControl::default()),
+                outgoing: video_out_receiver,
+                receivers: VideoReceivers::new(
+                    VideoFrames::new(DecodedPixelFormat::Bgra),
+                    keyframe_requests,
+                ),
+                keyframe_requests: keyframe_request_receiver,
+                keyframe_requested_at: HashMap::new(),
+                source: None,
+                watched_cameras: Vec::new(),
+                watch_list_pacing: WatchListPacing::default(),
+                uplink: UplinkLayerCeiling::default(),
+            },
+            is_path_dropped: Arc::new(AtomicBool::new(false)),
+        };
+        (network, sent, event_receiver)
+    }
+
+    fn video_state(sent: &Receiver<ClientFrame>) -> Option<(bool, bool)> {
+        sent.try_iter().last().and_then(|frame| match frame {
+            ClientFrame::VoiceState {
+                self_video,
+                self_stream,
+                ..
+            } => Some((self_video, self_stream)),
+            _ => None,
+        })
+    }
+
+    #[test]
+    fn the_server_hears_of_each_source_but_not_of_a_screen_quality_change() {
+        let (mut network, sent, _events) = network_without_peer();
+        network.handle_command(NetworkCommand::SetVideoSource(Some(
+            VideoSourceKind::Camera,
+        )));
+        assert_eq!(video_state(&sent), Some((true, false)));
+        let screen = VideoSourceKind::Screen(ScreenShareQuality::High);
+        network.handle_command(NetworkCommand::SetVideoSource(Some(screen)));
+        assert_eq!(video_state(&sent), Some((true, true)));
+        let highest = VideoSourceKind::Screen(ScreenShareQuality::Highest);
+        network.handle_command(NetworkCommand::SetVideoSource(Some(highest)));
+        assert_eq!(sent.try_iter().count(), 0);
+        network.handle_command(NetworkCommand::SetToggles(VoiceToggles::new(
+            true, false, false,
+        )));
+        assert_eq!(
+            video_state(&sent),
+            Some((true, true)),
+            "muting keeps the share"
+        );
+        network.handle_command(NetworkCommand::SetVideoSource(None));
+        assert_eq!(video_state(&sent), Some((false, false)));
+    }
+
+    #[test]
+    fn a_refusal_turns_the_video_off_and_says_why() {
+        let (mut network, _sent, events) = network_without_peer();
+        let camera = network.video.encoder.start(VideoSourceKind::Camera);
+        network.handle_command(NetworkCommand::SetVideoSource(Some(
+            VideoSourceKind::Camera,
+        )));
+        network.handle_gateway_event(GatewayEvent::VoiceVideoRefused {
+            channel_id: CHANNEL,
+            reason: VoiceVideoRefusal::TooManyCameras,
+        });
+        assert!(!camera.is_open() && network.video.source.is_none());
+        assert_eq!(
+            events.try_recv(),
+            Ok(VoiceSessionEvent::VideoRefused(
+                VoiceVideoRefusal::TooManyCameras
+            ))
+        );
+    }
+
+    #[test]
+    fn no_layer_watched_right_after_a_start_belongs_to_the_previous_source() {
+        let (mut network, _sent, events) = network_without_peer();
+        let camera = network.video.encoder.start(VideoSourceKind::Camera);
+        network.handle_command(NetworkCommand::SetVideoSource(Some(
+            VideoSourceKind::Camera,
+        )));
+        let no_layer = GatewayEvent::VoiceVideoLayers {
+            channel_id: CHANNEL,
+            active: Vec::new(),
+        };
+        network.handle_gateway_event(no_layer.clone());
+        assert!(camera.is_open());
+        // As if the grace period had passed.
+        network.video.source = Some((
+            VideoSourceKind::Camera,
+            Instant::now().checked_sub(VIDEO_RESTART_GRACE).unwrap(),
+        ));
+        network.handle_gateway_event(GatewayEvent::VoiceVideoLayers {
+            channel_id: CHANNEL,
+            active: vec![SimulcastLayer::Quarter],
+        });
+        assert!(camera.is_open(), "a list with layers keeps it");
+        network.handle_gateway_event(no_layer);
+        assert!(!camera.is_open());
+        assert_eq!(
+            events.try_recv(),
+            Ok(VoiceSessionEvent::VideoStoppedByServer)
+        );
+    }
+
+    #[test]
+    fn a_watch_list_goes_at_once_and_the_next_one_waits() {
+        let (mut network, sent, _events) = network_without_peer();
+        let cameras = vec![WatchedCamera {
+            user_id: Snowflake::from_raw(7),
+            size: VideoTileSize::Large,
+        }];
+        network.handle_command(NetworkCommand::WatchCameras(cameras.clone()));
+        // Right after: it waits for the network thread's next turns.
+        network.handle_command(NetworkCommand::WatchCameras(Vec::new()));
+        let sent: Vec<ClientFrame> = sent.try_iter().collect();
+        assert_eq!(sent, [ClientFrame::VoiceVideoWatch { cameras }]);
     }
 }

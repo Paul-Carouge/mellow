@@ -16,7 +16,7 @@ A calm, self-hostable alternative to Discord, written in Rust.
 - [CLAUDE.md](CLAUDE.md) — instructions for AI-assisted development.
 
 ## Development
-Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), `cmake` (it builds libopus, which encodes audio attachments: `brew install cmake` on macOS, `apt install cmake` on Debian and Ubuntu), the ALSA headers on Linux for the desktop voice engine's audio devices (`apt install libasound2-dev` on Debian and Ubuntu), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows.
+Prerequisites: [rustup](https://rustup.rs) (the pinned toolchain in `rust-toolchain.toml` installs itself), a C compiler, `nasm` on x86-64 (the server's AVIF encoder assembles its fast paths with it), `cmake` (it builds libopus, which encodes audio attachments: `brew install cmake` on macOS, `apt install cmake` on Debian and Ubuntu), the ALSA headers on Linux for the desktop voice engine's audio devices (`apt install libasound2-dev` on Debian and Ubuntu), `make`, `curl` and `tar` for the desktop's video engine, which downloads libvpx 1.17.0 (checked against its SHA-256) and builds it statically (`nasm` or `yasm` on x86-64; for an offline or packaged build, point `MELLOW_LIBVPX_SOURCE_DIR` at an unpacked copy of the release), and to build the vendored OpenSSL used by SQLCipher: `perl` and `make` on Linux, Visual Studio Build Tools (`nmake`) and Strawberry Perl on Windows.
 
 ```bash
 cargo test --workspace

@@ -28,6 +28,8 @@ async-trait = "0.1.92"
 axum-server = "0.8.0"
 argon2 = "0.6.0"
 axum = { version = "0.8.9", features = ["macros", "ws"] }
+# Already in the tree through other build scripts; compiles the desktop's small libvpx face (ADR-0051).
+cc = "1.9.0"
 clap = { version = "4.6.7", features = ["derive"] }
 # Audio devices of the desktop voice engine: CoreAudio, WASAPI, ALSA (ADR-0051).
 cpal = "0.18.2"
@@ -111,6 +113,8 @@ rubato = { version = "5.0.1", default-features = false }
 symphonia = { version = "0.6.1", default-features = false, features = ["wav", "pcm", "flac", "mp3", "aac", "isomp4"] }
 # Lossless (animated) WebP encoding through libwebp built from source, no system library (ADR-0021).
 webp-animation = { version = "0.10.0", default-features = false, features = ["static"] }
+# Pure Rust SIMD colour conversion (BGRA to I420 and back) for the desktop's video (ADR-0051).
+yuv = "0.8.20"
 
 [workspace.lints.rust]
 # deny, not forbid: Slint-generated code needs a local `allow(unsafe_code)`.

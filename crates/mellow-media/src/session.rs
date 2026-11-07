@@ -1,10 +1,13 @@
-//! A voice session: one channel joined through the gateway, with its network and audio threads.
+//! A voice session: one channel joined through the gateway, with its network, audio and video
+//! threads. The participant's one video source (a camera or a screen, never both) goes in
+//! through [`VideoInput`]; the cameras and screens it watches come out through [`VideoFrames`].
 //! Signalling goes through [`VoiceSignalling`] (frames out) and
 //! [`VoiceSession::handle_gateway_event`] (events in), so the desktop wires it to the client
 //! core's gateway and tests to a plain WebSocket. The session reconnects by itself as the web
 //! client does: a fresh offer after a lost path, a gateway `READY` or `RESUMED`, or the network
 //! coming back, and it says why it stopped.
 
+use std::collections::HashMap;
 use std::net::Ipv4Addr;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +16,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal,
+    ClientFrame, GatewayEvent, Snowflake, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
+    VoiceVideoRefusal, WatchedCamera,
 };
 
 use crate::audio_engine::{AudioCommand, AudioEngine, AudioEngineChannels, AudioSettings};
@@ -23,8 +27,14 @@ use crate::input_gate::InputMode;
 use crate::offer::OfferError;
 use crate::person_settings::{PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore};
 use crate::processing::ProcessingSettings;
+use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
 use crate::sounds::{LocalSound, VoiceCue};
-use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError};
+use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError, VideoLink};
+use crate::uplink::UplinkLayerCeiling;
+use crate::video_frame::DecodedPixelFormat;
+use crate::video_receiver::{VideoFrames, VideoReceivers};
+use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl, VideoInput};
+use crate::watch_list::WatchListPacing;
 
 /// Sends the session's gateway frames (`voice_join`, `voice_state`, `voice_leave`). Returns
 /// whether the frame went out: an offer the gateway could not carry is sent again on its next
@@ -70,6 +80,26 @@ pub enum VoiceSessionEvent {
     SelfSpeaking(bool),
     /// A device could not be opened, or failed and could not be reopened.
     DeviceUnavailable(AudioDirection),
+    /// The server refused the camera or screen, or took it away (`STREAM` lost): the source is
+    /// off; stop its capture.
+    VideoRefused(VoiceVideoRefusal),
+    /// The server turned the camera or screen off (nothing came from it for too long): stop
+    /// its capture.
+    VideoStoppedByServer,
+    /// This session's connection is too slow for `user_id`'s video even at its lowest layer
+    /// (`is_paused`), or it flows again: show their avatar meanwhile.
+    VideoPaused { user_id: Snowflake, is_paused: bool },
+}
+
+/// A camera or screen this session shows, and how large its tile is drawn.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct WatchedVideo {
+    pub user_id: Snowflake,
+    /// Decides the layer the server sends (ADR-0035).
+    pub tile_size: VideoTileSize,
+    /// The tile's size in physical pixels: pictures arrive at most this large.
+    pub display_width: u32,
+    pub display_height: u32,
 }
 
 /// At most this round trip reads as good, then medium; above, poor (`web/src/lib/voice.ts`).
@@ -168,6 +198,8 @@ pub struct VoiceSessionOptions {
     pub soundboard_volume: f32,
     pub input_device_id: Option<String>,
     pub output_device_id: Option<String>,
+    /// How received pictures are handed to the interface.
+    pub decoded_pixel_format: DecodedPixelFormat,
 }
 
 impl VoiceSessionOptions {
@@ -185,6 +217,7 @@ impl VoiceSessionOptions {
             soundboard_volume: crate::soundboard::DEFAULT_SOUNDBOARD_VOLUME,
             input_device_id: None,
             output_device_id: None,
+            decoded_pixel_format: DecodedPixelFormat::default(),
         }
     }
 }
@@ -218,7 +251,23 @@ pub struct VoiceSession {
     audio_commands: Sender<AudioCommand>,
     network_commands: Sender<NetworkCommand>,
     is_path_dropped: Arc<AtomicBool>,
+    video_encoder: Arc<VideoEncoderControl>,
+    video_frames: VideoFrames,
+    /// The last list sent to the network thread: only a change goes again.
+    watched_cameras: Vec<WatchedCamera>,
     threads: Vec<JoinHandle<()>>,
+}
+
+/// The video encoding thread, idle until a source starts, and where its frames come out.
+fn spawn_video_encoder(
+    control: &Arc<VideoEncoderControl>,
+) -> std::io::Result<(JoinHandle<()>, Receiver<OutgoingVideoFrame>)> {
+    let (outgoing, outgoing_receiver) = mpsc::channel();
+    let control = Arc::clone(control);
+    let thread = std::thread::Builder::new()
+        .name("mellow-video-encode".into())
+        .spawn(move || control.run(&outgoing))?;
+    Ok((thread, outgoing_receiver))
 }
 
 impl std::fmt::Debug for VoiceSession {
@@ -288,6 +337,21 @@ impl VoiceSession {
             Err(_) => return Err(VoiceSessionError::Audio("the audio thread ended".into())),
         }
         let is_path_dropped = Arc::new(AtomicBool::new(false));
+        let video_encoder = Arc::new(VideoEncoderControl::default());
+        let video_frames = VideoFrames::new(options.decoded_pixel_format);
+        let (video_thread, outgoing_video) = spawn_video_encoder(&video_encoder)?;
+        let (keyframe_requests, keyframe_request_receiver) = mpsc::channel();
+        let video = VideoLink {
+            encoder: Arc::clone(&video_encoder),
+            outgoing: outgoing_video,
+            receivers: VideoReceivers::new(video_frames.clone(), keyframe_requests),
+            keyframe_requests: keyframe_request_receiver,
+            keyframe_requested_at: HashMap::new(),
+            source: None,
+            watched_cameras: Vec::new(),
+            watch_list_pacing: WatchListPacing::default(),
+            uplink: UplinkLayerCeiling::default(),
+        };
         let network = NetworkThread {
             machine: ConnectionMachine::new(options.channel_id),
             peer: Some(first_peer),
@@ -301,6 +365,7 @@ impl VoiceSession {
             incoming,
             events,
             audio_commands: audio_commands.clone(),
+            video,
             is_path_dropped: is_path_dropped.clone(),
         };
         let network_thread = std::thread::Builder::new()
@@ -314,7 +379,10 @@ impl VoiceSession {
             audio_commands,
             network_commands,
             is_path_dropped,
-            threads: vec![audio_thread, network_thread],
+            video_encoder,
+            video_frames,
+            watched_cameras: Vec::new(),
+            threads: vec![audio_thread, network_thread, video_thread],
         };
         Ok((session, event_receiver))
     }
@@ -335,6 +403,9 @@ impl VoiceSession {
             GatewayEvent::VoiceSessionDescription { .. }
             | GatewayEvent::VoiceJoinRefused { .. }
             | GatewayEvent::VoiceSlotAssigned { .. }
+            | GatewayEvent::VoiceVideoLayers { .. }
+            | GatewayEvent::VoiceVideoRefused { .. }
+            | GatewayEvent::VoiceVideoPaused { .. }
             | GatewayEvent::VoiceDisconnected { .. } => true,
             GatewayEvent::VoiceStateDelete { user_id, .. } => *user_id == self.own_user_id,
             _ => false,
@@ -382,6 +453,77 @@ impl VoiceSession {
         self.command(AudioCommand::SetMuted(self.toggles.is_muted()));
         self.command(AudioCommand::SetDeafened(self.toggles.is_deafened()));
         self.network(NetworkCommand::SetToggles(self.toggles));
+    }
+
+    /// Turns the camera or a screen on, replacing the other (never both), and tells the
+    /// server; capture pushes its pictures into the returned input. The server answers with
+    /// [`VoiceSessionEvent::VideoRefused`] when it does not allow it.
+    #[must_use]
+    pub fn start_video(&self, kind: VideoSourceKind) -> VideoInput {
+        let input = self.video_encoder.start(kind);
+        self.network(NetworkCommand::SetVideoSource(Some(kind)));
+        input
+    }
+
+    /// A new quality for the shared screen: only bit rates change, as on the web.
+    pub fn change_screen_share_quality(&self, quality: ScreenShareQuality) {
+        if matches!(self.video_source(), Some(VideoSourceKind::Screen(_))) {
+            let kind = VideoSourceKind::Screen(quality);
+            self.video_encoder.change_kind(kind);
+            self.network(NetworkCommand::SetVideoSource(Some(kind)));
+        }
+    }
+
+    /// Turns the camera or screen off and tells the server; its input stops taking pictures.
+    pub fn stop_video(&self) {
+        if self.video_source().is_some() {
+            self.video_encoder.stop_source();
+            self.network(NetworkCommand::SetVideoSource(None));
+        }
+    }
+
+    /// The source on, if any (the server may have turned it off: see the session's events).
+    #[must_use]
+    pub fn video_source(&self) -> Option<VideoSourceKind> {
+        self.video_encoder.source()
+    }
+
+    /// The cameras and screens to show (at most `MAXIMUM_VIDEO_RECEIVE_SLOTS`, the rest is
+    /// ignored), replacing the previous list. Only a change of people or tile sizes reaches the
+    /// server, at most every 400 ms (the latest change always arrives); drawn sizes apply at
+    /// once.
+    pub fn watch_videos(&mut self, watched: &[WatchedVideo]) {
+        let watched = &watched[..watched
+            .len()
+            .min(mellow_protocol::MAXIMUM_VIDEO_RECEIVE_SLOTS)];
+        self.video_frames.set_display_sizes(
+            watched
+                .iter()
+                .map(|video| {
+                    (
+                        video.user_id,
+                        (video.display_width.max(1), video.display_height.max(1)),
+                    )
+                })
+                .collect::<HashMap<_, _>>(),
+        );
+        let cameras: Vec<WatchedCamera> = watched
+            .iter()
+            .map(|video| WatchedCamera {
+                user_id: video.user_id,
+                size: video.tile_size,
+            })
+            .collect();
+        if cameras != self.watched_cameras {
+            self.watched_cameras.clone_from(&cameras);
+            self.network(NetworkCommand::WatchCameras(cameras));
+        }
+    }
+
+    /// The decoded pictures of the watched cameras and screens, for the interface.
+    #[must_use]
+    pub fn video_frames(&self) -> VideoFrames {
+        self.video_frames.clone()
     }
 
     /// One person's volume and local mute, for their voice or their screen's sound: applied at
@@ -474,6 +616,7 @@ impl Drop for VoiceSession {
     fn drop(&mut self) {
         let _ = self.network_commands.send(NetworkCommand::Stop);
         let _ = self.audio_commands.send(AudioCommand::Stop);
+        self.video_encoder.shut_down();
         for thread in self.threads.drain(..) {
             if thread.join().is_err() {
                 tracing::error!("a voice thread panicked");
@@ -538,6 +681,9 @@ mod tests {
             audio_commands,
             network_commands,
             is_path_dropped: Arc::new(AtomicBool::new(false)),
+            video_encoder: Arc::new(VideoEncoderControl::default()),
+            video_frames: VideoFrames::new(DecodedPixelFormat::Bgra),
+            watched_cameras: Vec::new(),
             threads: Vec::new(),
         };
         (
@@ -614,6 +760,53 @@ mod tests {
             audio.try_recv(),
             Ok(AudioCommand::SetPersonSetting { setting, .. }) if setting == remembered
         ));
+    }
+
+    #[test]
+    fn a_screen_replaces_the_camera_and_the_network_thread_hears_of_each() {
+        let (session, _audio, network, _store) = session_without_threads();
+        let camera = session.start_video(VideoSourceKind::Camera);
+        let screen = session.start_video(VideoSourceKind::Screen(ScreenShareQuality::High));
+        assert!(!camera.is_open() && screen.is_open(), "never both");
+        session.stop_video();
+        assert!(!screen.is_open() && session.video_source().is_none());
+        let sources: Vec<Option<VideoSourceKind>> = network
+            .try_iter()
+            .filter_map(|command| match command {
+                NetworkCommand::SetVideoSource(kind) => Some(kind),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            sources,
+            [
+                Some(VideoSourceKind::Camera),
+                Some(VideoSourceKind::Screen(ScreenShareQuality::High)),
+                None
+            ]
+        );
+    }
+
+    #[test]
+    fn only_a_change_of_people_or_tile_sizes_sends_a_watch_list() {
+        let (mut session, _audio, network, _store) = session_without_threads();
+        let watched = WatchedVideo {
+            user_id: Snowflake::from_raw(7),
+            tile_size: VideoTileSize::Large,
+            display_width: 1_280,
+            display_height: 720,
+        };
+        session.watch_videos(&[watched]);
+        session.watch_videos(&[WatchedVideo {
+            display_width: 640,
+            ..watched
+        }]);
+        assert_eq!(network.try_iter().count(), 1, "only the drawn size changed");
+        session.watch_videos(&[WatchedVideo {
+            tile_size: VideoTileSize::Small,
+            ..watched
+        }]);
+        assert_eq!(network.try_iter().count(), 1);
     }
 
     #[test]
