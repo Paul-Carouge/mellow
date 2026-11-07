@@ -1,7 +1,8 @@
 //! Presences, custom statuses, profiles shown everywhere, and relationships (ADR-0025).
 
 use mellow_protocol::{
-    ChosenStatus, Presence, PresenceStatus, PublicUser, Relationship, RelationshipKind, Snowflake,
+    ChosenStatus, CurrentUser, Presence, PresenceStatus, PublicUser, Relationship,
+    RelationshipKind, Snowflake,
 };
 
 use super::pins::Pins;
@@ -67,6 +68,23 @@ impl ClientState {
         } else {
             self.presence_by_user_id.insert(user_id, presence);
         }
+        StateChange::Presence { user_id }
+    }
+
+    /// The instance's answer to a change of the user's own account (a status chosen in the user
+    /// card): the user everywhere they appear, as `UserUpdate` does, and their own pick at once,
+    /// before the instance echoes it (the web's `applyCurrentUser`).
+    pub fn apply_current_user(&mut self, user: CurrentUser) -> StateChange {
+        let public = PublicUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name.clone(),
+            avatar: user.avatar,
+            banner: user.banner,
+        };
+        let user_id = user.id;
+        self.current_user = Some(user);
+        self.apply_user_update(&public);
         StateChange::Presence { user_id }
     }
 
@@ -296,5 +314,21 @@ mod tests {
             Some("away"),
             "kept for when they show again"
         );
+    }
+
+    #[test]
+    fn the_users_own_answer_shows_their_pick_at_once() {
+        let mut state = ready_state();
+        let mut user = state.current_user().unwrap().clone();
+        user.status = ChosenStatus::DoNotDisturb;
+        user.display_name = "Me again".into();
+        let change = state.apply_current_user(user);
+        assert_eq!(change, StateChange::Presence { user_id: ME });
+        assert_eq!(
+            state.current_user().unwrap().status,
+            ChosenStatus::DoNotDisturb
+        );
+        assert_eq!(state.presence_of(ME), PresenceStatus::DoNotDisturb);
+        assert_eq!(state.current_user().unwrap().display_name, "Me again");
     }
 }
