@@ -25,6 +25,7 @@ use super::{
     ShownStatus, StatusIndicator, Switch, Tabs, TextField, Tooltip, UnsavedChangesBar,
     with_tab_navigation, with_type,
 };
+use crate::composer::{Composer, ReplyTarget};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MESSAGE_AVATAR_SIZE,
@@ -61,6 +62,7 @@ pub struct ComponentGallery {
     helper_field: Entity<InputState>,
     error_field: Entity<InputState>,
     password_field: Entity<InputState>,
+    composer: Entity<Composer>,
     menu: Option<(Entity<ContextMenu>, Subscription)>,
     dialog: Option<(Entity<ModalDialog>, Subscription)>,
     menu_button_focus: FocusHandle,
@@ -87,6 +89,39 @@ impl ComponentGallery {
                 .masked(true)
                 .default_value("correct horse")
         });
+        let composer = cx.new(|cx| {
+            let mut composer = Composer::new(window, cx);
+            composer.set_channel(
+                Some(mellow_protocol::Snowflake::from_raw(1)),
+                "Message #general".into(),
+                window,
+                cx,
+            );
+            composer.set_mention_candidates(
+                ["ana", "anouk", "léo"]
+                    .into_iter()
+                    .zip(2..)
+                    .map(|(name, id)| mellow_protocol::PublicUser {
+                        id: mellow_protocol::Snowflake::from_raw(id),
+                        username: name.to_owned(),
+                        display_name: String::new(),
+                        avatar: None,
+                        banner: None,
+                    })
+                    .collect(),
+                Some(mellow_protocol::Snowflake::from_raw(1)),
+                cx,
+            );
+            composer.set_reply_target(
+                Some(ReplyTarget {
+                    message_id: mellow_protocol::Snowflake::from_raw(9),
+                    author_name: "Ana".into(),
+                }),
+                window,
+                cx,
+            );
+            composer
+        });
         Self {
             switch_on: true,
             range_value: 100.0,
@@ -97,6 +132,7 @@ impl ComponentGallery {
             helper_field,
             error_field,
             password_field,
+            composer,
             menu: None,
             dialog: None,
             menu_button_focus: cx.focus_handle().tab_stop(true),
@@ -656,6 +692,9 @@ impl Render for ComponentGallery {
                         .child(column().child(identity).child(fields))
                         .child(column().child(navigation).child(feedback)),
                 )
+                // Type ":" or "@" and two letters for suggestions; files dropped on it fail to
+                // upload, as the gallery has no instance.
+                .child(section("Composer", cx).child(self.composer.clone()))
                 .children(overlays),
             &self.root_focus,
         )
