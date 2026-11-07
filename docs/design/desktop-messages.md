@@ -22,14 +22,14 @@ The GPUI desktop client's message components (`crates/mellow-desktop/src/message
 ## How GPUI draws message text
 
 - A paragraph, heading, subtext or list item is one `StyledText` with highlight runs, so it wraps as one paragraph. Bold, italic, underline, strikethrough, link colour, spoiler and search-match washes and mention chips are runs; inline code and server emoji switch to the monospace family by range.
-- Links and spoilers are click ranges (`InteractiveText`). A link opens in the OS browser only when `safe_http_url` accepts it (http and https, no user info), checked again at click; a masked link's tooltip shows its real address. A hidden spoiler draws its text in the bar's colour, keeps its links inactive and reveals on click; revealed spoilers and opened code blocks are kept per row while it is drawn.
+- Links and spoilers are click ranges (`InteractiveText`). A link opens in the OS browser only when `safe_http_url` accepts it (http and https, no user info), checked again at click; every link's tooltip shows its parsed address (punycode for a lookalike host), since a native window has no status bar. A text's screen-reader value is its own spoken form: a hidden spoiler is named, not read, a server emoji reads as `:name:`, chips drop their padding. A hidden spoiler draws its text in the bar's colour, keeps its links inactive and reveals on click; revealed spoilers and opened code blocks are kept per row while it is drawn.
 - GPUI text holds no inline boxes, so a server emoji keeps room with monospace no-break spaces (Source Code Pro advances 0.6 em, so the count covers the emoji's side) and its picture is painted over that room after the text; its tooltip is `:name:`. A picture that cannot load shows the missing-emoji outline.
 - Role mention chips use client-core's `role_mention_chip_colours` on `color.surface.chat`, memoised per colour and theme; people and `@everyone` use the amber chip.
 
 ## Known differences from the web
 
 - Mention chips have no radius or padding (text runs have neither): a thin space each side stands in for the padding, and chips do not change colour on hover.
-- Inline code, "(edited)" and server emoji in text use the message font size (a text has one size): the web sets code at 14 px and "(edited)" in the timestamp type.
+- Inline code, "(edited)" and server emoji in text use the message font size (a text has one size): the web sets code at 14 px and "(edited)" in the timestamp type. After a jumbo-emoji paragraph, "(edited)" goes on its own line so it does not take the jumbo size.
 - Server emoji painted in text show their still frame; reactions and pictures animate unless motion is reduced.
 - Message text is not selectable yet: gpui-base's selection layer works on plain text only, and a window-wide selection layer belongs to the shell.
 - Links and spoilers inside text are reached by pointer only; the keyboard reaches the row's buttons (reactions, code block keys, Retry, Delete). The list's roving row focus should give rows a way to open their links.

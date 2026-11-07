@@ -42,8 +42,11 @@ const MONOSPACE_ADVANCE_SHARE_OF_EM: f32 = 0.6;
 /// A thin space each side of a mention chip, standing in for its inline padding (GPUI text runs
 /// have no padding).
 const CHIP_PADDING: &str = "\u{2009}";
-/// The colour of a run that keeps no colour of its own.
-const NO_COLOUR_BYTES: u32 = 0;
+/// A role colour of 0 means the role has none (the web's `NO_ROLE_COLOR`).
+const NO_ROLE_COLOUR: u32 = 0;
+/// Distinct role colours worked out before the chip colour cache starts over; a server rarely has
+/// more than a few dozen.
+const MAXIMUM_CACHED_ROLE_CHIP_COLOURS: usize = 256;
 
 /// What clicking a range of the text does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +67,9 @@ pub(crate) struct InlinePicture {
 #[derive(Debug, Default, Clone, PartialEq)]
 pub(crate) struct RichText {
     pub text: String,
+    /// What a screen reader reads: hidden spoilers named, not read; server emoji by `:name:`;
+    /// chips without their padding.
+    pub accessible_text: String,
     pub highlights: Vec<(Range<usize>, HighlightStyle)>,
     pub monospace: Vec<Range<usize>>,
     pub actions: Vec<(Range<usize>, InlineAction)>,
@@ -129,8 +135,13 @@ thread_local! {
 
 fn role_chip_colours(role_colour: u32, sheet: u32) -> RoleMentionChipColours {
     ROLE_CHIP_COLOURS.with(|cache| {
+        let mut cache = cache.borrow_mut();
+        if cache.len() >= MAXIMUM_CACHED_ROLE_CHIP_COLOURS
+            && !cache.contains_key(&(role_colour, sheet))
+        {
+            cache.clear();
+        }
         *cache
-            .borrow_mut()
             .entry((role_colour, sheet))
             .or_insert_with(|| role_mention_chip_colours(role_colour, sheet))
     })
@@ -151,6 +162,7 @@ impl RichText {
     /// "(edited)" after the last word, with its tooltip.
     pub fn push_trailing(&mut self, text: &str, colour: Hsla, tooltip: SharedString) {
         self.text.push(' ');
+        self.accessible_text.push(' ');
         let range = self.push_text(
             text,
             InlineStyle {
@@ -162,6 +174,14 @@ impl RichText {
     }
 
     fn push_text(&mut self, text: &str, style: InlineStyle) -> Range<usize> {
+        self.push_run(text, text, style)
+    }
+
+    /// `text` drawn, `spoken` read by a screen reader unless inside a hidden spoiler.
+    fn push_run(&mut self, text: &str, spoken: &str, style: InlineStyle) -> Range<usize> {
+        if !style.is_hidden {
+            self.accessible_text.push_str(spoken);
+        }
         let start = self.text.len();
         self.text.push_str(text);
         let range = start..self.text.len();
@@ -191,7 +211,7 @@ impl RichText {
                 ..chip
             }
         };
-        self.push_text(&format!("{CHIP_PADDING}{text}{CHIP_PADDING}"), chip);
+        self.push_run(&format!("{CHIP_PADDING}{text}{CHIP_PADDING}"), text, chip);
     }
 
     #[allow(clippy::too_many_lines)] // One arm per node kind, as the web's snippet.
@@ -236,7 +256,7 @@ impl RichText {
                         None => {
                             self.push_text(&label, style);
                         }
-                        Some(role) if role.color == NO_COLOUR_BYTES => self.push_chip(
+                        Some(role) if role.color == NO_ROLE_COLOUR => self.push_chip(
                             &label,
                             color(tokens.component_mention_chip_background),
                             color(tokens.component_mention_chip_text),
@@ -268,8 +288,9 @@ impl RichText {
                     let room_length = picture_room_length(context.picture_em);
                     let room_text: String =
                         std::iter::repeat_n(PICTURE_ROOM_CHARACTER, room_length).collect();
-                    let room = self.push_text(
+                    let room = self.push_run(
                         &room_text,
+                        &format!(":{}:", emoji.name),
                         InlineStyle {
                             is_monospace: true,
                             ..style
@@ -331,6 +352,8 @@ impl RichText {
                         };
                         self.push_nodes(children, revealed, context);
                     } else {
+                        self.accessible_text
+                            .push_str(context.strings.messages().spoiler_hidden());
                         let hidden_colour = color(tokens.component_message_spoiler_background);
                         self.push_nodes(
                             children,
@@ -350,11 +373,7 @@ impl RichText {
                             .push((range, context.strings.messages().spoiler_hidden().into()));
                     }
                 }
-                InlineNode::Link {
-                    url,
-                    is_masked,
-                    children,
-                } => {
+                InlineNode::Link { url, children, .. } => {
                     let start = self.text.len();
                     let link = if style.is_hidden {
                         style
@@ -369,10 +388,9 @@ impl RichText {
                     if !style.is_hidden && !range.is_empty() {
                         self.actions
                             .push((range.clone(), InlineAction::OpenLink(url.clone())));
-                        // The destination is shown wherever the visible text is not it.
-                        if *is_masked {
-                            self.tooltips.push((range, url.clone().into()));
-                        }
+                        // Always the parsed address: a lookalike host shows as punycode, and a native
+                        // window has no status bar to show it.
+                        self.tooltips.push((range, url.clone().into()));
                     }
                 }
             }
@@ -398,6 +416,7 @@ pub(crate) fn open_message_link(url: &str, cx: &App) {
 /// The text as an element: GPUI's interactive text, plus the server emoji painted over their room.
 pub(crate) struct RichTextElement {
     text: InteractiveText,
+    accessible_text: String,
     layout: TextLayout,
     pictures: Vec<(Range<usize>, ImageSource)>,
     picture_side: f32,
@@ -416,6 +435,7 @@ impl RichTextElement {
     ) -> Self {
         let RichText {
             text,
+            accessible_text,
             highlights,
             monospace,
             actions,
@@ -473,6 +493,7 @@ impl RichTextElement {
             .collect();
         Self {
             text: interactive,
+            accessible_text,
             layout,
             pictures,
             picture_side,
@@ -562,7 +583,8 @@ impl gpui::Element for RichTextElement {
     }
 
     fn write_a11y_info(&self, node: &mut gpui::accesskit::Node) {
-        self.text.write_a11y_info(node);
+        // Not `InteractiveText`'s: its value is the drawn text, hidden spoilers included.
+        node.set_value(self.accessible_text.clone());
     }
 
     fn request_layout(
@@ -699,16 +721,65 @@ mod tests {
     }
 
     #[test]
-    fn a_masked_link_shows_its_real_destination() {
+    fn every_link_shows_its_real_destination() {
         let rich = RichText::from_inlines(
-            &[InlineNode::Link {
-                url: "https://example.com/".into(),
-                is_masked: true,
-                children: vec![text("docs")],
-            }],
+            &[
+                InlineNode::Link {
+                    url: "https://example.com/".into(),
+                    is_masked: true,
+                    children: vec![text("docs")],
+                },
+                text(" "),
+                InlineNode::Link {
+                    url: "https://example.org/".into(),
+                    is_masked: false,
+                    children: vec![text("example.org")],
+                },
+            ],
             context(&HashSet::new()),
         );
-        assert_eq!(rich.tooltips, vec![(0..4, "https://example.com/".into())]);
+        assert_eq!(
+            rich.tooltips,
+            vec![
+                (0..4, "https://example.com/".into()),
+                (5..16, "https://example.org/".into())
+            ]
+        );
+        // A lookalike host's address is its punycode form, the one the browser opens.
+        let lookalike = safe_http_url("https://\u{430}pple.com/login").expect("an http address");
+        assert!(lookalike.contains("xn--"), "{lookalike}");
+    }
+
+    #[test]
+    fn screen_readers_skip_hidden_spoilers_and_name_server_emoji() {
+        let emoji = CustomEmoji {
+            id: Snowflake::from_raw(500),
+            name: "party".into(),
+            is_animated: false,
+        };
+        let nodes = [
+            text("hi "),
+            InlineNode::EveryoneMention("@everyone".into()),
+            text(" "),
+            InlineNode::CustomEmoji(emoji),
+            text(" "),
+            InlineNode::Spoiler {
+                id: 0,
+                children: vec![text("the ending")],
+            },
+        ];
+        let strings = Strings::new(Language::English);
+        let hidden = RichText::from_inlines(&nodes, context(&HashSet::new()));
+        assert_eq!(
+            hidden.accessible_text,
+            format!(
+                "hi @everyone :party: {}",
+                strings.messages().spoiler_hidden()
+            )
+        );
+        let revealed = HashSet::from([0]);
+        let shown = RichText::from_inlines(&nodes, context(&revealed));
+        assert_eq!(shown.accessible_text, "hi @everyone :party: the ending");
     }
 
     #[test]
