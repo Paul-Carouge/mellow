@@ -1124,8 +1124,6 @@ impl Render for Composer {
             .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
 
         // The base row is as tall as the user card; buttons sit centred on it.
-        let line_height = TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height;
-        let row_padding = (SIZE_DOCK_HEIGHT - line_height) / 2.0;
         let button_margin = (SIZE_DOCK_HEIGHT - COMPONENT_COMPOSER_ATTACH_BUTTON_SIZE) / 2.0;
         let base_row = if self.can_send_messages {
             let attach = entity.clone();
@@ -1159,7 +1157,12 @@ impl Render for Composer {
                     with_type(div(), TYPE_MESSAGE)
                         .flex_1()
                         .min_w_0()
-                        .py(length(row_padding))
+                        // Centred in a row as tall as the user card: the field's own line
+                        // height is the text input's, not the message type's.
+                        .min_h(length(SIZE_DOCK_HEIGHT))
+                        .flex()
+                        .flex_col()
+                        .justify_center()
                         .px(length(SPACE_2XS))
                         .text_color(color(tokens.component_composer_text))
                         .child(
@@ -1205,6 +1208,7 @@ impl Render for Composer {
         let hover_wash = color(tokens.color_state_hover);
         let composer_box = div()
             .id("composer-box")
+            .debug_selector(|| "composer".to_owned())
             .relative()
             .rounded(length(COMPONENT_COMPOSER_RADIUS))
             .bg(color(tokens.component_composer_background))

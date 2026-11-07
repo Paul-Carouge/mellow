@@ -98,6 +98,20 @@ fn without_typing(events: Vec<ComposerEvent>) -> Vec<ComposerEvent> {
 }
 
 #[gpui::test]
+fn an_empty_composer_is_as_tall_as_the_user_card(cx: &mut TestAppContext) {
+    // ADR-0022 §4: the field's line is the text input's, so padding it to the message type's
+    // line height made the box taller than the dock.
+    let (_harness, cx) = open_composer(cx);
+    let composer = cx
+        .debug_bounds("composer")
+        .expect("the composer's box is drawn");
+    assert_eq!(
+        composer.size.height,
+        gpui::px(crate::theme::tokens::SIZE_DOCK_HEIGHT)
+    );
+}
+
+#[gpui::test]
 fn enter_sends_the_trimmed_text_and_shift_enter_writes_a_new_line(cx: &mut TestAppContext) {
     let (harness, cx) = open_composer(cx);
     cx.simulate_input("hi");
