@@ -22,10 +22,10 @@ use crate::components::{
 };
 use crate::i18n::{self, Strings};
 use crate::theme::tokens::{
-    COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_REACTION_BORDER_WIDTH,
-    COMPONENT_REACTION_EMOJI_SIZE, COMPONENT_REACTION_GAP, COMPONENT_REACTION_HEIGHT,
-    COMPONENT_REACTION_MARGIN_TOP, COMPONENT_REACTION_PADDING_INLINE, COMPONENT_REACTION_RADIUS,
-    COMPONENT_REACTION_ROW_GAP, FONT_WEIGHT_SEMIBOLD, TYPE_BODY_SM,
+    COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH, COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS,
+    COMPONENT_REACTION_BORDER_WIDTH, COMPONENT_REACTION_EMOJI_SIZE, COMPONENT_REACTION_GAP,
+    COMPONENT_REACTION_HEIGHT, COMPONENT_REACTION_MARGIN_TOP, COMPONENT_REACTION_PADDING_INLINE,
+    COMPONENT_REACTION_RADIUS, COMPONENT_REACTION_ROW_GAP, FONT_WEIGHT_SEMIBOLD, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
 
@@ -190,13 +190,15 @@ fn render_pill(
             .line_height(length(COMPONENT_REACTION_EMOJI_SIZE))
             .child(emoji.clone())
             .into_any_element(),
-        // No picture to show: the generic face, as the web's chip for a deleted emoji.
-        ReactionAppearance::Deleted => crate::components::icon(
-            crate::theme::icons::IconName::Smiley,
-            COMPONENT_REACTION_EMOJI_SIZE,
-            color(tokens.component_reaction_add_icon),
-        )
-        .into_any_element(),
+        // A dashed outline where the deleted emoji's picture was, as the web's `ReactionEmoji`.
+        ReactionAppearance::Deleted => div()
+            .flex_none()
+            .size(length(COMPONENT_REACTION_EMOJI_SIZE))
+            .rounded(length(COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS))
+            .border(length(COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH))
+            .border_dashed()
+            .border_color(color(tokens.component_custom_emoji_missing_border))
+            .into_any_element(),
     };
     let key = pill.key;
     let is_ring_shown = is_focus_visible(&focus_handle, window);
@@ -223,9 +225,6 @@ fn render_pill(
         .text_color(color(text))
         .font_weight(gpui::FontWeight(f32::from(FONT_WEIGHT_SEMIBOLD)))
         .when(is_usable, gpui::Styled::cursor_pointer)
-        .when(!is_usable, |pill| {
-            pill.opacity(COMPONENT_BUTTON_DISABLED_OPACITY)
-        })
         .tooltip(move |_, cx| Tooltip::view(accessible_label.clone(), cx))
         .tooltip_show_delay(Tooltip::show_delay())
         .on_hover(move |is_hovered, _, cx| {
