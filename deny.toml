@@ -168,6 +168,11 @@ skip = [
     { crate = "winnow@0.7.15", reason = "toml_edit 0.22" },
     { crate = "zune-core@0.4.12", reason = "zune-jpeg 0.4" },
     { crate = "zune-jpeg@0.4.21", reason = "resvg 0.45" },
+    # The desktop's AV1 decoder for AVIF pictures (ADR-0051).
+    { crate = "strum@0.26.3", reason = "rav1d 1.1" },
+    { crate = "strum_macros@0.26.4", reason = "strum 0.26, under rav1d 1.1" },
+    { crate = "zerocopy@0.7.35", reason = "rav1d 1.1" },
+    { crate = "zerocopy-derive@0.7.35", reason = "zerocopy 0.7, under rav1d 1.1" },
 ]
 
 [sources]

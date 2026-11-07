@@ -7,6 +7,7 @@ pub mod connection_banner;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
+pub mod pictures;
 pub mod preferences;
 pub mod session;
 pub mod session_store;
