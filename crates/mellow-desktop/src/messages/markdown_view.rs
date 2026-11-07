@@ -2,6 +2,7 @@
 //! or an element here; message text is never read as anything else.
 
 use std::collections::HashSet;
+use std::hash::{DefaultHasher, Hash as _, Hasher as _};
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -28,7 +29,7 @@ use crate::theme::{color, length, theme};
 /// A figure's width in the message font, for numbered list markers (`1ch`, tabular digits).
 const DIGIT_SHARE_OF_EM: f32 = 0.6;
 /// Headings sit at aria levels 4 to 6, below the page's and the channel's (the web's `3 + level`).
-const HEADING_LEVEL_OFFSET: usize = 3;
+const HEADING_LEVEL_OFFSET: usize = super::item::MESSAGE_HEADER_HEADING_LEVEL;
 const BULLET: &str = "•";
 const HOLLOW_BULLET: &str = "◦";
 
@@ -212,8 +213,12 @@ impl MessageMarkdown {
                 .into_any_element(),
             BlockNode::List(list) => Self::list(list, false, context, window),
             BlockNode::CodeBlock { text, .. } => {
-                MessageCodeBlock::new(context.next_id("code"), text.clone().into())
-                    .into_any_element()
+                // Keyed by its text too: an edit that changes the block starts it folded again,
+                // as the web's `{#key block.text}`.
+                let mut hasher = DefaultHasher::new();
+                text.hash(&mut hasher);
+                let id = context.next_id(&format!("code-{:x}", hasher.finish()));
+                MessageCodeBlock::new(id, text.clone().into()).into_any_element()
             }
         }
     }
@@ -300,10 +305,12 @@ impl RenderOnce for MessageMarkdown {
             is_jumbo: self.body.is_jumbo,
             next_index: 0,
         };
-        let ends_in_text = matches!(
-            self.body.blocks.last(),
-            Some(BlockNode::Paragraph(_) | BlockNode::Subtext(_))
-        );
+        // A jumbo paragraph's size would carry over to "(edited)": it goes on its own line.
+        let ends_in_text = !self.body.is_jumbo
+            && matches!(
+                self.body.blocks.last(),
+                Some(BlockNode::Paragraph(_) | BlockNode::Subtext(_))
+            );
         let trailing_inline = self.edited.as_ref().filter(|_| ends_in_text);
         let mut children = Self::blocks(&self.body.blocks, trailing_inline, &mut context, window);
         // After a heading, a quote, a list or a code block, or an empty body: on its own line.
