@@ -43,6 +43,8 @@ cc = "1.9.0"
 clap = { version = "4.6.7", features = ["derive"] }
 # Audio devices of the desktop voice engine: CoreAudio, WASAPI, ALSA (ADR-0051).
 cpal = "0.18.2"
+# Already in the tree through GPUI; the per-user cache directory of the desktop picture cache.
+dirs = "6.0.0"
 futures-util = { version = "0.3.34", default-features = false, features = ["sink"] }
 getrandom = "0.4.3"
 hkdf = "0.13.0"
@@ -51,6 +53,8 @@ gif = { version = "0.14.2", default-features = false, features = ["std"] }
 image = { version = "0.25.10", default-features = false, features = ["gif", "jpeg", "png", "webp"] }
 # AVIF container around rav1e's AV1 bitstream (ADR-0033).
 avif-serialize = "0.8.9"
+# Reads the AVIF container of the pictures the server stores, for the desktop decoder (ADR-0051).
+avif-parse = "2.1.0"
 hyper-util = { version = "0.1.21", features = ["tokio"] }
 # Already in the tree through url's IDNA; Unicode properties (letters, diacritics) the web client's regular expressions read.
 icu_properties = "2.3.0"
@@ -87,6 +91,9 @@ minisign-verify = "0.3.0"
 semver = "1.0.28"
 # Pure Rust AV1 encoder for AVIF pictures, one thread per job, with its assembly (ADR-0033).
 rav1e = { version = "0.8.1", default-features = false, features = ["asm"] }
+# Pure Rust AV1 decoder (dav1d port) for the AVIF pictures the desktop shows (ADR-0051). Its
+# assembly is enabled per target by mellow-desktop: the published crate lacks the arm64 header.
+rav1d = { version = "1.1.0", default-features = false, features = ["bitdepth_8", "bitdepth_16"] }
 # Already in the tree through rustls-acme; tests sign the local ACME test authority's HTTPS certificate with it.
 rcgen = { version = "0.13.2", default-features = false, features = ["pem", "aws_lc_rs"] }
 bitflags = "2.13.2"
@@ -171,6 +178,10 @@ opt-level = 3
 opt-level = 3
 
 [profile.dev.package.nnnoiseless]
+opt-level = 3
+
+# Picture tests decode AVIF; unoptimised, the AV1 decoder is tens of times slower.
+[profile.dev.package.rav1d]
 opt-level = 3
 
 # str0m 0.24.1 with its H.264 FU-A reassembly bounded (ADR-0052): upstream keeps every fragment
