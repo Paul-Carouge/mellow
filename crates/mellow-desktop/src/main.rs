@@ -2,6 +2,7 @@
 
 use std::process::ExitCode;
 
+use mellow_desktop::session::LOGOUT_ON_EXIT_TIMEOUT;
 use mellow_desktop::theme::EmbeddedAssets;
 use mellow_desktop::tokio_bridge::build_network_runtime;
 
@@ -29,5 +30,8 @@ fn main() -> ExitCode {
                 std::process::exit(1);
             }
         });
+    // Where `run` returns (Linux), dropping the runtime would wait without limit for a blocking
+    // secret-store call stuck on a prompt nobody sees; the quit already waited for sign-out work.
+    network_runtime.shutdown_timeout(LOGOUT_ON_EXIT_TIMEOUT);
     ExitCode::SUCCESS
 }

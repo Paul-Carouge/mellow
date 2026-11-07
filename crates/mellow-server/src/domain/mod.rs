@@ -10,6 +10,7 @@ pub mod clock;
 pub(crate) mod gifs;
 pub(crate) mod guild_rules;
 pub(crate) mod guilds;
+pub(crate) mod h264_sequence_parameter_sets;
 pub(crate) mod image_processing;
 pub(crate) mod image_recompression;
 pub(crate) mod link_previews;

@@ -48,7 +48,9 @@
   });
   const name = $derived(displayName(person));
   const isPaused = $derived(voice.pausedVideoUserIds.has(userId));
-  const isWaitingForPicture = $derived(status === "connecting" || (status === "live" && !hasPicture));
+  // Sent in a codec this browser does not decode (ADR-0052): the instance sends it no picture.
+  const isUndecodable = $derived(status !== "ended" && !voice.canShowVideoIn(client.voiceStatesByUserId.get(userId)?.video_codec));
+  const isWaitingForPicture = $derived(!isUndecodable && (status === "connecting" || (status === "live" && !hasPicture)));
   let isPictureLate = $state(false);
   const stageSentence = $derived.by(() => {
     if (status === "ended") {
@@ -56,6 +58,9 @@
     }
     if (isPaused) {
       return strings.screenShare.paused;
+    }
+    if (isUndecodable) {
+      return strings.screenShare.undecodable;
     }
     if (isWaitingForPicture) {
       return isPictureLate ? strings.screenShare.slow(name) : strings.screenShare.connecting;
@@ -67,7 +72,7 @@
   const isSoundMuted = $derived(soundSetting.isLocallyMuted);
   // Nothing is said about sound while no picture shows: the session counts from the track's
   // arrival, the view knows when its first frame is drawn.
-  const isSoundStatusShown = $derived(status !== "ended" && !isWaitingForPicture && !isPaused);
+  const isSoundStatusShown = $derived(status !== "ended" && !isWaitingForPicture && !isPaused && !isUndecodable);
   const isSilent = $derived(isSoundStatusShown && voice.watchedStreamSound === "silent" && !voice.toggles.isDeafened);
   const soundStatus = $derived.by((): { icon: "speaker-slash" | "headphones" | null; label: string } | null => {
     if (!isSoundStatusShown) {

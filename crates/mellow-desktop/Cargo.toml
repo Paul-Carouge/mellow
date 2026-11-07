@@ -33,14 +33,27 @@ gpui-component = "=0.9.0"
 gpui-base = "=0.9.0"
 # GIF, JPEG, PNG and WebP pictures, still and animated: the version GPUI's own frames use.
 image.workspace = true
+# The OS secret store (Keychain, Secret Service, Credential Manager) for the session token, as the
+# Slint app did (ADR-0051 "Session").
+keyring = "4.2.0"
+# Already in the tree through keyring; used directly to keep Windows credentials on this machine.
+keyring-core = "1.0.1"
 mellow-client-core.workspace = true
+mellow-protocol.workspace = true
 moxcms.workspace = true
 rav1d.workspace = true
+# Compares the instance's version with the oldest one this app supports.
+semver.workspace = true
+# The OS's preferred languages; already in the tree through GPUI (same version), so nothing new
+# is built or audited.
+sys-locale = "0.3.2"
+tempfile.workspace = true
 thiserror.workspace = true
 tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
 tracing.workspace = true
 # `tracing-log` forwards the `log` records of GPUI and wgpu, whose errors would otherwise be lost.
 tracing-subscriber = { workspace = true, features = ["tracing-log"] }
+zeroize.workspace = true
 
 # rav1d's x86-64 assembly builds with nasm (already needed by the server's rav1e); its arm64
 # assembly does not build from the published crate (`src/arm/asm-offsets.h` is left out of the
@@ -49,8 +62,11 @@ tracing-subscriber = { workspace = true, features = ["tracing-log"] }
 rav1d = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
-mellow-protocol.workspace = true
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+# Authenticator codes for the two-factor test; already built for the server.
+aws-lc-rs.workspace = true
+# The sign-in tests run a real in-process server, as the client core's do.
+mellow-server = { path = "../mellow-server" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true

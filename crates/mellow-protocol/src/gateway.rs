@@ -80,6 +80,24 @@ pub enum ClientFrame {
 /// The shortest time between two sounds played by one member (ADR-0032).
 pub const MINIMUM_MILLISECONDS_BETWEEN_SOUNDS: u64 = 2_000;
 
+/// The rate of the one format the instance stores sounds in (ADR-0032): a canonical WAV, PCM
+/// 16-bit, mono, with a 44-byte header and nothing after the samples.
+pub const SOUND_SAMPLE_RATE_HERTZ: u32 = 48_000;
+
+/// Discord's limit: 5.2 seconds.
+pub const MAXIMUM_SOUND_DURATION_MILLISECONDS: u32 = 5_200;
+
+/// The most samples a sound holds.
+pub const MAXIMUM_SOUND_SAMPLES: u32 =
+    SOUND_SAMPLE_RATE_HERTZ / 1_000 * MAXIMUM_SOUND_DURATION_MILLISECONDS;
+
+/// The canonical sound WAV's `fmt ` chunk of 16 bytes: PCM, one channel, 48 kHz, 96 000 bytes
+/// per second, 2-byte blocks, 16 bits.
+pub const CANONICAL_SOUND_FORMAT_CHUNK: [u8; 24] = [
+    b'f', b'm', b't', b' ', 16, 0, 0, 0, 1, 0, 1, 0, 0x80, 0xBB, 0, 0, 0x00, 0x77, 0x01, 0, 2, 0,
+    16, 0,
+];
+
 /// The most voices one participant hears at once: receive m-lines of a voice offer (ADR-0030).
 pub const MAXIMUM_VOICE_RECEIVE_SLOTS: usize = 16;
 
@@ -128,6 +146,21 @@ pub enum SimulcastLayer {
     /// 1280 × 720, up to 1.5 Mbit/s.
     #[serde(rename = "h")]
     High,
+}
+
+/// The codec of a camera or shared screen (ADR-0052). A client decodes every codec it lists on its
+/// video receive m-lines; the server forwards a picture only to those that list its codec.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum VideoCodec {
+    /// VP8 with its retransmissions (ADR-0035): what every web client sends.
+    Vp8,
+    /// H.264 Constrained Baseline in packetisation mode 1 (ADR-0052): what hardware encoders
+    /// send.
+    H264,
+    /// A codec from a newer server, which this client does not decode. Servers never send it.
+    #[serde(other, rename = "unknown")]
+    Unknown,
 }
 
 /// The session token is never printed.
@@ -284,6 +317,11 @@ pub struct VoiceState {
     /// Absent from older servers: off.
     #[serde(default)]
     pub self_stream: bool,
+    /// The codec of the person's camera or screen, fixed for their media session (ADR-0052): a
+    /// client that does not decode it shows that it cannot, instead of waiting for a picture.
+    /// Absent when their offer has no video, and from older servers, where it is VP8.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub video_codec: Option<VideoCodec>,
 }
 
 /// Why the server refused to turn a camera on.
@@ -998,6 +1036,31 @@ mod tests {
     }
 
     #[test]
+    fn voice_states_of_older_servers_have_no_video_codec() {
+        let from_an_older_server: VoiceState = serde_json::from_value(serde_json::json!({
+            "user_id": "3", "guild_id": "1", "channel_id": "2",
+            "self_mute": true, "self_deaf": false, "suppressed": false
+        }))
+        .unwrap();
+        assert_eq!(
+            from_an_older_server.video_codec, None,
+            "VP8, as before ADR-0052"
+        );
+        assert_eq!(serde_json::to_value(VideoCodec::Vp8).unwrap(), "vp8");
+    }
+
+    #[test]
+    fn video_codecs_of_newer_servers_read_as_unknown() {
+        let from_a_newer_server: VoiceState = serde_json::from_value(serde_json::json!({
+            "user_id": "3", "guild_id": "1", "channel_id": "2",
+            "self_mute": false, "self_deaf": false, "suppressed": false,
+            "self_video": true, "video_codec": "av1"
+        }))
+        .unwrap();
+        assert_eq!(from_a_newer_server.video_codec, Some(VideoCodec::Unknown));
+    }
+
+    #[test]
     fn voice_events_carry_string_ids_and_snake_case_reasons() {
         let voice_state = VoiceState {
             user_id: Snowflake::from_raw(3),
@@ -1009,6 +1072,7 @@ mod tests {
             join_sound_id: None,
             self_video: true,
             self_stream: false,
+            video_codec: Some(VideoCodec::H264),
         };
         let cases = [
             (
@@ -1018,7 +1082,7 @@ mod tests {
                 serde_json::json!({"t": "VOICE_STATE_UPDATE", "data": {"voice_state": {
                     "user_id": "3", "guild_id": "1", "channel_id": "2",
                     "self_mute": true, "self_deaf": false, "suppressed": false,
-                    "self_video": true, "self_stream": false
+                    "self_video": true, "self_stream": false, "video_codec": "h264"
                 }}}),
             ),
             (

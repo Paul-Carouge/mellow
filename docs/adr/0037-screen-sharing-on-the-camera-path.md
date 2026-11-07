@@ -2,6 +2,7 @@
 
 - Status: Accepted (owner, 2026-11-02: "je veux ça d'abord")
 - Date: 2026-11-02
+- Amended by: [ADR-0052](0052-h264-next-to-vp8-in-the-voice-sfu.md) (receive slots offer H.264 too where the browser decodes it)
 - Builds on [ADR-0035](0035-video-in-voice-channels.md) (VP8 simulcast relayed by the built-in SFU, `STREAM`, the safeguards) and [ADR-0030](0030-voice-channels-with-an-sfu-in-the-server-binary.md).
 
 ## Context

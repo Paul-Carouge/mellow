@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  isConstrainedBaselineInPacketizationMode1,
   isLinuxDesktop,
   isScreenShareQuality,
   preferredCodecs,
@@ -177,7 +178,46 @@ describe("screen share problems and codecs", () => {
     expect(preferredCodecs(audio, video)).toEqual({
       audio: [codec("audio/opus")],
       video: [codec("video/VP8"), codec("video/rtx")],
+      receivedVideo: [codec("video/VP8"), codec("video/rtx")],
+      receivesH264: false,
     });
     expect(preferredCodecs(audio, [codec("video/H264")])).toBeNull();
+  });
+
+  it("receives H.264 Constrained Baseline in packetisation mode 1 where the browser decodes it, and sends VP8", () => {
+    const h264 = (sdpFmtpLine: string) => ({ mimeType: "video/H264", clockRate: 90_000, sdpFmtpLine });
+    const vp8 = { mimeType: "video/VP8", clockRate: 90_000 };
+    const rtx = { mimeType: "video/rtx", clockRate: 90_000 };
+    const constrainedBaseline = h264("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f");
+    const video = [
+      h264("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"),
+      h264("level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f"),
+      constrainedBaseline,
+      h264("level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640c1f"),
+      vp8,
+      rtx,
+    ];
+    const preferences = preferredCodecs([{ mimeType: "audio/opus", clockRate: 48_000 }], video);
+    expect(preferences?.video).toEqual([vp8, rtx]);
+    expect(preferences?.receivedVideo).toEqual([vp8, constrainedBaseline, rtx]);
+    expect(preferences?.receivesH264).toBe(true);
+  });
+
+  it("tells Constrained Baseline from the other H.264 profiles, whatever the parameters' order and case", () => {
+    const h264 = (sdpFmtpLine: string | undefined) => ({ mimeType: "video/h264", clockRate: 90_000, sdpFmtpLine });
+    expect(isConstrainedBaselineInPacketizationMode1(h264("profile-level-id=42E033; packetization-mode=1"))).toBe(true);
+    expect(isConstrainedBaselineInPacketizationMode1(h264("packetization-mode=1;profile-level-id=42c01f"))).toBe(true);
+    expect(isConstrainedBaselineInPacketizationMode1(h264("packetization-mode=1;profile-level-id=4d001f"))).toBe(false);
+    expect(isConstrainedBaselineInPacketizationMode1(h264("packetization-mode=1;profile-level-id=42411f"))).toBe(false);
+    expect(isConstrainedBaselineInPacketizationMode1(h264("packetization-mode=1;profile-level-id=42e0"))).toBe(false);
+    expect(isConstrainedBaselineInPacketizationMode1(h264("profile-level-id=42e01f"))).toBe(false);
+    expect(isConstrainedBaselineInPacketizationMode1(h264(undefined))).toBe(false);
+    expect(
+      isConstrainedBaselineInPacketizationMode1({
+        mimeType: "video/VP8",
+        clockRate: 90_000,
+        sdpFmtpLine: "packetization-mode=1;profile-level-id=42e01f",
+      }),
+    ).toBe(false);
   });
 });

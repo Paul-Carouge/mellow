@@ -373,6 +373,7 @@ export const fr: Catalogue = {
     exitFullscreen: "Quitter le plein écran",
     slow: (person) => `L’image de ${person} n’arrive pas. Vérifie ta connexion, ou ferme puis rouvre son écran.`,
     paused: "Ta connexion est trop lente pour cette image. Elle reviendra dès que possible.",
+    undecodable: "Ce navigateur ne sait pas lire l’image de cet écran (H.264). Regarde-le depuis un autre navigateur.",
     streamVolume: "Volume du partage",
     muteStream: "Couper le son du partage",
     hasSound: "Avec son",
@@ -471,6 +472,7 @@ export const fr: Catalogue = {
     you: (person) => `${person} (toi)`,
     startingCamera: "Allumage de ta caméra…",
     paused: "Connexion trop lente",
+    undecodable: "Image non prise en charge par ce navigateur",
     overflow: (people) => `Encore ${count(people)} dans l’appel`,
     controls: "Commandes de l’appel",
     shareScreen: "Partager l’écran",
@@ -2304,5 +2306,9 @@ export const fr: Catalogue = {
     tooLarge: (kilobytes) => `l’image dépasse ${kilobytes}${NO_BREAK_SPACE}Ko. Choisis-en une plus petite.`,
     unreadable: "l’image est illisible. Choisis-en une autre.",
     currentIcon: (role) => `Icône de ${role}`,
+  },
+
+  desktop: {
+    quitMellow: "Quitter Mellow",
   },
 };
