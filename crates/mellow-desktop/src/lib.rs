@@ -3,6 +3,7 @@
 //! network runs on, the session and its sign-in screens, and the Dusk shell.
 
 pub mod components;
+pub mod composer;
 pub mod connection_banner;
 pub mod i18n;
 mod local_widgets;
@@ -45,6 +46,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
     components::bind_tab_navigation(cx);
+    composer::bind_composer_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
     let strings = Language::of_the_system().strings();
     cx.set_global(ActiveStrings(strings));

@@ -1,0 +1,291 @@
+//! Headless behaviour of the composer: keys, sending, editing, suggestions and drafts.
+
+use gpui::{
+    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
+    Subscription, TestAppContext, VisualTestContext, Window, WindowAppearance, div,
+};
+use mellow_protocol::{PublicUser, Snowflake};
+
+use super::{Cancelled, ComposedMessage, Composer, ComposerEvent, ReplyTarget, bind_composer_keys};
+use crate::components::bind_tab_navigation;
+use crate::theme::ActiveTheme;
+
+struct Harness {
+    composer: Entity<Composer>,
+    events: Vec<ComposerEvent>,
+    _subscription: Subscription,
+}
+
+impl Render for Harness {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div()
+            .size_full()
+            .flex()
+            .flex_col()
+            .justify_end()
+            .child(self.composer.clone())
+    }
+}
+
+fn channel(id: u64) -> Snowflake {
+    Snowflake::from_raw(id)
+}
+
+fn person(id: u64, username: &str) -> PublicUser {
+    PublicUser {
+        id: Snowflake::from_raw(id),
+        username: username.to_owned(),
+        display_name: String::new(),
+        avatar: None,
+        banner: None,
+    }
+}
+
+/// A composer open on channel 1, focused, as the chat pane leaves it.
+fn open_composer(cx: &mut TestAppContext) -> (Entity<Harness>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
+        gpui_component::init(cx);
+        bind_tab_navigation(cx);
+        bind_composer_keys(cx);
+    });
+    let (harness, cx) = cx.add_window_view(|window, cx| {
+        let composer = cx.new(|cx| Composer::new(window, cx));
+        let subscription = cx.subscribe(&composer, |harness: &mut Harness, _, event, _| {
+            harness.events.push(event.clone());
+        });
+        Harness {
+            composer,
+            events: Vec::new(),
+            _subscription: subscription,
+        }
+    });
+    let composer = composer_of(&harness, cx);
+    cx.update(|window, cx| {
+        window.activate_window();
+        composer.update(cx, |composer, cx| {
+            composer.set_channel(Some(channel(1)), "Message #general".into(), window, cx);
+            composer.focus(window, cx);
+        });
+    });
+    cx.run_until_parked();
+    (harness, cx)
+}
+
+fn composer_of(harness: &Entity<Harness>, cx: &mut VisualTestContext) -> Entity<Composer> {
+    harness.read_with(cx, |harness, _| harness.composer.clone())
+}
+
+fn text(harness: &Entity<Harness>, cx: &mut VisualTestContext) -> String {
+    let composer = composer_of(harness, cx);
+    composer.read_with(cx, Composer::text)
+}
+
+fn take_events(harness: &Entity<Harness>, cx: &mut VisualTestContext) -> Vec<ComposerEvent> {
+    harness.update(cx, |harness, _| std::mem::take(&mut harness.events))
+}
+
+fn without_typing(events: Vec<ComposerEvent>) -> Vec<ComposerEvent> {
+    events
+        .into_iter()
+        .filter(|event| !matches!(event, ComposerEvent::Typing { .. }))
+        .collect()
+}
+
+#[gpui::test]
+fn enter_sends_the_trimmed_text_and_shift_enter_writes_a_new_line(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    cx.simulate_input("hi");
+    cx.simulate_keystrokes("shift-enter");
+    cx.simulate_input("there");
+    assert_eq!(text(&harness, cx), "hi\nthere");
+
+    cx.simulate_keystrokes("enter");
+
+    assert_eq!(
+        without_typing(take_events(&harness, cx)),
+        [ComposerEvent::Send(ComposedMessage {
+            channel_id: channel(1),
+            text: "hi\nthere".into(),
+            reply_to: None,
+            attachments: Vec::new(),
+        })]
+    );
+    assert_eq!(text(&harness, cx), "");
+    // An empty field sends nothing.
+    cx.simulate_keystrokes("enter");
+    assert_eq!(without_typing(take_events(&harness, cx)), []);
+}
+
+#[gpui::test]
+fn typing_notices_are_throttled(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    cx.simulate_input("hello");
+    let typing: Vec<_> = take_events(&harness, cx)
+        .into_iter()
+        .filter(|event| matches!(event, ComposerEvent::Typing { .. }))
+        .collect();
+    assert_eq!(
+        typing,
+        [ComposerEvent::Typing {
+            channel_id: channel(1)
+        }]
+    );
+}
+
+#[gpui::test]
+fn up_in_an_empty_field_asks_to_edit_the_last_message_and_moves_the_caret_otherwise(
+    cx: &mut TestAppContext,
+) {
+    let (harness, cx) = open_composer(cx);
+    cx.simulate_keystrokes("up");
+    assert_eq!(take_events(&harness, cx), [ComposerEvent::EditLast]);
+
+    cx.simulate_input("a");
+    take_events(&harness, cx);
+    cx.simulate_keystrokes("up");
+    assert_eq!(take_events(&harness, cx), []);
+}
+
+#[gpui::test]
+fn the_reply_goes_with_the_message_and_esc_closes_it(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let reply = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.set_reply_target(
+                    Some(ReplyTarget {
+                        message_id: Snowflake::from_raw(77),
+                        author_name: "Ana".into(),
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+    };
+    reply(cx);
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        take_events(&harness, cx),
+        [ComposerEvent::Cancel(Cancelled::Reply)]
+    );
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        take_events(&harness, cx),
+        [ComposerEvent::Cancel(Cancelled::Nothing)]
+    );
+
+    reply(cx);
+    cx.simulate_input("yes");
+    cx.simulate_keystrokes("enter");
+    let sent = without_typing(take_events(&harness, cx));
+    assert!(
+        matches!(&sent[..], [ComposerEvent::Send(message)] if message.reply_to == Some(Snowflake::from_raw(77))),
+        "{sent:?}"
+    );
+}
+
+#[gpui::test]
+fn enter_inserts_the_chosen_emoji_instead_of_sending(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    cx.simulate_input(":thumbs");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(text(&harness, cx), "👍 ");
+    assert_eq!(without_typing(take_events(&harness, cx)), []);
+}
+
+#[gpui::test]
+fn tab_inserts_a_mention_and_esc_hides_the_list_until_the_word_changes(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    cx.update(|_, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_mention_candidates(
+                vec![person(1, "paul"), person(2, "pauline")],
+                Some(Snowflake::from_raw(1)),
+                cx,
+            );
+        });
+    });
+    cx.simulate_input("@pau");
+    cx.simulate_keystrokes("escape");
+    // The list was there to hide: Esc meant nothing else.
+    assert_eq!(without_typing(take_events(&harness, cx)), []);
+    assert!(composer.read_with(cx, |composer, _| composer.suggestions.visible().is_empty()));
+
+    cx.simulate_input(" @pau");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(text(&harness, cx), "@pau @pauline ");
+}
+
+#[gpui::test]
+fn an_edit_is_saved_with_enter_cancelled_with_esc_and_the_draft_comes_back(
+    cx: &mut TestAppContext,
+) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let message_id = Snowflake::from_raw(42);
+    cx.simulate_input("draft");
+    let edit = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.start_editing(message_id, "helo", window, cx);
+            });
+        });
+    };
+
+    edit(cx);
+    assert_eq!(text(&harness, cx), "helo");
+    cx.simulate_keystrokes("escape");
+    assert_eq!(
+        without_typing(take_events(&harness, cx)),
+        [ComposerEvent::Cancel(Cancelled::Editing { message_id })]
+    );
+    assert_eq!(text(&harness, cx), "draft");
+
+    edit(cx);
+    cx.simulate_input("x");
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        take_events(&harness, cx),
+        [ComposerEvent::Edit {
+            message_id,
+            text: "helox".into()
+        }]
+    );
+    assert_eq!(text(&harness, cx), "draft");
+}
+
+#[gpui::test]
+fn each_channel_keeps_its_own_draft(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let open = |id: u64, cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            composer.update(cx, |composer, cx| {
+                composer.set_channel(Some(channel(id)), "Message".into(), window, cx);
+            });
+        });
+    };
+    cx.simulate_input("first");
+    open(2, cx);
+    assert_eq!(text(&harness, cx), "");
+    open(1, cx);
+    assert_eq!(text(&harness, cx), "first");
+}
+
+#[gpui::test]
+fn a_message_over_the_limit_is_not_sent(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_text("a".repeat(4_001), window, cx);
+        });
+    });
+    cx.simulate_keystrokes("enter");
+    assert_eq!(without_typing(take_events(&harness, cx)), []);
+    assert!(composer.read_with(cx, |composer, _| composer.has_tried_sending_too_long));
+}
