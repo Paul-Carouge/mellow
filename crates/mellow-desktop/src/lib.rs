@@ -2,16 +2,20 @@
 //! the interface strings generated from the web's catalogues, the bridge to the Tokio runtime the
 //! network runs on, the session and its sign-in screens, and the Dusk shell.
 
+pub mod column_widths;
 pub mod components;
 pub mod connection_banner;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
+pub mod navigation;
 pub mod pictures;
 pub mod preferences;
 pub mod session;
 pub mod session_store;
 pub mod shell;
+#[cfg(test)]
+mod shell_fixtures;
 pub mod sign_in_form;
 pub mod sign_in_screen;
 pub mod strings_pending_i18n;
@@ -46,6 +50,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     theme::register_embedded_fonts(cx)?;
     components::bind_tab_navigation(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
+    preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();
     cx.set_global(ActiveStrings(strings));
     let session = cx.new(Session::new_restoring_stored_session);

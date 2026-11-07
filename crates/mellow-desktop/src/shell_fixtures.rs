@@ -1,0 +1,215 @@
+//! A small signed-in world for the shell's tests: two servers, a category with text and voice
+//! channels, two conversations and a few members, as `Ready` brings them.
+
+use mellow_client_core::state::ClientState;
+use mellow_protocol::{
+    Channel, ChannelKind, ChannelUnread, ChosenStatus, CurrentUser, DirectMessageChannel, Guild,
+    Member, Permissions, Presence, PresenceStatus, PublicUser, ReadState, Ready, Role, Snowflake,
+};
+
+pub const ME: Snowflake = Snowflake::from_raw(1000);
+pub const ANA: Snowflake = Snowflake::from_raw(1001);
+pub const ZOE: Snowflake = Snowflake::from_raw(1002);
+
+pub const GUILD_RUST: Snowflake = Snowflake::from_raw(1);
+pub const GUILD_BOOKS: Snowflake = Snowflake::from_raw(2);
+pub const RUST_TALK: Snowflake = Snowflake::from_raw(20);
+pub const RUST_ANNOUNCEMENTS: Snowflake = Snowflake::from_raw(21);
+pub const RUST_GENERAL: Snowflake = Snowflake::from_raw(22);
+pub const RUST_HELP: Snowflake = Snowflake::from_raw(23);
+pub const RUST_VOICE: Snowflake = Snowflake::from_raw(24);
+pub const BOOKS_READING: Snowflake = Snowflake::from_raw(31);
+pub const MODERATORS: Snowflake = Snowflake::from_raw(90);
+
+pub const CONVERSATION_ANA: Snowflake = Snowflake::from_raw(50);
+pub const CONVERSATION_ZOE: Snowflake = Snowflake::from_raw(51);
+
+/// The newest message everywhere; read positions sit on it unless a test makes a channel unread.
+const NEWEST_MESSAGE: Snowflake = Snowflake::from_raw(9_000);
+
+pub fn person(id: Snowflake, username: &str, display_name: &str) -> PublicUser {
+    PublicUser {
+        id,
+        username: username.to_owned(),
+        display_name: display_name.to_owned(),
+        avatar: None,
+        banner: None,
+    }
+}
+
+fn channel(
+    id: Snowflake,
+    guild_id: Snowflake,
+    kind: ChannelKind,
+    name: &str,
+    parent_id: Option<Snowflake>,
+    position: u32,
+) -> Channel {
+    Channel {
+        id,
+        guild_id,
+        kind,
+        name: name.to_owned(),
+        topic: if id == RUST_GENERAL {
+            "Everything Rust, in Lyon".to_owned()
+        } else {
+            String::new()
+        },
+        parent_id,
+        position,
+        icon: None,
+        permission_overwrites: Vec::new(),
+        user_limit: None,
+    }
+}
+
+fn guild(id: Snowflake, name: &str, channels: Vec<Channel>) -> Guild {
+    Guild {
+        id,
+        name: name.to_owned(),
+        owner_id: ANA,
+        icon: None,
+        my_permissions: Permissions::VIEW_CHANNEL
+            | Permissions::SEND_MESSAGES
+            | Permissions::READ_MESSAGE_HISTORY,
+        my_role_ids: Vec::new(),
+        roles: vec![Role {
+            id: MODERATORS,
+            name: "Moderators".to_owned(),
+            color: 0,
+            position: 1,
+            permissions: Permissions::empty(),
+            is_displayed_separately: true,
+            is_mentionable: false,
+            icon: None,
+            unicode_emoji: None,
+        }],
+        channels,
+        emojis: Vec::new(),
+        sounds: Vec::new(),
+        my_join_sound_id: None,
+    }
+}
+
+fn conversation(id: Snowflake, with: PublicUser, last_message: u64) -> DirectMessageChannel {
+    DirectMessageChannel {
+        id,
+        recipients: vec![with],
+        last_message_id: Some(Snowflake::from_raw(last_message)),
+        owner_id: None,
+        name: String::new(),
+    }
+}
+
+/// `unreads`: channels with messages past the reader's position, and how many mention them.
+pub fn sample_state_with_unreads(unreads: &[(Snowflake, u32)]) -> ClientState {
+    use ChannelKind::{Category, Text, Voice};
+    let rust = guild(
+        GUILD_RUST,
+        "Rust Lyon",
+        vec![
+            channel(RUST_TALK, GUILD_RUST, Category, "Talk", None, 1),
+            channel(
+                RUST_ANNOUNCEMENTS,
+                GUILD_RUST,
+                Text,
+                "announcements",
+                None,
+                0,
+            ),
+            channel(
+                RUST_GENERAL,
+                GUILD_RUST,
+                Text,
+                "general",
+                Some(RUST_TALK),
+                0,
+            ),
+            channel(RUST_HELP, GUILD_RUST, Text, "help", Some(RUST_TALK), 1),
+            channel(RUST_VOICE, GUILD_RUST, Voice, "Lounge", Some(RUST_TALK), 2),
+        ],
+    );
+    let books = guild(
+        GUILD_BOOKS,
+        "Books",
+        vec![channel(
+            BOOKS_READING,
+            GUILD_BOOKS,
+            Text,
+            "reading",
+            None,
+            0,
+        )],
+    );
+    let conversations = vec![
+        conversation(CONVERSATION_ZOE, person(ZOE, "zoe", "Zoé"), 8_000),
+        conversation(CONVERSATION_ANA, person(ANA, "ana", "Ana"), 8_500),
+    ];
+    let read_states = [CONVERSATION_ANA, CONVERSATION_ZOE]
+        .into_iter()
+        .filter(|id| !unreads.iter().any(|(unread, _)| unread == id))
+        .map(|channel_id| ReadState {
+            channel_id,
+            last_read_message_id: NEWEST_MESSAGE,
+        })
+        .collect();
+    let mut state = ClientState::default();
+    state.apply_ready(Ready {
+        session_id: "session".to_owned(),
+        user: CurrentUser {
+            id: ME,
+            username: "paul".to_owned(),
+            display_name: "Paul".to_owned(),
+            email: "paul@example.org".to_owned(),
+            is_instance_administrator: false,
+            avatar: None,
+            banner: None,
+            status: ChosenStatus::Online,
+            custom_status: None,
+            friend_code: None,
+        },
+        guilds: vec![rust, books],
+        read_states,
+        online_user_ids: Vec::new(),
+        direct_message_channels: conversations,
+        channel_unreads: unreads
+            .iter()
+            .map(|(channel_id, mention_count)| ChannelUnread {
+                channel_id: *channel_id,
+                last_message_id: Snowflake::from_raw(NEWEST_MESSAGE.raw() + 1),
+                mention_count: *mention_count,
+            })
+            .collect(),
+        presences: vec![Presence {
+            user_id: ANA,
+            status: PresenceStatus::Online,
+            custom_status: Some("Reading".to_owned()),
+        }],
+        relationships: Vec::new(),
+        may_create_guilds: true,
+        voice_states: Vec::new(),
+        voice_enabled: false,
+        maximum_attachment_bytes: None,
+    });
+    state.set_members(
+        GUILD_RUST,
+        vec![
+            member(person(ANA, "ana", "Ana"), vec![MODERATORS]),
+            member(person(ZOE, "zoe", "Zoé"), Vec::new()),
+            member(person(ME, "paul", "Paul"), Vec::new()),
+        ],
+    );
+    state
+}
+
+pub fn sample_state() -> ClientState {
+    sample_state_with_unreads(&[])
+}
+
+fn member(user: PublicUser, role_ids: Vec<Snowflake>) -> Member {
+    Member {
+        user,
+        role_ids,
+        joined_at_unix_milliseconds: 0,
+    }
+}

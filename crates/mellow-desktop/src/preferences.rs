@@ -1,30 +1,143 @@
 //! Per-device settings (ADR-0051 "Session"): one small `key=value` file in the OS configuration
 //! directory, the desktop's counterpart of the web client's `localStorage`. A missing or unreadable
 //! file gives the defaults, unknown lines are ignored and every value is validated, since anything
-//! may have written the file. Reads and writes block: run them off the UI thread.
+//! may have written the file. Reads and writes block: they run off the UI thread, and the app
+//! keeps the loaded preferences in [`PreferencesStore`], which every change goes through.
 
 use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, PoisonError};
 
-use gpui::App;
+use gpui::{App, AppContext as _, BorrowAppContext as _, Global};
 use mellow_client_core::InstanceAddress;
+use mellow_protocol::Snowflake;
 
 const FILE_NAME: &str = "preferences";
 /// Ours stays far below; anything larger was not written by Mellow and is not read.
 const MAXIMUM_FILE_LENGTH: u64 = 64 * 1024;
 const INSTANCE_ADDRESS_KEY: &str = "instance-address";
+const PLACE_KEY: &str = "place";
+const CHANNEL_KEY: &str = "channel";
+const MEMBER_SHEET_KEY: &str = "member-sheet";
+const CHANNELS_WIDTH_KEY: &str = "channels-width";
+const MEMBERS_WIDTH_KEY: &str = "members-width";
+const HOME_PLACE: &str = "home";
+const SERVER_PLACE_PREFIX: &str = "server:";
+/// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
+/// hostile or corrupted file cannot grow the lists without bound.
+pub const MAXIMUM_REMEMBERED_PLACES: usize = 200;
+/// Any width a column may take is far below; larger numbers were not written by Mellow.
+const MAXIMUM_STORED_COLUMN_WIDTH: f32 = 10_000.0;
 
 /// The latest save asked for; an older save that starts after it skips its write.
 static LATEST_SAVE_REQUEST: AtomicU64 = AtomicU64::new(0);
 /// One write at a time, so the file is never written by two threads at once.
 static WRITE_LOCK: Mutex<()> = Mutex::new(());
 
-#[derive(Debug, Clone, Default, PartialEq, Eq)]
+/// Where the reader was: opened again at the next launch.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RememberedPlace {
+    /// Conversations, with the one open if any.
+    Home {
+        conversation_id: Option<Snowflake>,
+    },
+    Server {
+        guild_id: Snowflake,
+    },
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
 pub struct Preferences {
     /// The instance of the last sign-in, offered again on the instance address screen.
     pub last_instance_address: Option<InstanceAddress>,
+    pub last_place: Option<RememberedPlace>,
+    /// The channel last opened in each server, most recent last.
+    pub last_channel_by_guild: Vec<(Snowflake, Snowflake)>,
+    /// Servers and groups whose docked member sheet was left open, most recent last
+    /// (`member-sheet-places.ts`).
+    pub member_sheet_place_ids: Vec<Snowflake>,
+    /// The widths the reader gave the channel list and the docked member sheet, in logical
+    /// pixels; the shell keeps them within each column's bounds.
+    pub channels_column_width: Option<f32>,
+    pub members_column_width: Option<f32>,
+}
+
+impl Preferences {
+    /// The channel last opened in `guild_id`.
+    #[must_use]
+    pub fn last_channel_of(&self, guild_id: Snowflake) -> Option<Snowflake> {
+        self.last_channel_by_guild
+            .iter()
+            .rev()
+            .find(|(guild, _)| *guild == guild_id)
+            .map(|(_, channel)| *channel)
+    }
+
+    /// Remembers `channel_id` as the one last opened in `guild_id`.
+    pub fn remember_channel(&mut self, guild_id: Snowflake, channel_id: Snowflake) {
+        self.last_channel_by_guild
+            .retain(|(guild, _)| *guild != guild_id);
+        self.last_channel_by_guild.push((guild_id, channel_id));
+        keep_latest(&mut self.last_channel_by_guild);
+    }
+
+    /// Opens or closes the docked member sheet of a server or group, for next time.
+    pub fn remember_member_sheet(&mut self, place_id: Snowflake, is_open: bool) {
+        self.member_sheet_place_ids.retain(|id| *id != place_id);
+        if is_open {
+            self.member_sheet_place_ids.push(place_id);
+            keep_latest(&mut self.member_sheet_place_ids);
+        }
+    }
+}
+
+fn keep_latest<T>(list: &mut Vec<T>) {
+    let excess = list.len().saturating_sub(MAXIMUM_REMEMBERED_PLACES);
+    list.drain(..excess);
+}
+
+fn parse_place(value: &str) -> Option<RememberedPlace> {
+    if value == HOME_PLACE {
+        return Some(RememberedPlace::Home {
+            conversation_id: None,
+        });
+    }
+    if let Some(conversation) = value
+        .strip_prefix(HOME_PLACE)
+        .and_then(|rest| rest.strip_prefix(':'))
+    {
+        return parse_snowflake(conversation).map(|id| RememberedPlace::Home {
+            conversation_id: Some(id),
+        });
+    }
+    parse_snowflake(value.strip_prefix(SERVER_PLACE_PREFIX)?)
+        .map(|guild_id| RememberedPlace::Server { guild_id })
+}
+
+fn place_text(place: RememberedPlace) -> String {
+    match place {
+        RememberedPlace::Home {
+            conversation_id: None,
+        } => HOME_PLACE.to_owned(),
+        RememberedPlace::Home {
+            conversation_id: Some(id),
+        } => format!("{HOME_PLACE}:{id}"),
+        RememberedPlace::Server { guild_id } => format!("{SERVER_PLACE_PREFIX}{guild_id}"),
+    }
+}
+
+/// Only plain decimal ids: anything else in the file is ignored.
+fn parse_snowflake(text: &str) -> Option<Snowflake> {
+    let is_decimal =
+        !text.is_empty() && text.len() <= 20 && text.bytes().all(|byte| byte.is_ascii_digit());
+    is_decimal.then(|| text.parse().ok()).flatten()
+}
+
+fn parse_column_width(text: &str) -> Option<f32> {
+    text.parse::<f32>()
+        .ok()
+        .filter(|width| width.is_finite() && (0.0..=MAXIMUM_STORED_COLUMN_WIDTH).contains(width))
 }
 
 impl Preferences {
@@ -63,25 +176,65 @@ impl Preferences {
     fn from_file_text(text: &str) -> Self {
         let mut preferences = Self::default();
         for (key, value) in text.lines().filter_map(|line| line.split_once('=')) {
-            if key.trim() == INSTANCE_ADDRESS_KEY {
+            let value = value.trim();
+            match key.trim() {
                 // The same https rule as a typed address: a tampered file cannot downgrade it.
-                preferences.last_instance_address = InstanceAddress::parse(value.trim()).ok();
+                INSTANCE_ADDRESS_KEY => {
+                    preferences.last_instance_address = InstanceAddress::parse(value).ok();
+                }
+                PLACE_KEY => preferences.last_place = parse_place(value),
+                CHANNEL_KEY => {
+                    if let Some((guild, channel)) = value.split_once(':')
+                        && let (Some(guild_id), Some(channel_id)) =
+                            (parse_snowflake(guild), parse_snowflake(channel))
+                    {
+                        preferences.remember_channel(guild_id, channel_id);
+                    }
+                }
+                MEMBER_SHEET_KEY => {
+                    if let Some(place_id) = parse_snowflake(value) {
+                        preferences.remember_member_sheet(place_id, true);
+                    }
+                }
+                CHANNELS_WIDTH_KEY => preferences.channels_column_width = parse_column_width(value),
+                MEMBERS_WIDTH_KEY => preferences.members_column_width = parse_column_width(value),
+                _ => {}
             }
         }
         preferences
     }
 
     fn to_file_text(&self) -> String {
+        use std::fmt::Write as _;
         let instance_address = self
             .last_instance_address
             .as_ref()
             .map_or("", InstanceAddress::as_str);
-        format!("{INSTANCE_ADDRESS_KEY}={instance_address}\n")
+        let mut text = format!("{INSTANCE_ADDRESS_KEY}={instance_address}\n");
+        // Writing to a `String` cannot fail.
+        if let Some(place) = self.last_place {
+            let _ = writeln!(text, "{PLACE_KEY}={}", place_text(place));
+        }
+        for (guild_id, channel_id) in &self.last_channel_by_guild {
+            let _ = writeln!(text, "{CHANNEL_KEY}={guild_id}:{channel_id}");
+        }
+        for place_id in &self.member_sheet_place_ids {
+            let _ = writeln!(text, "{MEMBER_SHEET_KEY}={place_id}");
+        }
+        for (key, width) in [
+            (CHANNELS_WIDTH_KEY, self.channels_column_width),
+            (MEMBERS_WIDTH_KEY, self.members_column_width),
+        ] {
+            if let Some(width) = width {
+                let _ = writeln!(text, "{key}={width}");
+            }
+        }
+        text
     }
 
     /// Writes the preferences on GPUI's background executor; of several quick saves, the latest
     /// wins.
-    pub fn save_in_background(&self, cx: &App) {
+    fn save_in_background(&self, cx: &App) {
         let Some(path) = preferences_file_path() else {
             return;
         };
@@ -99,6 +252,104 @@ impl Preferences {
             })
             .detach();
     }
+}
+
+/// A change asked for before the file was read; applied once it is.
+type PendingChange = Box<dyn FnOnce(&mut Preferences)>;
+
+/// The preferences the app runs with. Every change goes through [`change_preferences`], which
+/// saves the whole set, so no part of the app overwrites another's settings. Without
+/// [`load_preferences_in_background`] (tests), nothing is read or written on the machine.
+pub struct PreferencesStore {
+    /// `None` while the file is read.
+    loaded: Option<Preferences>,
+    pending_changes: Vec<PendingChange>,
+    is_saved_to_disk: bool,
+}
+
+impl Default for PreferencesStore {
+    fn default() -> Self {
+        Self {
+            loaded: Some(Preferences::default()),
+            pending_changes: Vec::new(),
+            is_saved_to_disk: false,
+        }
+    }
+}
+
+impl std::fmt::Debug for PreferencesStore {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("PreferencesStore")
+            .field("loaded", &self.loaded)
+            .field("pending_change_count", &self.pending_changes.len())
+            .finish_non_exhaustive()
+    }
+}
+
+impl Global for PreferencesStore {}
+
+/// Reads the preferences file off the main thread; until then [`preferences`] is `None` and
+/// changes wait.
+pub fn load_preferences_in_background(cx: &mut App) {
+    cx.set_global(PreferencesStore {
+        loaded: None,
+        pending_changes: Vec::new(),
+        is_saved_to_disk: true,
+    });
+    let load = cx.background_spawn(async { Preferences::load() });
+    cx.spawn(async move |cx| {
+        let preferences = load.await;
+        cx.update(|cx| take_loaded_preferences(preferences, cx));
+    })
+    .detach();
+}
+
+/// The file is read: changes asked meanwhile go on top of it, and are saved.
+fn take_loaded_preferences(mut preferences: Preferences, cx: &mut App) {
+    cx.update_global::<PreferencesStore, _>(|store, cx| {
+        let has_changes = !store.pending_changes.is_empty();
+        for change in store.pending_changes.drain(..) {
+            change(&mut preferences);
+        }
+        if has_changes && store.is_saved_to_disk {
+            preferences.save_in_background(cx);
+        }
+        store.loaded = Some(preferences);
+    });
+}
+
+/// The preferences, once read.
+#[must_use]
+pub fn preferences(cx: &App) -> Option<&Preferences> {
+    cx.try_global::<PreferencesStore>()
+        .map_or(Some(&DEFAULT_PREFERENCES), |store| store.loaded.as_ref())
+}
+
+static DEFAULT_PREFERENCES: Preferences = Preferences {
+    last_instance_address: None,
+    last_place: None,
+    last_channel_by_guild: Vec::new(),
+    member_sheet_place_ids: Vec::new(),
+    channels_column_width: None,
+    members_column_width: None,
+};
+
+/// Changes the preferences and saves them; a change asked for while the file is still read is
+/// applied on top of it.
+pub fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferences) + 'static) {
+    if !cx.has_global::<PreferencesStore>() {
+        cx.set_global(PreferencesStore::default());
+    }
+    cx.update_global::<PreferencesStore, _>(|store, cx| match store.loaded.as_mut() {
+        Some(preferences) => {
+            change(preferences);
+            if store.is_saved_to_disk {
+                preferences.save_in_background(cx);
+            }
+        }
+        None => store.pending_changes.push(Box::new(change)),
+    });
 }
 
 /// A crash or a full disk mid-write leaves the previous file, never half of the new one.
@@ -139,14 +390,27 @@ mod tests {
     fn with_instance(address: &str) -> Preferences {
         Preferences {
             last_instance_address: Some(InstanceAddress::parse(address).unwrap()),
+            ..Preferences::default()
         }
+    }
+
+    fn id(raw: u64) -> Snowflake {
+        Snowflake::from_raw(raw)
     }
 
     #[test]
     fn preferences_survive_a_round_trip_through_an_atomic_write() {
         let directory = tempfile::tempdir().unwrap();
         let path = directory.path().join("nested").join(FILE_NAME);
-        let preferences = with_instance("chat.example.org");
+        let mut preferences = with_instance("chat.example.org");
+        preferences.last_place = Some(RememberedPlace::Home {
+            conversation_id: Some(id(7)),
+        });
+        preferences.remember_channel(id(1), id(11));
+        preferences.remember_channel(id(2), id(21));
+        preferences.remember_member_sheet(id(1), true);
+        preferences.channels_column_width = Some(300.0);
+        preferences.members_column_width = Some(264.0);
 
         write_atomically(&path, &preferences.to_file_text()).unwrap();
         assert_eq!(Preferences::load_from(&path), preferences);
@@ -204,5 +468,71 @@ mod tests {
                 "{text}"
             );
         }
+    }
+
+    #[test]
+    fn the_shell_remembers_the_place_channels_member_sheets_and_widths() {
+        let text = "place=server:1\nchannel=1:11\nchannel=2:21\nchannel=1:12\n\
+            member-sheet=1\nmember-sheet=2\nchannels-width=300\nmembers-width=264.5\n";
+        let preferences = Preferences::from_file_text(text);
+        assert_eq!(
+            preferences.last_place,
+            Some(RememberedPlace::Server { guild_id: id(1) })
+        );
+        assert_eq!(preferences.last_channel_of(id(1)), Some(id(12)));
+        assert_eq!(preferences.last_channel_of(id(2)), Some(id(21)));
+        assert_eq!(preferences.last_channel_of(id(3)), None);
+        assert_eq!(preferences.member_sheet_place_ids, [id(1), id(2)]);
+        assert_eq!(preferences.channels_column_width, Some(300.0));
+        assert_eq!(preferences.members_column_width, Some(264.5));
+        assert_eq!(
+            Preferences::from_file_text(&preferences.to_file_text()),
+            preferences
+        );
+    }
+
+    #[test]
+    fn tampered_navigation_lines_are_ignored() {
+        let text = "place=server:abc\nchannel=1:-2\nchannel=1\nmember-sheet=99999999999999999999999\n\
+            channels-width=NaN\nmembers-width=-4\nplace=home:\n";
+        let preferences = Preferences::from_file_text(text);
+        assert_eq!(preferences, Preferences::default());
+    }
+
+    #[test]
+    fn remembered_places_stay_bounded_and_most_recent_last() {
+        let mut preferences = Preferences::default();
+        for raw in 0..=u64::try_from(MAXIMUM_REMEMBERED_PLACES).unwrap() {
+            preferences.remember_member_sheet(id(raw), true);
+            preferences.remember_channel(id(raw), id(raw + 1000));
+        }
+        assert_eq!(
+            preferences.member_sheet_place_ids.len(),
+            MAXIMUM_REMEMBERED_PLACES
+        );
+        assert_eq!(preferences.member_sheet_place_ids.first(), Some(&id(1)));
+        assert_eq!(
+            preferences.last_channel_by_guild.len(),
+            MAXIMUM_REMEMBERED_PLACES
+        );
+        preferences.remember_member_sheet(id(5), false);
+        assert!(!preferences.member_sheet_place_ids.contains(&id(5)));
+    }
+
+    #[gpui::test]
+    fn changes_asked_while_the_file_is_read_apply_on_top_of_it(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            cx.set_global(PreferencesStore {
+                loaded: None,
+                pending_changes: Vec::new(),
+                is_saved_to_disk: false,
+            });
+            change_preferences(cx, |preferences| preferences.remember_channel(id(1), id(2)));
+            assert_eq!(preferences(cx), None);
+            take_loaded_preferences(with_instance("chat.example.org"), cx);
+            let loaded = preferences(cx).unwrap();
+            assert_eq!(loaded.last_channel_of(id(1)), Some(id(2)));
+            assert!(loaded.last_instance_address.is_some());
+        });
     }
 }
