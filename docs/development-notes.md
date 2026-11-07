@@ -4,8 +4,8 @@ Practical notes for the next iterations: how work is organised, and the traps al
 project state (what is done, blocked, next, known gaps) lives in [ROADMAP.md](../ROADMAP.md#status-2026-11-01);
 decisions live in [docs/adr/](adr/). Update this file when a new trap or habit appears.
 
-## Where things stand (2026-11-06)
-- **M3, the GPUI desktop client, started** (ADR-0051). Waves 1 and 2 ran as workflows: one implementer per track in its own worktree, then `code-reviewer` (plus `security-auditor` for auth, network and media), then a fixer. The main thread rebases or merges `main` into each PR branch and squash-merges one by one. What is merged and what waits is in ROADMAP.md M3 "Progress". To merge #280 (Vesper crates) and #288 (VP8 engine), refresh the `gh` token with `gh auth refresh -h github.com -s workflow`: both change `ci.yml`.
+## Where things stand (2026-11-07)
+- **M3, the GPUI desktop client, started** (ADR-0051). Waves 1 and 2 ran as workflows: one implementer per track in its own worktree, then `code-reviewer` (plus `security-auditor` for auth, network and media), then a fixer. The main thread rebases or merges `main` into each PR branch and squash-merges one by one. Waves 1 and 2 are merged (#275 to #289); the list is in ROADMAP.md M3 "Progress".
 - Wave 3 (next iteration): shell and navigation, then message list and composer, on the merged primitives (#281), catalogue (#283), session (#282) and pictures (#285). Brief each track with the web component it ports and the design file in `docs/design/`.
 
 ## Where things stand (2026-11-05)
@@ -98,7 +98,8 @@ A local hook refuses `git commit` when fmt or clippy fail on the touched crate: 
 - **Disk full from worktrees**: every workflow worktree builds its own `target/` (17 to 27 GB with GPUI), and a wave of 8 tracks filled 460 GB; agents died before committing. Give each agent its own directory under the main `target/` (`CARGO_TARGET_DIR=<repo>/target/<track>`), never one shared directory: Cargo hashes workspace crates by path relative to the workspace root, so worktrees sharing a target dir overwrite each other's `mellow-protocol` artifacts and report false E0432/E0560 errors (or a false pass). Delete `target/` dirs of finished worktrees and old session scratchpads.
 - **Force-push is refused** to agents and the main thread: update a stale PR branch by merging `main` into it (`git merge origin/main`, resolve, push), not by rebasing it. A branch that cannot be fixed that way goes to a new branch and a new PR.
 - **Web strings and the desktop catalogue**: since #283, any change to `web/src/i18n/en.ts` or `fr.ts` needs `cargo xtask i18n` (CI runs `--check`), including web-only PRs.
-- **`ci.yml` changes need the `workflow` scope** on the `gh` token to merge; the default token has only `repo`.
+- **`ci.yml` changes need the `workflow` scope** on the `gh` token to merge (granted on 2026-11-07); if a merge is refused for it, run `gh auth refresh -h github.com -s workflow` in a separate terminal (it waits for a browser code).
+- **A failed `cd` runs the next command in the main checkout**: chain `cd <worktree> && …` and never assume the worktree still exists (one was removed mid-session). A merge started there by mistake was undone with `git merge --abort`.
 - **The commit hook checks the session's start directory**, not the worktree being committed: an agent committing in another worktree is not checked by it, so run fmt, clippy and tests in that worktree yourself.
 - **Flaky under load**: `voice_through_a_real_server::a_dropped_network_path_is_noticed_and_voice_comes_back_on_a_new_one` failed once while the whole workspace was testing in parallel and passes alone (17 s); `voice::tests::full_channels_refuse_and_members_losing_connect_are_disconnected` failed once in CI with `InvalidOffer`. Watch both.
 - **GPUI desktop shaders**: `mellow-desktop` defaults to `runtime-shaders` because `xcrun metal` needs a full Xcode with the Metal toolchain; a desktop release built on a Mac with that toolchain must pass `--no-default-features`, or it ships shaders compiled at start-up (ADR-0051).
