@@ -7,6 +7,7 @@
 
 pub mod channel_order;
 pub mod code_blocks;
+pub mod custom_emoji;
 pub mod emoji_catalogue;
 pub mod emoji_suggestions;
 pub mod format;
@@ -18,6 +19,7 @@ pub mod message_rows;
 pub mod notification_settings;
 pub mod notifications;
 pub mod quick_switcher;
+pub mod role_colors;
 pub mod role_mentions;
 pub mod search_query;
 pub mod search_suggestions;

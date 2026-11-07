@@ -14,6 +14,7 @@ pub mod connection_banner;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
+pub mod messages;
 pub mod navigation;
 pub mod pictures;
 pub mod preferences;

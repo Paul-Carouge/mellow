@@ -1,7 +1,9 @@
 //! The hidden component gallery (`MELLOW_COMPONENT_GALLERY=1`, or `=dark` / `=light` to force a
-//! theme): every primitive in its states, to compare with the web's components side by side.
+//! theme): every primitive in its states, and sample messages, to compare with the web's
+//! components side by side.
 //! Developer-facing, so its own words are English and not translated.
 
+use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
@@ -26,6 +28,7 @@ use super::{
     with_tab_navigation, with_type,
 };
 use crate::composer::{Composer, ReplyTarget};
+use crate::messages::samples::{MessageSamples, SampleActionHandler};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MESSAGE_AVATAR_SIZE,
@@ -67,6 +70,7 @@ pub struct ComponentGallery {
     dialog: Option<(Entity<ModalDialog>, Subscription)>,
     menu_button_focus: FocusHandle,
     root_focus: FocusHandle,
+    messages: MessageSamples,
 }
 
 impl ComponentGallery {
@@ -137,6 +141,7 @@ impl ComponentGallery {
             dialog: None,
             menu_button_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle(),
+            messages: MessageSamples::new(),
         }
     }
 
@@ -654,6 +659,30 @@ impl Render for ComponentGallery {
                 ),
             );
 
+        let on_message_action: SampleActionHandler = Rc::new({
+            let entity = entity.clone();
+            move |action, _, cx| {
+                entity.update(cx, |gallery, cx| {
+                    gallery.messages.apply(&action);
+                    cx.notify();
+                });
+            }
+        });
+        // The chat sheet at a laptop's message column width, as rows sit in the list.
+        let messages = section("Messages", cx).child(
+            div()
+                .w_full()
+                .max_w(length(MESSAGE_SAMPLE_COLUMN_WIDTH))
+                .py(length(SPACE_SM))
+                .rounded(length(SPACE_SM))
+                .border_1()
+                .border_color(color(tokens.color_border_divider))
+                .bg(color(tokens.color_surface_chat))
+                .flex()
+                .flex_col()
+                .children(self.messages.rows(&on_message_action, cx)),
+        );
+
         let overlays: Vec<AnyElement> = self
             .menu
             .iter()
@@ -692,6 +721,7 @@ impl Render for ComponentGallery {
                         .child(column().child(identity).child(fields))
                         .child(column().child(navigation).child(feedback)),
                 )
+                .child(messages)
                 // Type ":" or "@" and two letters for suggestions; files dropped on it fail to
                 // upload, as the gallery has no instance.
                 .child(section("Composer", cx).child(self.composer.clone()))
@@ -727,6 +757,8 @@ pub fn gallery_window_options(cx: &App) -> gpui::WindowOptions {
 }
 
 const GALLERY_SHARE_OF_SCREEN: f32 = 0.95;
+/// The message column of a 1280 px window with the navigator and the side sheet docked.
+const MESSAGE_SAMPLE_COLUMN_WIDTH: f32 = 720.0;
 
 /// Builds the gallery view, following the OS theme or forcing one. A forced theme is for
 /// screenshots: motion is reduced too, because macOS gives a window opened behind others no

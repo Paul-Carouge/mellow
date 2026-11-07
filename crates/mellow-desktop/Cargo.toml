@@ -22,6 +22,8 @@ runtime-shaders = ["gpui_platform/runtime_shaders"]
 [dependencies]
 anyhow.workspace = true
 avif-parse.workspace = true
+# Already in the tree through GPUI (with `clock`): the reader's time zone offset at a message's moment.
+chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
 dirs.workspace = true
 # GPUI from Longbridge's weekly crates.io snapshot of Zed (crates.io only, Apache-2.0). gpui-pre,
 # gpui-pre-platform and gpui-component are pinned together and upgraded together (ADR-0051).
@@ -63,10 +65,14 @@ rav1d = { workspace = true, features = ["asm"] }
 
 [dev-dependencies]
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
+# The headless Metal or wgpu renderer, so the gallery can be drawn to a picture (`examples/gallery_picture.rs`).
+gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
 # Authenticator codes for the two-factor test; already built for the server.
 aws-lc-rs.workspace = true
 # The sign-in tests run a real in-process server, as the client core's do.
 mellow-server = { path = "../mellow-server" }
+# Sample messages in tests, as the instance sends them.
+serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true

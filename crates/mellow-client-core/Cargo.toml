@@ -21,6 +21,7 @@ tokio = { workspace = true, features = ["sync", "time", "net"] }
 tokio-tungstenite = { workspace = true, features = ["rustls-tls-native-roots"] }
 tracing.workspace = true
 unicode-normalization.workspace = true
+unicode-segmentation.workspace = true
 url.workspace = true
 zeroize.workspace = true
 
