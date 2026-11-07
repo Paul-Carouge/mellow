@@ -1,6 +1,6 @@
 //! Messages we sent that the server has not confirmed yet (the outbox, ARCHITECTURE.md §6).
 
-use mellow_protocol::{Message, SendMessageRequest, Snowflake};
+use mellow_protocol::{Attachment, Message, SendMessageRequest, Snowflake};
 
 use super::{ClientState, StateChange};
 
@@ -20,6 +20,8 @@ pub struct PendingMessage {
     pub channel_id: Snowflake,
     pub content: String,
     pub reply_to_id: Option<Snowflake>,
+    /// Uploaded already (ADR-0020): sent by id with every attempt, shown while it waits.
+    pub attachments: Vec<Attachment>,
     pub status: PendingMessageStatus,
 }
 
@@ -29,7 +31,11 @@ impl PendingMessage {
             content: self.content.clone(),
             reply_to_id: self.reply_to_id,
             nonce: Some(self.nonce.clone()),
-            attachment_ids: Vec::new(),
+            attachment_ids: self
+                .attachments
+                .iter()
+                .map(|attachment| attachment.id)
+                .collect(),
             forwarded_from: None,
             poll: None,
             checklist: None,
@@ -55,11 +61,24 @@ impl ClientState {
         reply_to_id: Option<Snowflake>,
         nonce: String,
     ) -> SendMessageRequest {
+        self.queue_message_with_attachments(channel_id, content, reply_to_id, Vec::new(), nonce)
+    }
+
+    /// [`Self::queue_message`] with files uploaded for it (ADR-0020).
+    pub fn queue_message_with_attachments(
+        &mut self,
+        channel_id: Snowflake,
+        content: String,
+        reply_to_id: Option<Snowflake>,
+        attachments: Vec<Attachment>,
+        nonce: String,
+    ) -> SendMessageRequest {
         let pending = PendingMessage {
             nonce,
             channel_id,
             content,
             reply_to_id,
+            attachments,
             status: PendingMessageStatus::Sending,
         };
         let request = pending.send_request();
@@ -175,5 +194,30 @@ mod tests {
             "the late answer changes nothing"
         );
         assert_eq!(state.messages(GENERAL).len(), 1);
+    }
+
+    #[test]
+    fn files_go_with_every_attempt_of_their_message() {
+        let mut state = ready_state();
+        let file: Attachment = serde_json::from_value(serde_json::json!({
+            "id": "77", "file_name": "a.png", "content_type": "image/png", "size_bytes": 1
+        }))
+        .expect("a valid attachment");
+        let request = state.queue_message_with_attachments(
+            GENERAL,
+            String::new(),
+            None,
+            vec![file.clone()],
+            "n1".into(),
+        );
+        assert_eq!(request.attachment_ids, vec![file.id]);
+        state.mark_send_failed("n1");
+        let (_, retry) = state.retry_pending_message("n1").expect("a failed message");
+        assert_eq!(retry.attachment_ids, vec![file.id]);
+        let pending = state
+            .pending_messages(GENERAL)
+            .next()
+            .expect("still waiting");
+        assert_eq!(pending.attachments, vec![file]);
     }
 }
