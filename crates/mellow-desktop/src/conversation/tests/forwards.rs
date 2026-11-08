@@ -90,3 +90,56 @@ fn a_forwards_footer_reaches_its_original_once_its_channel_is_open(cx: &mut Test
         assert_eq!(view.pending_origin_jump, None);
     });
 }
+
+#[gpui::test]
+fn a_forwards_footer_opens_another_channel_through_the_shell_and_reaches_the_original(
+    cx: &mut TestAppContext,
+) {
+    use gpui::{AppContext as _, WindowAppearance, px, size};
+
+    use crate::conversation::OpenForwardOrigin;
+    use crate::session::Session;
+    use crate::shell::DuskShell;
+    use crate::shell_fixtures::sample_state;
+    use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
+    use crate::theme::ActiveTheme;
+
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
+    });
+    let original = Snowflake::from_raw(FORWARDED + 2);
+    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+    session.update(cx, |session, _| {
+        let state = session.state_mut();
+        *state = sample_state();
+        let in_help = (1..=3)
+            .map(|index| mellow_protocol::Message {
+                channel_id: RUST_HELP,
+                ..message(FORWARDED + index, &ana(), "hi")
+            })
+            .collect();
+        state.insert_history_page(RUST_HELP, in_help);
+    });
+    let (shell, cx) = cx.add_window_view(|window, cx| DuskShell::new(session, window, cx));
+    cx.simulate_resize(size(px(1280.0), px(800.0)));
+    cx.update(|window, cx| {
+        window.activate_window();
+        shell.update(cx, |shell, cx| shell.open_channel(RUST_GENERAL, window, cx));
+    });
+    cx.run_until_parked();
+
+    cx.dispatch_action(OpenForwardOrigin {
+        channel_id: RUST_HELP,
+        message_id: original,
+    });
+    cx.run_until_parked();
+
+    let view = shell.read_with(cx, |shell, _| shell.conversation().clone());
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.open_channel_id(), Some(RUST_HELP));
+        assert_eq!(view.highlight.map(|(id, _)| id), Some(original));
+        assert_eq!(view.pending_origin_jump, None);
+    });
+}
