@@ -558,3 +558,49 @@ fn a_new_message_from_someone_else_is_read_out_but_not_the_first_page_or_a_block
         "a blocked author is not"
     );
 }
+
+fn jump_to(view: &Entity<ConversationView>, message_id: u64, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.jump_to_message(Snowflake::from_raw(message_id), window, cx);
+        });
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_jump_to_a_loaded_pin_focuses_and_lights_it_and_jump_to_present_comes_back(
+    cx: &mut TestAppContext,
+) {
+    let (view, _session, cx) = open_general(cx, many_messages(40), None);
+    jump_to(&view, 10_005, cx);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.focused_row_key.as_deref(), Some("10005"));
+        assert_eq!(view.highlight.map(|(id, _)| id.raw()), Some(10_005));
+        assert!(!view.is_at_latest());
+    });
+    cx.update(|_, cx| view.update(cx, ConversationView::jump_to_present));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.is_at_latest()));
+}
+
+#[gpui::test]
+fn a_jump_to_a_message_before_the_channel_start_says_it_is_gone(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, many_messages(30), None);
+    jump_to(&view, 5, cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.action_error.clone()),
+        Some("This message was deleted, or you can no longer read it.".into())
+    );
+}
+
+#[gpui::test]
+fn a_jump_that_cannot_load_older_history_says_so(cx: &mut TestAppContext) {
+    // A full first page: older history exists, and this session has no instance to ask.
+    let (view, _session, cx) = open_general(cx, many_messages(60), None);
+    jump_to(&view, 5, cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.action_error.clone()),
+        Some("Couldn't open the message".into())
+    );
+}

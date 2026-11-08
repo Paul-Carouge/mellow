@@ -11,7 +11,8 @@ use gpui::{App, Context, Task};
 use mellow_client_core::ClientError;
 use mellow_client_core::generate_message_nonce;
 use mellow_client_core::state::{
-    ChangeOutcome, HISTORY_PAGE_SIZE, PendingMessage, PinsAnswer, StateChange,
+    ChangeOutcome, HISTORY_PAGE_SIZE, HistoryReachStep, MAXIMUM_HISTORY_PAGE_SIZE, PendingMessage,
+    PinsAnswer, StateChange,
 };
 use mellow_protocol::{
     Attachment, EditMessageRequest, GatewayEvent, Message, MessageHistoryQuery, Snowflake,
@@ -34,6 +35,20 @@ pub struct SendRefused {
     pub nonce: String,
     /// "Couldn't send the message: …".
     pub reason: String,
+}
+
+/// What [`Session::reach_message`] calls back once it knows.
+type ReachDone = Box<dyn FnOnce(HistoryReach, &mut App)>;
+
+/// How a jump to a message older than the cached history ended (the web's `HistoryReach`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryReach {
+    Loaded,
+    /// Deleted since, or no longer readable.
+    Missing,
+    /// More than `MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE` pages back.
+    TooFar,
+    Failed,
 }
 
 /// Where a channel's history stands, beyond what the state caches.
@@ -219,6 +234,98 @@ impl Session {
             },
         );
         cx.notify();
+    }
+
+    /// Loads older pages until `message_id` is cached, for a pinned message far back (the web's
+    /// `loadHistoryUntilMessage`); `on_done` is not called if a `Ready` empties the history meanwhile.
+    pub fn reach_message(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        on_done: impl FnOnce(HistoryReach, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let history_generation = self.state.history_generation();
+        self.reach_message_after(
+            channel_id,
+            message_id,
+            0,
+            history_generation,
+            Box::new(on_done),
+            cx,
+        );
+    }
+
+    fn reach_message_after(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        pages_loaded: u32,
+        history_generation: u64,
+        on_done: ReachDone,
+        cx: &mut Context<Self>,
+    ) {
+        if self.state.history_generation() != history_generation {
+            return;
+        }
+        let rest = self.cloned_rest_client();
+        let (before, rest) = match (
+            self.state
+                .history_reach_step(channel_id, message_id, pages_loaded),
+            rest,
+        ) {
+            (HistoryReachStep::LoadBefore(before), Some(rest)) => (before, rest),
+            (step, _) => {
+                let reach = match step {
+                    HistoryReachStep::Loaded => HistoryReach::Loaded,
+                    HistoryReachStep::Missing => HistoryReach::Missing,
+                    HistoryReachStep::TooFar => HistoryReach::TooFar,
+                    HistoryReachStep::LoadBefore(_) => HistoryReach::Failed,
+                };
+                // Deferred: the view asking is still being updated when the answer is known at once.
+                cx.defer(move |cx| on_done(reach, cx));
+                return;
+            }
+        };
+        let query = MessageHistoryQuery {
+            before,
+            after: None,
+            limit: Some(MAXIMUM_HISTORY_PAGE_SIZE),
+        };
+        self.run_request(
+            cx,
+            async move { rest.list_messages(channel_id, &query).await },
+            move |session, answer, cx| {
+                if session.state.history_generation() != history_generation {
+                    return;
+                }
+                match answer {
+                    Ok(page) => {
+                        // Only next to the cursor; a page that landed meanwhile is fine too.
+                        if session.state.messages(channel_id).first().map(|m| m.id) == before {
+                            let change = session.state.insert_reach_page(
+                                channel_id,
+                                page,
+                                MAXIMUM_HISTORY_PAGE_SIZE,
+                            );
+                            Self::emit_changes(cx, vec![change]);
+                        }
+                        session.reach_message_after(
+                            channel_id,
+                            message_id,
+                            pages_loaded + 1,
+                            history_generation,
+                            on_done,
+                            cx,
+                        );
+                    }
+                    Err(error) => {
+                        session.report_request_error(&error, "load history around a message", cx);
+                        on_done(HistoryReach::Failed, cx);
+                    }
+                }
+            },
+        );
     }
 
     /// "Try again": the first page if none loaded, else the older one.

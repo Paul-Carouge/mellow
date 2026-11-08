@@ -358,6 +358,9 @@ impl Render for ConversationView {
         }
         if self.are_rows_stale {
             self.rebuild_rows(cx);
+            if let Some(message_id) = self.pending_reveal.take() {
+                self.reveal_message(message_id, window, cx);
+            }
             // New rows move the list in its layout (opening, the divider, a page): what follows
             // from where it lands is read once that layout is done.
             cx.defer_in(window, |view, window, cx| view.follow_reading(window, cx));

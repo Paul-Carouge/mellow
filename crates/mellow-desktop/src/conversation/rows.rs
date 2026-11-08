@@ -11,9 +11,10 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher as _};
 
 use gpui::{
-    AnyElement, App, Context, FontWeight, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, relative,
+    Animation, AnimationExt as _, AnyElement, App, Context, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, relative,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::markdown::{MarkdownSources, RoleMentionContext};
@@ -28,7 +29,7 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
-    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, icon,
+    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, easing, icon,
     inset_focus_ring, shadow, with_type,
 };
 use crate::i18n::strings;
@@ -46,12 +47,13 @@ use crate::theme::tokens::{
     COMPONENT_MESSAGE_BLOCKED_ICON_SIZE, COMPONENT_MESSAGE_CHANNEL_START_GAP,
     COMPONENT_MESSAGE_CHANNEL_START_ICON_CIRCLE_SIZE, COMPONENT_MESSAGE_CHANNEL_START_ICON_SIZE,
     COMPONENT_MESSAGE_CHANNEL_START_PADDING_BLOCK, COMPONENT_MESSAGE_GROUP_GAP,
-    COMPONENT_MESSAGE_GUTTER, COMPONENT_MESSAGE_PADDING_BLOCK, COMPONENT_MESSAGE_PADDING_TRAILING,
+    COMPONENT_MESSAGE_GUTTER, COMPONENT_MESSAGE_HIGHLIGHT_DURATION,
+    COMPONENT_MESSAGE_PADDING_BLOCK, COMPONENT_MESSAGE_PADDING_TRAILING,
     COMPONENT_MESSAGE_REPLY_AVATAR_SIZE, COMPONENT_MESSAGE_SKELETON_BAR_HEIGHT,
-    COMPONENT_MESSAGE_SKELETON_NAME_MAX_WIDTH, MOTION_DELAY_SKELETON, SPACE_MD, SPACE_SM, SPACE_XS,
-    TYPE_BODY, TYPE_BODY_LG, TYPE_DISPLAY, TYPE_MESSAGE,
+    COMPONENT_MESSAGE_SKELETON_NAME_MAX_WIDTH, MOTION_DELAY_SKELETON, MOTION_EASING_EXIT, SPACE_MD,
+    SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_DISPLAY, TYPE_MESSAGE,
 };
-use crate::theme::{color, delay, length, theme};
+use crate::theme::{animation_duration, color, delay, length, theme};
 
 const HISTORY_START_KEY: &str = "history-start";
 const INITIAL_SKELETON_COUNT: usize = 5;
@@ -138,6 +140,31 @@ fn message_version(message: &Message, is_original_cached: bool) -> u64 {
         is_original_cached,
         message.link_previews.len(),
     ))
+}
+
+/// The share of the wash's time it holds before fading (`mw-jump-highlight`'s 0–40 % keyframes).
+const JUMP_HIGHLIGHT_HOLD_SHARE: f32 = 0.4;
+
+/// The match wash behind a message reached by a jump: it holds, then fades out; under reduced
+/// motion it holds until the view takes it away (`MOTION_DELAY_JUMP_HIGHLIGHT`).
+fn jump_highlight(generation: u64, cx: &App) -> AnyElement {
+    let wash = div()
+        .absolute()
+        .inset_0()
+        .bg(color(theme(cx).component_message_highlight_background));
+    if cx.reduce_motion() {
+        return wash.into_any_element();
+    }
+    wash.with_animation(
+        SharedString::from(format!("jump-highlight-{generation}")),
+        Animation::new(animation_duration(COMPONENT_MESSAGE_HIGHLIGHT_DURATION, cx))
+            .with_easing(|progress| easing(MOTION_EASING_EXIT).sample(progress)),
+        |wash, progress| {
+            let fade = (progress - JUMP_HIGHLIGHT_HOLD_SHARE) / (1.0 - JUMP_HIGHLIGHT_HOLD_SHARE);
+            wash.opacity(1.0 - fade.clamp(0.0, 1.0))
+        },
+    )
+    .into_any_element()
 }
 
 /// What a folded run shows: a change of any of these may change its height.
@@ -805,6 +832,10 @@ impl ConversationView {
                 self.hovered_message_id == Some(*id) || is_menu_open || has_keyboard_focus_within
             })
             .and_then(|id| self.render_hover_bar(index, id, cx));
+        let highlight = self
+            .highlight
+            .filter(|(highlighted_id, _)| Some(*highlighted_id) == message_id)
+            .map(|(_, generation)| jump_highlight(generation, cx));
         let hover_id = message_id;
         let menu_id = message_id;
         div()
@@ -838,6 +869,7 @@ impl ConversationView {
                             }),
                         )
                     })
+                    .children(highlight)
                     .child(item)
                     .children(hover_bar)
                     .when(is_keyboard_focused, |row| {
