@@ -1,10 +1,9 @@
 //! A member's profile in the side sheet (`MemberList.svelte`, `ProfileCard.svelte`,
 //! `ProfileDetails.svelte`, DESIGN.md §5.7, ADR-0050): choosing a member shows the banner, or the
 //! strip in their avatar tint, the avatar cut out of the sheet, their name, "About me" and links
-//! (read when it opens, as `user-profile-loader.svelte.ts`), and "Send message". Back returns to
-//! the list, on the row it came from.
-//! shortcut: the web's friend and block buttons under "Send message" come with the friends work
-//! of M3 step 4; a blocked person's profile shows no action until then.
+//! (read when it opens, as `user-profile-loader.svelte.ts`), "Send message", then Add friend (or
+//! Accept, or "Request sent") and Block; someone blocked shows Unblock alone (ADR-0025). Back
+//! returns to the list, on the row it came from.
 
 use std::rc::Rc;
 
@@ -14,13 +13,16 @@ use gpui::{
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
     prelude::FluentBuilder as _,
 };
+use mellow_client_core::ClientError;
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::markdown::parse_inline_markdown;
 use mellow_client_core::shared_logic::profiles::{
     ShownProfileLink, UserProfileLoad, UserProfileLoader, shown_profile_links,
 };
-use mellow_protocol::{PublicUser, RelationshipKind, Snowflake};
+use mellow_protocol::{
+    PublicUser, RelationshipKind, SendFriendRequest, SetRelationshipKind, Snowflake,
+};
 
 use super::DuskShell;
 use crate::components::{
@@ -30,6 +32,7 @@ use crate::components::{
 use crate::i18n::strings;
 use crate::messages::{MessageBody, MessageMarkdown, picture_animation, picture_for_box};
 use crate::pictures::Animation;
+use crate::sign_in_form::describe_error;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_PROFILE_POPOVER_AVATAR_RING_WIDTH, COMPONENT_PROFILE_POPOVER_AVATAR_SIZE,
@@ -41,6 +44,17 @@ use crate::theme::tokens::{
     SPACE_2XS, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_HEADING_LG,
 };
 use crate::theme::{color, length, theme};
+
+/// Block, and Unblock in its place once blocked.
+const PROFILE_BLOCK_ID: &str = "profile-block";
+
+/// A friend or block change made from the profile without a dialog.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum RelationshipChange {
+    AddFriend,
+    Accept,
+    Unblock,
+}
 
 /// Whose profile the sheet shows, and in which server's list it was chosen.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -56,7 +70,10 @@ pub(super) struct MemberProfileState {
     /// "About me" parsed once per text.
     parsed_about_me: Option<(String, Rc<MessageBody>)>,
     is_opening_conversation: bool,
-    open_conversation_error: Option<String>,
+    profile_action_error: Option<String>,
+    is_changing_relationship: bool,
+    /// Read out by the profile's status region: what the last friend or block change did.
+    relationship_announcement: String,
     back_focus: FocusHandle,
     /// The sheet's scroller, shared by the list and the profile.
     list_scroll: ScrollHandle,
@@ -74,7 +91,9 @@ impl MemberProfileState {
             loader: UserProfileLoader::default(),
             parsed_about_me: None,
             is_opening_conversation: false,
-            open_conversation_error: None,
+            profile_action_error: None,
+            is_changing_relationship: false,
+            relationship_announcement: String::new(),
             back_focus: cx.focus_handle().tab_stop(true),
             list_scroll: ScrollHandle::new(),
             list_offset: Point::default(),
@@ -85,6 +104,17 @@ impl MemberProfileState {
     #[cfg(test)]
     pub(super) fn load(&self) -> &UserProfileLoad {
         self.loader.current()
+    }
+
+    /// Why the last action failed, as the card says it.
+    #[cfg(test)]
+    pub(super) fn profile_action_error(&self) -> Option<&str> {
+        self.profile_action_error.as_deref()
+    }
+
+    #[cfg(test)]
+    pub(super) fn is_changing_relationship(&self) -> bool {
+        self.is_changing_relationship
     }
 
     pub(super) fn back_focus(&self) -> &FocusHandle {
@@ -115,7 +145,7 @@ impl MemberProfileState {
     fn forget(&mut self) {
         self.shown = None;
         self.loader.show(None);
-        self.open_conversation_error = None;
+        self.profile_action_error = None;
     }
 
     fn about_body(&mut self, about_me: &str) -> Option<Rc<MessageBody>> {
@@ -153,7 +183,7 @@ impl DuskShell {
         }
         profile.list_scroll.set_offset(Point::default());
         profile.shown = Some(ShownProfile { guild_id, user_id });
-        profile.open_conversation_error = None;
+        profile.profile_action_error = None;
         profile.is_opening_conversation = false;
         if let Some(ticket) = profile.loader.show(Some(user_id)) {
             let shell = cx.entity().downgrade();
@@ -191,7 +221,7 @@ impl DuskShell {
             return;
         }
         self.member_profile.is_opening_conversation = true;
-        self.member_profile.open_conversation_error = None;
+        self.member_profile.profile_action_error = None;
         let failure = strings(cx).members().open_conversation_failed().to_owned();
         let shell = cx.entity().downgrade();
         let window_handle = window.window_handle();
@@ -211,7 +241,7 @@ impl DuskShell {
                                 });
                             }
                             Err(message) => {
-                                shell.member_profile.open_conversation_error = Some(message);
+                                shell.member_profile.profile_action_error = Some(message);
                             }
                         }
                         cx.notify();
@@ -220,6 +250,165 @@ impl DuskShell {
             });
         });
         cx.notify();
+    }
+
+    /// Add friend, Accept or Unblock (`changeRelationship`): the button pressed is replaced once
+    /// the instance answers, so focus moves to Block if it was still on it.
+    pub(super) fn change_relationship_from_profile(
+        &mut self,
+        user: &PublicUser,
+        change: RelationshipChange,
+        block_focus: FocusHandle,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.member_profile.is_changing_relationship {
+            return;
+        }
+        self.member_profile.is_changing_relationship = true;
+        self.member_profile.profile_action_error = None;
+        let catalogue = strings(cx);
+        let person = display_name(user);
+        let (done, failure) = match change {
+            RelationshipChange::AddFriend => (
+                catalogue.friends().sent(person),
+                catalogue.members().friend_request_failed().to_owned(),
+            ),
+            RelationshipChange::Accept => (
+                catalogue.friends().accepted(person),
+                catalogue.members().accept_failed().to_owned(),
+            ),
+            RelationshipChange::Unblock => (
+                catalogue.friends().unblocked(person),
+                catalogue.friends().unblock_failed(person),
+            ),
+        };
+        let pressed = window.focused(cx);
+        let shell = cx.entity().downgrade();
+        let window_handle = window.window_handle();
+        let on_done = move |answer: Result<(), ClientError>, cx: &mut App| {
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let has_focus_stayed = window.focused(cx) == pressed;
+                let _ = shell.update(cx, |shell, cx| {
+                    let profile = &mut shell.member_profile;
+                    profile.is_changing_relationship = false;
+                    match answer {
+                        Ok(()) => {
+                            profile.relationship_announcement = done;
+                            if has_focus_stayed {
+                                window.focus(&block_focus, cx);
+                            }
+                        }
+                        Err(error) => {
+                            profile.profile_action_error = Some(describe_error(
+                                &error,
+                                &failure,
+                                crate::strings_pending_i18n::strings(cx),
+                            ));
+                        }
+                    }
+                    cx.notify();
+                });
+            });
+        };
+        let user_id = user.id;
+        let username = user.username.clone();
+        self.session.update(cx, |session, cx| match change {
+            RelationshipChange::AddFriend => session.send_friend_request(
+                SendFriendRequest {
+                    username,
+                    friend_code: None,
+                },
+                cx,
+                move |answer, cx| on_done(answer.map(|_| ()), cx),
+            ),
+            RelationshipChange::Accept => {
+                session.set_relationship(user_id, SetRelationshipKind::Friend, cx, on_done);
+            }
+            RelationshipChange::Unblock => session.remove_relationship(user_id, cx, on_done),
+        });
+        cx.notify();
+    }
+
+    /// The friend and block buttons under "Send message", stacked: the sheet is too narrow for two
+    /// labels side by side in French. Block and Unblock share a focus handle, so focus stays put
+    /// when one replaces the other.
+    fn relationship_buttons(
+        &self,
+        user: &PublicUser,
+        relationship: Option<RelationshipKind>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        let catalogue = strings(cx);
+        let is_busy = self.member_profile.is_changing_relationship;
+        let block_focus = remembered_focus_handle(&ElementId::from(PROFILE_BLOCK_ID), window, cx);
+        let entity = cx.entity();
+        let change_button = |id: &'static str, label: &'static str, change: RelationshipChange| {
+            let entity = entity.clone();
+            let user = user.clone();
+            let block_focus = block_focus.clone();
+            Button::new(id, label)
+                .full_width()
+                .disabled(is_busy)
+                .on_click(move |window, cx| {
+                    entity.update(cx, |shell, cx| {
+                        shell.change_relationship_from_profile(
+                            &user,
+                            change,
+                            block_focus.clone(),
+                            window,
+                            cx,
+                        );
+                    });
+                })
+        };
+        if relationship == Some(RelationshipKind::Blocked) {
+            return vec![
+                change_button(
+                    "profile-unblock",
+                    catalogue.friends().unblock(),
+                    RelationshipChange::Unblock,
+                )
+                .track_focus(&block_focus)
+                .into_any_element(),
+            ];
+        }
+        let request = match relationship {
+            None => Some(
+                change_button(
+                    "profile-add-friend",
+                    catalogue.members().add_friend(),
+                    RelationshipChange::AddFriend,
+                )
+                .into_any_element(),
+            ),
+            Some(RelationshipKind::IncomingRequest) => Some(
+                change_button(
+                    "profile-accept",
+                    catalogue.members().accept_request(),
+                    RelationshipChange::Accept,
+                )
+                .into_any_element(),
+            ),
+            Some(RelationshipKind::OutgoingRequest) => Some(
+                Button::new("profile-request-sent", catalogue.members().request_sent())
+                    .full_width()
+                    .disabled(true)
+                    .into_any_element(),
+            ),
+            Some(RelationshipKind::Friend | RelationshipKind::Blocked) => None,
+        };
+        let home = self.home.clone();
+        let user = user.clone();
+        let block = Button::new(PROFILE_BLOCK_ID, catalogue.friends().block())
+            .full_width()
+            .track_focus(&block_focus)
+            .on_click(move |window, cx| {
+                home.update(cx, |home, cx| home.ask_to_block(&user, window, cx));
+            })
+            .into_any_element();
+        request.into_iter().chain([block]).collect()
     }
 
     /// The card under the sheet's header; `sheet_width` sizes the banner picture.
@@ -277,10 +466,10 @@ impl DuskShell {
         let name = display_name(user).to_owned();
         let state = self.session.read(cx).state();
         let is_self = state.current_user().is_some_and(|me| me.id == user.id);
-        let is_blocked = state
+        let relationship = state
             .relationship(user.id)
-            .map(|relationship| relationship.kind)
-            == Some(RelationshipKind::Blocked);
+            .map(|relationship| relationship.kind);
+        let is_blocked = relationship == Some(RelationshipKind::Blocked);
 
         let details: Vec<AnyElement> = match self.member_profile.loader.current().clone() {
             UserProfileLoad::Loaded { user_id, profile } if user_id == user.id => {
@@ -334,6 +523,12 @@ impl DuskShell {
         let is_opening = self.member_profile.is_opening_conversation;
         let user_id = user.id;
         let entity = cx.entity();
+        let relationship_buttons = if is_self {
+            Vec::new()
+        } else {
+            self.relationship_buttons(user, relationship, window, cx)
+        };
+        // No conversation while blocked: unblocking comes first.
         let action = (!is_self && !is_blocked).then(|| {
             div().mt(length(SPACE_XS)).child(
                 Button::new(
@@ -356,7 +551,7 @@ impl DuskShell {
         });
         let error = self
             .member_profile
-            .open_conversation_error
+            .profile_action_error
             .clone()
             .map(|error| {
                 with_type(div(), TYPE_BODY)
@@ -409,6 +604,26 @@ impl DuskShell {
                     )
                     .children(details)
                     .children(action)
+                    .when(!relationship_buttons.is_empty(), |card| {
+                        card.child(
+                            div()
+                                .when(is_blocked, |buttons| buttons.mt(length(SPACE_XS)))
+                                .flex()
+                                .flex_col()
+                                .gap(length(SPACE_XS))
+                                .children(relationship_buttons),
+                        )
+                    })
+                    .child(
+                        div()
+                            .id("profile-relationship-announcement")
+                            .role(Role::Status)
+                            .aria_label(SharedString::from(
+                                self.member_profile.relationship_announcement.clone(),
+                            ))
+                            .h_0()
+                            .overflow_hidden(),
+                    )
                     .children(error),
             )
             .into_any_element()

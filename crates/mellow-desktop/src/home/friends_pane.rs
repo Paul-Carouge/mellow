@@ -11,9 +11,9 @@ use std::rc::Rc;
 use gpui::{
     AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, ClipboardItem, Context, ElementId,
     Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement,
-    KeyDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas, div,
-    prelude::FluentBuilder as _,
+    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas,
+    div, prelude::FluentBuilder as _,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use mellow_client_core::ClientError;
@@ -26,12 +26,13 @@ use mellow_protocol::{
     SetRelationshipKind, Snowflake,
 };
 
-use super::{presence_name, shown_presence};
+use super::{PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, MentionBadge, MenuAlignment,
     MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin, ModalDialog, ModalDialogEvent,
-    Tooltip, focus_ring, icon, is_focus_visible, next_tab_index, remembered_focus_handle,
-    remembered_hover, with_type,
+    Tooltip, bounds_recorder, focus_ring, icon, is_context_menu_keystroke, is_focus_visible,
+    menu_origin_at_pointer, menu_origin_beside_remembered, next_tab_index, remembered_bounds,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
@@ -57,10 +58,12 @@ use crate::theme::tokens::{
 use crate::theme::{color, delay, length, theme};
 
 /// What the pane asks of its host.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum FriendsPaneEvent {
     /// Message opened (or found) this conversation: it shows, the composer focused.
     OpenConversation(Snowflake),
+    /// A right-click, Shift+F10 or the Menu key on a row: the person's menu.
+    OpenPersonMenu(PersonMenuRequest),
 }
 
 /// How an "Add friend" form looks the person up (ADR-0048).
@@ -87,7 +90,7 @@ enum ActionTone {
 
 /// What a confirmed dialog does to a friend.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Confirmed {
+pub(super) enum Confirmed {
     Remove,
     Block,
 }
@@ -200,6 +203,16 @@ impl FriendsPane {
         self.tab
     }
 
+    /// What the last action did, read out by Home's status region.
+    pub(super) fn announcement(&self) -> &str {
+        &self.announcement
+    }
+
+    /// The Remove friend or Block dialog, drawn by Home over the whole window.
+    pub(super) fn confirmation_dialog(&self) -> Option<&Entity<ModalDialog>> {
+        self.confirmation.as_ref().map(|(dialog, _)| dialog)
+    }
+
     /// Chooses a tab; `should_focus_field`: a click or Enter on Add friend goes to its field,
     /// while arrows stay on the tabs.
     pub fn choose_tab(
@@ -240,7 +253,7 @@ impl FriendsPane {
 
     /// The first action of the row at `index` (or the last row), else the selected tab: where
     /// focus goes once the row it was on has left.
-    fn focus_row_at(&self, index: usize, window: &mut Window, cx: &mut App) {
+    pub(super) fn focus_row_at(&self, index: usize, window: &mut Window, cx: &mut App) {
         match self
             .row_first_actions
             .get(index.min(self.row_first_actions.len().saturating_sub(1)))
@@ -318,7 +331,7 @@ impl FriendsPane {
 
     /// After the list changed under a row the reader acted on: focus lands on the row now at its
     /// place once the list without it is drawn, else on the selected tab.
-    fn focus_row_after_change(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn focus_row_after_change(&mut self, index: usize, cx: &mut Context<Self>) {
         self.pending_focus_row = Some(index);
         cx.notify();
     }
@@ -368,7 +381,9 @@ impl FriendsPane {
             let pane = pane.clone();
             let user = user.clone();
             move |window: &mut Window, cx: &mut App| {
-                let _ = pane.update(cx, |pane, cx| pane.confirm(&user, confirmed, window, cx));
+                let _ = pane.update(cx, |pane, cx| {
+                    pane.confirm(&user, confirmed, true, window, cx);
+                });
             }
         };
         let entries = vec![
@@ -413,11 +428,14 @@ impl FriendsPane {
     }
 
     /// "Remove friend" and "Block", the destructive pattern of DESIGN.md §8: Cancel takes focus.
-    /// Blocking says what it does, and that the other person is never told (ADR-0025).
-    fn confirm(
+    /// Blocking says what it does, and that the other person is never told (ADR-0025). Home draws
+    /// the dialog, so a person's menu anywhere asks the same way; `should_focus_row_after`: asked
+    /// from a row here, whose place focus moves to once it changed.
+    pub(super) fn confirm(
         &mut self,
         user: &PublicUser,
         confirmed: Confirmed,
+        should_focus_row_after: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
@@ -474,7 +492,7 @@ impl FriendsPane {
                                 window_handle,
                                 pane: pane_handle,
                                 dialog,
-                                row_index,
+                                row_index: should_focus_row_after.then_some(row_index),
                                 done,
                                 failure,
                             },
@@ -903,6 +921,10 @@ impl FriendsPane {
             }
         }
         let first_action = first_action.unwrap_or_else(|| cx.focus_handle());
+        let row_bounds = remembered_bounds(&row_id, window, cx);
+        let pointer_user = user.clone();
+        let key_user = user.clone();
+        let key_bounds = row_bounds.clone();
         let row = div()
             .id(row_id)
             .role(Role::ListItem)
@@ -923,6 +945,35 @@ impl FriendsPane {
                     cx.notify();
                 });
             })
+            // The person's menu (`PersonContextMenu`): at the pointer, or beside the row from the
+            // keyboard while focus is on one of its actions.
+            .relative()
+            .on_mouse_down(
+                MouseButton::Right,
+                cx.listener(move |pane, event: &MouseDownEvent, _, cx| {
+                    cx.stop_propagation();
+                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest {
+                        friends_row_index: Some(pane.row_index_of(pointer_user.id, cx)),
+                        ..PersonMenuRequest::new(
+                            pointer_user.clone(),
+                            menu_origin_at_pointer(event.position),
+                        )
+                    }));
+                }),
+            )
+            .on_key_down(cx.listener(move |pane, event: &KeyDownEvent, _, cx| {
+                if !is_context_menu_keystroke(&event.keystroke) {
+                    return;
+                }
+                if let Some(origin) = menu_origin_beside_remembered(&key_bounds, cx) {
+                    cx.stop_propagation();
+                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest {
+                        friends_row_index: Some(pane.row_index_of(key_user.id, cx)),
+                        ..PersonMenuRequest::new(key_user.clone(), origin)
+                    }));
+                }
+            }))
+            .child(bounds_recorder(row_bounds))
             .child(avatar)
             .child(
                 div()
@@ -1235,7 +1286,8 @@ struct FinishedConfirmation {
     window_handle: AnyWindowHandle,
     pane: gpui::WeakEntity<FriendsPane>,
     dialog: gpui::WeakEntity<ModalDialog>,
-    row_index: usize,
+    /// The row focus moves to, when asked from the pane.
+    row_index: Option<usize>,
     done: String,
     failure: String,
 }
@@ -1265,7 +1317,9 @@ fn finish_confirmation(
         if answer.is_ok() {
             let _ = finished.pane.update(cx, |pane, cx| {
                 pane.announcement.clone_from(&finished.done);
-                pane.focus_row_after_change(finished.row_index, cx);
+                if let Some(row_index) = finished.row_index {
+                    pane.focus_row_after_change(row_index, cx);
+                }
                 cx.notify();
             });
         }
@@ -1543,19 +1597,8 @@ impl Render for FriendsPane {
                     .pb(length(SPACE_MD))
                     .children(panel),
             )
-            .child(
-                div()
-                    .id("friends-announcement")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(self.announcement.clone()))
-                    .h_0()
-                    .overflow_hidden(),
-            )
             .when_some(self.menu.as_ref(), |pane, (menu, _)| {
                 pane.child(menu.clone())
-            })
-            .when_some(self.confirmation.as_ref(), |pane, (dialog, _)| {
-                pane.child(dialog.clone())
             })
     }
 }

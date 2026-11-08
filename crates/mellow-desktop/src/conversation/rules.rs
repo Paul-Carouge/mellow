@@ -1,10 +1,11 @@
-//! The conversation's pure rules: which actions a message offers (`message-actions.ts` and
-//! `messageMenuActions` in `context-menus.ts`), the typing line (`typingSegments` in `format.ts`),
+//! The conversation's pure rules: which keys a message's hover bar offers (`message-actions.ts`;
+//! its menu is client-core's `message_menu_actions`), the typing line (`typingSegments` in `format.ts`),
 //! who reacted (`MessageReactions.svelte`), how the virtual list follows a new set of rows, and when
 //! it asks for older history.
 
 use std::ops::Range;
 
+use mellow_client_core::shared_logic::context_menus_people::MessageMenuFacts;
 use mellow_protocol::{DirectMessageChannel, PublicUser, Snowflake};
 
 use crate::i18n::Strings;
@@ -43,40 +44,10 @@ pub enum HoverBarAction {
     More,
 }
 
-/// What a message's actions depend on.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(clippy::struct_excessive_bools)] // The web's facts, one flag each.
-pub struct MessageFacts {
-    pub is_own: bool,
-    /// A forward copies someone's words: it cannot be edited (ADR-0039).
-    pub is_forward: bool,
-    /// A poll, checklist or progress bar is neither edited as text nor copied (ADR-0043, ADR-0047).
-    pub is_rich: bool,
-    pub has_text: bool,
-    pub is_pinned: bool,
-    pub can_send_messages: bool,
-    /// Delete others' messages: `MANAGE_MESSAGES`.
-    pub can_manage_messages: bool,
-    /// Joining an existing reaction: the channel's history is readable.
-    pub can_join_reactions: bool,
-    /// `MANAGE_MESSAGES` in a server channel; any participant in a conversation.
-    pub can_manage_pins: bool,
-}
-
-impl MessageFacts {
-    fn can_edit(self) -> bool {
-        self.is_own && self.can_send_messages && !self.is_forward && !self.is_rich
-    }
-
-    fn can_delete(self) -> bool {
-        self.is_own || self.can_manage_messages
-    }
-}
-
 /// Edit takes Reply's place on a message you can edit, as on Discord; Delete stays in More
 /// unless Shift is held, so the everyday bar stays short (`hoverBarActions`).
 #[must_use]
-pub fn hover_bar_actions(facts: MessageFacts, is_shift_held: bool) -> Vec<HoverBarAction> {
+pub fn hover_bar_actions(facts: MessageMenuFacts, is_shift_held: bool) -> Vec<HoverBarAction> {
     let mut actions = Vec::new();
     if facts.can_edit() {
         actions.push(HoverBarAction::Edit);
@@ -92,75 +63,6 @@ pub fn hover_bar_actions(facts: MessageFacts, is_shift_held: bool) -> Vec<HoverB
     // The menu always has Copy message ID.
     actions.push(HoverBarAction::More);
     actions
-}
-
-/// A message menu item (DESIGN.md §6.33).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MessageMenuAction {
-    /// Adds or takes back the reader's reaction with this stored key, one per existing reaction.
-    /// shortcut: a new emoji needs the picker (M3 step 5); the menu offers the existing ones.
-    ToggleReaction(String),
-    Reply,
-    Edit,
-    CopyText,
-    Pin,
-    Unpin,
-    /// Who reacted with what, in a dialog.
-    ViewReactions,
-    CopyMessageId,
-    Delete,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum MenuLine {
-    Action(MessageMenuAction),
-    Separator,
-}
-
-/// The More button and a right-click open the same menu, as on Discord (`messageMenuActions`):
-/// reactions, then the everyday actions, then Delete, each section only when not empty.
-#[must_use]
-pub fn message_menu_lines(facts: MessageFacts, reaction_keys: &[String]) -> Vec<MenuLine> {
-    use MessageMenuAction as Action;
-    let reactions: Vec<Action> = if facts.can_join_reactions {
-        reaction_keys
-            .iter()
-            .map(|key| Action::ToggleReaction(key.clone()))
-            .collect()
-    } else {
-        Vec::new()
-    };
-    let everyday: Vec<Action> = [
-        facts.can_send_messages.then_some(Action::Reply),
-        facts.can_edit().then_some(Action::Edit),
-        (facts.has_text && !facts.is_rich).then_some(Action::CopyText),
-        facts.can_manage_pins.then_some(if facts.is_pinned {
-            Action::Unpin
-        } else {
-            Action::Pin
-        }),
-        (!reaction_keys.is_empty() && facts.can_join_reactions).then_some(Action::ViewReactions),
-        Some(Action::CopyMessageId),
-    ]
-    .into_iter()
-    .flatten()
-    .collect();
-    let danger: Vec<Action> = facts
-        .can_delete()
-        .then_some(Action::Delete)
-        .into_iter()
-        .collect();
-    let mut lines = Vec::new();
-    for section in [reactions, everyday, danger] {
-        if section.is_empty() {
-            continue;
-        }
-        if !lines.is_empty() {
-            lines.push(MenuLine::Separator);
-        }
-        lines.extend(section.into_iter().map(MenuLine::Action));
-    }
-    lines
 }
 
 // ---- Who reacted ----
@@ -351,7 +253,7 @@ mod tests {
         );
     }
 
-    const OTHERS_TEXT: MessageFacts = MessageFacts {
+    const OTHERS_TEXT: MessageMenuFacts = MessageMenuFacts {
         is_own: false,
         is_forward: false,
         is_rich: false,
@@ -362,7 +264,7 @@ mod tests {
         can_join_reactions: true,
         can_manage_pins: false,
     };
-    const OWN_TEXT: MessageFacts = MessageFacts {
+    const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
         is_own: true,
         ..OTHERS_TEXT
     };
@@ -378,7 +280,7 @@ mod tests {
 
     #[test]
     fn others_messages_have_reply_copy_and_more_even_for_a_moderator() {
-        let moderator = MessageFacts {
+        let moderator = MessageMenuFacts {
             can_manage_messages: true,
             ..OTHERS_TEXT
         };
@@ -391,7 +293,7 @@ mod tests {
             hover_bar_actions(OWN_TEXT, true),
             [Edit, CopyText, Delete, More]
         );
-        let moderator = MessageFacts {
+        let moderator = MessageMenuFacts {
             can_manage_messages: true,
             ..OTHERS_TEXT
         };
@@ -401,7 +303,7 @@ mod tests {
 
     #[test]
     fn a_message_without_text_has_nothing_to_copy() {
-        let files_only = MessageFacts {
+        let files_only = MessageMenuFacts {
             has_text: false,
             ..OTHERS_TEXT
         };
@@ -410,12 +312,12 @@ mod tests {
 
     #[test]
     fn your_own_forward_or_poll_offers_reply_since_it_cannot_be_edited() {
-        let forward = MessageFacts {
+        let forward = MessageMenuFacts {
             is_forward: true,
             ..OWN_TEXT
         };
         assert_eq!(hover_bar_actions(forward, false), [Reply, CopyText, More]);
-        let poll = MessageFacts {
+        let poll = MessageMenuFacts {
             is_rich: true,
             has_text: false,
             ..OWN_TEXT
@@ -425,89 +327,11 @@ mod tests {
 
     #[test]
     fn neither_reply_nor_edit_where_you_cannot_send() {
-        let read_only = MessageFacts {
+        let read_only = MessageMenuFacts {
             can_send_messages: false,
             ..OWN_TEXT
         };
         assert_eq!(hover_bar_actions(read_only, false), [CopyText, More]);
-    }
-
-    // Ported from `context-menus.test.ts` ("messageMenuActions"): reactions toggle the existing
-    // ones, and Copy message ID joins the everyday section.
-
-    fn actions(lines: &[MenuLine]) -> Vec<Option<MessageMenuAction>> {
-        lines
-            .iter()
-            .map(|line| match line {
-                MenuLine::Action(action) => Some(action.clone()),
-                MenuLine::Separator => None,
-            })
-            .collect()
-    }
-
-    #[test]
-    fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction, ViewReactions};
-        assert_eq!(
-            actions(&message_menu_lines(OTHERS_TEXT, &["👍".to_owned()])),
-            [
-                Some(ToggleReaction("👍".to_owned())),
-                None,
-                Some(Reply),
-                Some(CopyText),
-                Some(ViewReactions),
-                Some(CopyMessageId)
-            ]
-        );
-    }
-
-    #[test]
-    fn your_own_message_adds_edit_and_delete_last_and_separated() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete, Edit, Reply};
-        assert_eq!(
-            actions(&message_menu_lines(OWN_TEXT, &[])),
-            [
-                Some(Reply),
-                Some(Edit),
-                Some(CopyText),
-                Some(CopyMessageId),
-                None,
-                Some(Delete)
-            ]
-        );
-    }
-
-    #[test]
-    fn a_moderator_pins_and_deletes_anyones_message_and_unpins_a_pinned_one() {
-        let moderator = MessageFacts {
-            can_manage_messages: true,
-            can_manage_pins: true,
-            ..OTHERS_TEXT
-        };
-        let lines = message_menu_lines(moderator, &[]);
-        assert!(lines.contains(&MenuLine::Action(MessageMenuAction::Pin)));
-        assert!(lines.contains(&MenuLine::Action(MessageMenuAction::Delete)));
-        let pinned = MessageFacts {
-            is_pinned: true,
-            ..moderator
-        };
-        assert!(
-            message_menu_lines(pinned, &[]).contains(&MenuLine::Action(MessageMenuAction::Unpin))
-        );
-    }
-
-    #[test]
-    fn a_read_only_channel_leaves_out_reply_edit_and_reactions_without_history() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete};
-        let read_only = MessageFacts {
-            can_send_messages: false,
-            can_join_reactions: false,
-            ..OWN_TEXT
-        };
-        assert_eq!(
-            actions(&message_menu_lines(read_only, &["👍".to_owned()])),
-            [Some(CopyText), Some(CopyMessageId), None, Some(Delete)]
-        );
     }
 
     fn named(id: u64, name: &str) -> PublicUser {

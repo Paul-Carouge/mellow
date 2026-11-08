@@ -18,9 +18,8 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext as _, Bounds, Context, DismissEvent, Div, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, MouseButton, MouseDownEvent,
-    Pixels, Role, SharedString, Stateful, StatefulInteractiveElement as _, Subscription,
-    WeakEntity, Window, div,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Role,
+    SharedString, Stateful, StatefulInteractiveElement as _, Subscription, WeakEntity, Window, div,
 };
 use mellow_client_core::shared_logic::context_menus_places::{
     CategoryMenuAction, CategoryMenuFacts, ChannelMenuAction, ChannelMenuFacts,
@@ -78,15 +77,6 @@ pub(super) struct PlaceMenus {
     announcement: SharedString,
 }
 
-/// The Menu key, or Shift+F10 (`isContextMenuKey`); not with another modifier.
-pub(super) fn is_context_menu_key(keystroke: &Keystroke) -> bool {
-    let modifiers = keystroke.modifiers;
-    if modifiers.control || modifiers.alt || modifiers.platform {
-        return false;
-    }
-    keystroke.key == "menu" || (keystroke.key == "f10" && modifiers.shift)
-}
-
 /// The target's own mute (`isTargetMuted`): a channel of a muted server is not "muted" itself.
 pub(super) fn is_target_muted(
     settings: &NotificationSettings,
@@ -137,7 +127,7 @@ pub(super) fn with_place_menu(
         }),
     )
     .on_key_down(cx.listener(move |shell, event: &KeyDownEvent, window, cx| {
-        if !is_context_menu_key(&event.keystroke) {
+        if !crate::components::is_context_menu_keystroke(&event.keystroke) {
             return;
         }
         cx.stop_propagation();

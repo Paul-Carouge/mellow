@@ -699,7 +699,7 @@ impl DuskShell {
                 name_with_mute
             };
             let child_index = rows.len();
-            rows.push(Self::sidebar_row(
+            let row = Self::sidebar_row(
                 SidebarRow {
                     id: ElementId::from(("conversation-row", conversation.id.raw())),
                     label: name_with_unread_state(strings, &label, has_unread, mention_count),
@@ -717,6 +717,12 @@ impl DuskShell {
                     menu: None,
                 },
                 (tab_stop, child_index),
+                window,
+                cx,
+            );
+            rows.push(Self::with_conversation_menu(
+                row,
+                conversation.id,
                 window,
                 cx,
             ));

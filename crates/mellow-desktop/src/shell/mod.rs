@@ -6,6 +6,7 @@
 //! navigator becomes a drawer and the member sheet an overlay. Every length and colour is a token.
 
 mod channel_sidebar;
+mod conversation_menus;
 mod conversation_sheet;
 mod custom_status_dialog;
 mod member_profile;
@@ -41,7 +42,7 @@ use crate::column_widths::{
 use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::ConversationView;
-use crate::home::{Home, HomeEvent};
+use crate::home::{Home, HomeEvent, OpenPersonMenu};
 use crate::local_widgets::error_line;
 use crate::navigation::{Direction, Navigation, Place};
 use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
@@ -197,7 +198,7 @@ pub struct DuskShell {
     conversation: Entity<ConversationView>,
     /// The Friends space, the people picker and the group dialogs.
     home: Entity<Home>,
-    /// Why the last `OpenDirectConversation` failed, until the next place opens.
+    /// Why the last `OpenDirectConversation` or menu action failed, until the next place opens.
     conversation_error: Option<String>,
     navigation: Navigation,
     /// Kept while the shell lives, so collapsing survives the drawer closing (as on the web).
@@ -653,14 +654,21 @@ impl DuskShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        match *event {
+        match event {
             HomeEvent::OpenConversation(conversation_id) => {
-                self.show_conversation(conversation_id, window, cx);
+                self.show_conversation(*conversation_id, window, cx);
             }
             HomeEvent::ShowFriends => {
                 self.open_place(None, None, window, cx);
                 let pane = self.home.read(cx).friends_pane().clone();
                 pane.update(cx, |pane, cx| pane.focus_start(window, cx));
+            }
+            HomeEvent::ShowMemberProfile { guild_id, user_id } => {
+                self.show_member_profile(*guild_id, *user_id, window, cx);
+            }
+            HomeEvent::MenuActionFailed(reason) => {
+                self.conversation_error = Some(reason.clone());
+                cx.notify();
             }
         }
     }
@@ -673,6 +681,7 @@ impl DuskShell {
         cx: &mut Context<Self>,
     ) {
         self.open_channel(conversation_id, window, cx);
+        self.close_member_overlay(window, cx);
         if self.navigation.selected_channel_id() == Some(conversation_id) {
             self.conversation.update(cx, |conversation, cx| {
                 conversation.focus_composer(window, cx);
@@ -1062,6 +1071,12 @@ impl Render for DuskShell {
                     shell.open_direct_conversation_with(action.user_id, window, cx);
                 }),
             )
+            .on_action(cx.listener(|shell, action: &OpenPersonMenu, window, cx| {
+                let request = action.request.clone();
+                shell
+                    .home
+                    .update(cx, |home, cx| home.open_person_menu(request, window, cx));
+            }))
             .on_action(cx.listener(|shell, _: &NextRegion, window, cx| {
                 shell.move_to_region(Direction::Next, window, cx);
             }))

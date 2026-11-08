@@ -29,6 +29,7 @@ pub mod gallery;
 #[cfg(test)]
 mod keyboard_tests;
 mod menu;
+mod menu_opening;
 mod progress;
 mod range_field;
 mod settings_list_status;
@@ -56,6 +57,10 @@ pub use menu::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
     MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
     popover_position_beside_anchor, typeahead_menu_item_index,
+};
+pub use menu_opening::{
+    bounds_recorder, is_context_menu_keystroke, menu_origin_at_pointer, menu_origin_beside,
+    menu_origin_beside_remembered, remembered_bounds,
 };
 pub use progress::ProgressMeter;
 pub use range_field::{RangeBounds, RangeField};

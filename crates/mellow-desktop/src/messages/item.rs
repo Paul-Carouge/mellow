@@ -12,8 +12,8 @@ use std::sync::Arc;
 
 use gpui::{
     AnyElement, App, ElementId, Hsla, ImageSource, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _,
+    MouseButton, ParentElement as _, Pixels, Point, RenderOnce, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::state::PendingMessageStatus;
@@ -92,7 +92,11 @@ pub struct MessageItem {
     selection_order: u64,
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
+    on_open_author_menu: Option<AuthorMenuHandler>,
 }
+
+/// Opens the author's menu at a window point.
+type AuthorMenuHandler = Arc<dyn Fn(Point<Pixels>, &mut Window, &mut App) + 'static>;
 
 impl MessageItem {
     /// `id` is the row's key: the message's id, or the pending message's nonce.
@@ -107,6 +111,7 @@ impl MessageItem {
             selection_order: 0,
             on_retry: None,
             on_discard: None,
+            on_open_author_menu: None,
         }
     }
 
@@ -148,6 +153,16 @@ impl MessageItem {
     #[must_use]
     pub fn on_retry(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_retry = Some(Arc::new(handler));
+        self
+    }
+
+    /// A right-click on the author's name or avatar: their menu (`onopenauthormenu`).
+    #[must_use]
+    pub fn on_open_author_menu(
+        mut self,
+        handler: impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static,
+    ) -> Self {
+        self.on_open_author_menu = Some(Arc::new(handler));
         self
     }
 
@@ -264,6 +279,14 @@ impl RenderOnce for MessageItem {
             cx,
         );
         let author_name = display_name(&content.author.user).to_owned();
+        // The author's menu instead of the message's, which the row opens.
+        let with_author_menu = |element: gpui::Div| match self.on_open_author_menu.clone() {
+            Some(open) => element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                cx.stop_propagation();
+                open(event.position, window, cx);
+            }),
+            None => element,
+        };
         let sent = content.sent_at_unix_milliseconds.map(local_date_time);
         let now = local_date_time(content.now_unix_milliseconds);
 
@@ -287,7 +310,7 @@ impl RenderOnce for MessageItem {
                 .items_baseline()
                 .gap_x(length(SPACE_XS))
                 .child(
-                    with_type(div(), TYPE_MESSAGE_AUTHOR)
+                    with_author_menu(with_type(div(), TYPE_MESSAGE_AUTHOR))
                         .text_color(
                             content
                                 .author
@@ -312,7 +335,7 @@ impl RenderOnce for MessageItem {
             COMPONENT_MESSAGE_PADDING_BLOCK + SPACE_3XS
         };
         let avatar = content.starts_author_group.then(|| {
-            div()
+            with_author_menu(div())
                 .absolute()
                 .left(length(COMPONENT_MESSAGE_AVATAR_INSET))
                 .top(length(avatar_top))

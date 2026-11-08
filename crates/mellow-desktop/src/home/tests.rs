@@ -4,12 +4,13 @@ use gpui::{
     AppContext as _, Entity, InputEvent as _, KeyUpEvent, Keystroke, TestAppContext,
     VisualTestContext, WindowAppearance, px, size,
 };
+use mellow_client_core::shared_logic::context_menus_people::{GroupMenuAction, PersonMenuAction};
 use mellow_client_core::shared_logic::friends::FriendsTab;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{DirectMessageChannel, Relationship, RelationshipKind, Snowflake};
 
-use super::FriendsPane;
-use crate::components::bind_tab_navigation;
+use super::{FriendsPane, FriendsPaneEvent, PersonMenuRequest};
+use crate::components::{MenuOrigin, bind_tab_navigation};
 use crate::navigation::Place;
 use crate::session::Session;
 use crate::shell::{DuskShell, bind_shell_keys};
@@ -221,4 +222,151 @@ fn a_remove_dialog_closes_when_its_person_left_the_group_meanwhile(cx: &mut Test
     // Zoé leaves too: there is no one to remove any more.
     keep_only(vec![person(LEA, "lea", "Léa")], cx);
     assert!(!is_group_dialog_open(&shell, cx));
+}
+
+// ---- Context menus ----
+
+fn is_menu_open(shell: &Entity<DuskShell>, cx: &mut VisualTestContext) -> bool {
+    shell.read_with(cx, |shell, cx| shell.home().read(cx).menu.is_some())
+}
+
+fn clipboard_text(cx: &mut VisualTestContext) -> String {
+    cx.read_from_clipboard()
+        .and_then(|item| item.text())
+        .unwrap_or_default()
+}
+
+const SOMEWHERE: MenuOrigin = MenuOrigin::Point { x: 40.0, y: 40.0 };
+
+#[gpui::test]
+fn shift_f10_or_the_menu_key_on_a_friend_row_opens_their_menu_and_esc_closes_it(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let pane = shell.read_with(cx, |shell, cx| shell.home().read(cx).friends_pane().clone());
+    for key in ["shift-f10", "menu"] {
+        pane.update_in(cx, |pane, window, cx| pane.focus_row_at(0, window, cx));
+        cx.run_until_parked();
+        assert!(!is_menu_open(&shell, cx));
+        press(cx, key);
+        assert!(is_menu_open(&shell, cx), "{key} opens the person's menu");
+        press(cx, "escape");
+        assert!(!is_menu_open(&shell, cx));
+    }
+}
+
+#[gpui::test]
+fn a_persons_menu_copies_their_id_and_says_so(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    let request = PersonMenuRequest::new(person(ANA, "ana", "Ana"), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.open_person_menu(request.clone(), window, cx);
+    });
+    assert!(is_menu_open(&shell, cx));
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::CopyUserId, &request, window, cx);
+    });
+    assert_eq!(clipboard_text(cx), ANA.raw().to_string());
+    assert_eq!(
+        home.read_with(cx, |home, _| home.announcement.clone()),
+        "User ID copied."
+    );
+}
+
+#[gpui::test]
+fn block_from_a_persons_menu_asks_first_in_a_dialog_drawn_over_the_window(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    let request = PersonMenuRequest::new(person(ZOE, "zoe", "Zoé"), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::Block, &request, window, cx);
+    });
+    cx.run_until_parked();
+    let is_asking = home.read_with(cx, |home, cx| {
+        home.friends_pane.read(cx).confirmation_dialog().is_some()
+    });
+    assert!(is_asking);
+    press(cx, "escape");
+    let is_asking = home.read_with(cx, |home, cx| {
+        home.friends_pane.read(cx).confirmation_dialog().is_some()
+    });
+    assert!(!is_asking, "Esc cancels: nothing was blocked");
+}
+
+#[gpui::test]
+fn a_groups_menu_renames_it_and_copies_its_id(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    home.update_in(cx, |home, window, cx| {
+        home.open_group_menu(GROUP, SOMEWHERE, None, window, cx);
+    });
+    assert!(is_menu_open(&shell, cx));
+    home.update_in(cx, |home, window, cx| {
+        home.run_group_action(GroupMenuAction::CopyChannelId, GROUP, window, cx);
+    });
+    assert_eq!(clipboard_text(cx), GROUP.raw().to_string());
+    home.update_in(cx, |home, window, cx| {
+        home.run_group_action(GroupMenuAction::RenameGroup, GROUP, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(is_group_dialog_open(&shell, cx));
+}
+
+#[gpui::test]
+fn a_menu_change_that_fails_is_said_in_the_notice_bar(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    // Signed out: the instance cannot be asked, as when it is unreachable.
+    let request = PersonMenuRequest::new(person(LEA, "lea", "Léa"), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::AcceptRequest, &request, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("shell-notice-bar").is_some());
+}
+
+#[gpui::test]
+fn a_friend_rows_menu_knows_its_row_so_focus_can_land_in_its_place(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let pane = shell.read_with(cx, |shell, cx| shell.home().read(cx).friends_pane().clone());
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let seen = opened.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&pane, move |_, event: &FriendsPaneEvent, _| {
+            if let FriendsPaneEvent::OpenPersonMenu(request) = event {
+                *seen.borrow_mut() = Some(request.friends_row_index);
+            }
+        })
+    });
+    pane.update_in(cx, |pane, window, cx| pane.focus_row_at(0, window, cx));
+    cx.run_until_parked();
+    press(cx, "shift-f10");
+    assert_eq!(*opened.borrow(), Some(Some(0)));
+}
+
+#[gpui::test]
+fn an_item_the_menu_no_longer_offers_does_nothing(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    let lea = person(LEA, "lea", "Léa");
+    let request = PersonMenuRequest::new(lea.clone(), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.open_person_menu(request.clone(), window, cx);
+    });
+    // Léa's request is accepted elsewhere while her menu shows Accept and Ignore.
+    let session = home.read_with(cx, |home, _| home.session.clone());
+    session.update(cx, |session, _| {
+        session.state_mut().apply_relationship(Relationship {
+            user: lea,
+            kind: RelationshipKind::Friend,
+            since_unix_milliseconds: 0,
+        });
+    });
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::IgnoreRequest, &request, window, cx);
+    });
+    cx.run_until_parked();
+    // Signed out, a change that ran would fail into the notice bar.
+    assert!(cx.debug_bounds("shell-notice-bar").is_none());
 }

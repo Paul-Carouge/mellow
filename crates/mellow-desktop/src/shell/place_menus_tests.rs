@@ -74,11 +74,17 @@ fn open_menu_at_a_point(
 #[test]
 fn the_menu_key_and_shift_f10_open_menus_but_not_with_other_modifiers() {
     let key = |text: &'static str| Keystroke::parse(text).expect("a valid keystroke in a test");
-    assert!(is_context_menu_key(&key("menu")));
-    assert!(is_context_menu_key(&key("shift-f10")));
-    assert!(!is_context_menu_key(&key("f10")));
-    assert!(!is_context_menu_key(&key("ctrl-shift-f10")));
-    assert!(!is_context_menu_key(&key("alt-menu")));
+    assert!(crate::components::is_context_menu_keystroke(&key("menu")));
+    assert!(crate::components::is_context_menu_keystroke(&key(
+        "shift-f10"
+    )));
+    assert!(!crate::components::is_context_menu_keystroke(&key("f10")));
+    assert!(!crate::components::is_context_menu_keystroke(&key(
+        "ctrl-shift-f10"
+    )));
+    assert!(!crate::components::is_context_menu_keystroke(&key(
+        "alt-menu"
+    )));
 }
 
 #[gpui::test]
