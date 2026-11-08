@@ -143,8 +143,14 @@ pub fn judge_instance_health(
 /// `summary: reason.`, never the server's own text (development notes: "Server text in the UI").
 #[must_use]
 pub fn describe_error(error: &ClientError, summary: &str, strings: &Strings) -> String {
+    (strings.error_with_reason)(summary, error_reason(error, strings))
+}
+
+/// The reason alone, as `describe_error` words it (the web's `errorReason`).
+#[must_use]
+pub fn error_reason(error: &ClientError, strings: &Strings) -> &'static str {
     let reasons = &strings.error_reasons;
-    let reason = match error {
+    match error {
         ClientError::Network(_) | ClientError::TransferStalled => reasons.network,
         ClientError::Api { code, .. } => reasons
             .for_code(*code)
@@ -154,8 +160,7 @@ pub fn describe_error(error: &ClientError, summary: &str, strings: &Strings) -> 
         | ClientError::UnexpectedResponse(_)
         | ClientError::NotSignedIn
         | ClientError::RandomGeneratorFailed(_) => strings.error_unknown_reason,
-    };
-    (strings.error_with_reason)(summary, reason)
+    }
 }
 
 #[cfg(test)]
