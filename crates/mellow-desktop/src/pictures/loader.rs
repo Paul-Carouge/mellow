@@ -6,8 +6,10 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use mellow_client_core::{ClientError, Download, DownloadableFile, RestClient};
-use tokio::sync::oneshot;
+use mellow_client_core::{
+    ClientError, Download, DownloadableFile, KlipyClient, KlipyError, RestClient,
+};
+use tokio::sync::{Semaphore, oneshot};
 
 use super::PictureLoadError;
 use super::disk_cache::{DiskCache, disk_file_name};
@@ -24,6 +26,9 @@ const MAXIMUM_ATTACHMENT_PICTURE_BYTES: usize = 128 * 1024 * 1024;
 /// Conversation pictures kept in memory, as files, so a revalidation answered `304` costs no
 /// transfer. Decoded pictures have their own cache in the store.
 pub(crate) const FILES_IN_MEMORY_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
+/// Klipy's pictures loaded at once: a page of the GIF picker asks for 24, as a browser would
+/// spread them over a few connections.
+const CONCURRENT_KLIPY_DOWNLOADS: usize = 6;
 
 pub(crate) type PictureBytes = Arc<[u8]>;
 type FetchResult = Result<PictureBytes, PictureLoadError>;
@@ -48,6 +53,16 @@ fn maximum_bytes(file: DownloadableFile) -> usize {
     }
 }
 
+impl From<KlipyError> for PictureLoadError {
+    fn from(error: KlipyError) -> Self {
+        match error {
+            KlipyError::Unreachable | KlipyError::RateLimited => Self::Unavailable,
+            KlipyError::TooLarge => Self::TooLarge,
+            KlipyError::Refused | KlipyError::Failed => Self::Refused,
+        }
+    }
+}
+
 impl From<ClientError> for PictureLoadError {
     fn from(error: ClientError) -> Self {
         match error {
@@ -67,6 +82,9 @@ pub(crate) struct PictureLoader {
     /// Files being downloaded, with the callers waiting for the first caller's answer.
     in_flight: Mutex<HashMap<DownloadableFile, Vec<oneshot::Sender<FetchResult>>>>,
     retry_delay: Duration,
+    /// Klipy's media (ADR-0042), on its own client: no Mellow token, no cache.
+    klipy: Option<KlipyClient>,
+    klipy_downloads: Semaphore,
 }
 
 /// Lock a map that holds no invariant a panicking holder could break halfway.
@@ -113,6 +131,10 @@ impl PictureLoader {
             files_in_memory: Mutex::new(ByteBoundedLru::new(FILES_IN_MEMORY_CAPACITY_BYTES)),
             in_flight: Mutex::new(HashMap::new()),
             retry_delay: RETRY_DELAY,
+            klipy: KlipyClient::new()
+                .inspect_err(|error| tracing::warn!(%error, "cannot load GIFs from KLIPY"))
+                .ok(),
+            klipy_downloads: Semaphore::new(CONCURRENT_KLIPY_DOWNLOADS),
         }
     }
 
@@ -155,6 +177,19 @@ impl PictureLoader {
             let _ = waiter.send(result.clone());
         }
         result
+    }
+
+    /// A picture on Klipy's media hosts, from the address Klipy returned. Never written to disk:
+    /// the store keeps it decoded in memory, as a browser's memory cache would.
+    pub(crate) async fn fetch_klipy(&self, url: &str) -> FetchResult {
+        let Some(klipy) = &self.klipy else {
+            return Err(PictureLoadError::Unavailable);
+        };
+        // Closed only with the loader, which nobody waits on then.
+        let Ok(_permit) = self.klipy_downloads.acquire().await else {
+            return Err(PictureLoadError::Unavailable);
+        };
+        Ok(klipy.media(url).await?.into())
     }
 
     async fn download_retrying_once(&self, file: DownloadableFile) -> FetchResult {

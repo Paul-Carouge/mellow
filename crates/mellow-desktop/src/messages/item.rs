@@ -21,6 +21,7 @@ use mellow_protocol::{Attachment, PublicUser};
 
 use super::attachments::MessageAttachments;
 use super::body::MessageBody;
+use super::gif::MessageGif;
 use super::markdown_view::{EditedMarker, MessageMarkdown};
 use super::reactions::{
     MessageReactions, ReactionPill, ReactionToggleHandler, ReactionTooltipBuilder,
@@ -93,6 +94,8 @@ pub struct MessageItem {
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    /// The Klipy address the message is, shown as the GIF itself (ADR-0042).
+    gif_url: Option<SharedString>,
 }
 
 /// Opens the author's menu at a window point.
@@ -112,7 +115,16 @@ impl MessageItem {
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            gif_url: None,
         }
+    }
+
+    /// Shows the message as this GIF (`message_gif_media_of` accepted its text, and the instance
+    /// has GIFs); its text comes back if the GIF cannot be shown.
+    #[must_use]
+    pub fn gif(mut self, url: Option<SharedString>) -> Self {
+        self.gif_url = url;
+        self
     }
 
     #[must_use]
@@ -389,11 +401,18 @@ impl RenderOnce for MessageItem {
             } else {
                 tokens.component_message_body_text
             }))
-            .child(
-                MessageMarkdown::new(id.clone(), content.body.clone())
+            .child({
+                let markdown = MessageMarkdown::new(id.clone(), content.body.clone())
                     .edited(edited)
-                    .selection_order(self.selection_order),
-            );
+                    .selection_order(self.selection_order)
+                    .into_any_element();
+                match self.gif_url {
+                    Some(url) => {
+                        MessageGif::new(child_id(&id, "gif"), url, markdown).into_any_element()
+                    }
+                    None => markdown,
+                }
+            });
         let attachments = (!content.attachments.is_empty()).then(|| {
             MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
                 .pending(content.pending.is_some())

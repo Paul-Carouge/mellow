@@ -23,6 +23,7 @@ use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
 mod blocks;
+mod gifs;
 mod messages;
 mod relationships;
 mod servers;
@@ -116,6 +117,8 @@ pub struct Session {
     stored_session_forget_in_flight: Option<Task<Result<(), JoinError>>>,
     /// History pages, read positions on their way (`messages`).
     conversation: messages::ConversationRequests,
+    /// The instance's GIF settings (`gifs`).
+    gifs: gifs::GifSettingsLoad,
 }
 
 impl std::fmt::Debug for Session {
@@ -183,6 +186,7 @@ impl Session {
             is_kept_on_this_device,
             stored_session_forget_in_flight: None,
             conversation: messages::ConversationRequests::default(),
+            gifs: gifs::GifSettingsLoad::default(),
         }
     }
 
@@ -267,6 +271,7 @@ impl Session {
         self.member_loads.clear();
         self.status_error = None;
         self.conversation = messages::ConversationRequests::default();
+        self.gifs = gifs::GifSettingsLoad::default();
         // Nothing of the pictures may reach the disk of a session kept in memory only.
         if self.is_kept_on_this_device {
             start_picture_session(rest.clone(), cx);
@@ -326,6 +331,7 @@ impl Session {
                     // `Ready` emptied the member lists and the history: the views ask again.
                     self.member_loads.clear();
                     self.conversation.forget_history();
+                    self.load_gif_settings(cx);
                     self.state.apply_ready(*ready)
                 }
                 GatewayUpdate::Event(event) => {

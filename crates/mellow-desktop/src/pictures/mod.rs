@@ -22,7 +22,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use gpui::{App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, Window};
+use gpui::{
+    App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, SharedString, Window,
+};
 use mellow_client_core::{DownloadableFile, RestClient};
 use tokio::sync::oneshot;
 
@@ -76,10 +78,25 @@ impl DisplaySize {
     }
 }
 
+/// Where a picture comes from: the instance, or Klipy's media hosts (ADR-0042), loaded from the
+/// address Klipy returned and kept in memory only, since Klipy's terms forbid copies and caches.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum PictureFile {
+    Instance(DownloadableFile),
+    /// An address `klipy_media_url` accepted.
+    Klipy(SharedString),
+}
+
+impl From<DownloadableFile> for PictureFile {
+    fn from(file: DownloadableFile) -> Self {
+        Self::Instance(file)
+    }
+}
+
 /// One picture as one place shows it.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct PictureRequest {
-    pub file: DownloadableFile,
+    pub file: PictureFile,
     pub animation: Animation,
     pub display_size: DisplaySize,
 }
@@ -87,14 +104,17 @@ pub struct PictureRequest {
 impl PictureRequest {
     /// The file to download: the still route of a profile picture or icon when animation is off.
     /// Other pictures have no still route; their first frame is decoded instead.
-    fn file_to_download(&self) -> DownloadableFile {
-        match (self.animation, self.file) {
+    fn file_to_download(&self) -> PictureFile {
+        let PictureFile::Instance(file) = self.file else {
+            return self.file.clone();
+        };
+        PictureFile::Instance(match (self.animation, file) {
             (Animation::StillFrame, DownloadableFile::ProfileImage(id)) => {
                 DownloadableFile::ProfileImageStill(id)
             }
             (Animation::StillFrame, DownloadableFile::Icon(id)) => DownloadableFile::IconStill(id),
             (_, file) => file,
-        }
+        })
     }
 }
 
@@ -319,15 +339,51 @@ pub fn end_picture_session(cx: &mut App) {
 /// unsized `img` would draw too large on a high-density screen.
 #[must_use]
 pub fn picture_source(request: PictureRequest) -> ImageSource {
-    let request = PictureRequest {
-        display_size: request.display_size.rounded_up_to_display_step(),
-        ..request
-    };
-    ImageSource::Custom(Arc::new(move |window, cx| picture(request, window, cx)))
+    let request = request.rounded_up_to_display_step();
+    ImageSource::Custom(Arc::new(move |window, cx| picture(&request, window, cx)))
+}
+
+impl PictureRequest {
+    fn rounded_up_to_display_step(self) -> Self {
+        Self {
+            display_size: self.display_size.rounded_up_to_display_step(),
+            ..self
+        }
+    }
+}
+
+/// How far a picture has come, for a view that sizes or replaces itself by it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PictureStatus {
+    Loading,
+    /// Decoded, `width` × `height` device pixels (scaled down, in the picture's own shape).
+    Ready {
+        width: u32,
+        height: u32,
+    },
+    Failed,
+}
+
+/// Where `request` stands, without asking for it: the view's `img` does that.
+pub fn picture_status(request: PictureRequest, cx: &mut App) -> PictureStatus {
+    let request = request.rounded_up_to_display_step();
+    let store = cx.default_global::<PictureStore>();
+    if let Some(picture) = store.pictures().get(&request) {
+        let size = picture.size(0);
+        return PictureStatus::Ready {
+            width: u32::try_from(size.width.0).unwrap_or(0),
+            height: u32::try_from(size.height.0).unwrap_or(0),
+        };
+    }
+    if store.has_standing_failure(&request, Instant::now()) {
+        PictureStatus::Failed
+    } else {
+        PictureStatus::Loading
+    }
 }
 
 fn picture(
-    request: PictureRequest,
+    request: &PictureRequest,
     window: &mut Window,
     cx: &mut App,
 ) -> Option<Result<Arc<RenderImage>, ImageCacheError>> {
@@ -336,38 +392,47 @@ fn picture(
         // Only fails for a window without an atlas, which holds nothing to free.
         let _ = window.drop_image(released);
     }
-    if let Some(picture) = store.pictures().get(&request) {
+    if let Some(picture) = store.pictures().get(request) {
         return Some(Ok(Arc::clone(picture)));
     }
-    if store.has_standing_failure(&request, Instant::now()) {
+    if store.has_standing_failure(request, Instant::now()) {
         return Some(Err(ImageCacheError::Asset("picture unavailable".into())));
     }
     let view = window.current_view();
-    if let Some(waiting_views) = store.loading.get_mut(&request) {
+    if let Some(waiting_views) = store.loading.get_mut(request) {
         if !waiting_views.contains(&view) {
             waiting_views.push(view);
         }
         return None;
     }
     let loader = Arc::clone(store.loader.as_ref()?);
-    store.loading.insert(request, vec![view]);
+    store.loading.insert(request.clone(), vec![view]);
     let session = store.session;
-    load(request, loader, session, cx);
+    load(request.clone(), loader, session, cx);
     None
 }
 
 fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &mut App) {
     let file = request.file_to_download();
     let fetch_loader = Arc::clone(&loader);
-    let download = spawn_on_network_runtime(cx, async move { fetch_loader.fetch(file).await });
+    let fetched_file = file.clone();
+    let download = spawn_on_network_runtime(cx, async move {
+        match fetched_file {
+            PictureFile::Instance(file) => fetch_loader.fetch(file).await,
+            PictureFile::Klipy(url) => fetch_loader.fetch_klipy(&url).await,
+        }
+    });
+    let (animation, display_size) = (request.animation, request.display_size);
     cx.spawn(async move |cx| {
         let decoded: Result<_, PictureFailure> = match download.await {
             Ok(Ok(bytes)) => {
-                let decoding = cx.background_executor().spawn(async move {
-                    decode::decode_frames(&bytes, request.animation, request.display_size)
-                });
+                let decoding = cx
+                    .background_executor()
+                    .spawn(async move { decode::decode_frames(&bytes, animation, display_size) });
                 let decoded = decoding.await;
-                if decoded.is_err() {
+                if decoded.is_err()
+                    && let PictureFile::Instance(file) = file
+                {
                     // A cached copy that does not decode is fetched again next time.
                     cx.update(|cx| {
                         spawn_on_network_runtime(cx, async move { loader.forget(file).await })
@@ -409,7 +474,7 @@ mod tests {
 
     fn request(id: u64) -> PictureRequest {
         PictureRequest {
-            file: DownloadableFile::ProfileImage(Snowflake::from_raw(id)),
+            file: DownloadableFile::ProfileImage(Snowflake::from_raw(id)).into(),
             animation: Animation::Animate,
             display_size: DisplaySize {
                 width: 64,
@@ -431,29 +496,41 @@ mod tests {
     #[test]
     fn the_still_mode_asks_for_the_still_routes_where_they_exist() {
         let id = Snowflake::from_raw(5);
-        let still = |file| {
+        let still = |file: DownloadableFile| {
             PictureRequest {
-                file,
+                file: file.into(),
                 animation: Animation::StillFrame,
                 ..request(1)
             }
             .file_to_download()
         };
+        let instance = PictureFile::Instance;
         assert_eq!(
             still(DownloadableFile::ProfileImage(id)),
-            DownloadableFile::ProfileImageStill(id)
+            instance(DownloadableFile::ProfileImageStill(id))
         );
         assert_eq!(
             still(DownloadableFile::Icon(id)),
-            DownloadableFile::IconStill(id)
+            instance(DownloadableFile::IconStill(id))
         );
         assert_eq!(
             still(DownloadableFile::Attachment(id)),
-            DownloadableFile::Attachment(id)
+            instance(DownloadableFile::Attachment(id))
         );
         assert_eq!(
             request(5).file_to_download(),
-            DownloadableFile::ProfileImage(id)
+            instance(DownloadableFile::ProfileImage(id))
+        );
+        let klipy = PictureFile::Klipy("https://static.klipy.com/ii/a/md.webp".into());
+        let klipy_still = PictureRequest {
+            file: klipy.clone(),
+            animation: Animation::StillFrame,
+            ..request(1)
+        };
+        assert_eq!(
+            klipy_still.file_to_download(),
+            klipy,
+            "its first frame is decoded"
         );
     }
 

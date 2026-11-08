@@ -11,6 +11,7 @@ mod attachments;
 mod body;
 mod code_block;
 mod dividers;
+mod gif;
 mod item;
 mod markdown_view;
 mod reactions;
@@ -20,12 +21,12 @@ pub(crate) mod samples;
 mod time;
 
 use gpui::{App, ImageSource, Window};
-use mellow_client_core::DownloadableFile;
 
 pub use attachments::MessageAttachments;
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
+pub use gif::{MessageGif, message_gif_url};
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};
 pub use markdown_view::{EditedMarker, MessageMarkdown};
 pub use reactions::{MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills};
@@ -35,7 +36,7 @@ pub use time::{
     message_timestamp_label, time_of_day_label, upcoming_time_label,
 };
 
-use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
+use crate::pictures::{Animation, DisplaySize, PictureFile, PictureRequest, picture_source};
 
 /// Lengths in tokens are logical pixels at the default 16 px root size; zoom changes the root.
 const TOKEN_PIXELS_PER_REM: f32 = 16.0;
@@ -49,25 +50,38 @@ pub(crate) fn picture_animation(cx: &App) -> Animation {
     }
 }
 
-/// The picture of `file` decoded for a box of `width` × `height` token pixels in this window.
-pub(crate) fn picture_for_box(
-    file: DownloadableFile,
+/// The request for `file` decoded for a box of `width` × `height` token pixels in this window.
+pub(crate) fn picture_request_for_box(
+    file: impl Into<PictureFile>,
     width: f32,
     height: f32,
     animation: Animation,
     window: &Window,
-) -> ImageSource {
+) -> PictureRequest {
     let device_pixels_per_token_pixel =
         f32::from(window.rem_size()) / TOKEN_PIXELS_PER_REM * window.scale_factor();
     // Rounded up and at least one pixel, so the cast cannot truncate a positive size to zero.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let device = |side: f32| (side * device_pixels_per_token_pixel).ceil().max(1.0) as u32;
-    picture_source(PictureRequest {
-        file,
+    PictureRequest {
+        file: file.into(),
         animation,
         display_size: DisplaySize {
             width: device(width),
             height: device(height),
         },
-    })
+    }
+}
+
+/// The picture of `file` decoded for a box of `width` × `height` token pixels in this window.
+pub(crate) fn picture_for_box(
+    file: impl Into<PictureFile>,
+    width: f32,
+    height: f32,
+    animation: Animation,
+    window: &Window,
+) -> ImageSource {
+    picture_source(picture_request_for_box(
+        file, width, height, animation, window,
+    ))
 }

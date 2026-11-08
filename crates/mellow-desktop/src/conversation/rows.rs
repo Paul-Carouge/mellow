@@ -36,8 +36,8 @@ use crate::home::{OpenPersonMenu, PersonMenuRequest};
 use crate::i18n::strings;
 use crate::messages::{
     DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, UnreadDivider,
-    day_divider_label, local_date_time, local_day_of, message_summary, picture_animation,
-    picture_for_box, reaction_pills, reply_reference, time_of_day_label,
+    day_divider_label, local_date_time, local_day_of, message_gif_url, message_summary,
+    picture_animation, picture_for_box, reaction_pills, reply_reference, time_of_day_label,
 };
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
@@ -661,6 +661,7 @@ impl ConversationView {
         let session = session.read(cx);
         let state = session.state();
         let reader_id = state.current_user().map(|user| user.id);
+        let are_gifs_shown = session.gif_settings().is_some();
 
         let (sent_at, is_first_unread) = match row.kind {
             MessageRowKind::Sent {
@@ -767,6 +768,7 @@ impl ConversationView {
                     },
                 )
                 .selection_order(selection_order(index))
+                .gif(message_gif_url(&message.content, are_gifs_shown))
                 .can_join_reactions(rights.can_join_reactions)
                 .reaction_tooltip({
                     let view = view.clone();
@@ -845,6 +847,7 @@ impl ConversationView {
                     },
                 )
                 .selection_order(selection_order(index))
+                .gif(message_gif_url(&pending.content, are_gifs_shown))
                 .on_retry(move |_, cx| {
                     let _ = retry_view.update(cx, |view, cx| view.retry_message(&retry_nonce, cx));
                 })
