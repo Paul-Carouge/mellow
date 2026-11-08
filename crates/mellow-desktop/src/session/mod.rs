@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 
 mod blocks;
 mod messages;
+mod relationships;
 
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 

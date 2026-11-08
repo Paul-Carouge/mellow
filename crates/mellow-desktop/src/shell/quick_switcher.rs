@@ -18,10 +18,11 @@ use mellow_client_core::shared_logic::quick_switcher::{
 };
 use mellow_protocol::{PublicUser, RelationshipKind};
 
-use super::channel_sidebar::{can_send_in, conversation_display_name};
+use super::channel_sidebar::can_send_in;
 use crate::components::{
     FocusNextControl, FocusPreviousControl, easing, focus_ring, icon, shadow, with_type,
 };
+use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::theme::icons::IconName;

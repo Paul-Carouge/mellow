@@ -11,6 +11,8 @@ pub mod custom_emoji;
 pub mod emoji_catalogue;
 pub mod emoji_suggestions;
 pub mod format;
+pub mod friends;
+pub mod group_conversations;
 pub mod markdown;
 pub mod member_order;
 pub mod mentions;

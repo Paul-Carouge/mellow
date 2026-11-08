@@ -15,9 +15,11 @@ use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, IconButton, ShownStatus, inset_focus_ring, is_focus_visible,
+    Avatar, AvatarPerson, Button, IconButton, inset_focus_ring, is_focus_visible,
     remembered_focus_handle, remembered_hover, with_type,
 };
+use crate::home::group_sheet::group_sheet_rows;
+use crate::home::{conversation_display_name, presence_name, shown_presence};
 use crate::i18n::strings;
 use crate::session::MembersLoad;
 use crate::theme::icons::IconName;
@@ -31,16 +33,30 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme, window_width_at_default_zoom};
 
-pub(super) fn shown_presence(status: PresenceStatus) -> ShownStatus {
-    match status {
-        PresenceStatus::Online => ShownStatus::Online,
-        PresenceStatus::Idle => ShownStatus::Idle,
-        PresenceStatus::DoNotDisturb => ShownStatus::DoNotDisturb,
-        PresenceStatus::Offline => ShownStatus::Offline,
-    }
-}
-
 impl DuskShell {
+    /// "Members of Rust", or of the open group.
+    pub(super) fn member_sheet_label(&self, cx: &gpui::App) -> String {
+        let strings = strings(cx);
+        let state = self.session.read(cx).state();
+        let Some(place_id) = self.member_sheet_place_id(cx) else {
+            return String::new();
+        };
+        if let Some(guild) = state.guild(place_id) {
+            return strings.shell().members_of(&guild.name);
+        }
+        state
+            .direct_message_channel(place_id)
+            .map(|group| {
+                let current_user_id = state.current_user().map(|user| user.id);
+                strings.shell().members_of(&conversation_display_name(
+                    group,
+                    current_user_id,
+                    strings,
+                ))
+            })
+            .unwrap_or_default()
+    }
+
     /// `width` is the docked width; `None` is the overlay, at the token width or (`is_full_window`)
     /// across the window.
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
@@ -54,8 +70,13 @@ impl DuskShell {
         let strings = strings(cx);
         let state = self.session.read(cx).state();
         let guild = self
-            .member_sheet_place_id()
+            .member_sheet_place_id(cx)
             .and_then(|guild_id| state.guild(guild_id))
+            .cloned();
+        let group = self
+            .member_sheet_place_id(cx)
+            .and_then(|group_id| state.direct_message_channel(group_id))
+            .filter(|_| guild.is_none())
             .cloned();
         // From the list, so a new avatar or name shows in an open profile too.
         let profile_user = guild.as_ref().and_then(|guild| {
@@ -66,16 +87,24 @@ impl DuskShell {
                 .find(|member| member.user.id == user_id)
                 .map(|member| member.user.clone())
         });
-        let sheet_label = match (&profile_user, &guild) {
-            (Some(user), _) => strings.members().profile_of(display_name(user)),
-            (None, Some(guild)) => strings.shell().members_of(&guild.name),
-            (None, None) => String::new(),
+        let sheet_label = match &profile_user {
+            Some(user) => strings.members().profile_of(display_name(user)),
+            None => self.member_sheet_label(cx),
+        };
+        let heading = if profile_user.is_some() {
+            strings.members().profile()
+        } else if group.is_some() {
+            strings.groups().members()
+        } else {
+            strings.members().members()
         };
         let entity = cx.entity();
         let back_entity = entity.clone();
         let sheet_width = width.unwrap_or_else(|| window_width_at_default_zoom(window));
         let body: Vec<AnyElement> = match &guild {
-            None => Vec::new(),
+            None => group
+                .map(|group| group_sheet_rows(&self.home, &self.session, &group, window, cx))
+                .unwrap_or_default(),
             Some(_) if profile_user.is_some() => profile_user
                 .iter()
                 .map(|user| self.render_member_profile(user, sheet_width, window, cx))
@@ -341,11 +370,7 @@ impl DuskShell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(if profile_user.is_some() {
-                                strings.members().profile()
-                            } else {
-                                strings.members().members()
-                            }),
+                            .child(heading),
                     )
                     .child(
                         IconButton::new(
@@ -374,15 +399,5 @@ impl DuskShell {
                     .pb(length(SPACE_MD))
                     .children(body),
             )
-    }
-}
-
-fn presence_name(strings: crate::i18n::Strings, status: PresenceStatus) -> &'static str {
-    let presence = strings.presence();
-    match status {
-        PresenceStatus::Online => presence.online(),
-        PresenceStatus::Idle => presence.idle(),
-        PresenceStatus::DoNotDisturb => presence.do_not_disturb(),
-        PresenceStatus::Offline => presence.offline(),
     }
 }

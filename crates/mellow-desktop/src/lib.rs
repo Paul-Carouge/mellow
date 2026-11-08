@@ -13,6 +13,7 @@ pub mod composer;
 pub mod connection_banner;
 pub mod conversation;
 pub mod dock_and_tray;
+pub mod home;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;

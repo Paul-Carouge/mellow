@@ -585,3 +585,290 @@ fn fresh_ready(runtime: &Runtime, rest: &RestClient) -> GatewayUpdate {
         ready
     })
 }
+
+/// Registers `name` on the instance and returns its signed-in REST client.
+fn register(harness: &Harness, name: &str) -> RestClient {
+    harness.runtime.block_on(async {
+        let mut rest = RestClient::new(harness.instance.address.clone()).unwrap();
+        rest.register(&RegisterRequest {
+            username: name.into(),
+            display_name: None,
+            email: format!("{name}@example.org"),
+            password: PASSWORD.into(),
+            device_name: "test".into(),
+        })
+        .await
+        .unwrap();
+        rest
+    })
+}
+
+/// Runs one session request and waits for its answer.
+fn answer_of<T: 'static>(
+    harness: &Harness,
+    cx: &mut VisualTestContext,
+    request: impl FnOnce(
+        &mut Session,
+        &mut gpui::Context<Session>,
+        Box<dyn FnOnce(Result<T, mellow_client_core::ClientError>, &mut gpui::App)>,
+    ),
+) -> Result<T, mellow_client_core::ClientError> {
+    let answer = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let slot = answer.clone();
+    harness.session.update(cx, |session, cx| {
+        request(
+            session,
+            cx,
+            Box::new(move |result, _| *slot.borrow_mut() = Some(result)),
+        );
+    });
+    wait_until(cx, |_| answer.borrow().is_some());
+    answer.borrow_mut().take().unwrap()
+}
+
+#[gpui::test]
+fn friends_and_groups_change_through_the_session_and_stay_in_step(cx: &mut TestAppContext) {
+    use mellow_protocol::{RelationshipKind, SendFriendRequest, SetRelationshipKind};
+
+    let (harness, cx) = start(cx);
+    let ada = register(&harness, "ada");
+    let bob = register(&harness, "bob");
+    let cleo = register(&harness, "cleo");
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(ada, cx));
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session.status() == ConnectionStatus::Connected
+        })
+    });
+
+    // Ada asks Bob by name; Cleo asks Ada, who accepts.
+    let sent = answer_of(&harness, cx, |session, cx, on_done| {
+        let request = SendFriendRequest {
+            username: "Bob".into(),
+            friend_code: None,
+        };
+        session.send_friend_request(request, cx, on_done);
+    })
+    .unwrap();
+    assert_eq!(sent.kind, RelationshipKind::OutgoingRequest);
+    let ada_id = harness
+        .session
+        .read_with(cx, |session, _| session.state().current_user().unwrap().id);
+    harness.runtime.block_on(async {
+        bob.set_relationship(ada_id, SetRelationshipKind::Friend)
+            .await
+            .unwrap();
+        cleo.send_friend_request(&SendFriendRequest {
+            username: "ada".into(),
+            friend_code: None,
+        })
+        .await
+        .unwrap();
+    });
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session.state().incoming_request_count() == 1
+                && session.state().relationship(sent.user.id).map(|r| r.kind)
+                    == Some(RelationshipKind::Friend)
+        })
+    });
+    let cleo_id = harness.session.read_with(cx, |session, _| {
+        session
+            .state()
+            .relationships_of_kind(RelationshipKind::IncomingRequest)[0]
+            .user
+            .id
+    });
+    answer_of(&harness, cx, |session, cx, on_done| {
+        session.set_relationship(cleo_id, SetRelationshipKind::Friend, cx, on_done);
+    })
+    .unwrap();
+    // Removing a relationship that is already gone counts as done.
+    answer_of(&harness, cx, |session, cx, on_done| {
+        session.remove_relationship(mellow_protocol::Snowflake::from_raw(404), cx, on_done);
+    })
+    .unwrap();
+
+    // A named group with both, renamed back to its people's names, then left.
+    let group_id = answer_of(&harness, cx, |session, cx, on_done| {
+        session.create_group_conversation(vec![sent.user.id, cleo_id], " Book club ", cx, on_done);
+    })
+    .unwrap();
+    let name_of = |cx: &mut VisualTestContext| {
+        harness.session.read_with(cx, |session, _| {
+            session
+                .state()
+                .direct_message_channel(group_id)
+                .map(|group| group.name.clone())
+        })
+    };
+    assert_eq!(name_of(cx).as_deref(), Some("Book club"));
+    answer_of(&harness, cx, |session, cx, on_done| {
+        session.rename_group_conversation(group_id, "  ", cx, on_done);
+    })
+    .unwrap();
+    assert_eq!(name_of(cx).as_deref(), Some(""));
+    answer_of(&harness, cx, |session, cx, on_done| {
+        session.leave_group_conversation(group_id, cx, on_done);
+    })
+    .unwrap();
+    assert_eq!(name_of(cx), None);
+    harness.stop();
+}
+
+#[gpui::test]
+fn open_direct_conversation_shows_it_with_the_composer_focused_or_says_why_not(
+    cx: &mut TestAppContext,
+) {
+    use mellow_protocol::{SendFriendRequest, SetRelationshipKind, Snowflake};
+
+    use crate::home::FriendsPane;
+    use crate::navigation::Place;
+    use crate::shell::OpenDirectConversation;
+
+    let (harness, cx) = start(cx);
+    let ada = register(&harness, "ada");
+    let bob = register(&harness, "bob");
+    let bob_id = harness.runtime.block_on(async {
+        let bob_id = bob.current_user().await.unwrap().id;
+        bob.send_friend_request(&SendFriendRequest {
+            username: "ada".into(),
+            friend_code: None,
+        })
+        .await
+        .unwrap();
+        ada.set_relationship(bob_id, SetRelationshipKind::Friend)
+            .await
+            .unwrap();
+        bob_id
+    });
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(ada, cx));
+    wait_until(cx, |cx| {
+        harness
+            .main_window
+            .read_with(cx, |main_window, _| main_window.shell().is_some())
+            && harness.session.read_with(cx, |session, _| {
+                session.status() == ConnectionStatus::Connected
+            })
+    });
+    let shell = harness
+        .main_window
+        .read_with(cx, |main_window, _| main_window.shell().cloned())
+        .unwrap();
+    // As from a menu in the Friends space: the action bubbles up to the shell.
+    let pane = shell.read_with(cx, |shell, cx| shell.home().read(cx).friends_pane().clone());
+    pane.update_in(cx, FriendsPane::focus_start);
+
+    // A person nobody can reach: the notice bar says so, and Home stays.
+    cx.dispatch_action(OpenDirectConversation {
+        user_id: Snowflake::from_raw(404),
+    });
+    wait_until(cx, |cx| cx.debug_bounds("shell-notice-bar").is_some());
+    assert_eq!(
+        shell.read_with(cx, |shell, _| shell.navigation().place()),
+        Some(Place::Home {
+            conversation_id: None
+        })
+    );
+
+    // A friend: the conversation opens and typing goes to its composer.
+    pane.update_in(cx, FriendsPane::focus_start);
+    cx.dispatch_action(OpenDirectConversation { user_id: bob_id });
+    wait_until(cx, |cx| {
+        matches!(
+            shell.read_with(cx, |shell, _| shell.navigation().place()),
+            Some(Place::Home {
+                conversation_id: Some(_)
+            })
+        )
+    });
+    cx.simulate_input("hi");
+    let typed = cx.update(|_, cx| {
+        let composer = shell.read(cx).conversation().read(cx).composer().clone();
+        composer.read(cx).text_in_field(cx)
+    });
+    assert_eq!(typed, "hi");
+    harness.stop();
+}
+
+#[gpui::test]
+fn the_people_picker_adds_several_friends_to_a_group_one_after_another(cx: &mut TestAppContext) {
+    use mellow_protocol::{SendFriendRequest, SetRelationshipKind};
+
+    let (harness, cx) = start(cx);
+    let ada = register(&harness, "ada");
+    let others = ["bob", "cleo", "dan", "eve"].map(|name| register(&harness, name));
+    let ids = harness.runtime.block_on(async {
+        let mut ids = Vec::new();
+        for other in &others {
+            let id = other.current_user().await.unwrap().id;
+            other
+                .send_friend_request(&SendFriendRequest {
+                    username: "ada".into(),
+                    friend_code: None,
+                })
+                .await
+                .unwrap();
+            ada.set_relationship(id, SetRelationshipKind::Friend)
+                .await
+                .unwrap();
+            ids.push(id);
+        }
+        ids
+    });
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(ada, cx));
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session.status() == ConnectionStatus::Connected
+        })
+    });
+    let group_id = answer_of(&harness, cx, |session, cx, on_done| {
+        session.create_group_conversation(ids[..2].to_vec(), "", cx, on_done);
+    })
+    .unwrap();
+
+    // Dan and Eve picked together: one request each, the second sent once the first answered.
+    let home = harness
+        .main_window
+        .read_with(cx, |main_window, cx| {
+            main_window
+                .shell()
+                .map(|shell| shell.read(cx).home().clone())
+        })
+        .unwrap();
+    home.update_in(cx, |home, window, cx| {
+        home.open_people_picker(Some(group_id), window, cx);
+    });
+    cx.run_until_parked();
+    let picker = home
+        .read_with(cx, |home, _| home.picker().cloned())
+        .unwrap();
+    for name in ["dan", "eve"] {
+        cx.simulate_input(name);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+    }
+    assert_eq!(
+        picker.read_with(cx, |picker, _| picker.picked_ids().to_vec()),
+        ids[2..].to_vec()
+    );
+    let dialog = picker
+        .read_with(cx, |picker, _| picker.dialog().cloned())
+        .unwrap();
+    dialog.update(cx, crate::components::ModalDialog::submit_now);
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session
+                .state()
+                .direct_message_channel(group_id)
+                .is_some_and(|group| group.recipients.len() == 4)
+        })
+    });
+    harness.stop();
+}

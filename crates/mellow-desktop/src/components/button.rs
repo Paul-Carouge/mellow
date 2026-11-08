@@ -121,6 +121,7 @@ pub(crate) fn button_colours(
 pub struct Button {
     id: ElementId,
     label: SharedString,
+    accessible_label: Option<SharedString>,
     variant: ButtonVariant,
     size: ButtonSize,
     is_disabled: bool,
@@ -135,6 +136,7 @@ impl Button {
         Self {
             id: id.into(),
             label: label.into(),
+            accessible_label: None,
             variant: ButtonVariant::Secondary,
             size: ButtonSize::Default,
             is_disabled: false,
@@ -165,6 +167,14 @@ impl Button {
     #[must_use]
     pub fn full_width(mut self) -> Self {
         self.is_full_width = true;
+        self
+    }
+
+    /// The name read out instead of the visible text, when that text alone does not say whom
+    /// the button acts on ("Unblock" on a row).
+    #[must_use]
+    pub fn accessible_label(mut self, label: impl Into<SharedString>) -> Self {
+        self.accessible_label = Some(label.into());
         self
     }
 
@@ -209,7 +219,7 @@ impl RenderOnce for Button {
         with_type(div(), TYPE_BUTTON)
             .id(self.id)
             .role(Role::Button)
-            .aria_label(self.label.clone())
+            .aria_label(self.accessible_label.unwrap_or_else(|| self.label.clone()))
             .track_focus(&focus_handle)
             .relative()
             .flex()

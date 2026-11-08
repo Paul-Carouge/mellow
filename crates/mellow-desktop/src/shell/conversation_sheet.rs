@@ -11,10 +11,12 @@ use gpui::{
 
 use mellow_client_core::shared_logic::format::display_name;
 
-use super::channel_sidebar::{can_send_in, conversation_display_name};
+use super::channel_sidebar::can_send_in;
 use super::{DuskShell, ShellLayout};
 use crate::components::{IconButton, icon, with_type};
 use crate::conversation::OpenConversation;
+use crate::home::FriendsPane;
+use crate::home::conversation_display_name;
 use crate::i18n::strings;
 use crate::navigation::Place;
 use crate::theme::icons::IconName;
@@ -23,8 +25,8 @@ use crate::theme::tokens::{
     COMPONENT_CHAT_HEADER_HEIGHT, COMPONENT_CHAT_HEADER_ICON_SIZE,
     COMPONENT_CHAT_HEADER_PADDING_INLINE, COMPONENT_COMPOSER_MARGIN_BOTTOM,
     COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_MIN_HEIGHT, COMPONENT_COMPOSER_RADIUS,
-    COMPONENT_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_HEADING_MD,
-    TYPE_HEADING_XL,
+    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_XS,
+    TYPE_BODY, TYPE_HEADING_MD, TYPE_HEADING_XL,
 };
 use crate::theme::{color, length, theme};
 
@@ -190,14 +192,14 @@ impl DuskShell {
                     }),
                     topic: None,
                     name,
-                    has_member_sheet: false,
+                    // A group's members show in the side sheet (`GroupMembersSheet.svelte`).
+                    has_member_sheet: is_group,
                 }
             }
-            // shortcut: the Friends space (`FriendsPane.svelte`) comes with friends (M3 step 4).
             Some(Place::Home {
                 conversation_id: None,
             }) => SheetSubject {
-                name: strings.sidebar().friends().to_owned(),
+                name: strings.friends().title().to_owned(),
                 icon: Some(IconName::Users),
                 topic: None,
                 welcome: None,
@@ -216,8 +218,23 @@ impl DuskShell {
         let is_full_bleed = layout == ShellLayout::SheetAlone;
         let subject = self.sheet_subject(cx);
         let header = self.render_chat_header(&subject, is_full_bleed, window, cx);
+        let is_friends_space = self.navigation.place()
+            == Some(Place::Home {
+                conversation_id: None,
+            });
+        let friends_pane = self.home.read(cx).friends_pane().clone();
+        // The drawer layout gives the Friends tabs their own row under the header.
+        let friends_tabs_row = (is_friends_space && is_full_bleed).then(|| {
+            div()
+                .flex_none()
+                .px(length(COMPONENT_FRIENDS_LIST_PADDING_INLINE))
+                .pb(length(SPACE_XS))
+                .child(FriendsPane::tab_list(&friends_pane, window, cx))
+        });
         let slot = if self.navigation.selected_channel_id().is_some() {
             self.conversation.clone().into_any_element()
+        } else if is_friends_space {
+            friends_pane.into_any_element()
         } else {
             Self::conversation_slot(&subject, cx)
         };
@@ -235,6 +252,7 @@ impl DuskShell {
             })
             .overflow_hidden()
             .child(header)
+            .children(friends_tabs_row)
             .child(slot)
     }
 
@@ -256,6 +274,17 @@ impl DuskShell {
             )
         };
         let is_member_sheet_shown = self.is_member_sheet_shown(window, cx);
+        // The Friends tabs sit in the header after a divider where the navigator is docked.
+        let friends_tabs = (self.navigation.place()
+            == Some(Place::Home {
+                conversation_id: None,
+            })
+            && !has_navigation_drawer)
+            .then(|| {
+                let pane = self.home.read(cx).friends_pane().clone();
+                FriendsPane::tab_list(&pane, window, cx)
+            });
+        let has_friends_tabs = friends_tabs.is_some();
         let divider = || {
             div()
                 .flex_none()
@@ -328,9 +357,16 @@ impl DuskShell {
                     )
                 },
             )
-            .when(subject.topic.is_none() || has_navigation_drawer, |header| {
-                header.child(div().flex_1())
+            .when_some(friends_tabs, |header, tabs| {
+                // The padding keeps the tabs' focus ring clear of the header's edges.
+                header
+                    .child(divider())
+                    .child(div().flex_1().min_w_0().p(length(SPACE_2XS)).child(tabs))
             })
+            .when(
+                (subject.topic.is_none() || has_navigation_drawer) && !has_friends_tabs,
+                |header| header.child(div().flex_1()),
+            )
             .child({
                 let entity = entity.clone();
                 header_button(

@@ -18,8 +18,6 @@ mod resize_handle;
 mod server_rail;
 mod user_card;
 
-pub(crate) use channel_sidebar::conversation_display_name;
-
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -27,8 +25,8 @@ use std::rc::Rc;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, ImageSource,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, Styled as _, Subscription, Task, WeakEntity, Window,
-    actions, div, prelude::FluentBuilder as _,
+    ParentElement as _, Pixels, Render, Role, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, actions, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::state::{ClientState, StateChange};
@@ -41,6 +39,7 @@ use crate::column_widths::{
 use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::ConversationView;
+use crate::home::{Home, HomeEvent};
 use crate::local_widgets::error_line;
 use crate::navigation::{Direction, Navigation, Place};
 use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
@@ -79,6 +78,15 @@ actions!(
         ToggleMemberSheet
     ]
 );
+
+/// Opens (creating it if needed) the one-to-one conversation with someone and shows it, the
+/// composer focused: what a person's "Message" does anywhere in the shell (context menus, profile
+/// cards). A failure shows in a notice bar under the connection banner.
+#[derive(Debug, Clone, PartialEq, gpui::Action)]
+#[action(namespace = mellow_shell, no_json)]
+pub struct OpenDirectConversation {
+    pub user_id: Snowflake,
+}
 
 const SHELL_KEY_CONTEXT: &str = "DuskShell";
 
@@ -185,6 +193,10 @@ pub struct DuskShell {
     banner: Entity<ConnectionBanner>,
     /// The message list and composer of the open channel or conversation.
     conversation: Entity<ConversationView>,
+    /// The Friends space, the people picker and the group dialogs.
+    home: Entity<Home>,
+    /// Why the last `OpenDirectConversation` failed, until the next place opens.
+    conversation_error: Option<String>,
     navigation: Navigation,
     /// Kept while the shell lives, so collapsing survives the drawer closing (as on the web).
     collapsed_category_ids: HashSet<Snowflake>,
@@ -230,7 +242,9 @@ impl DuskShell {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
         let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
+        let home = cx.new(|cx| Home::new(session.clone(), window, cx));
         let subscriptions = vec![
+            cx.subscribe_in(&home, window, Self::follow_home),
             cx.subscribe(&session, |shell, _, changes: &StateChanged, cx| {
                 shell.follow_state(&changes.0, cx);
             }),
@@ -245,6 +259,8 @@ impl DuskShell {
             session,
             banner,
             conversation,
+            home,
+            conversation_error: None,
             navigation: Navigation::default(),
             collapsed_category_ids: HashSet::new(),
             is_navigation_drawer_open: false,
@@ -291,6 +307,12 @@ impl DuskShell {
         &self.conversation
     }
 
+    /// The Friends space, the people picker and the group dialogs.
+    #[must_use]
+    pub fn home(&self) -> &Entity<Home> {
+        &self.home
+    }
+
     #[must_use]
     pub fn is_quick_switcher_open(&self) -> bool {
         self.quick_switcher.is_some()
@@ -318,6 +340,7 @@ impl DuskShell {
 
     /// The place changed: remembered for the next launch, and the members asked for.
     fn after_navigation(&mut self, cx: &mut Context<Self>) {
+        self.conversation_error = None;
         if let Some(place) = self.navigation.place() {
             change_preferences(cx, move |preferences| {
                 preferences.last_place = Some(place.remembered());
@@ -408,22 +431,28 @@ impl DuskShell {
 
     // ---- The member sheet ----
 
-    /// The server whose members the side sheet shows: the open one, with a channel open.
-    /// shortcut: a group conversation's member sheet (`GroupMembersSheet.svelte`) comes with the
-    /// conversations step (M3 step 4).
-    fn member_sheet_place_id(&self) -> Option<Snowflake> {
+    /// Whose members the side sheet shows: the open server, with a channel open, or the open
+    /// group conversation (`GroupMembersSheet.svelte`).
+    fn member_sheet_place_id(&self, cx: &App) -> Option<Snowflake> {
+        let state = self.state(cx);
         match self.navigation.place()? {
             Place::Server {
                 guild_id,
                 channel_id: Some(_),
             } => Some(guild_id),
+            Place::Home {
+                conversation_id: Some(conversation_id),
+            } => state
+                .direct_message_channel(conversation_id)
+                .filter(|conversation| conversation.owner_id.is_some())
+                .map(|group| group.id),
             _ => None,
         }
     }
 
     /// Whether the member sheet is left open for this server (remembered per server).
     fn is_member_sheet_docked_open(&self, cx: &App) -> bool {
-        self.member_sheet_place_id().is_some_and(|place_id| {
+        self.member_sheet_place_id(cx).is_some_and(|place_id| {
             preferences(cx)
                 .is_some_and(|preferences| preferences.member_sheet_place_ids.contains(&place_id))
         })
@@ -440,7 +469,7 @@ impl DuskShell {
 
     /// The header's toggle and Ctrl+U: docked where it fits, over the sheet otherwise.
     fn toggle_member_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(place_id) = self.member_sheet_place_id() else {
+        let Some(place_id) = self.member_sheet_place_id(cx) else {
             return;
         };
         if self.quick_switcher.is_some() {
@@ -468,7 +497,7 @@ impl DuskShell {
     fn close_member_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_member_overlay_open {
             self.close_member_overlay(window, cx);
-        } else if let Some(place_id) = self.member_sheet_place_id() {
+        } else if let Some(place_id) = self.member_sheet_place_id(cx) {
             change_preferences(cx, move |preferences| {
                 preferences.remember_member_sheet(place_id, false);
             });
@@ -524,7 +553,7 @@ impl DuskShell {
         let layout =
             ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx));
         let is_member_overlay_obsolete =
-            window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id().is_none();
+            window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id(cx).is_none();
         if self.is_navigation_drawer_open && layout != ShellLayout::SheetAlone {
             self.overlay_opener = None;
             self.close_navigation_drawer(window, cx);
@@ -608,6 +637,83 @@ impl DuskShell {
                 });
             }
         }
+    }
+
+    // ---- Home ----
+
+    fn follow_home(
+        &mut self,
+        _: &Entity<Home>,
+        event: &HomeEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match *event {
+            HomeEvent::OpenConversation(conversation_id) => {
+                self.show_conversation(conversation_id, window, cx);
+            }
+            HomeEvent::ShowFriends => {
+                self.open_place(None, None, window, cx);
+                let pane = self.home.read(cx).friends_pane().clone();
+                pane.update(cx, |pane, cx| pane.focus_start(window, cx));
+            }
+        }
+    }
+
+    /// Opens a conversation just found or created, the composer focused.
+    fn show_conversation(
+        &mut self,
+        conversation_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.open_channel(conversation_id, window, cx);
+        if self.navigation.selected_channel_id() == Some(conversation_id) {
+            self.conversation.update(cx, |conversation, cx| {
+                conversation.focus_composer(window, cx);
+            });
+        }
+    }
+
+    /// The `OpenDirectConversation` action: opens or creates the conversation with `user_id`.
+    pub fn open_direct_conversation_with(
+        &mut self,
+        user_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let failure = crate::i18n::strings(cx)
+            .members()
+            .open_conversation_failed()
+            .to_owned();
+        let shell = cx.entity().downgrade();
+        let window_handle = window.window_handle();
+        self.conversation_error = None;
+        self.session.update(cx, |session, cx| {
+            session.open_direct_message(user_id, failure, cx, move |answer, cx| {
+                // The answer comes while the session is being updated, and showing the
+                // conversation reads it: wait until that update is over.
+                cx.defer(move |cx| {
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let _ = shell.update(cx, |shell, cx| match answer {
+                            Ok(conversation_id) => {
+                                shell.show_conversation(conversation_id, window, cx);
+                            }
+                            Err(message) => {
+                                shell.conversation_error = Some(message);
+                                cx.notify();
+                            }
+                        });
+                    });
+                });
+            });
+        });
+    }
+
+    /// The Home list's "+" and its empty state's "New message": the people picker.
+    pub(crate) fn open_new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.home
+            .update(cx, |home, cx| home.open_people_picker(None, window, cx));
     }
 
     // ---- Column widths ----
@@ -729,23 +835,41 @@ impl DuskShell {
 
     // ---- Rendering ----
 
-    /// A notice bar for a sign-out the instance did not confirm.
-    fn sign_out_error_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+    /// A notice bar, read out when it appears, for a sign-out the instance did not confirm and a
+    /// conversation that did not open; both show when both happened.
+    fn notice_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
         let tokens = theme(cx);
-        let error = self.session.read(cx).sign_out_error()?.to_owned();
+        let errors: Vec<String> = self
+            .session
+            .read(cx)
+            .sign_out_error()
+            .map(str::to_owned)
+            .into_iter()
+            .chain(self.conversation_error.clone())
+            .collect();
+        if errors.is_empty() {
+            return None;
+        }
         Some(
             div()
+                .id("shell-notice-bar")
+                .debug_selector(|| "shell-notice-bar".to_owned())
+                .role(Role::Alert)
+                .aria_label(errors.join(" "))
                 .flex()
-                .justify_center()
+                .flex_col()
+                .items_center()
                 .min_h(length(COMPONENT_NOTICE_BAR_MIN_HEIGHT))
                 .px(length(COMPONENT_NOTICE_BAR_PADDING_INLINE))
                 .py(length(COMPONENT_NOTICE_BAR_PADDING_BLOCK))
                 .bg(color(tokens.color_danger_wash))
-                .child(error_line(
-                    error,
-                    tokens.color_text_danger,
-                    COMPONENT_NOTICE_BAR_ICON_SIZE,
-                )),
+                .children(errors.into_iter().map(|error| {
+                    error_line(
+                        error,
+                        tokens.color_text_danger,
+                        COMPONENT_NOTICE_BAR_ICON_SIZE,
+                    )
+                })),
         )
     }
 }
@@ -794,7 +918,7 @@ fn picture(file: DownloadableFile, logical_side: f32, window: &Window) -> ImageS
     })
 }
 
-fn profile_picture(image: ProfileImage, size: f32, window: &Window) -> ImageSource {
+pub(crate) fn profile_picture(image: ProfileImage, size: f32, window: &Window) -> ImageSource {
     picture(DownloadableFile::ProfileImage(image.id), size, window)
 }
 
@@ -814,7 +938,7 @@ impl Render for DuskShell {
         let is_drawer_obsolete =
             self.is_navigation_drawer_open && layout != ShellLayout::SheetAlone;
         let is_member_overlay_obsolete = self.is_member_overlay_open
-            && (window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id().is_none());
+            && (window_width >= BREAKPOINT_SIDE_SHEET || self.member_sheet_place_id(cx).is_none());
         if is_drawer_obsolete || is_member_overlay_obsolete {
             cx.defer_in(window, |shell, window, cx| {
                 shell.close_obsolete_layers(window, cx);
@@ -832,10 +956,9 @@ impl Render for DuskShell {
             2.0 * SIZE_SHEET_INSET
         };
         let banner = self.banner.read(cx);
-        let sign_out_error_bar = self.sign_out_error_bar(cx);
-        let is_notice_shown = banner.trouble().is_some()
-            || banner.is_back_online_shown()
-            || sign_out_error_bar.is_some();
+        let notice_bar = self.notice_bar(cx);
+        let is_notice_shown =
+            banner.trouble().is_some() || banner.is_back_online_shown() || notice_bar.is_some();
         // The notices sit below the macOS title band, and the cards keep their gap below them.
         let top_padding = if is_full_bleed {
             0.0
@@ -929,6 +1052,11 @@ impl Render for DuskShell {
             .on_action(cx.listener(|shell, _: &ToggleMemberSheet, window, cx| {
                 shell.toggle_member_sheet(window, cx);
             }))
+            .on_action(
+                cx.listener(|shell, action: &OpenDirectConversation, window, cx| {
+                    shell.open_direct_conversation_with(action.user_id, window, cx);
+                }),
+            )
             .on_action(cx.listener(|shell, _: &NextRegion, window, cx| {
                 shell.move_to_region(Direction::Next, window, cx);
             }))
@@ -941,7 +1069,7 @@ impl Render for DuskShell {
                 root.child(div().flex_none().h(length(TITLE_BAR_BAND_HEIGHT)))
             })
             .child(self.banner.clone())
-            .children(sign_out_error_bar)
+            .children(notice_bar)
             .child(cards)
             .when(self.is_navigation_drawer_open, |root| {
                 root.child(self.render_navigation_drawer(window, cx))
@@ -955,6 +1083,7 @@ impl Render for DuskShell {
             .when_some(self.status_menu.as_ref(), |root, (menu, _)| {
                 root.child(menu.clone())
             })
+            .child(self.home.clone())
             .when_some(self.notification_settings.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             })

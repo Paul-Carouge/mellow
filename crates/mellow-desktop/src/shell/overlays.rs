@@ -73,11 +73,7 @@ impl DuskShell {
         let sheet = self
             .render_member_sheet(None, window, cx)
             .into_any_element();
-        let label = self
-            .member_sheet_place_id()
-            .and_then(|guild_id| self.session.read(cx).state().guild(guild_id))
-            .map(|guild| strings(cx).shell().members_of(&guild.name))
-            .unwrap_or_default();
+        let label = self.member_sheet_label(cx);
         let panel = if is_full_window {
             div()
                 .size_full()

@@ -41,10 +41,11 @@ use mellow_media::{SoundPlayer, SystemAudioDevices};
 use mellow_protocol::{Message, Snowflake};
 
 use crate::dock_and_tray;
+use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
 use crate::preferences::{PreferencesStore, preferences};
 use crate::session::{IncomingMessage, Session, StateChanged, now_unix_milliseconds};
-use crate::shell::{DuskShell, conversation_display_name};
+use crate::shell::DuskShell;
 use crate::window_chrome::WINDOW_TITLE;
 
 /// A burst rings once: the chime does not play again within this time.
