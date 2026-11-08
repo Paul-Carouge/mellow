@@ -2,7 +2,8 @@
 //! as one GPUI text with highlight runs, so it wraps as one paragraph. Mentions, code, spoilers and
 //! search matches are coloured runs; links and spoilers are click ranges; a server emoji keeps
 //! room with no-break spaces and its picture is painted over them, since GPUI text holds no
-//! inline boxes.
+//! inline boxes. The text joins the window's text selection (gpui-base's `TextSelection`, mounted by
+//! the main window), so it can be selected with the pointer and copied.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -16,6 +17,7 @@ use gpui::{
     SharedString, StrikethroughStyle, StyledText, TextLayout, UnderlineStyle, Window, point, px,
     size,
 };
+use gpui_base::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::markdown::{InlineNode, safe_http_url};
 use mellow_client_core::shared_logic::role_colors::{
@@ -416,6 +418,11 @@ pub(crate) fn open_message_link(url: &str, cx: &App) {
 /// The text as an element: GPUI's interactive text, plus the server emoji painted over their room.
 pub(crate) struct RichTextElement {
     text: InteractiveText,
+    /// What the layout draws, for the selection to measure and copy.
+    drawn_text: SharedString,
+    /// Where this text comes in reading order among the selectable texts of the window.
+    selection_order: u64,
+    selection_colour: Hsla,
     accessible_text: String,
     layout: TextLayout,
     pictures: Vec<(Range<usize>, ImageSource)>,
@@ -442,7 +449,8 @@ impl RichTextElement {
             tooltips,
             pictures,
         } = rich_text;
-        let styled = StyledText::new(text)
+        let drawn_text = SharedString::from(text);
+        let styled = StyledText::new(drawn_text.clone())
             .with_highlights(highlights)
             .with_font_family_overrides(
                 monospace
@@ -453,6 +461,11 @@ impl RichTextElement {
         let (ranges, actions): (Vec<_>, Vec<_>) = actions.into_iter().unzip();
         let tooltips: Rc<[(Range<usize>, SharedString)]> = tooltips.into();
         let mut interactive = InteractiveText::new(id, styled);
+        // shortcut: links inside a message open with the pointer only. GPUI 0.3.11's
+        // `InteractiveText` gives its click ranges no focus stop and no AccessKit node, and GPUI
+        // text holds no inline boxes for gpui-base's focusable `Link`; keyboard users reach the
+        // address through Copy text. Add focus stops per range (Tab through the focused message's
+        // links) when GPUI or gpui-component offers them.
         if !ranges.is_empty() {
             let actions: Arc<[InlineAction]> = actions.into();
             interactive =
@@ -493,11 +506,47 @@ impl RichTextElement {
             .collect();
         Self {
             text: interactive,
+            drawn_text,
+            selection_order: 0,
+            selection_colour: color(tokens.component_message_selection_background),
             accessible_text,
             layout,
             pictures,
             picture_side,
             missing_border: color(tokens.component_custom_emoji_missing_border),
+        }
+    }
+
+    /// Places this text in reading order among the window's selectable texts, so a selection
+    /// dragged across messages takes the ones between.
+    #[must_use]
+    pub fn selection_order(mut self, order: u64) -> Self {
+        self.selection_order = order;
+        self
+    }
+
+    /// The selected part of the text, washed line by line (gpui-base's `SelectableText`).
+    fn paint_selection(
+        &self,
+        handle: &TextSelectionHandle,
+        bounds: Bounds<Pixels>,
+        window: &mut Window,
+        cx: &mut App,
+    ) {
+        let run = TextSelectionRun::new(self.drawn_text.clone(), self.layout.clone(), bounds)
+            .with_document_order(self.selection_order);
+        let projection = handle.update_runs(&[run], cx);
+        let line_height = self.layout.line_height();
+        for range in projection.ranges().iter().flatten() {
+            let (Some(start), Some(end)) = (
+                self.layout.position_for_index(range.start),
+                self.layout.position_for_index(range.end),
+            ) else {
+                continue;
+            };
+            for quad in selection_quads(start, end, bounds, line_height) {
+                window.paint_quad(gpui::fill(quad, self.selection_colour));
+            }
         }
     }
 
@@ -558,6 +607,37 @@ impl RichTextElement {
     }
 }
 
+/// The boxes a selection from `start` to `end` covers: the rest of the first line, the whole lines
+/// between, and the start of the last.
+fn selection_quads(
+    start: gpui::Point<Pixels>,
+    end: gpui::Point<Pixels>,
+    bounds: Bounds<Pixels>,
+    line_height: Pixels,
+) -> Vec<Bounds<Pixels>> {
+    if start.y == end.y {
+        return vec![Bounds::from_corners(
+            start,
+            point(end.x, end.y + line_height),
+        )];
+    }
+    let mut quads = vec![Bounds::from_corners(
+        start,
+        point(bounds.right(), start.y + line_height),
+    )];
+    if end.y > start.y + line_height {
+        quads.push(Bounds::from_corners(
+            point(bounds.left(), start.y + line_height),
+            point(bounds.right(), end.y),
+        ));
+    }
+    quads.push(Bounds::from_corners(
+        point(bounds.left(), end.y),
+        point(end.x, end.y + line_height),
+    ));
+    quads
+}
+
 impl IntoElement for RichTextElement {
     type Element = Self;
 
@@ -567,7 +647,7 @@ impl IntoElement for RichTextElement {
 }
 
 impl gpui::Element for RichTextElement {
-    type RequestLayoutState = ();
+    type RequestLayoutState = TextSelectionHandle;
     type PrepaintState = Hitbox;
 
     fn id(&self) -> Option<ElementId> {
@@ -594,7 +674,18 @@ impl gpui::Element for RichTextElement {
         window: &mut Window,
         cx: &mut App,
     ) -> (LayoutId, Self::RequestLayoutState) {
-        self.text.request_layout(id, inspector_id, window, cx)
+        // Kept across frames with the element, as `SelectableText` keeps its own.
+        let handle = match id {
+            Some(id) => window.with_element_state(id, |kept: Option<TextSelectionHandle>, _| {
+                let handle =
+                    kept.unwrap_or_else(|| TextSelectionHandle::new(self.drawn_text.clone(), cx));
+                (handle.clone(), handle)
+            }),
+            // Never for a message text, which always has an id; it would only lose its selection.
+            None => TextSelectionHandle::new(self.drawn_text.clone(), cx),
+        };
+        let (layout_id, ()) = self.text.request_layout(id, inspector_id, window, cx);
+        (layout_id, handle)
     }
 
     fn prepaint(
@@ -602,12 +693,19 @@ impl gpui::Element for RichTextElement {
         id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
+        handle: &mut Self::RequestLayoutState,
         window: &mut Window,
         cx: &mut App,
     ) -> Self::PrepaintState {
-        self.text
-            .prepaint(id, inspector_id, bounds, request_layout, window, cx)
+        let hitbox = self
+            .text
+            .prepaint(id, inspector_id, bounds, &mut (), window, cx);
+        let registration = TextSelectionRegistration::new(hitbox.clone(), bounds)
+            .with_document_order(self.selection_order)
+            .with_text_bounds(vec![bounds])
+            .with_rendered_element(handle, window, cx);
+        handle.register(registration, window, cx);
+        hitbox
     }
 
     fn paint(
@@ -615,13 +713,14 @@ impl gpui::Element for RichTextElement {
         id: Option<&GlobalElementId>,
         inspector_id: Option<&InspectorElementId>,
         bounds: Bounds<Pixels>,
-        request_layout: &mut Self::RequestLayoutState,
+        handle: &mut Self::RequestLayoutState,
         hitbox: &mut Self::PrepaintState,
         window: &mut Window,
         cx: &mut App,
     ) {
+        self.paint_selection(handle, bounds, window, cx);
         self.text
-            .paint(id, inspector_id, bounds, request_layout, hitbox, window, cx);
+            .paint(id, inspector_id, bounds, &mut (), hitbox, window, cx);
         self.paint_pictures(window, cx);
     }
 }
@@ -859,5 +958,117 @@ mod tests {
         assert_eq!(safe_http_url("javascript:alert(1)"), None);
         assert_eq!(safe_http_url("file:///etc/passwd"), None);
         assert!(safe_http_url("https://example.com").is_some());
+    }
+
+    /// Two message texts in reading order under the window's selection layer.
+    struct TwoTexts;
+
+    impl gpui::Render for TwoTexts {
+        fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            use gpui::{ParentElement as _, Styled as _};
+            let text = |id: &'static str, value: &str, order: u64| {
+                RichTextElement::new(
+                    id.into(),
+                    RichText {
+                        text: value.to_owned(),
+                        accessible_text: value.to_owned(),
+                        ..RichText::default()
+                    },
+                    COMPONENT_CUSTOM_EMOJI_INLINE_SIZE,
+                    None,
+                    &DARK_THEME,
+                    window,
+                )
+                .selection_order(order)
+            };
+            gpui::div()
+                .size_full()
+                .child(gpui_base::TextSelectionLayer)
+                .child(
+                    gpui::div()
+                        .w(px(240.))
+                        .h(px(32.))
+                        .child(text("first", "alpha beta", 0)),
+                )
+                .child(
+                    gpui::div()
+                        .w(px(240.))
+                        .h(px(32.))
+                        .child(text("second", "gamma", 1)),
+                )
+        }
+    }
+
+    #[gpui::test]
+    fn message_text_can_be_selected_across_messages_with_the_pointer(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        use gpui::{Modifiers, MouseButton};
+        cx.update(gpui_component::init);
+        let (_, cx) = cx.add_window_view(|_, _| TwoTexts);
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.simulate_mouse_down(
+            point(px(1.), px(12.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_move(
+            point(px(230.), px(44.)),
+            Some(MouseButton::Left),
+            Modifiers::default(),
+        );
+        cx.simulate_mouse_up(
+            point(px(230.), px(44.)),
+            MouseButton::Left,
+            Modifiers::default(),
+        );
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+            assert_eq!(
+                gpui_base::TextSelection::selected_text(window, cx),
+                "alpha beta\ngamma"
+            );
+        });
+    }
+
+    /// A spoiler under the selection layer: a click still acts on its range.
+    struct SpoilerText(Entity<HashSet<u32>>);
+
+    impl gpui::Render for SpoilerText {
+        fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+            use gpui::{ParentElement as _, Styled as _};
+            let element = RichTextElement::new(
+                "spoiler".into(),
+                RichText {
+                    text: "secret".to_owned(),
+                    accessible_text: String::new(),
+                    actions: vec![(0..6, InlineAction::RevealSpoiler(1))],
+                    ..RichText::default()
+                },
+                COMPONENT_CUSTOM_EMOJI_INLINE_SIZE,
+                Some(self.0.clone()),
+                &DARK_THEME,
+                window,
+            );
+            gpui::div()
+                .size_full()
+                .child(gpui_base::TextSelectionLayer)
+                .child(gpui::div().w(px(240.)).h(px(32.)).child(element))
+        }
+    }
+
+    #[gpui::test]
+    fn a_click_on_a_range_still_acts_with_text_selection_on(cx: &mut gpui::TestAppContext) {
+        cx.update(gpui_component::init);
+        let revealed = gpui::AppContext::new(cx, |_| HashSet::new());
+        let view_revealed = revealed.clone();
+        let (_, cx) = cx.add_window_view(move |_, _| SpoilerText(view_revealed));
+        cx.update(|window, cx| {
+            let _ = window.draw(cx);
+        });
+        cx.simulate_click(point(px(4.), px(12.)), gpui::Modifiers::default());
+        assert!(revealed.read_with(cx, |revealed, _| revealed.contains(&1)));
     }
 }

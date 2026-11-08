@@ -24,7 +24,7 @@ use zeroize::Zeroizing;
 
 mod messages;
 
-pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
+pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
 use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;

@@ -1,6 +1,7 @@
 //! The conversation's pure rules: which actions a message offers (`message-actions.ts` and
 //! `messageMenuActions` in `context-menus.ts`), the typing line (`typingSegments` in `format.ts`),
-//! how the virtual list follows a new set of rows, and when it asks for older history.
+//! who reacted (`MessageReactions.svelte`), how the virtual list follows a new set of rows, and when
+//! it asks for older history.
 
 use std::ops::Range;
 
@@ -104,6 +105,8 @@ pub enum MessageMenuAction {
     CopyText,
     Pin,
     Unpin,
+    /// Who reacted with what, in a dialog.
+    ViewReactions,
     CopyMessageId,
     Delete,
 }
@@ -136,6 +139,7 @@ pub fn message_menu_lines(facts: MessageFacts, reaction_keys: &[String]) -> Vec<
         } else {
             Action::Pin
         }),
+        (!reaction_keys.is_empty() && facts.can_join_reactions).then_some(Action::ViewReactions),
         Some(Action::CopyMessageId),
     ]
     .into_iter()
@@ -157,6 +161,39 @@ pub fn message_menu_lines(facts: MessageFacts, reaction_keys: &[String]) -> Vec<
         lines.extend(section.into_iter().map(MenuLine::Action));
     }
     lines
+}
+
+// ---- Who reacted ----
+
+/// Others named before "and 3 others", as on Discord.
+const NAMED_REACTORS: usize = 3;
+
+/// "You, Ana, Bo and 3 others reacted with 👍" (`sentenceFor`): the reader first when they are
+/// among the `count`, then up to three others from `users`, then how many are left.
+#[must_use]
+pub fn reactor_sentence(
+    users: &[PublicUser],
+    count: u32,
+    is_mine: bool,
+    reader_id: Option<Snowflake>,
+    emoji: &str,
+    strings: Strings,
+) -> String {
+    let named: Vec<&str> = users
+        .iter()
+        .filter(|user| Some(user.id) != reader_id)
+        .take(NAMED_REACTORS)
+        .map(mellow_client_core::shared_logic::format::display_name)
+        .collect();
+    let unnamed = usize::try_from(count)
+        .unwrap_or(usize::MAX)
+        .saturating_sub(usize::from(is_mine) + named.len());
+    strings.reactions().reacted_with(
+        is_mine,
+        &named,
+        i64::try_from(unnamed).unwrap_or(i64::MAX),
+        emoji,
+    )
 }
 
 // ---- Typing ----
@@ -410,7 +447,7 @@ mod tests {
 
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction};
+        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction, ViewReactions};
         assert_eq!(
             actions(&message_menu_lines(OTHERS_TEXT, &["👍".to_owned()])),
             [
@@ -418,6 +455,7 @@ mod tests {
                 None,
                 Some(Reply),
                 Some(CopyText),
+                Some(ViewReactions),
                 Some(CopyMessageId)
             ]
         );
@@ -469,6 +507,42 @@ mod tests {
         assert_eq!(
             actions(&message_menu_lines(read_only, &["👍".to_owned()])),
             [Some(CopyText), Some(CopyMessageId), None, Some(Delete)]
+        );
+    }
+
+    fn named(id: u64, name: &str) -> PublicUser {
+        PublicUser {
+            id: Snowflake::from_raw(id),
+            username: name.to_lowercase(),
+            display_name: name.to_owned(),
+            avatar: None,
+            banner: None,
+        }
+    }
+
+    #[test]
+    fn who_reacted_names_the_reader_first_then_three_others_then_counts_the_rest() {
+        let strings = Strings::new(Language::English);
+        let reader = Snowflake::from_raw(1);
+        let users = [
+            named(1, "Me"),
+            named(2, "Ana"),
+            named(3, "Bo"),
+            named(4, "Cy"),
+            named(5, "Di"),
+        ];
+        assert_eq!(
+            reactor_sentence(&users, 6, true, Some(reader), "👍", strings),
+            "You, Ana, Bo, Cy and 2 others reacted with\u{a0}👍"
+        );
+        assert_eq!(
+            reactor_sentence(&users[1..2], 1, false, Some(reader), "👍", strings),
+            "Ana reacted with\u{a0}👍"
+        );
+        // A page that has not caught up yet never counts below zero.
+        assert_eq!(
+            reactor_sentence(&users[1..3], 1, false, Some(reader), "👍", strings),
+            "Ana and Bo reacted with\u{a0}👍"
         );
     }
 

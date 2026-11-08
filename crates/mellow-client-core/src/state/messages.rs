@@ -5,7 +5,10 @@ use std::collections::BTreeMap;
 use mellow_protocol::{Message, Snowflake};
 
 use super::checklists::keep_newest;
-use super::{ClientState, HISTORY_PAGE_SIZE, MAXIMUM_CACHED_MESSAGES_PER_CHANNEL, StateChange};
+use super::{
+    ClientState, HISTORY_PAGE_SIZE, MAXIMUM_CACHED_MESSAGES_PER_CHANNEL,
+    MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange,
+};
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct ChannelHistory {
@@ -16,6 +19,21 @@ pub(super) struct ChannelHistory {
     /// Pages loaded by scrolling up: new messages no longer push the oldest out until
     /// `trim_history`, since the reader may be looking at them.
     is_extended_by_older_pages: bool,
+}
+
+/// What reaching a message far back does next (the web's `loadHistoryUntilMessage`): a pinned
+/// message or a search result older than what is cached.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryReachStep {
+    /// The message is cached.
+    Loaded,
+    /// The channel's start, or an older message, is cached: the message was deleted since.
+    Missing,
+    /// `MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE` pages were loaded without reaching it.
+    TooFar,
+    /// Ask for `MAXIMUM_HISTORY_PAGE_SIZE` messages before this one (the newest page for `None`),
+    /// then insert them with [`ClientState::insert_reach_page`] if the oldest is still it.
+    LoadBefore(Option<Snowflake>),
 }
 
 /// `None` (never edited) orders as the oldest edit.
@@ -242,6 +260,49 @@ impl ClientState {
         StateChange::Messages { channel_id }
     }
 
+    /// The next step towards `message_id` after `pages_loaded` pages. Pages go next to the
+    /// oldest cached message only, so the cache never has a gap.
+    #[must_use]
+    pub fn history_reach_step(
+        &self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        pages_loaded: u32,
+    ) -> HistoryReachStep {
+        if self
+            .cached_history_message(channel_id, message_id)
+            .is_some()
+        {
+            return HistoryReachStep::Loaded;
+        }
+        let oldest_id = self.messages(channel_id).first().map(|oldest| oldest.id);
+        if !self.has_older_history(channel_id)
+            || oldest_id.is_some_and(|oldest| oldest < message_id)
+        {
+            return HistoryReachStep::Missing;
+        }
+        if pages_loaded >= MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE {
+            return HistoryReachStep::TooFar;
+        }
+        HistoryReachStep::LoadBefore(oldest_id)
+    }
+
+    /// Merges a page asked by [`HistoryReachStep::LoadBefore`] with `limit`: a shorter page
+    /// means the channel's start is cached.
+    pub fn insert_reach_page(
+        &mut self,
+        channel_id: Snowflake,
+        page: Vec<Message>,
+        limit: u32,
+    ) -> StateChange {
+        let is_last_page = page.len() < usize::try_from(limit).unwrap_or(usize::MAX);
+        let change = self.insert_history_page(channel_id, page);
+        if let Some(history) = self.history_by_channel.get_mut(&channel_id) {
+            history.has_reached_channel_start |= is_last_page;
+        }
+        change
+    }
+
     /// Keeps only the newest `MAXIMUM_CACHED_MESSAGES_PER_CHANNEL` messages of a channel the
     /// reader left, so pages loaded by scrolling up do not pile up across channels.
     pub fn trim_history(&mut self, channel_id: Snowflake) {
@@ -350,6 +411,92 @@ mod tests {
 
     use super::super::tests::{GENERAL, NOW, OTHER, message, ready_state};
     use super::*;
+
+    /// The instance's answer over a channel of `count` messages with ids 1000 and up: `limit` at
+    /// most before `before`, oldest first (the web test's `historyOf`).
+    fn page_of(count: u64, before: Option<Snowflake>, limit: u32) -> Vec<Message> {
+        let newest_before = before
+            .map_or(1000 + count, Snowflake::raw)
+            .min(1000 + count);
+        let first = newest_before.saturating_sub(u64::from(limit)).max(1000);
+        (first..newest_before)
+            .map(|id| message(id, OTHER))
+            .collect()
+    }
+
+    /// Runs the steps against `page_of` from the newest page; returns the outcome and the cursors
+    /// of the jump's own requests.
+    fn reach(
+        state: &mut ClientState,
+        count: u64,
+        message_id: u64,
+    ) -> (HistoryReachStep, Vec<Option<Snowflake>>) {
+        let mut requests = Vec::new();
+        let mut pages = 0;
+        loop {
+            match state.history_reach_step(GENERAL, Snowflake::from_raw(message_id), pages) {
+                HistoryReachStep::LoadBefore(before) => {
+                    requests.push(before);
+                    let limit = super::super::MAXIMUM_HISTORY_PAGE_SIZE;
+                    state.insert_reach_page(GENERAL, page_of(count, before, limit), limit);
+                    pages += 1;
+                }
+                outcome => return (outcome, requests),
+            }
+        }
+    }
+
+    fn opened(count: u64) -> ClientState {
+        let mut state = ready_state();
+        state.insert_history_page(GENERAL, page_of(count, None, HISTORY_PAGE_SIZE));
+        state
+    }
+
+    // Ported from `client.test.ts` ("Reaching a message far back").
+
+    #[test]
+    fn a_jump_loads_older_pages_until_the_message_is_cached_without_a_gap() {
+        let mut state = opened(200);
+        let (outcome, requests) = reach(&mut state, 200, 1020);
+        assert_eq!(outcome, HistoryReachStep::Loaded);
+        let ids: Vec<u64> = state.messages(GENERAL).iter().map(|m| m.id.raw()).collect();
+        assert!(ids[0] <= 1020);
+        assert!(ids.windows(2).all(|pair| pair[1] == pair[0] + 1));
+        assert_eq!(
+            requests,
+            [
+                Some(Snowflake::from_raw(1150)),
+                Some(Snowflake::from_raw(1050))
+            ]
+        );
+    }
+
+    #[test]
+    fn a_jump_says_the_message_is_missing_once_an_older_one_or_the_start_is_cached() {
+        let mut state = opened(30);
+        assert_eq!(reach(&mut state, 30, 999).0, HistoryReachStep::Missing);
+    }
+
+    #[test]
+    fn a_jump_reaches_a_message_900_back_in_9_requests() {
+        let mut state = opened(1_000);
+        let (outcome, requests) = reach(&mut state, 1_000, 1050);
+        assert_eq!(outcome, HistoryReachStep::Loaded);
+        assert_eq!(requests.len(), 9);
+    }
+
+    #[test]
+    fn a_jump_knows_the_start_is_cached_from_a_page_shorter_than_it_asked_for() {
+        let mut state = opened(230);
+        assert_eq!(reach(&mut state, 230, 1000).0, HistoryReachStep::Loaded);
+        assert!(!state.has_older_history(GENERAL));
+    }
+
+    #[test]
+    fn a_jump_gives_up_1000_messages_back() {
+        let mut state = opened(2_000);
+        assert_eq!(reach(&mut state, 2_000, 1000).0, HistoryReachStep::TooFar);
+    }
 
     fn thumbs() -> Vec<ReactionSummary> {
         vec![ReactionSummary {

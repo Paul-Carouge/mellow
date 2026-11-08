@@ -27,6 +27,7 @@ pub use checklists::{
     ChecklistProgress, Revisioned, checklist_progress, keep_newest, progress_percent, set_item_tick,
 };
 pub use mentions::{MentionReader, does_message_mention_reader};
+pub use messages::HistoryReachStep;
 pub use optimistic::{ChangeOutcome, ChecklistTickChange, PollVoteChanges, ReactionToggle};
 pub use outbox::{PendingMessage, PendingMessageStatus};
 pub use pins::{PinsAnswer, PinsStatus};
@@ -45,6 +46,12 @@ use unreads::ReadPositions;
 pub const MAXIMUM_CACHED_MESSAGES_PER_CHANNEL: usize = 500;
 /// Messages asked per history request; a shorter page means the channel's start is reached.
 pub const HISTORY_PAGE_SIZE: u32 = 50;
+/// The largest history page the instance gives (`MAXIMUM_HISTORY_PAGE_SIZE` on the server): a
+/// jump far back asks for these, half the round trips of scrolling there.
+pub const MAXIMUM_HISTORY_PAGE_SIZE: u32 = 100;
+/// Pages a jump loads at most to reach a message, so a message years back does not load the
+/// whole channel (the web's `MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE`).
+pub const MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE: u32 = 10;
 /// A typing indicator disappears after this long without a new `TYPING_START`.
 pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 

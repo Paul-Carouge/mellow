@@ -41,6 +41,8 @@ pub struct Tabs {
     id: ElementId,
     label: SharedString,
     tab_labels: Vec<SharedString>,
+    /// Read out instead of the visible text when it says less ("👍, 3 reactions" for "👍 3").
+    accessible_labels: Option<Vec<SharedString>>,
     selected_index: usize,
     on_select: Option<SelectHandler>,
 }
@@ -58,9 +60,17 @@ impl Tabs {
             id: id.into(),
             label: label.into(),
             tab_labels,
+            accessible_labels: None,
             selected_index,
             on_select: None,
         }
+    }
+
+    /// Screen reader names, one per tab, when the visible text is not enough.
+    #[must_use]
+    pub fn accessible_labels(mut self, labels: Vec<SharedString>) -> Self {
+        self.accessible_labels = Some(labels);
+        self
     }
 
     #[must_use]
@@ -96,6 +106,7 @@ impl RenderOnce for Tabs {
         let key_on_select = on_select.clone();
 
         let tab_list_id = self.id.clone();
+        let accessible_labels = self.accessible_labels.unwrap_or_default();
         let tabs = self
             .tab_labels
             .into_iter()
@@ -122,7 +133,12 @@ impl RenderOnce for Tabs {
                 with_type(div(), TYPE_BODY)
                     .id(tab_id)
                     .role(Role::Tab)
-                    .aria_label(tab_label.clone())
+                    .aria_label(
+                        accessible_labels
+                            .get(index)
+                            .cloned()
+                            .unwrap_or_else(|| tab_label.clone()),
+                    )
                     .aria_selected(is_selected)
                     .aria_position_in_set(index + 1)
                     .aria_size_of_set(tab_count)

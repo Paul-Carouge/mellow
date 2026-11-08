@@ -96,7 +96,9 @@ impl Render for MainWindow {
         let root = div()
             .size_full()
             .font_family(SANS_FONT_FAMILY)
-            .bg(color(tokens.component_auth_card_backdrop));
+            .bg(color(tokens.component_auth_card_backdrop))
+            // Lets message text be selected and copied (gpui-base's window text selection).
+            .child(gpui_base::TextSelectionLayer);
         if let Some(sign_in_screen) = &self.sign_in_screen {
             return root.child(sign_in_screen.clone());
         }
