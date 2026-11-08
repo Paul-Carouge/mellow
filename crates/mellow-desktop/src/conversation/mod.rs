@@ -27,8 +27,10 @@ use mellow_client_core::shared_logic::context_menus_people::{
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
+use mellow_client_core::shared_logic::role_mentions::roles_writer_may_mention;
 use mellow_client_core::state::{
-    MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange, UnreadMarker,
+    ClientState, MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange,
+    UnreadMarker,
 };
 use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
@@ -378,6 +380,8 @@ impl ConversationView {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
+        let (mentionable_roles, can_mention_everyone) =
+            role_mentions_for(state, self.open_conversation.as_ref(), channel_id);
         let rest = session.rest_client().cloned();
         // Per account and instance, and only where the session may keep things on this device.
         let kept_drafts_file = rest
@@ -390,6 +394,7 @@ impl ConversationView {
             composer.set_blocked_recipient(blocked_recipient, cx);
             composer.set_permissions(can_send, can_attach, cx);
             composer.set_mention_candidates(people, current_user_id, cx);
+            composer.set_role_mentions(mentionable_roles, can_mention_everyone, cx);
             composer.set_uploads(rest, maximum_attachment_bytes, cx);
             composer.keep_drafts_in(kept_drafts_file, cx);
         });
@@ -1597,6 +1602,32 @@ impl ConversationView {
         .detach();
         cx.notify();
     }
+}
+
+/// The roles the writer may mention in the open server channel, highest first, and whether they
+/// may mention `@everyone` (ADR-0040); nothing in a conversation.
+fn role_mentions_for(
+    state: &ClientState,
+    open: Option<&OpenConversation>,
+    channel_id: Option<Snowflake>,
+) -> (Vec<Role>, bool) {
+    let (Some(guild_id), Some(channel_id)) = (open.and_then(|open| open.guild_id), channel_id)
+    else {
+        return (Vec::new(), false);
+    };
+    let can_mention_everyone = state
+        .my_channel_permissions(channel_id)
+        .is_some_and(|bits| bits.contains(Permissions::MENTION_EVERYONE));
+    let roles = state
+        .guild(guild_id)
+        .map(|guild| {
+            roles_writer_may_mention(&guild.roles, guild_id, can_mention_everyone)
+                .into_iter()
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    (roles, can_mention_everyone)
 }
 
 /// What a channel lets the reader do here (ADR-0007 bits, only to adapt the interface).
