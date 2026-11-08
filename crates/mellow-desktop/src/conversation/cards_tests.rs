@@ -247,3 +247,56 @@ fn a_checklist_without_its_title_stays_in_its_dialog_and_a_valid_one_is_sent(
     });
     assert_eq!(queued, 0);
 }
+
+#[gpui::test]
+fn the_checklist_dialog_sends_the_trimmed_title_and_its_items(cx: &mut TestAppContext) {
+    use std::cell::RefCell;
+    use std::rc::Rc;
+
+    use mellow_client_core::state::MessageCard;
+    use mellow_protocol::NewChecklist;
+
+    use super::card_dialogs::{CardDialogKind, open_card_dialog};
+    use super::cards::CardDialogDone;
+
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    let ended = Rc::new(RefCell::new(Vec::new()));
+    let heard = ended.clone();
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            let opened = open_card_dialog(
+                CardDialogKind::Checklist,
+                false,
+                None,
+                window,
+                cx,
+                move |done, _| heard.borrow_mut().push(done),
+            );
+            view.confirmation = Some(opened);
+            cx.notify();
+        });
+    });
+    cx.run_until_parked();
+    cx.simulate_input("  Release ");
+    press(cx, "enter");
+    cx.simulate_input("Tag");
+    cx.update(|_, cx| {
+        let dialog = view
+            .read(cx)
+            .confirmation
+            .as_ref()
+            .map(|(dialog, _)| dialog.clone())
+            .expect("the dialog is open");
+        dialog.update(cx, crate::components::ModalDialog::submit_now);
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        ended.borrow().first(),
+        Some(&CardDialogDone::Send(MessageCard::Checklist(
+            NewChecklist {
+                title: "Release".into(),
+                items: vec!["Tag".into()],
+            }
+        )))
+    );
+}
