@@ -5,6 +5,7 @@
 
 mod friends_pane;
 pub mod group_sheet;
+mod menus;
 mod people_picker;
 #[cfg(test)]
 mod tests;
@@ -26,9 +27,10 @@ use mellow_protocol::{
 };
 
 pub use friends_pane::{FriendsPane, FriendsPaneEvent};
+pub use menus::{OpenPersonMenu, PersonMenuRequest};
 pub use people_picker::{PeoplePicker, PeoplePickerEvent};
 
-use crate::components::{ModalDialog, ModalDialogEvent, ShownStatus, TextField};
+use crate::components::{ContextMenu, ModalDialog, ModalDialogEvent, ShownStatus, TextField};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::sign_in_form::describe_error;
@@ -86,12 +88,19 @@ pub(crate) fn presence_name(strings: Strings, status: PresenceStatus) -> &'stati
 }
 
 /// What Home asks the shell to do.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum HomeEvent {
     /// Show this conversation, the composer focused.
     OpenConversation(Snowflake),
     /// Show the Friends space (after leaving a group, or "Add friend" in the picker), focus in it.
     ShowFriends,
+    /// A member row's menu chose Profile: show it in the side sheet.
+    ShowMemberProfile {
+        guild_id: Snowflake,
+        user_id: Snowflake,
+    },
+    /// A menu's change failed: why, in words, for the notice bar.
+    MenuActionFailed(String),
 }
 
 /// A group dialog: rename, leave, or the owner removing someone.
@@ -108,7 +117,9 @@ pub struct Home {
     picker: Option<(Entity<PeoplePicker>, Subscription)>,
     /// The dialog and what it listens to (its own events, the rename field's Enter).
     group_dialog: Option<(Entity<ModalDialog>, Vec<Subscription>)>,
-    /// Read out by the status region: what the last group change did.
+    /// A person's or a group's context menu.
+    menu: Option<(Entity<ContextMenu>, Subscription)>,
+    /// Read out by the status region: what the last group change or menu action did.
     announcement: String,
     _subscriptions: Vec<Subscription>,
 }
@@ -128,19 +139,28 @@ impl EventEmitter<HomeEvent> for Home {}
 impl Home {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let friends_pane = cx.new(|cx| FriendsPane::new(session.clone(), window, cx));
-        let subscriptions = vec![cx.subscribe(
-            &friends_pane,
-            |_, _, event: &FriendsPaneEvent, cx| match *event {
-                FriendsPaneEvent::OpenConversation(conversation_id) => {
-                    cx.emit(HomeEvent::OpenConversation(conversation_id));
-                }
-            },
-        )];
+        let subscriptions = vec![
+            cx.subscribe_in(
+                &friends_pane,
+                window,
+                |home, _, event: &FriendsPaneEvent, window, cx| match event {
+                    FriendsPaneEvent::OpenConversation(conversation_id) => {
+                        cx.emit(HomeEvent::OpenConversation(*conversation_id));
+                    }
+                    FriendsPaneEvent::OpenPersonMenu(request) => {
+                        home.open_person_menu(request.clone(), window, cx);
+                    }
+                },
+            ),
+            // Its confirmation dialog and announcements are drawn here, over the whole window.
+            cx.observe(&friends_pane, |_, _, cx| cx.notify()),
+        ];
         Self {
             session,
             friends_pane,
             picker: None,
             group_dialog: None,
+            menu: None,
             announcement: String::new(),
             _subscriptions: subscriptions,
         }
@@ -154,6 +174,11 @@ impl Home {
     #[cfg(test)]
     pub(crate) fn picker(&self) -> Option<&Entity<PeoplePicker>> {
         self.picker.as_ref().map(|(picker, _)| picker)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_menu_open(&self) -> bool {
+        self.menu.is_some()
     }
 
     /// Whether a picker or group dialog is open over the window.
@@ -483,6 +508,9 @@ impl Render for Home {
             .picker
             .as_ref()
             .and_then(|(picker, _)| picker.read(cx).dialog().cloned());
+        let pane = self.friends_pane.read(cx);
+        let friends_announcement = pane.announcement().to_owned();
+        let friends_confirmation = pane.confirmation_dialog().cloned();
         div()
             .id("home-layers")
             .child(
@@ -493,9 +521,21 @@ impl Render for Home {
                     .h_0()
                     .overflow_hidden(),
             )
+            .child(
+                div()
+                    .id("friends-announcement")
+                    .role(Role::Status)
+                    .aria_label(SharedString::from(friends_announcement))
+                    .h_0()
+                    .overflow_hidden(),
+            )
             .when_some(picker_dialog, gpui::ParentElement::child)
             .when_some(self.group_dialog.as_ref(), |layers, (dialog, _)| {
                 layers.child(dialog.clone())
             })
+            .when_some(self.menu.as_ref(), |layers, (menu, _)| {
+                layers.child(menu.clone())
+            })
+            .when_some(friends_confirmation, gpui::ParentElement::child)
     }
 }

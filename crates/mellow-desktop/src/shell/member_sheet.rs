@@ -4,8 +4,9 @@
 //! member shows their profile in the sheet (`member_profile`).
 
 use gpui::{
-    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
+    div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::member_order::{
@@ -15,11 +16,13 @@ use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, IconButton, inset_focus_ring, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, IconButton, bounds_recorder, inset_focus_ring,
+    is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
+    menu_origin_beside_remembered, remembered_bounds, remembered_focus_handle, remembered_hover,
+    with_type,
 };
 use crate::home::group_sheet::group_sheet_rows;
-use crate::home::{conversation_display_name, presence_name, shown_presence};
+use crate::home::{PersonMenuRequest, conversation_display_name, presence_name, shown_presence};
 use crate::i18n::strings;
 use crate::session::MembersLoad;
 use crate::theme::icons::IconName;
@@ -235,6 +238,37 @@ impl DuskShell {
                             let is_ring_shown = is_focus_visible(&focus_handle, window);
                             let user_id = user.id;
                             let row_entity = entity.clone();
+                            let row_bounds = remembered_bounds(&row_id, window, cx);
+                            let open_menu = {
+                                let entity = entity.clone();
+                                let user = user.clone();
+                                let opener = focus_handle.clone();
+                                let row_bounds = row_bounds.clone();
+                                // At the pointer, else beside the row (Shift+F10, the Menu key).
+                                move |at: Option<gpui::Point<gpui::Pixels>>,
+                                      window: &mut Window,
+                                      cx: &mut gpui::App| {
+                                    let origin = match at {
+                                        Some(position) => Some(menu_origin_at_pointer(position)),
+                                        None => menu_origin_beside_remembered(&row_bounds, cx),
+                                    };
+                                    let Some(origin) = origin else {
+                                        return false;
+                                    };
+                                    let request = PersonMenuRequest {
+                                        opener: Some(opener.clone()),
+                                        profile_guild_id: Some(guild_id),
+                                        ..PersonMenuRequest::new(user.clone(), origin)
+                                    };
+                                    entity.update(cx, |shell, cx| {
+                                        shell.home.update(cx, |home, cx| {
+                                            home.open_person_menu(request, window, cx);
+                                        });
+                                    });
+                                    true
+                                }
+                            };
+                            let open_menu_by_key = open_menu.clone();
                             let row = div()
                                 .id(row_id)
                                 .role(Role::Button)
@@ -264,6 +298,18 @@ impl DuskShell {
                                         shell.show_member_profile(guild_id, user_id, window, cx);
                                     });
                                 })
+                                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                                    cx.stop_propagation();
+                                    open_menu(Some(event.position), window, cx);
+                                })
+                                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                                    if is_context_menu_keystroke(&event.keystroke)
+                                        && open_menu_by_key(None, window, cx)
+                                    {
+                                        cx.stop_propagation();
+                                    }
+                                })
+                                .child(bounds_recorder(row_bounds))
                                 .child(
                                     Avatar::new(
                                         AvatarPerson::from_user(user, picture),

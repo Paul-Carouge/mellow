@@ -4,17 +4,18 @@
 //! removes others from their row. The shell draws the sheet's frame around these rows.
 
 use gpui::{
-    AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement, ParentElement as _,
-    Role, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    AnyElement, App, ElementId, Entity, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::search_text::fold_for_search;
 use mellow_protocol::{DirectMessageChannel, PresenceStatus, PublicUser};
 
-use super::{Home, presence_name, shown_presence};
+use super::{Home, PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, IconButton, IconButtonTone, icon, inset_focus_ring, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    menu_origin_at_pointer, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::session::Session;
@@ -235,12 +236,23 @@ pub fn group_sheet_rows(
                 });
             })
         });
+        let menu_home = home.clone();
+        let menu_person = person.clone();
         rows.push(
             div()
                 .id(ElementId::from(("group-member", person.id.raw())))
                 .role(Role::ListItem)
                 // One sentence for screen readers; the owner is said in words, never by a mark.
                 .aria_label(label)
+                // The person's menu at the pointer; the row itself takes no focus.
+                .on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                    cx.stop_propagation();
+                    let request = PersonMenuRequest::new(
+                        menu_person.clone(),
+                        menu_origin_at_pointer(event.position),
+                    );
+                    menu_home.update(cx, |home, cx| home.open_person_menu(request, window, cx));
+                })
                 .mx(length(COMPONENT_MEMBER_ROW_MARGIN_INLINE))
                 .mt(length(COMPONENT_MEMBER_ROW_GAP))
                 .min_h(length(COMPONENT_MEMBER_ROW_HEIGHT))
