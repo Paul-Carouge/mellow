@@ -228,8 +228,13 @@ impl EmojiPicker {
         let list = ListState::new(0, ListAlignment::Top, px(LIST_OVERDRAW));
         let picker = cx.entity().downgrade();
         list.set_scroll_handler(move |event, window, cx| {
-            let _ = picker.update(cx, |picker, cx| {
-                picker.follow_scroll(event.visible_range.clone(), window, cx);
+            let was_end_shown = event.visible_range.end;
+            let _ = picker.update(cx, |_, cx| {
+                // The list is borrowed while it calls this, and the event's range predates the
+                // move: read the new scroll top once it is done.
+                cx.defer_in(window, move |picker, window, cx| {
+                    picker.follow_scroll(was_end_shown, window, cx);
+                });
             });
         });
         let mut picker = Self {
@@ -306,21 +311,26 @@ impl EmojiPicker {
     /// list is scrolled to its end (a short last section never reaches the top).
     fn follow_scroll(
         &mut self,
-        visible: std::ops::Range<usize>,
+        visible_end_before: usize,
         window: &Window,
         cx: &mut Context<Self>,
     ) {
-        let line = if visible.end >= self.lines.len() {
+        let is_at_end =
+            self.list.is_scrolled_to_end() == Some(true) || visible_end_before >= self.lines.len();
+        let line = if is_at_end {
             self.lines.len().checked_sub(1)
         } else {
-            Some(visible.start)
+            Some(self.list.logical_scroll_top().item_ix)
         };
-        let Some(section) = line
+        if let Some(section) = line
             .and_then(|line| self.lines.get(line))
             .map(|line| line.section())
-        else {
-            return;
-        };
+        {
+            self.show_current_section(section, window, cx);
+        }
+    }
+
+    fn show_current_section(&mut self, section: usize, window: &Window, cx: &mut Context<Self>) {
         if section != self.current_section {
             self.current_section = section;
             // The bar's keyboard place follows too, unless the reader is moving through it.
@@ -365,6 +375,8 @@ impl EmojiPicker {
             self.list
                 .scroll_to_reveal_item(if is_first_row { line - 1 } else { line });
             self.list.scroll_to_reveal_item(line);
+            // Revealing does not call the scroll handler: the bar follows the active cell.
+            self.show_current_section(self.lines[line].section(), window, cx);
         }
         window.focus(&self.grid_focus, cx);
         cx.notify();

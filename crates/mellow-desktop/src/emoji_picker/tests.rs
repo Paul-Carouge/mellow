@@ -173,3 +173,17 @@ fn page_down_and_a_category_move_the_emojis_tab_stop_to_the_sections_start(
     });
     assert_eq!((active, current), (start, 2));
 }
+
+#[gpui::test]
+fn the_category_bar_follows_the_keyboard_through_the_grid(cx: &mut TestAppContext) {
+    let (host, cx) = open(cx);
+    press(cx, "down");
+    let picker = picker_of(&host, cx);
+    assert_eq!(picker.read_with(cx, |picker, _| picker.current_section), 0);
+    // Page Down leaves the recent emoji for the people.
+    press(cx, "pagedown");
+    let (current, highlighted) = picker.read_with(cx, |picker, _| {
+        (picker.current_section, picker.highlighted_category)
+    });
+    assert_eq!((current, highlighted), (1, 1));
+}
