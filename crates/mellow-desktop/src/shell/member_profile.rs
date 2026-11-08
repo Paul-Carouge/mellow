@@ -70,7 +70,7 @@ pub(super) struct MemberProfileState {
     /// "About me" parsed once per text.
     parsed_about_me: Option<(String, Rc<MessageBody>)>,
     is_opening_conversation: bool,
-    open_conversation_error: Option<String>,
+    profile_action_error: Option<String>,
     is_changing_relationship: bool,
     /// Read out by the profile's status region: what the last friend or block change did.
     relationship_announcement: String,
@@ -91,7 +91,7 @@ impl MemberProfileState {
             loader: UserProfileLoader::default(),
             parsed_about_me: None,
             is_opening_conversation: false,
-            open_conversation_error: None,
+            profile_action_error: None,
             is_changing_relationship: false,
             relationship_announcement: String::new(),
             back_focus: cx.focus_handle().tab_stop(true),
@@ -108,8 +108,8 @@ impl MemberProfileState {
 
     /// Why the last action failed, as the card says it.
     #[cfg(test)]
-    pub(super) fn error(&self) -> Option<&str> {
-        self.open_conversation_error.as_deref()
+    pub(super) fn profile_action_error(&self) -> Option<&str> {
+        self.profile_action_error.as_deref()
     }
 
     #[cfg(test)]
@@ -145,7 +145,7 @@ impl MemberProfileState {
     fn forget(&mut self) {
         self.shown = None;
         self.loader.show(None);
-        self.open_conversation_error = None;
+        self.profile_action_error = None;
     }
 
     fn about_body(&mut self, about_me: &str) -> Option<Rc<MessageBody>> {
@@ -183,7 +183,7 @@ impl DuskShell {
         }
         profile.list_scroll.set_offset(Point::default());
         profile.shown = Some(ShownProfile { guild_id, user_id });
-        profile.open_conversation_error = None;
+        profile.profile_action_error = None;
         profile.is_opening_conversation = false;
         if let Some(ticket) = profile.loader.show(Some(user_id)) {
             let shell = cx.entity().downgrade();
@@ -221,7 +221,7 @@ impl DuskShell {
             return;
         }
         self.member_profile.is_opening_conversation = true;
-        self.member_profile.open_conversation_error = None;
+        self.member_profile.profile_action_error = None;
         let failure = strings(cx).members().open_conversation_failed().to_owned();
         let shell = cx.entity().downgrade();
         let window_handle = window.window_handle();
@@ -241,7 +241,7 @@ impl DuskShell {
                                 });
                             }
                             Err(message) => {
-                                shell.member_profile.open_conversation_error = Some(message);
+                                shell.member_profile.profile_action_error = Some(message);
                             }
                         }
                         cx.notify();
@@ -266,7 +266,7 @@ impl DuskShell {
             return;
         }
         self.member_profile.is_changing_relationship = true;
-        self.member_profile.open_conversation_error = None;
+        self.member_profile.profile_action_error = None;
         let catalogue = strings(cx);
         let person = display_name(user);
         let (done, failure) = match change {
@@ -286,31 +286,28 @@ impl DuskShell {
         let pressed = window.focused(cx);
         let shell = cx.entity().downgrade();
         let window_handle = window.window_handle();
-        // Deferred: a signed-out session answers at once, while the shell is still being updated.
         let on_done = move |answer: Result<(), ClientError>, cx: &mut App| {
-            cx.defer(move |cx| {
-                let _ = window_handle.update(cx, |_, window, cx| {
-                    let has_focus_stayed = window.focused(cx) == pressed;
-                    let _ = shell.update(cx, |shell, cx| {
-                        let profile = &mut shell.member_profile;
-                        profile.is_changing_relationship = false;
-                        match answer {
-                            Ok(()) => {
-                                profile.relationship_announcement = done;
-                                if has_focus_stayed {
-                                    window.focus(&block_focus, cx);
-                                }
-                            }
-                            Err(error) => {
-                                profile.open_conversation_error = Some(describe_error(
-                                    &error,
-                                    &failure,
-                                    crate::strings_pending_i18n::strings(cx),
-                                ));
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let has_focus_stayed = window.focused(cx) == pressed;
+                let _ = shell.update(cx, |shell, cx| {
+                    let profile = &mut shell.member_profile;
+                    profile.is_changing_relationship = false;
+                    match answer {
+                        Ok(()) => {
+                            profile.relationship_announcement = done;
+                            if has_focus_stayed {
+                                window.focus(&block_focus, cx);
                             }
                         }
-                        cx.notify();
-                    });
+                        Err(error) => {
+                            profile.profile_action_error = Some(describe_error(
+                                &error,
+                                &failure,
+                                crate::strings_pending_i18n::strings(cx),
+                            ));
+                        }
+                    }
+                    cx.notify();
                 });
             });
         };
@@ -554,7 +551,7 @@ impl DuskShell {
         });
         let error = self
             .member_profile
-            .open_conversation_error
+            .profile_action_error
             .clone()
             .map(|error| {
                 with_type(div(), TYPE_BODY)

@@ -552,7 +552,7 @@ fn add_friend_from_a_profile_says_why_it_failed_and_can_be_tried_again(cx: &mut 
         assert!(
             shell
                 .member_profile
-                .error()
+                .profile_action_error()
                 .is_some_and(|error| error.starts_with("Couldn't send the friend request"))
         );
     });

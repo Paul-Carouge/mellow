@@ -19,7 +19,8 @@ use super::{Session, StateChanged};
 
 impl Session {
     /// Runs `request`, applies its answer with `apply`, then tells `on_done`. A session that is
-    /// not signed in answers `NotSignedIn` at once, so a waiting view never stays busy.
+    /// not signed in answers `NotSignedIn` right after the caller's update, so a waiting view never
+    /// stays busy and can still update itself.
     fn run_change<Answer, Outcome, Request>(
         &mut self,
         cx: &mut Context<Self>,
@@ -33,7 +34,7 @@ impl Session {
         Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
     {
         let Some(rest) = self.rest_client().cloned() else {
-            on_done(Err(ClientError::NotSignedIn), cx);
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
         self.run_request(cx, request(rest), move |session, answer, cx| match answer {
@@ -195,7 +196,7 @@ impl Session {
         on_done: impl FnOnce(Result<(), ClientError>, &mut App) + 'static,
     ) {
         let Some(user_id) = self.state.current_user().map(|user| user.id) else {
-            on_done(Err(ClientError::NotSignedIn), cx);
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
         self.run_change(
