@@ -30,7 +30,7 @@ use mellow_client_core::shared_logic::message_length::{
 use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Snowflake};
 
-use crate::components::{IconButton, focus_ring, is_focus_visible, with_type};
+use crate::components::{Button, IconButton, focus_ring, is_focus_visible, with_type};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{Language, Strings, strings};
 use crate::theme::icons::IconName;
@@ -39,8 +39,8 @@ use crate::theme::tokens::{
     COMPONENT_COMPOSER_ICON_SIZE, COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_RADIUS,
     COMPONENT_COMPOSER_REPLY_BAR_BUTTON_SIZE, COMPONENT_COMPOSER_REPLY_BAR_ICON_SIZE,
     COMPONENT_COMPOSER_REPLY_BAR_MIN_HEIGHT, COMPONENT_COMPOSER_REPLY_BAR_PADDING_INLINE,
-    COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT, SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_XS,
-    TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
+    COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT, SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_SM,
+    SPACE_XS, TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
 };
 use crate::theme::{color, length, theme};
 use crate::tokio_bridge::spawn_on_network_runtime;
@@ -137,6 +137,17 @@ pub enum ComposerEvent {
     /// Up in an empty field: edit the last own message of the open channel.
     EditLast,
     Cancel(Cancelled),
+    /// "Unblock" on the notice of a conversation locked by a block; the answer comes back through
+    /// [`Composer::finish_unblocking`].
+    Unblock(BlockedRecipient),
+}
+
+/// The other person of a one-to-one conversation the user blocked (ADR-0025): the field gives way
+/// to a notice with "Unblock".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedRecipient {
+    pub user_id: Snowflake,
+    pub name: SharedString,
 }
 
 /// A failure said above the box until the next send.
@@ -160,6 +171,7 @@ struct EditSession {
     original_text: Option<String>,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent flags of one view, each read on its own.
 pub struct Composer {
     input: Entity<TextareaState>,
     drafts: ComposerDrafts,
@@ -171,6 +183,10 @@ pub struct Composer {
     current_user_id: Option<Snowflake>,
     can_send_messages: bool,
     can_attach_files: bool,
+    blocked_recipient: Option<BlockedRecipient>,
+    is_unblocking: bool,
+    /// The field takes focus at the next render, once it is drawn again (after an unblock).
+    is_field_focus_pending: bool,
     rest: Option<RestClient>,
     maximum_attachment_bytes: Option<u64>,
     suggestions: SuggestionState,
@@ -206,6 +222,9 @@ impl Composer {
             current_user_id: None,
             can_send_messages: true,
             can_attach_files: true,
+            blocked_recipient: None,
+            is_unblocking: false,
+            is_field_focus_pending: false,
             rest: None,
             maximum_attachment_bytes: None,
             suggestions: SuggestionState::default(),
@@ -287,6 +306,27 @@ impl Composer {
     ) {
         self.can_send_messages = can_send_messages;
         self.can_attach_files = can_attach_files;
+        cx.notify();
+    }
+
+    /// The person whose block locks the open conversation, if any; `set_permissions` says the
+    /// reader cannot send there too.
+    pub fn set_blocked_recipient(
+        &mut self,
+        blocked_recipient: Option<BlockedRecipient>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocked_recipient != blocked_recipient {
+            self.blocked_recipient = blocked_recipient;
+            cx.notify();
+        }
+    }
+
+    /// The instance answered "Unblock": on success the field, back once the conversation unlocks,
+    /// takes focus, as on the web.
+    pub fn finish_unblocking(&mut self, is_unblocked: bool, cx: &mut Context<Self>) {
+        self.is_unblocking = false;
+        self.is_field_focus_pending = is_unblocked;
         cx.notify();
     }
 
@@ -372,6 +412,14 @@ impl Composer {
         self.refresh_suggestions(cx);
         cx.notify();
         true
+    }
+
+    /// Who locks the open conversation, for the conversation view's tests.
+    #[cfg(test)]
+    pub(crate) fn locking_recipient(&self) -> Option<&BlockedRecipient> {
+        self.blocked_recipient
+            .as_ref()
+            .filter(|_| !self.can_send_messages)
     }
 
     /// The field's text, for the conversation view's tests.
@@ -973,6 +1021,10 @@ impl Render for Composer {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.follow_window_height(window, cx);
+        if self.is_field_focus_pending && self.can_send_messages {
+            self.is_field_focus_pending = false;
+            self.focus(window, cx);
+        }
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let chat = catalogue.chat();
@@ -1239,6 +1291,38 @@ impl Render for Composer {
                             .child(characters_left.to_string()),
                     )
                 })
+        } else if let Some(recipient) = self.blocked_recipient.clone() {
+            // `Composer.svelte`: the sentence, then "Unblock", wrapping below it when narrow.
+            let unblock = entity.clone();
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_x(length(SPACE_SM))
+                .gap_y(length(SPACE_2XS))
+                .min_h(length(SIZE_DOCK_HEIGHT))
+                .px(length(SPACE_XS))
+                .py(length(SPACE_2XS))
+                .child(
+                    with_type(div(), TYPE_MESSAGE)
+                        .text_color(color(tokens.component_composer_locked_text))
+                        .child(chat.you_blocked(&recipient.name)),
+                )
+                .child(
+                    Button::new("composer-unblock", catalogue.friends().unblock())
+                        .disabled(self.is_unblocking)
+                        .on_click(move |_, cx| {
+                            unblock.update(cx, |composer, cx| {
+                                if composer.is_unblocking {
+                                    return;
+                                }
+                                composer.is_unblocking = true;
+                                cx.emit(ComposerEvent::Unblock(recipient.clone()));
+                                cx.notify();
+                            });
+                        }),
+                )
         } else {
             with_type(div(), TYPE_MESSAGE)
                 .flex()

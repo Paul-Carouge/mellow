@@ -20,6 +20,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
+mod blocks;
 mod messages;
 
 pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
