@@ -21,8 +21,8 @@ use std::rc::Rc;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, ImageSource,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, Styled as _, Subscription, Task, WeakEntity, Window,
-    actions, div, prelude::FluentBuilder as _,
+    ParentElement as _, Pixels, Render, Role, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, WeakEntity, Window, actions, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::state::{ClientState, StateChange};
@@ -811,29 +811,41 @@ impl DuskShell {
 
     // ---- Rendering ----
 
-    /// A notice bar for a sign-out the instance did not confirm, or a conversation that did not
-    /// open.
-    fn sign_out_error_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
+    /// A notice bar, read out when it appears, for a sign-out the instance did not confirm and a
+    /// conversation that did not open; both show when both happened.
+    fn notice_bar(&self, cx: &App) -> Option<impl IntoElement + use<>> {
         let tokens = theme(cx);
-        let error = self
+        let errors: Vec<String> = self
             .session
             .read(cx)
             .sign_out_error()
             .map(str::to_owned)
-            .or_else(|| self.conversation_error.clone())?;
+            .into_iter()
+            .chain(self.conversation_error.clone())
+            .collect();
+        if errors.is_empty() {
+            return None;
+        }
         Some(
             div()
+                .id("shell-notice-bar")
+                .debug_selector(|| "shell-notice-bar".to_owned())
+                .role(Role::Alert)
+                .aria_label(errors.join(" "))
                 .flex()
-                .justify_center()
+                .flex_col()
+                .items_center()
                 .min_h(length(COMPONENT_NOTICE_BAR_MIN_HEIGHT))
                 .px(length(COMPONENT_NOTICE_BAR_PADDING_INLINE))
                 .py(length(COMPONENT_NOTICE_BAR_PADDING_BLOCK))
                 .bg(color(tokens.color_danger_wash))
-                .child(error_line(
-                    error,
-                    tokens.color_text_danger,
-                    COMPONENT_NOTICE_BAR_ICON_SIZE,
-                )),
+                .children(errors.into_iter().map(|error| {
+                    error_line(
+                        error,
+                        tokens.color_text_danger,
+                        COMPONENT_NOTICE_BAR_ICON_SIZE,
+                    )
+                })),
         )
     }
 }
@@ -920,10 +932,9 @@ impl Render for DuskShell {
             2.0 * SIZE_SHEET_INSET
         };
         let banner = self.banner.read(cx);
-        let sign_out_error_bar = self.sign_out_error_bar(cx);
-        let is_notice_shown = banner.trouble().is_some()
-            || banner.is_back_online_shown()
-            || sign_out_error_bar.is_some();
+        let notice_bar = self.notice_bar(cx);
+        let is_notice_shown =
+            banner.trouble().is_some() || banner.is_back_online_shown() || notice_bar.is_some();
         // The notices sit below the macOS title band, and the cards keep their gap below them.
         let top_padding = if is_full_bleed {
             0.0
@@ -1028,7 +1039,7 @@ impl Render for DuskShell {
                 root.child(div().flex_none().h(length(TITLE_BAR_BAND_HEIGHT)))
             })
             .child(self.banner.clone())
-            .children(sign_out_error_bar)
+            .children(notice_bar)
             .child(cards)
             .when(self.is_navigation_drawer_open, |root| {
                 root.child(self.render_navigation_drawer(window, cx))
