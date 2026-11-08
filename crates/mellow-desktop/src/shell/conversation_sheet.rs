@@ -438,6 +438,8 @@ impl DuskShell {
                                 |_, (), _, _| {},
                             )
                             .absolute()
+                            .top_0()
+                            .left_0()
                             .size_full(),
                         ),
                 )

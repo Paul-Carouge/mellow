@@ -177,3 +177,18 @@ fn a_narrow_window_folds_go_to_into_more_options(cx: &mut TestAppContext) {
     press(cx, "enter");
     assert!(shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
 }
+
+#[gpui::test]
+fn more_options_records_where_its_button_is_for_the_menu_to_open_under_it(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, BREAKPOINT_NAVIGATOR - 1.0);
+    let header = cx
+        .debug_bounds("chat-header")
+        .expect("the chat header is drawn");
+    let button = shell
+        .read_with(cx, |shell, _| shell.place_menus.more_options_bounds.get())
+        .expect("the button's place is recorded");
+    assert!(
+        (button.center().y - header.center().y).abs() < px(1.0),
+        "{button:?} in {header:?}"
+    );
+}
