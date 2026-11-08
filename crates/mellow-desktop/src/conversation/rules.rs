@@ -257,6 +257,7 @@ mod tests {
         is_own: false,
         is_forward: false,
         is_rich: false,
+        is_poll_open: false,
         has_text: true,
         is_pinned: false,
         can_send_messages: true,

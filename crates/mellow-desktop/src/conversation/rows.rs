@@ -332,6 +332,7 @@ impl ConversationView {
                             layout,
                             is_first_unread,
                             message_version(message, is_original_cached),
+                            super::cards::card_version(message, &self.cards),
                         ))
                     }),
                     MessageRowKind::Pending { pending_index } => version_of((
@@ -739,6 +740,11 @@ impl ConversationView {
                     && (state.does_message_mention_current_user(message) || body.names_reader);
                 let rights = self.permissions(channel_id, cx);
                 let message_id = message.id;
+                // Cloned out of the session, which the card's rights read again.
+                let card_message = (message.poll.is_some()
+                    || message.checklist.is_some()
+                    || message.progress_bar.is_some())
+                .then(|| message.clone());
                 let toggle_view = view.clone();
                 let item = MessageItem::new(
                     row_id.clone(),
@@ -793,7 +799,8 @@ impl ConversationView {
                         list_focus.dispatch_action(&action, window, cx);
                     }
                 });
-                (item, Some(message_id))
+                let card = card_message.and_then(|message| self.card_for_message(&message, cx));
+                (item.card(card), Some(message_id))
             }
             MessageRowKind::Pending { pending_index } => {
                 let Some(pending) = state.pending_messages(channel_id).nth(pending_index) else {
@@ -817,6 +824,10 @@ impl ConversationView {
                     },
                     reader_id,
                 );
+                let pending_card = pending
+                    .card
+                    .clone()
+                    .map(|card| (pending.nonce.clone(), card));
                 let retry_nonce = pending.nonce.clone();
                 let discard_nonce = pending.nonce.clone();
                 let retry_view = view.clone();
@@ -852,7 +863,8 @@ impl ConversationView {
                     let _ = discard_view
                         .update(cx, |view, cx| view.discard_message(&discard_nonce, cx));
                 });
-                (item, None)
+                let card = pending_card.map(|(nonce, card)| self.card_for_pending(&nonce, &card));
+                (item.card(card), None)
             }
         };
 

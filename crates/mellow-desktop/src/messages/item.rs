@@ -93,6 +93,7 @@ pub struct MessageItem {
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    card: Option<AnyElement>,
 }
 
 /// Opens the author's menu at a window point.
@@ -112,7 +113,15 @@ impl MessageItem {
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            card: None,
         }
+    }
+
+    /// A poll, checklist or progress bar, drawn under the text.
+    #[must_use]
+    pub fn card(mut self, card: Option<AnyElement>) -> Self {
+        self.card = card;
+        self
     }
 
     #[must_use]
@@ -503,6 +512,7 @@ impl RenderOnce for MessageItem {
             .children(gutter_time)
             .children(gutter_pin)
             .child(body)
+            .children(self.card)
             .children(attachments)
             .children(reactions)
             .children(sending_label)

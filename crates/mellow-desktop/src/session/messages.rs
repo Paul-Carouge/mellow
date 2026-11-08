@@ -102,13 +102,13 @@ impl ConversationRequests {
 }
 
 impl Session {
-    fn cloned_rest_client(&self) -> Option<mellow_client_core::RestClient> {
+    pub(super) fn cloned_rest_client(&self) -> Option<mellow_client_core::RestClient> {
         self.rest_client().cloned()
     }
 
     /// `request`'s failure as a sentence starting with `failure_summary`; a session the instance
     /// no longer accepts ends here.
-    fn run_conversation_request<T: Send + 'static>(
+    pub(super) fn run_conversation_request<T: Send + 'static>(
         &self,
         cx: &mut Context<Self>,
         request: impl Future<Output = Result<T, ClientError>> + Send + 'static,
@@ -126,7 +126,7 @@ impl Session {
         });
     }
 
-    fn emit_changes(cx: &mut Context<Self>, changes: Vec<StateChange>) {
+    pub(super) fn emit_changes(cx: &mut Context<Self>, changes: Vec<StateChange>) {
         let changes: Vec<StateChange> = changes
             .into_iter()
             .filter(|change| *change != StateChange::Nothing)

@@ -41,6 +41,8 @@ pub struct MessageMenuFacts {
     pub is_forward: bool,
     /// A poll, checklist or progress bar is neither edited as text nor copied (ADR-0043, ADR-0047).
     pub is_rich: bool,
+    /// A poll still taking votes: its author may end it early (ADR-0043).
+    pub is_poll_open: bool,
     pub has_text: bool,
     pub is_pinned: bool,
     pub can_send_messages: bool,
@@ -65,8 +67,8 @@ impl MessageMenuFacts {
 }
 
 /// A message menu item.
-/// shortcut: no Add reaction, Forward, End poll or Remove all reactions yet; they come with the
-/// emoji picker, forwards, polls and reaction moderation (M3 step 5). The existing reactions are
+/// shortcut: no Add reaction, Forward or Remove all reactions yet; they come with the emoji
+/// picker, forwards and reaction moderation (M3 steps 5 and 6). The existing reactions are
 /// offered one by one instead, and Copy message ID joins the everyday section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageMenuAction {
@@ -80,6 +82,8 @@ pub enum MessageMenuAction {
     /// Who reacted with what, in a dialog.
     ViewReactions,
     CopyMessageId,
+    /// Its author stops the votes now, after a confirmation.
+    EndPoll,
     Delete,
 }
 
@@ -114,7 +118,10 @@ pub fn message_menu_actions(
                 .then_some(Action::ViewReactions),
             Some(Action::CopyMessageId),
         ],
-        vec![facts.can_delete().then_some(Action::Delete)],
+        vec![
+            (facts.is_own && facts.is_poll_open).then_some(Action::EndPoll),
+            facts.can_delete().then_some(Action::Delete),
+        ],
     ])
 }
 
@@ -247,6 +254,7 @@ mod tests {
         is_own: false,
         is_forward: false,
         is_rich: false,
+        is_poll_open: false,
         has_text: true,
         is_pinned: false,
         can_send_messages: true,
@@ -307,6 +315,35 @@ mod tests {
         let lines = message_menu_actions(poll, &[]);
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Edit)));
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::CopyText)));
+    }
+
+    #[test]
+    fn the_author_of_an_open_poll_ends_it_from_the_danger_section() {
+        use MessageMenuAction::{CopyMessageId, Delete, EndPoll, Reply};
+        let open_poll = MessageMenuFacts {
+            is_rich: true,
+            is_poll_open: true,
+            has_text: false,
+            ..OWN_TEXT
+        };
+        assert_eq!(
+            actions(&message_menu_actions(open_poll, &[])),
+            [
+                Some(Reply),
+                Some(CopyMessageId),
+                None,
+                Some(EndPoll),
+                Some(Delete)
+            ]
+        );
+        let someone_elses = MessageMenuFacts {
+            is_own: false,
+            ..open_poll
+        };
+        assert!(
+            !message_menu_actions(someone_elses, &[])
+                .contains(&MenuLine::Action(MessageMenuAction::EndPoll))
+        );
     }
 
     #[test]

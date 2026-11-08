@@ -40,6 +40,7 @@ pub struct TextField {
     password_toggle: Option<PasswordToggle>,
     is_monospace: bool,
     is_read_only: bool,
+    is_label_hidden: bool,
 }
 
 impl TextField {
@@ -60,6 +61,7 @@ impl TextField {
             password_toggle: None,
             is_monospace: false,
             is_read_only: false,
+            is_label_hidden: false,
         }
     }
 
@@ -92,6 +94,14 @@ impl TextField {
     #[must_use]
     pub fn monospace(mut self) -> Self {
         self.is_monospace = true;
+        self
+    }
+
+    /// Named for screen readers only: rows of a list whose heading names them all (a poll's
+    /// answers), each with its placeholder in view.
+    #[must_use]
+    pub fn label_hidden(mut self) -> Self {
+        self.is_label_hidden = true;
         self
     }
 
@@ -242,11 +252,13 @@ impl RenderOnce for TextField {
             .flex()
             .flex_col()
             .gap(length(COMPONENT_TEXT_FIELD_LABEL_GAP))
-            .child(
-                with_type(div(), TYPE_CATEGORY)
-                    .text_color(color(tokens.component_text_field_label_text))
-                    .child(self.label),
-            )
+            .when(!self.is_label_hidden, |column| {
+                column.child(
+                    with_type(div(), TYPE_CATEGORY)
+                        .text_color(color(tokens.component_text_field_label_text))
+                        .child(self.label),
+                )
+            })
             .child(field)
             .when_some(self.helper, |column, helper| {
                 column.child(

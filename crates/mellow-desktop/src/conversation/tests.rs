@@ -14,7 +14,7 @@ use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
 
-fn message(id: u64, author: &PublicUser, content: &str) -> Message {
+pub(super) fn message(id: u64, author: &PublicUser, content: &str) -> Message {
     Message {
         id: Snowflake::from_raw(id),
         channel_id: RUST_GENERAL,
@@ -50,7 +50,7 @@ fn general() -> OpenConversation {
 }
 
 /// `#general` open over `messages` (a whole channel: fewer than a page), read up to `last_read`.
-fn open_general(
+pub(super) fn open_general(
     cx: &mut TestAppContext,
     messages: Vec<Message>,
     last_read: Option<u64>,
@@ -87,16 +87,16 @@ fn open_general(
     (view, session, cx)
 }
 
-fn ana() -> PublicUser {
+pub(super) fn ana() -> PublicUser {
     person(ANA, "ana", "Ana")
 }
 
-fn me() -> PublicUser {
+pub(super) fn me() -> PublicUser {
     person(ME, "paul", "Paul")
 }
 
 /// A full key press: GPUI activates a focused control on the release, as browsers do.
-fn press(cx: &mut VisualTestContext, key: &'static str) {
+pub(super) fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.simulate_keystrokes(key);
     let keystroke = Keystroke::parse(key).expect("a valid keystroke in a test");
     cx.update(|window, cx| {
@@ -105,14 +105,14 @@ fn press(cx: &mut VisualTestContext, key: &'static str) {
     cx.run_until_parked();
 }
 
-fn composer_text(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> String {
+pub(super) fn composer_text(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> String {
     cx.update(|_, cx| {
         let composer = view.read(cx).composer().clone();
         composer.read(cx).text_in_field(cx)
     })
 }
 
-fn focus_composer(view: &Entity<ConversationView>, cx: &mut VisualTestContext) {
+pub(super) fn focus_composer(view: &Entity<ConversationView>, cx: &mut VisualTestContext) {
     cx.update(|window, cx| view.update(cx, |view, cx| view.focus_composer(window, cx)));
     cx.run_until_parked();
 }

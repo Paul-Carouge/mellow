@@ -23,10 +23,12 @@ use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
 mod blocks;
+mod cards;
 mod messages;
 mod relationships;
 mod servers;
 
+pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
 use crate::composer::{forget_saved_drafts, forget_saved_drafts_now};
