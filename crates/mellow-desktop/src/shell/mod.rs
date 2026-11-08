@@ -7,6 +7,8 @@
 
 mod channel_sidebar;
 mod conversation_sheet;
+mod custom_status_dialog;
+mod member_profile;
 mod member_sheet;
 mod overlays;
 pub mod quick_switcher;
@@ -33,7 +35,7 @@ use crate::column_widths::{
     CHANNELS_COLUMN_BOUNDS, ColumnBounds, MEMBERS_COLUMN_BOUNDS, WIDTH_BESIDE_COLUMNS,
     clamp_column_width, fit_column_widths, largest_column_width, stored_column_width,
 };
-use crate::components::{ContextMenu, with_tab_navigation};
+use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::ConversationView;
 use crate::local_widgets::error_line;
@@ -189,6 +191,9 @@ pub struct DuskShell {
     column_drag: Option<ColumnDrag>,
     quick_switcher: Option<(Entity<QuickSwitcher>, Subscription)>,
     status_menu: Option<(Entity<ContextMenu>, Subscription)>,
+    custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    /// The profile a member row opened in the side sheet.
+    member_profile: member_profile::MemberProfileState,
     /// Where the user card is drawn, for the status menu to open across it.
     user_card_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// "User ID copied" on the user card, until `copied_label_timer` ends it.
@@ -242,6 +247,8 @@ impl DuskShell {
             column_drag: None,
             quick_switcher: None,
             status_menu: None,
+            custom_status_dialog: None,
+            member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
             copied_label_timer: None,
@@ -941,6 +948,9 @@ impl Render for DuskShell {
             })
             .when_some(self.status_menu.as_ref(), |root, (menu, _)| {
                 root.child(menu.clone())
+            })
+            .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
+                root.child(dialog.clone())
             });
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {

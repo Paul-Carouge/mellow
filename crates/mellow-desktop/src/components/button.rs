@@ -268,6 +268,8 @@ pub struct IconButton {
     tone: IconButtonTone,
     toggled: Option<bool>,
     is_disabled: bool,
+    /// The host's handle, to move focus here; otherwise one kept while it is drawn.
+    focus_handle: Option<FocusHandle>,
     on_click: Option<ActivationHandler>,
 }
 
@@ -287,6 +289,7 @@ impl IconButton {
             tone: IconButtonTone::Standard,
             toggled: None,
             is_disabled: false,
+            focus_handle: None,
             on_click: None,
         }
     }
@@ -323,12 +326,22 @@ impl IconButton {
         self.on_click = Some(Arc::new(handler));
         self
     }
+
+    /// A handle the host focuses itself (a tab stop, as the remembered one is).
+    #[must_use]
+    pub fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
+        self.focus_handle = Some(focus_handle.clone());
+        self
+    }
 }
 
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = theme(cx);
-        let focus_handle = remembered_focus_handle(&self.id, window, cx);
+        let focus_handle = self
+            .focus_handle
+            .clone()
+            .unwrap_or_else(|| remembered_focus_handle(&self.id, window, cx));
         let hover = remembered_hover(&self.id, window, cx);
         let is_hovered = *hover.read(cx) && !self.is_disabled;
         let is_on = self.toggled == Some(true);

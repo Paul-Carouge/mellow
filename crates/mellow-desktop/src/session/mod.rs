@@ -15,7 +15,7 @@ use mellow_client_core::state::{ClientState, StateChange};
 use mellow_client_core::{
     ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, run_gateway,
 };
-use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake};
+use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake, UserProfile};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
@@ -361,7 +361,8 @@ impl Session {
     }
 
     /// Runs `request` on the network runtime, then `on_done` here with its answer, unless the
-    /// session changed in between.
+    /// session changed in between. `on_done` runs while the session is leased: a caller's own
+    /// callback must be deferred (`cx.defer`) before it reads the session.
     fn run_request<T: Send + 'static>(
         &self,
         cx: &mut Context<Self>,
@@ -549,6 +550,65 @@ impl Session {
         cx.notify();
     }
 
+    /// Replaces the status and custom status (blank clears it), as the web's `updatePresence`;
+    /// `on_done` gets the outcome (the custom status dialog).
+    pub fn update_presence(
+        &mut self,
+        status: ChosenStatus,
+        custom_status: Option<String>,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<(), ClientError>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            // Later, as an answer would come: the caller may still be updating its own view.
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
+            return;
+        };
+        let custom_status = custom_status
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        self.run_request(
+            cx,
+            async move { rest.update_presence(status, custom_status).await },
+            move |session, answer, cx| match answer {
+                Ok(user) => {
+                    let change = session.state.apply_current_user(user);
+                    cx.emit(StateChanged(vec![change]));
+                    cx.notify();
+                    cx.defer(move |cx| on_done(Ok(()), cx));
+                }
+                Err(error) => {
+                    session.report_request_error(&error, "change custom status", cx);
+                    cx.defer(move |cx| on_done(Err(error), cx));
+                }
+            },
+        );
+    }
+
+    /// Reads someone's "about me" and links (ADR-0050) for the profile on screen.
+    pub fn load_user_profile(
+        &mut self,
+        user_id: Snowflake,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<UserProfile, ClientError>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            // Later, as an answer would come: the caller may still be updating its own view.
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
+            return;
+        };
+        self.run_request(
+            cx,
+            async move { rest.user_profile(user_id).await },
+            move |session, answer, cx| {
+                if let Err(error) = &answer {
+                    session.report_request_error(error, "load profile", cx);
+                }
+                cx.defer(move |cx| on_done(answer, cx));
+            },
+        );
+    }
+
     /// Opens the one-to-one conversation with `user_id` (creating it on the instance if needed),
     /// then hands its id, or what went wrong in words, to `on_done`.
     pub fn open_direct_message(
@@ -570,12 +630,12 @@ impl Session {
                     let change = session.state.upsert_direct_message_channel(conversation);
                     cx.emit(StateChanged(vec![change]));
                     cx.notify();
-                    on_done(Ok(conversation_id), cx);
+                    cx.defer(move |cx| on_done(Ok(conversation_id), cx));
                 }
                 Err(error) => {
                     let message = describe_error(&error, &failure_summary, strings(cx));
                     session.report_request_error(&error, "open conversation", cx);
-                    on_done(Err(message), cx);
+                    cx.defer(move |cx| on_done(Err(message), cx));
                 }
             },
         );
