@@ -192,7 +192,7 @@ impl PeoplePicker {
     }
 
     #[cfg(test)]
-    pub(super) fn picked_ids(&self) -> &[Snowflake] {
+    pub(crate) fn picked_ids(&self) -> &[Snowflake] {
         &self.picked_ids
     }
 
@@ -440,7 +440,14 @@ impl PeoplePicker {
                         Ok(()) => {
                             picker.picked_ids.retain(|id| *id != person.id);
                             added.push(display_name(&person).to_owned());
-                            picker.add_next(group_id, remaining, added, cx);
+                            // The answer comes while the session is being updated: the next
+                            // request waits until that update is over.
+                            let picker = cx.entity().downgrade();
+                            cx.defer(move |cx| {
+                                let _ = picker.update(cx, |picker, cx| {
+                                    picker.add_next(group_id, remaining, added, cx);
+                                });
+                            });
                         }
                         Err(error) => {
                             let words = strings(cx).groups();

@@ -673,13 +673,19 @@ impl DuskShell {
         self.conversation_error = None;
         self.session.update(cx, |session, cx| {
             session.open_direct_message(user_id, failure, cx, move |answer, cx| {
-                let _ = window_handle.update(cx, |_, window, cx| {
-                    let _ = shell.update(cx, |shell, cx| match answer {
-                        Ok(conversation_id) => shell.show_conversation(conversation_id, window, cx),
-                        Err(message) => {
-                            shell.conversation_error = Some(message);
-                            cx.notify();
-                        }
+                // The answer comes while the session is being updated, and showing the
+                // conversation reads it: wait until that update is over.
+                cx.defer(move |cx| {
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let _ = shell.update(cx, |shell, cx| match answer {
+                            Ok(conversation_id) => {
+                                shell.show_conversation(conversation_id, window, cx);
+                            }
+                            Err(message) => {
+                                shell.conversation_error = Some(message);
+                                cx.notify();
+                            }
+                        });
                     });
                 });
             });

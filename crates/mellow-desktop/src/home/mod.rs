@@ -142,6 +142,11 @@ impl Home {
         &self.friends_pane
     }
 
+    #[cfg(test)]
+    pub(crate) fn picker(&self) -> Option<&Entity<PeoplePicker>> {
+        self.picker.as_ref().map(|(picker, _)| picker)
+    }
+
     /// Whether a picker or group dialog is open over the window.
     #[must_use]
     pub fn is_dialog_open(&self) -> bool {
