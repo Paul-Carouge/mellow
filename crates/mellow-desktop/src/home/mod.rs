@@ -308,6 +308,14 @@ impl Home {
                 }
             }));
         }
+        subscriptions.push(close_when_subject_gone(
+            &self.session,
+            group_id,
+            &question,
+            &dialog,
+            window,
+            cx,
+        ));
         let subscription = cx.subscribe_in(
             &dialog,
             window,
@@ -415,6 +423,35 @@ impl Home {
             }
         });
     }
+}
+
+/// Closes a group dialog whose group, or whose person to remove, left meanwhile (the web's
+/// `GroupMembersSheet`); a dialog waiting for its own answer stays (`request_close` is a no-op).
+fn close_when_subject_gone(
+    session: &Entity<Session>,
+    group_id: Snowflake,
+    question: &GroupQuestion,
+    dialog: &Entity<ModalDialog>,
+    window: &mut Window,
+    cx: &mut Context<Home>,
+) -> Subscription {
+    let removed_id = match question {
+        GroupQuestion::Remove(person) => Some(person.id),
+        GroupQuestion::Rename | GroupQuestion::Leave => None,
+    };
+    let dialog = dialog.downgrade();
+    cx.observe_in(session, window, move |_, session, window, cx| {
+        let is_subject_present = session
+            .read(cx)
+            .state()
+            .direct_message_channel(group_id)
+            .is_some_and(|group| {
+                removed_id.is_none_or(|id| group.recipients.iter().any(|user| user.id == id))
+            });
+        if !is_subject_present {
+            let _ = dialog.update(cx, |dialog, cx| dialog.request_close(window, cx));
+        }
+    })
 }
 
 /// The rename dialog's field.

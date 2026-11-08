@@ -170,3 +170,55 @@ fn a_group_shows_its_members_in_the_side_sheet(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.debug_bounds("side-sheet").is_none());
 }
+
+fn is_group_dialog_open(shell: &Entity<DuskShell>, cx: &mut VisualTestContext) -> bool {
+    shell.read_with(cx, |shell, cx| shell.home().read(cx).group_dialog.is_some())
+}
+
+#[gpui::test]
+fn renaming_a_group_to_its_own_name_closes_without_asking_the_instance(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    home.update_in(cx, |home, window, cx| {
+        home.ask_to_rename_group(GROUP, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(is_group_dialog_open(&shell, cx));
+    // The field starts with "Book club"; the session is signed out, so a request would hang.
+    press(cx, "enter");
+    assert!(!is_group_dialog_open(&shell, cx));
+}
+
+#[gpui::test]
+fn a_remove_dialog_closes_when_its_person_left_the_group_meanwhile(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    home.update_in(cx, |home, window, cx| {
+        home.ask_to_remove_from_group(GROUP, person(ZOE, "zoe", "Zoé"), window, cx);
+    });
+    cx.run_until_parked();
+    assert!(is_group_dialog_open(&shell, cx));
+
+    // Someone else's change: Ana leaves, the dialog about Zoé stays.
+    let session = home.read_with(cx, |home, _| home.session.clone());
+    let keep_only = |recipients: Vec<_>, cx: &mut VisualTestContext| {
+        session.update(cx, |session, cx| {
+            session
+                .state_mut()
+                .upsert_direct_message_channel(DirectMessageChannel {
+                    id: GROUP,
+                    recipients,
+                    last_message_id: None,
+                    owner_id: Some(ME),
+                    name: "Book club".to_owned(),
+                });
+            cx.notify();
+        });
+        cx.run_until_parked();
+    };
+    keep_only(vec![person(ZOE, "zoe", "Zoé")], cx);
+    assert!(is_group_dialog_open(&shell, cx));
+    // Zoé leaves too: there is no one to remove any more.
+    keep_only(vec![person(LEA, "lea", "Léa")], cx);
+    assert!(!is_group_dialog_open(&shell, cx));
+}
