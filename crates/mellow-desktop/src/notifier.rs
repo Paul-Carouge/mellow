@@ -60,6 +60,9 @@ pub const TURNED_ON_NOTIFICATION_TAG: &str = "mellow-notifications-turned-on";
 const CAN_REPLACE_SYSTEM_NOTIFICATIONS: bool = !cfg!(all(unix, not(target_os = "macos")));
 /// Where notifications pile up (see the module doc), a flood stops here until the reader is back.
 const MAXIMUM_NOTIFICATIONS_WHILE_AWAY: u32 = 20;
+/// Platform timers overflow on huge waits; a longer mute wakes up early and waits again (the
+/// web's `refreshClock`).
+const MAXIMUM_MUTE_END_WAIT: Duration = Duration::from_hours(24);
 
 /// The notification choices of `user_id`, as the preferences hold them.
 #[must_use]
@@ -84,6 +87,8 @@ pub struct Notifier {
     shown_attention_count: u32,
     /// Wakes at the earliest end of a running mute, which it then drops from the preferences.
     mute_end_timer: Option<(u64, Task<()>)>,
+    /// The account the mute clock was last set for, so other gateway events skip it.
+    mute_clock_user_id: Option<Snowflake>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -118,7 +123,14 @@ impl Notifier {
                 |notifier, _, _: &StateChanged, window, cx| {
                     notifier.show_attention_count(window, cx);
                     // The account is known from the first `Ready` on.
-                    if notifier.mute_end_timer.is_none() {
+                    let user_id = notifier
+                        .session
+                        .read(cx)
+                        .state()
+                        .current_user()
+                        .map(|user| user.id);
+                    if user_id != notifier.mute_clock_user_id {
+                        notifier.mute_clock_user_id = user_id;
                         notifier.wake_at_next_mute_end(window, cx);
                     }
                 },
@@ -132,6 +144,8 @@ impl Notifier {
                 notifier.note_open_channel_seen(window, cx);
             }),
             cx.observe_window_activation(window, Self::note_open_channel_seen),
+            // Timers stand still while the Mac sleeps: a mute that ended meanwhile goes now.
+            cx.observe_window_activation(window, Self::wake_at_next_mute_end),
         ];
         let notifier = cx.entity().downgrade();
         cx.on_system_notification_response(move |response, cx| {
@@ -152,6 +166,7 @@ impl Notifier {
             notifications_shown_while_away: 0,
             shown_attention_count: 0,
             mute_end_timer: None,
+            mute_clock_user_id: None,
             _subscriptions: subscriptions,
         };
         notifier.show_attention_count(window, cx);
@@ -326,7 +341,7 @@ impl Notifier {
         {
             return;
         }
-        let wait = Duration::from_millis(end.saturating_sub(now).saturating_add(1));
+        let wait = mute_end_wait(end, now);
         let timer = cx.spawn_in(window, async move |notifier, cx| {
             cx.background_executor().timer(wait).await;
             let _ = notifier.update_in(cx, |notifier, window, cx| {
@@ -351,6 +366,11 @@ impl Notifier {
         window.set_window_title(&window_title(count, WINDOW_TITLE));
         dock_and_tray::show_attention_count(count, cx);
     }
+}
+
+/// How long to wait for a mute ending at `end`: just past it, at most [`MAXIMUM_MUTE_END_WAIT`].
+fn mute_end_wait(end: u64, now: u64) -> Duration {
+    Duration::from_millis(end.saturating_sub(now).saturating_add(1)).min(MAXIMUM_MUTE_END_WAIT)
 }
 
 /// Plays the chime, opening the system's output in `player` the first time.

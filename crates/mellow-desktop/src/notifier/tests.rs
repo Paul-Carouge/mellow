@@ -246,6 +246,13 @@ fn text_from_others_reaches_the_system_without_controls_or_markup() {
     assert_eq!(channel_of_tag("someone-else-42"), None);
 }
 
+#[test]
+fn a_mute_end_is_waited_for_just_past_it_and_never_longer_than_a_day() {
+    assert_eq!(mute_end_wait(1_000, 400), Duration::from_millis(601));
+    assert_eq!(mute_end_wait(400, 1_000), Duration::from_millis(1));
+    assert_eq!(mute_end_wait(u64::MAX, 0), MAXIMUM_MUTE_END_WAIT);
+}
+
 #[gpui::test]
 fn ended_mutes_are_dropped_and_a_running_one_is_waited_for(cx: &mut TestAppContext) {
     use mellow_client_core::shared_logic::notification_settings::{
