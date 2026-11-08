@@ -100,6 +100,9 @@ impl Default for NotificationSettings {
 /// At most this many places are kept, so a hostile or corrupted entry cannot grow without bound.
 const MAXIMUM_STORED_PLACES: usize = 2_000;
 const MAXIMUM_SNOWFLAKE_DIGITS: usize = 20;
+/// The last millisecond of year 9999: a later mute end is corrupt, and would overflow date
+/// formatting and platform timers.
+const LATEST_STORED_MUTE_END: u64 = 253_402_300_799_999;
 
 /// The web's storage key, kept so settings files read alike.
 #[must_use]
@@ -214,7 +217,10 @@ fn parse_places(stored: &Map<String, Value>) -> BTreeMap<Snowflake, PlaceNotific
             let record = value.as_object()?;
             let muted_until = record.get("mutedUntil").and_then(|end| match end {
                 Value::String(text) if text == "never" => Some(MuteEnd::Never),
-                Value::Number(number) => number.as_u64().filter(|end| *end > 0).map(MuteEnd::At),
+                Value::Number(number) => number
+                    .as_u64()
+                    .filter(|end| (1..=LATEST_STORED_MUTE_END).contains(end))
+                    .map(MuteEnd::At),
                 _ => None,
             });
             let place = PlaceNotificationSettings {
@@ -398,6 +404,7 @@ mod tests {
                 "12": { "mutedUntil": "never" },
                 "not-an-id": { "level": "all" },
                 "13": { "mutedUntil": 1.5e300 },
+                "15": { "mutedUntil": LATEST_STORED_MUTE_END + 1 },
                 "14": "all",
             },
         }));
