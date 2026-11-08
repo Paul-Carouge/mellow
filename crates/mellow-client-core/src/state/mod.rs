@@ -29,7 +29,7 @@ pub use checklists::{
 pub use mentions::{MentionReader, does_message_mention_reader};
 pub use messages::HistoryReachStep;
 pub use optimistic::{ChangeOutcome, ChecklistTickChange, PollVoteChanges, ReactionToggle};
-pub use outbox::{PendingMessage, PendingMessageStatus};
+pub use outbox::{MessageCard, PendingMessage, PendingMessageStatus};
 pub use pins::{PinsAnswer, PinsStatus};
 pub use polls::{PollVoteChange, count_poll_vote, is_poll_ended, own_vote_changes_for_choice};
 pub use reactions::{add_reaction, reaction_key, remove_emoji, remove_reaction, take_emoji_from};
@@ -60,7 +60,10 @@ pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 const DIRECT_MESSAGE_PERMISSIONS: Permissions = Permissions::VIEW_CHANNEL
     .union(Permissions::SEND_MESSAGES)
     .union(Permissions::READ_MESSAGE_HISTORY)
-    .union(Permissions::ATTACH_FILES);
+    .union(Permissions::ATTACH_FILES)
+    .union(Permissions::ADD_REACTIONS)
+    .union(Permissions::SEND_POLLS)
+    .union(Permissions::SEND_CHECKLISTS);
 
 /// What an update touched, so a UI refreshes only that part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

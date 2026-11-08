@@ -10,6 +10,7 @@ mod editor;
 mod emoji_button;
 mod gif_button;
 mod saved_drafts;
+mod slash_menu;
 mod suggestions;
 mod tray;
 
@@ -32,6 +33,7 @@ use mellow_client_core::shared_logic::message_length::{
     MAXIMUM_MESSAGE_LENGTH, MESSAGE_LENGTH_COUNTER_THRESHOLD, message_characters_left,
 };
 use mellow_client_core::shared_logic::role_mentions::with_role_names_as_markup;
+use mellow_client_core::shared_logic::slash_commands::SlashCommandId;
 use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Role as ServerRole, Snowflake};
 
@@ -55,6 +57,7 @@ pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
 use saved_drafts::{SavedDraft, WriteRequest};
 pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts, forget_saved_drafts_now};
+use slash_menu::{SlashMenuList, SlashMenuState, is_dialog_command};
 use suggestions::{MentionSources, Suggestion, SuggestionList, SuggestionQuery, SuggestionState};
 
 /// Drafts are written this long after typing pauses, never on every keystroke.
@@ -151,6 +154,8 @@ pub enum ComposerEvent {
     /// "Unblock" on the notice of a conversation locked by a block; the answer comes back through
     /// [`Composer::finish_unblocking`].
     Unblock(BlockedRecipient),
+    /// "/poll", "/checklist" or "/progress" chose a dialog; the "/query" is gone already.
+    OpenCardDialog(SlashCommandId),
     /// The GIF button: open the GIF picker beside it, or close it.
     ToggleGifPicker,
     /// The emoji button or Ctrl+E: the chat opens the picker beside the button, drawn at
@@ -228,6 +233,7 @@ pub struct Composer {
     rest: Option<RestClient>,
     maximum_attachment_bytes: Option<u64>,
     suggestions: SuggestionState,
+    slash_menu: SlashMenuState,
     /// The caret and text the suggestions were last read from.
     suggestions_read_at: Option<(usize, usize)>,
     has_tried_sending_too_long: bool,
@@ -289,6 +295,7 @@ impl Composer {
             rest: None,
             maximum_attachment_bytes: None,
             suggestions: SuggestionState::default(),
+            slash_menu: SlashMenuState::default(),
             suggestions_read_at: None,
             has_tried_sending_too_long: false,
             notice: None,
@@ -411,6 +418,19 @@ impl Composer {
         self.can_send_messages = can_send_messages;
         self.can_attach_files = can_attach_files;
         cx.notify();
+    }
+
+    /// "Send polls" and "Send checklists" in the open channel: the "/" menu offers their commands.
+    pub fn set_card_permissions(
+        &mut self,
+        can_create_polls: bool,
+        can_create_checklists: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.slash_menu
+            .set_card_permissions(can_create_polls, can_create_checklists);
+        self.suggestions_read_at = None;
+        self.refresh_suggestions(cx);
     }
 
     /// The person whose block locks the open conversation, if any; `set_permissions` says the
@@ -724,6 +744,7 @@ impl Composer {
             input.set_selected_range(end..end, cx);
         });
         self.suggestions.close();
+        self.slash_menu.close();
         self.suggestions_read_at = None;
     }
 
@@ -744,6 +765,7 @@ impl Composer {
             }
             InputEvent::Blur => {
                 self.suggestions.close();
+                self.slash_menu.close();
                 cx.notify();
             }
             InputEvent::PressEnter { .. } | InputEvent::Focus => {}
@@ -785,6 +807,28 @@ impl Composer {
                 can_mention_everyone: self.can_mention_everyone,
             },
         );
+        // One list at a time: ":" and "@" have the word first; editing has no "/" menu.
+        let command_caret =
+            caret.filter(|_| self.suggestions.query().is_none() && self.edit_session.is_none());
+        self.slash_menu.refresh(&text, command_caret, strings(cx));
+        cx.notify();
+    }
+
+    /// Writes the chosen command's Markdown, or removes the "/query" and opens its dialog.
+    fn choose_slash_command(&mut self, index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some((edit, command_id)) = self.slash_menu.apply(index, &self.text(cx), strings(cx))
+        else {
+            return;
+        };
+        self.set_text(edit.text, window, cx);
+        self.input.update(cx, |input, cx| {
+            input.set_selected_range(edit.selection_start..edit.selection_end, cx);
+            input.focus(window, cx);
+        });
+        self.schedule_kept_drafts_write(cx);
+        if is_dialog_command(command_id) {
+            cx.emit(ComposerEvent::OpenCardDialog(command_id));
+        }
         cx.notify();
     }
 
@@ -812,7 +856,9 @@ impl Composer {
     // --- Keys ---------------------------------------------------------------------------------
 
     fn enter(&mut self, _: &EnterInComposer, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.suggestions.visible().is_empty() {
+        if !self.slash_menu.visible().is_empty() {
+            self.choose_slash_command(self.slash_menu.active_index(), window, cx);
+        } else if !self.suggestions.visible().is_empty() {
             self.choose_suggestion(self.suggestions.active_index(), window, cx);
         } else if self.edit_session.is_some() {
             self.save_edit(window, cx);
@@ -822,7 +868,7 @@ impl Composer {
     }
 
     fn up(&mut self, _: &UpInComposer, _: &mut Window, cx: &mut Context<Self>) {
-        if self.suggestions.move_active("up") {
+        if self.slash_menu.move_active("up") || self.suggestions.move_active("up") {
             cx.notify();
         } else if self.edit_session.is_none() && self.text(cx).is_empty() {
             cx.emit(ComposerEvent::EditLast);
@@ -832,7 +878,7 @@ impl Composer {
     }
 
     fn down(&mut self, _: &DownInComposer, _: &mut Window, cx: &mut Context<Self>) {
-        if self.suggestions.move_active("down") {
+        if self.slash_menu.move_active("down") || self.suggestions.move_active("down") {
             cx.notify();
         } else {
             cx.propagate();
@@ -840,7 +886,9 @@ impl Composer {
     }
 
     fn tab(&mut self, _: &TabInComposer, window: &mut Window, cx: &mut Context<Self>) {
-        if self.suggestions.visible().is_empty() {
+        if !self.slash_menu.visible().is_empty() {
+            self.choose_slash_command(self.slash_menu.active_index(), window, cx);
+        } else if self.suggestions.visible().is_empty() {
             window.focus_next(cx);
         } else {
             self.choose_suggestion(self.suggestions.active_index(), window, cx);
@@ -848,7 +896,9 @@ impl Composer {
     }
 
     fn escape(&mut self, _: &EscapeInComposer, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.suggestions.visible().is_empty() {
+        if !self.slash_menu.visible().is_empty() {
+            self.slash_menu.dismiss();
+        } else if !self.suggestions.visible().is_empty() {
             self.suggestions.dismiss();
         } else if let Some(message_id) = self.editor.message_id() {
             self.editor.close();
@@ -1249,6 +1299,56 @@ fn written_file_size(bytes: u64, catalogue: Strings) -> String {
     }
 }
 
+impl Composer {
+    /// The "/" menu above the field while a "/query" names commands.
+    fn render_slash_menu(
+        &self,
+        entity: Entity<Self>,
+        cx: &App,
+    ) -> Option<impl IntoElement + use<>> {
+        let commands = self.slash_menu.visible().to_vec();
+        if !self.can_send_messages || commands.is_empty() {
+            return None;
+        }
+        let chat = strings(cx).chat();
+        let query = self
+            .slash_menu
+            .query()
+            .map(|query| query.query.clone())
+            .unwrap_or_default();
+        let count = i64::try_from(commands.len()).unwrap_or(i64::MAX);
+        let hover = entity.clone();
+        Some(deferred(
+            div()
+                .absolute()
+                .left_0()
+                .right_0()
+                .bottom(relative(1.0))
+                .pb(length(SPACE_XS))
+                .child(SlashMenuList {
+                    title: chat.slash_command_suggestions_title(&query).into(),
+                    count_sentence: chat.slash_command_suggestions_count(count).into(),
+                    commands,
+                    active_index: self.slash_menu.active_index(),
+                    scroll: self.slash_menu.scroll_handle().clone(),
+                    on_choose: Arc::new(move |index, window, cx| {
+                        entity.update(cx, |composer, cx| {
+                            composer.choose_slash_command(index, window, cx);
+                        });
+                    }),
+                    on_hover: Arc::new(move |index, _, cx| {
+                        hover.update(cx, |composer, cx| {
+                            if composer.slash_menu.active_index() != index {
+                                composer.slash_menu.hover(index);
+                                cx.notify();
+                            }
+                        });
+                    }),
+                }),
+        ))
+    }
+}
+
 impl Render for Composer {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -1352,6 +1452,8 @@ impl Render for Composer {
                     }),
             )
         });
+
+        let command_list = self.render_slash_menu(entity.clone(), cx);
 
         let bar = |content: gpui::Div| {
             with_type(div(), TYPE_BODY)
@@ -1595,6 +1697,7 @@ impl Render for Composer {
                     .child(base_row),
             )
             .children(suggestion_list)
+            .children(command_list)
             .when(is_ring_shown, |composer_box| {
                 composer_box.child(focus_ring(COMPONENT_COMPOSER_RADIUS, cx))
             });

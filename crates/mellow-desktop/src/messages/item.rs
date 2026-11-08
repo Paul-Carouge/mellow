@@ -99,6 +99,7 @@ pub struct MessageItem {
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    card: Option<AnyElement>,
     /// The Klipy address the message is, shown as the GIF itself (ADR-0042).
     gif_url: Option<SharedString>,
     link_previews: Option<MessageLinkPreviews>,
@@ -123,6 +124,7 @@ impl MessageItem {
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            card: None,
             gif_url: None,
             link_previews: None,
             forward: None,
@@ -147,6 +149,13 @@ impl MessageItem {
         let on_open_origin =
             on_open_origin.map(|handler| -> ActivationHandler { Arc::new(handler) });
         self.forward = Some((origin, on_open_origin));
+        self
+    }
+
+    /// A poll, checklist or progress bar, drawn under the text.
+    #[must_use]
+    pub fn card(mut self, card: Option<AnyElement>) -> Self {
+        self.card = card;
         self
     }
 
@@ -561,7 +570,7 @@ impl RenderOnce for MessageItem {
             .children(gutter_time)
             .children(gutter_pin)
             .map(|row| match self.forward {
-                // A forward copies no preview (ADR-0039).
+                // A forward copies no preview (ADR-0039), and polls and cards are not forwarded.
                 Some((origin, on_open_origin)) => {
                     let mut copied = vec![body.into_any_element()];
                     copied.extend(attachments.map(IntoElement::into_any_element));
@@ -575,6 +584,7 @@ impl RenderOnce for MessageItem {
                 }
                 None => row
                     .child(body)
+                    .children(self.card)
                     .children(attachments)
                     .children(self.link_previews),
             })

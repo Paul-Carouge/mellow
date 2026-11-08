@@ -8,12 +8,18 @@
 //! The shell fills its conversation slot with this view and tells it the place
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
+mod card_dialogs;
+mod cards;
+#[cfg(test)]
+mod cards_tests;
+mod checklist_editor;
 mod chrome;
 mod emoji_reactions;
 mod forward_dialog;
 mod forwarding;
 mod gif_picker_host;
 mod pins_panel;
+mod poll_voters_dialog;
 mod reactions_dialog;
 mod rows;
 pub mod rules;
@@ -32,9 +38,10 @@ use mellow_client_core::shared_logic::context_menus_people::{
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
 use mellow_client_core::shared_logic::role_mentions::roles_writer_may_mention;
+use mellow_client_core::shared_logic::slash_commands::SlashCommandId;
 use mellow_client_core::state::{
     ClientState, MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange,
-    UnreadMarker,
+    UnreadMarker, is_poll_ended,
 };
 use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
@@ -47,11 +54,14 @@ use crate::composer::{
 };
 use crate::i18n::strings;
 use crate::messages::{MessageBodyCache, ReactionPill};
-use crate::session::{HistoryReach, HistoryStatus, SendRefused, Session, StateChanged};
+use crate::session::{
+    HistoryReach, HistoryStatus, SendRefused, Session, StateChanged, now_unix_milliseconds,
+};
 use crate::theme::delay;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
+use self::card_dialogs::CardDialogKind;
 use self::emoji_reactions::is_reaction_given;
 pub use self::forwarding::OpenForwardOrigin;
 use self::rows::Entry;
@@ -180,6 +190,7 @@ pub struct ConversationView {
     list_focus: FocusHandle,
     pins_focus: FocusHandle,
     typing_refresh: Option<Task<()>>,
+    cards: cards::CardsState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -268,6 +279,7 @@ impl ConversationView {
             list_focus: cx.focus_handle().tab_stop(true),
             pins_focus: cx.focus_handle(),
             typing_refresh: None,
+            cards: cards::CardsState::default(),
             _subscriptions: subscriptions,
         }
     }
@@ -335,6 +347,7 @@ impl ConversationView {
             // A sound of the channel left stops and is freed, as the web's goes with the page.
             crate::attachment_audio::stop_attachment_audio(cx);
             self.revealed_blocked_message_ids.clear();
+            self.forget_cards_of_channel();
             self.reactor_sentences.clear();
             self.pending_reveal = None;
             self.highlight = None;
@@ -395,6 +408,11 @@ impl ConversationView {
             });
         let can_send = permissions.is_none_or(|permissions| permissions.can_send);
         let can_attach = permissions.is_none_or(|permissions| permissions.can_attach);
+        let card_rights = channel_id
+            .map(|channel_id| self.card_rights(channel_id, cx))
+            .map_or((false, false), |rights| {
+                (rights.can_create_polls, rights.can_create_checklists)
+            });
         let people = match &self.open_conversation {
             Some(OpenConversation {
                 guild_id: Some(guild_id),
@@ -423,6 +441,7 @@ impl ConversationView {
         self.composer.update(cx, |composer, cx| {
             composer.set_blocked_recipient(blocked_recipient, cx);
             composer.set_permissions(can_send, can_attach, cx);
+            composer.set_card_permissions(card_rights.0, card_rights.1, cx);
             composer.set_mention_candidates(people, current_user_id, cx);
             composer.set_role_mentions(mentionable_roles, can_mention_everyone, cx);
             composer.set_uploads(rest, maximum_attachment_bytes, cx);
@@ -565,6 +584,10 @@ impl ConversationView {
             is_rich: message.poll.is_some()
                 || message.checklist.is_some()
                 || message.progress_bar.is_some(),
+            is_poll_open: message
+                .poll
+                .as_ref()
+                .is_some_and(|poll| !is_poll_ended(poll, now_unix_milliseconds())),
             has_text: !message.content.trim().is_empty(),
             is_pinned: message.pinned,
             can_send_messages: rights.can_send,
@@ -742,6 +765,17 @@ impl ConversationView {
             ComposerEvent::Cancel(Cancelled::Nothing) => self.mark_as_read(cx),
             ComposerEvent::Cancel(Cancelled::Editing { .. } | Cancelled::Reply) => {}
             ComposerEvent::Unblock(recipient) => self.unblock(recipient, cx),
+            ComposerEvent::OpenCardDialog(command) => {
+                let kind = match command {
+                    SlashCommandId::Poll => Some(CardDialogKind::Poll),
+                    SlashCommandId::Checklist => Some(CardDialogKind::Checklist),
+                    SlashCommandId::ProgressBar => Some(CardDialogKind::ProgressBar(None)),
+                    _ => None,
+                };
+                if let Some(kind) = kind {
+                    self.open_card_dialog(kind, window, cx);
+                }
+            }
             ComposerEvent::ToggleGifPicker => self.toggle_gif_picker(window, cx),
             ComposerEvent::OpenEmojiPicker { anchor } => self.toggle_emoji_picker(
                 emoji_reactions::EmojiTarget::Composer,
@@ -790,7 +824,12 @@ impl ConversationView {
             .read(cx)
             .state()
             .pending_messages(refused.channel_id)
-            .find(|pending| pending.nonce == refused.nonce && pending.attachments.is_empty());
+            // A poll, checklist or progress bar has no text to give back: it stays failed in the list.
+            .find(|pending| {
+                pending.nonce == refused.nonce
+                    && pending.attachments.is_empty()
+                    && pending.card.is_none()
+            });
         if let Some(text) = pending.map(|pending| pending.content.clone()) {
             let is_given_back = self.composer.update(cx, |composer, cx| {
                 composer.give_back_refused_send(refused.channel_id, text, window, cx)
@@ -1276,6 +1315,7 @@ impl ConversationView {
                 let copied = strings(cx).context_menu().message_id_copied();
                 self.copy_to_clipboard(message_id.to_string(), Some(copied), cx);
             }
+            MessageMenuAction::EndPoll => self.ask_to_end_poll(message_id, window, cx),
             MessageMenuAction::Delete => {
                 let skip = window.modifiers().shift;
                 self.delete(message_id, skip, window, cx);
@@ -1714,6 +1754,11 @@ fn message_menu_item_look(
             catalogue.context_menu().copy_message_id().to_owned(),
             IconName::Copy,
             MenuItemTone::Normal,
+        ),
+        MessageMenuAction::EndPoll => (
+            catalogue.polls().end().to_owned(),
+            IconName::ChartBarHorizontal,
+            MenuItemTone::Danger,
         ),
         MessageMenuAction::Delete => (
             catalogue.context_menu().delete_message().to_owned(),

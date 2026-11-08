@@ -23,12 +23,14 @@ use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
 mod blocks;
+mod cards;
 mod forwards;
 mod gifs;
 mod messages;
 mod relationships;
 mod servers;
 
+pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
 use crate::attachment_audio::{end_attachment_audio_session, start_attachment_audio_session};
