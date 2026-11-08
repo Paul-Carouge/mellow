@@ -255,6 +255,8 @@ pub struct MenuItem {
     pub label: SharedString,
     pub icon: IconName,
     pub choice: Option<MenuChoice>,
+    /// An on/off item (a quick reaction already given): checked shows the check mark.
+    pub is_checked: Option<bool>,
     /// Said after the label by screen readers ("You won't get notifications").
     pub description: Option<SharedString>,
     pub tone: MenuItemTone,
@@ -276,6 +278,7 @@ impl MenuItem {
             label: label.into(),
             icon,
             choice: None,
+            is_checked: None,
             description: None,
             tone: MenuItemTone::Normal,
             key_shortcuts: None,
@@ -301,6 +304,13 @@ impl MenuItem {
     #[must_use]
     pub fn description(mut self, description: impl Into<SharedString>) -> Self {
         self.description = Some(description.into());
+        self
+    }
+
+    /// `Some` makes it an on/off item, heard as checked or not.
+    #[must_use]
+    pub fn checked(mut self, is_checked: Option<bool>) -> Self {
+        self.is_checked = is_checked;
         self
     }
 
@@ -517,10 +527,13 @@ impl Render for ContextMenu {
                     let is_active = is_highlighted || self.hovered_index == Some(index);
                     let (text, fill) = item_colours(item.tone, is_active, tokens);
                     let choice = item.choice;
+                    let is_checked = item.is_checked;
                     with_type(div(), TYPE_MENU_ITEM)
                         .id(ElementId::named_usize("menu-item", index))
                         .role(if choice.is_some() {
                             Role::MenuItemRadio
+                        } else if is_checked.is_some() {
+                            Role::MenuItemCheckBox
                         } else {
                             Role::MenuItem
                         })
@@ -530,6 +543,13 @@ impl Render for ContextMenu {
                         })
                         .when_some(choice, |row, choice| {
                             row.aria_toggled(if choice.is_checked {
+                                Toggled::True
+                            } else {
+                                Toggled::False
+                            })
+                        })
+                        .when_some(is_checked, |row, is_checked| {
+                            row.aria_toggled(if is_checked {
                                 Toggled::True
                             } else {
                                 Toggled::False
@@ -585,7 +605,12 @@ impl Render for ContextMenu {
                         .child(div().flex_1().min_w_0().child(item.label.clone()))
                         // The check says which choice is current without relying on colour.
                         .when(choice.is_none_or(|choice| choice.is_checked), |row| {
-                            row.child(icon(item.icon, COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE, text))
+                            let shown = if is_checked == Some(true) {
+                                IconName::Check
+                            } else {
+                                item.icon
+                            };
+                            row.child(icon(shown, COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE, text))
                         })
                         .when(is_highlighted && is_keyboard_focus, |row| {
                             row.child(inset_focus_ring(COMPONENT_CONTEXT_MENU_ITEM_RADIUS, cx))

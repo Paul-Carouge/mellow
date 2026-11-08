@@ -11,6 +11,7 @@ pub mod context_menus_people;
 pub mod context_menus_places;
 pub mod custom_emoji;
 pub mod emoji_catalogue;
+pub mod emoji_picker;
 pub mod emoji_suggestions;
 pub mod format;
 pub mod forward_messages;

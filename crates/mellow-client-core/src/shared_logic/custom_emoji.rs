@@ -4,13 +4,16 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+use std::sync::LazyLock;
 
 use icu_properties::CodePointSetData;
 use icu_properties::props::{EmojiPresentation, RegionalIndicator};
 use mellow_protocol::{CustomEmoji, Snowflake};
 use unicode_segmentation::UnicodeSegmentation as _;
 
+use super::emoji_catalogue::EMOJI_CATALOGUE;
 use super::markdown::{BlockNode, InlineNode};
+use crate::state::reaction_key;
 
 /// As on Discord: a message of up to 30 emoji and nothing else shows them large.
 pub const MAXIMUM_JUMBO_EMOJI: usize = 30;
@@ -18,6 +21,20 @@ const EMOJI_PRESENTATION_SELECTOR: char = '\u{FE0F}';
 const KEYCAP: char = '\u{20E3}';
 /// The longest id a custom reaction key holds, as the server's `u64`.
 const MAXIMUM_ID_DIGITS: usize = 20;
+
+/// Each built-in emoji by its stored key (`CATALOGUE_EMOJI_BY_KEY`).
+static CATALOGUE_EMOJI_BY_KEY: LazyLock<HashMap<String, &'static str>> = LazyLock::new(|| {
+    EMOJI_CATALOGUE
+        .iter()
+        .map(|entry| (reaction_key(entry.emoji), entry.emoji))
+        .collect()
+});
+
+/// Whether the picker knows this emoji, whatever its selectors (`readRecentEmoji`'s filter).
+#[must_use]
+pub fn is_catalogue_emoji(emoji: &str) -> bool {
+    CATALOGUE_EMOJI_BY_KEY.contains_key(&reaction_key(emoji))
+}
 
 /// A grapheme drawn as an emoji: emoji presentation, a selector asking for it, a keycap or a flag.
 fn is_emoji_grapheme(grapheme: &str) -> bool {
@@ -80,14 +97,14 @@ pub fn custom_emoji_of_reaction_key(key: &str) -> Option<Snowflake> {
         .flatten()
 }
 
-/// How a stored key shows: a lone symbol or keycap asks for its emoji look, which some fonts only
-/// give with the selector the instance strips.
-///
-/// shortcut: the web first looks the key up in its emoji catalogue to put back every selector a
-/// sequence had; without that catalogue a stripped selector inside a ZWJ sequence stays out.
-/// Port the catalogue with the emoji picker (M3 step 5).
+/// How a stored key shows: as the picker writes it when the catalogue knows it (the selectors the
+/// instance strips put back), else a lone symbol or keycap asks for its emoji look, which some
+/// fonts only give with the selector.
 #[must_use]
 pub fn display_emoji(key: &str) -> String {
+    if let Some(known) = CATALOGUE_EMOJI_BY_KEY.get(key) {
+        return (*known).to_owned();
+    }
     let mut characters = key.chars();
     match (characters.next(), characters.next(), characters.next()) {
         (Some(base), Some(KEYCAP), None) => format!("{base}{EMOJI_PRESENTATION_SELECTOR}{KEYCAP}"),
@@ -198,7 +215,7 @@ mod tests {
         let known = known();
         assert_eq!(
             reaction_appearance("👍", &known),
-            ReactionAppearance::Unicode("👍\u{FE0F}".to_owned())
+            ReactionAppearance::Unicode("👍".to_owned())
         );
         assert_eq!(
             reaction_appearance(":502", &known),
@@ -226,5 +243,17 @@ mod tests {
         assert_eq!(display_emoji("❤"), "❤\u{FE0F}");
         assert_eq!(display_emoji("1\u{20E3}"), "1\u{FE0F}\u{20E3}");
         assert_eq!(display_emoji("👨‍👩‍👧"), "👨‍👩‍👧");
+    }
+
+    // Ported from `reactions.test.ts` ("show with the picker's spelling").
+    #[test]
+    fn a_known_key_shows_as_the_picker_writes_it() {
+        assert_eq!(display_emoji("☺"), "☺\u{FE0F}");
+        assert_eq!(display_emoji("👨‍💻"), "👨‍💻");
+        for entry in EMOJI_CATALOGUE.iter() {
+            assert_eq!(display_emoji(&reaction_key(entry.emoji)), entry.emoji);
+        }
+        assert!(is_catalogue_emoji("❤") && is_catalogue_emoji("❤\u{FE0F}"));
+        assert!(!is_catalogue_emoji("lol"));
     }
 }

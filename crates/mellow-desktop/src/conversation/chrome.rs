@@ -1,7 +1,7 @@
 //! What surrounds the rows (`ChatPane.svelte`, `MessageList.svelte`): the list itself with its
 //! keys, the unread bar over its top, the jump bar resting on the composer while older messages
 //! show, the typing line, the failure of the last action, the composer, and the layers (pins
-//! panel, message menu, confirmation).
+//! panel, message menu, emoji picker, confirmation).
 
 use gpui::{
     AnyElement, Context, ExternalPaths, FontWeight, HighlightStyle, InteractiveElement as _,
@@ -512,6 +512,9 @@ impl Render for ConversationView {
             .children(pins_panel)
             .when_some(self.menu.as_ref(), |slot, (menu, _, _)| {
                 slot.child(menu.clone())
+            })
+            .when_some(self.emoji_picker.as_ref(), |slot, open| {
+                slot.child(open.picker.clone())
             })
             .when_some(self.confirmation.as_ref(), |slot, (dialog, _)| {
                 slot.child(dialog.clone())

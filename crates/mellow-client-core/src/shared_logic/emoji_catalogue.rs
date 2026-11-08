@@ -21,6 +21,20 @@ pub enum EmojiCategory {
     Flags,
 }
 
+impl EmojiCategory {
+    /// In the picker's order (`EMOJI_CATEGORY_IDS`).
+    pub const ALL: [Self; 8] = [
+        Self::People,
+        Self::Nature,
+        Self::Food,
+        Self::Activities,
+        Self::Travel,
+        Self::Objects,
+        Self::Symbols,
+        Self::Flags,
+    ];
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CatalogueEmoji {
     /// As sent and shown, variation selector included ("❤️").

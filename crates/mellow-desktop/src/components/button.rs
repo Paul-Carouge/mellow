@@ -279,6 +279,8 @@ pub struct IconButton {
     toggled: Option<bool>,
     /// Whether the menu it opens is open, for a button that opens one.
     expanded: Option<bool>,
+    /// Its own shortcut, for screen readers ("Control+E").
+    key_shortcuts: Option<SharedString>,
     is_disabled: bool,
     /// The host's handle, to move focus here; otherwise one kept while it is drawn.
     focus_handle: Option<FocusHandle>,
@@ -301,6 +303,7 @@ impl IconButton {
             tone: IconButtonTone::Standard,
             toggled: None,
             expanded: None,
+            key_shortcuts: None,
             is_disabled: false,
             focus_handle: None,
             on_click: None,
@@ -338,6 +341,12 @@ impl IconButton {
     #[must_use]
     pub fn expanded(mut self, is_open: bool) -> Self {
         self.expanded = Some(is_open);
+        self
+    }
+
+    #[must_use]
+    pub fn key_shortcuts(mut self, key_shortcuts: impl Into<SharedString>) -> Self {
+        self.key_shortcuts = Some(key_shortcuts.into());
         self
     }
 
@@ -397,6 +406,9 @@ impl RenderOnce for IconButton {
             })
             .when_some(self.expanded, |button, is_open| {
                 button.aria_expanded(is_open)
+            })
+            .when_some(self.key_shortcuts, |button, shortcuts| {
+                button.aria_keyshortcuts(shortcuts)
             })
             .track_focus(&focus_handle)
             .relative()

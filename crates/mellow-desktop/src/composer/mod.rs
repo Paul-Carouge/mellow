@@ -7,6 +7,7 @@
 
 mod drafts;
 mod editor;
+mod emoji_button;
 mod saved_drafts;
 mod suggestions;
 mod tray;
@@ -52,7 +53,7 @@ pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
 use saved_drafts::{SavedDraft, WriteRequest};
 pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts, forget_saved_drafts_now};
-use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
+use suggestions::{Suggestion, SuggestionList, SuggestionQuery, SuggestionState};
 
 /// Drafts are written this long after typing pauses, never on every keystroke.
 const DRAFT_WRITE_DELAY: Duration = Duration::from_secs(1);
@@ -97,6 +98,7 @@ pub fn bind_composer_keys(cx: &mut App) {
         KeyBinding::new("shift-tab", ShiftTabInComposer, context),
         KeyBinding::new("escape", EscapeInComposer, context),
     ]);
+    emoji_button::bind_emoji_button_keys(cx, context);
 }
 
 /// The message a reply answers, as the bar names it.
@@ -147,6 +149,11 @@ pub enum ComposerEvent {
     /// "Unblock" on the notice of a conversation locked by a block; the answer comes back through
     /// [`Composer::finish_unblocking`].
     Unblock(BlockedRecipient),
+    /// The emoji button or Ctrl+E: the chat opens the picker beside the button, drawn at
+    /// `anchor`, and gives the pick back through [`Composer::insert_at_caret`].
+    OpenEmojiPicker {
+        anchor: gpui::Bounds<gpui::Pixels>,
+    },
 }
 
 /// The other person of a one-to-one conversation the user blocked (ADR-0025): the field gives way
@@ -220,6 +227,8 @@ pub struct Composer {
     last_typing_sent_at: Option<Instant>,
     maximum_rows: usize,
     kept_drafts: KeptDrafts,
+    emoji_button_bounds: emoji_button::EmojiButtonBounds,
+    is_emoji_picker_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -279,6 +288,8 @@ impl Composer {
                 pending_write: None,
                 window: window.window_handle(),
             },
+            emoji_button_bounds: cx.new(|_| None),
+            is_emoji_picker_open: false,
             _subscriptions: subscriptions,
         }
     }
@@ -725,6 +736,9 @@ impl Composer {
         let Some((suggestion, range)) = self.suggestions.choice(index) else {
             return;
         };
+        if let Suggestion::Emoji(emoji) = &suggestion {
+            crate::emoji_picker::note_emoji_used(self.current_user_id, emoji.emoji, cx);
+        }
         let (text, caret) = replace_in_draft(
             &self.text(cx),
             range.start,
@@ -1378,6 +1392,7 @@ impl Render for Composer {
                 })
         };
 
+        let emoji_button = self.emoji_button(cx);
         let tray = (self.can_send_messages && !self.drafts.tray().is_empty())
             .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
 
@@ -1451,6 +1466,7 @@ impl Render for Composer {
                             .child(characters_left.to_string()),
                     )
                 })
+                .child(emoji_button)
         } else if let Some(recipient) = self.blocked_recipient.clone() {
             // `Composer.svelte`: the sentence, then "Unblock", wrapping below it when narrow.
             let unblock = entity.clone();
@@ -1532,6 +1548,7 @@ impl Render for Composer {
             .on_action(cx.listener(Self::tab))
             .on_action(|_: &ShiftTabInComposer, window, cx| window.focus_prev(cx))
             .on_action(cx.listener(Self::escape))
+            .on_action(cx.listener(Self::open_emoji_picker))
             .flex_none()
             .flex()
             .flex_col()

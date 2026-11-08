@@ -32,8 +32,8 @@ pub fn blocked_recipient_of(
 
 // ---- Message actions ----
 
-/// The keys of a message's hover bar, in order (DESIGN.md §5.4).
-/// shortcut: no quick reactions yet; they come with the emoji picker (M3 step 5).
+/// The keys of a message's hover bar after its reactions, in order (DESIGN.md §5.4). The quick
+/// reactions and Add reaction lead the bar wherever `can_add_reactions` holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverBarAction {
     Edit,
@@ -264,7 +264,9 @@ mod tests {
         is_pinned: false,
         can_send_messages: true,
         can_manage_messages: false,
+        has_reactions: false,
         can_join_reactions: true,
+        can_add_reactions: true,
         can_manage_pins: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {

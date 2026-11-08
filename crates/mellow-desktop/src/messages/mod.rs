@@ -32,7 +32,9 @@ pub use forward::ForwardOrigin;
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};
 pub use link_previews::MessageLinkPreviews;
 pub use markdown_view::{EditedMarker, MessageMarkdown};
-pub use reactions::{MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills};
+pub use reactions::{
+    AddReactionButton, MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills,
+};
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,

@@ -67,6 +67,7 @@ fn open_general(
         cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
         bind_tab_navigation(cx);
         bind_composer_keys(cx);
+        crate::emoji_picker::bind_emoji_picker_keys(cx);
     });
     let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
     session.update(cx, |session, _| {
@@ -808,4 +809,230 @@ fn shift_f10_or_the_menu_key_on_a_focused_message_opens_its_menu(cx: &mut TestAp
         press(cx, "escape");
         assert!(view.read_with(cx, |view, _| view.menu.is_none()));
     }
+}
+
+// ---- The emoji picker and reactions ----
+
+/// The open server lets the reader start reactions (`ADD_REACTIONS`).
+fn allow_new_reactions(session: &Entity<Session>, cx: &mut VisualTestContext) {
+    session.update(cx, |session, cx| {
+        let state = session.state_mut();
+        let mut guild = state
+            .guild(GUILD_RUST)
+            .cloned()
+            .expect("the fixture's server");
+        guild.my_permissions |= Permissions::ADD_REACTIONS;
+        let change = state.apply_event(
+            mellow_protocol::GatewayEvent::GuildCreate(Box::new(guild)),
+            0,
+        );
+        cx.emit(StateChanged(vec![change]));
+    });
+    cx.run_until_parked();
+}
+
+fn picker_target(
+    view: &Entity<ConversationView>,
+    cx: &mut VisualTestContext,
+) -> Option<emoji_reactions::EmojiTarget> {
+    view.read_with(cx, |view, _| {
+        view.emoji_picker.as_ref().map(|open| open.target)
+    })
+}
+
+fn menu_actions(
+    view: &Entity<ConversationView>,
+    message_id: u64,
+    cx: &mut VisualTestContext,
+) -> Vec<MenuLine<MessageMenuAction>> {
+    cx.update(|_, cx| {
+        let view = view.read(cx);
+        let message = view
+            .cached_message(Snowflake::from_raw(message_id), cx)
+            .expect("a loaded message");
+        message_menu_actions(view.message_facts(&message, cx), &view.quick_reactions(cx))
+    })
+}
+
+#[gpui::test]
+fn ctrl_e_opens_the_picker_and_the_emoji_goes_in_at_the_caret(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    focus_composer(&view, cx);
+    cx.simulate_input("hi");
+    press(
+        cx,
+        if cfg!(target_os = "macos") {
+            "cmd-e"
+        } else {
+            "ctrl-e"
+        },
+    );
+    assert_eq!(
+        picker_target(&view, cx),
+        Some(emoji_reactions::EmojiTarget::Composer)
+    );
+    cx.simulate_input("coeur rouge");
+    cx.run_until_parked();
+    press(cx, "enter");
+    assert_eq!(picker_target(&view, cx), None);
+    assert_eq!(composer_text(&view, cx), "hi❤️ ");
+    let recent = cx.update(|_, cx| crate::emoji_picker::recent_emoji(Some(ME), cx));
+    assert_eq!(recent, ["❤️"], "a pick is remembered for the account");
+}
+
+#[gpui::test]
+fn add_reaction_and_quick_reactions_need_add_reactions_and_the_picker_holds_the_message(
+    cx: &mut TestAppContext,
+) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
+    let lines = menu_actions(&view, 10_001, cx);
+    assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::AddReaction)));
+
+    allow_new_reactions(&session, cx);
+    let lines = menu_actions(&view, 10_001, cx);
+    assert_eq!(
+        lines[..4],
+        [
+            MenuLine::Action(MessageMenuAction::ToggleReaction("👍".to_owned())),
+            MenuLine::Action(MessageMenuAction::ToggleReaction("❤️".to_owned())),
+            MenuLine::Action(MessageMenuAction::ToggleReaction("😂".to_owned())),
+            MenuLine::Action(MessageMenuAction::AddReaction),
+        ]
+    );
+    let message_id = Snowflake::from_raw(10_001);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.run_menu_action(message_id, MessageMenuAction::AddReaction, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        picker_target(&view, cx),
+        Some(emoji_reactions::EmojiTarget::Message(message_id))
+    );
+    assert_eq!(
+        view.read_with(cx, |view, _| view.message_holding_the_picker()),
+        Some(message_id),
+        "the hover bar stays for focus to come back to"
+    );
+    press(cx, "escape");
+    assert_eq!(picker_target(&view, cx), None);
+}
+
+#[gpui::test]
+fn a_quick_reaction_from_the_menu_becomes_the_first_quick_reaction(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
+    allow_new_reactions(&session, cx);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.run_menu_action(
+                Snowflake::from_raw(10_001),
+                MessageMenuAction::ToggleReaction("😂".to_owned()),
+                window,
+                cx,
+            );
+        });
+    });
+    let quick = view.read_with(cx, ConversationView::quick_reactions);
+    assert_eq!(quick, ["😂", "👍", "❤️"]);
+}
+
+/// A small anchor in the window's top-left corner: the picker opens below it.
+fn corner_anchor() -> gpui::Bounds<gpui::Pixels> {
+    gpui::Bounds::new(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(10.), gpui::px(10.)),
+    )
+}
+
+fn toggle_picker(
+    view: &Entity<ConversationView>,
+    target: emoji_reactions::EmojiTarget,
+    cx: &mut VisualTestContext,
+) {
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.toggle_emoji_picker(target, corner_anchor(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+}
+
+fn mouse_down_at(position: gpui::Point<gpui::Pixels>, cx: &mut VisualTestContext) {
+    cx.simulate_mouse_down(
+        position,
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    cx.run_until_parked();
+}
+
+/// A point far from the picker and its corner anchor.
+fn far_corner(cx: &mut VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    let viewport = cx.update(|window, _| window.viewport_size());
+    gpui::point(
+        viewport.width - gpui::px(2.),
+        viewport.height - gpui::px(2.),
+    )
+}
+
+#[gpui::test]
+fn a_click_on_the_opener_closes_the_picker_without_reopening_it(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
+    allow_new_reactions(&session, cx);
+    let target = emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_001));
+    toggle_picker(&view, target, cx);
+    assert_eq!(picker_target(&view, cx), Some(target));
+
+    // The opener's mouse-down dismisses it first; its click must not open it again.
+    mouse_down_at(corner_anchor().center(), cx);
+    assert_eq!(picker_target(&view, cx), None);
+    toggle_picker(&view, target, cx);
+    assert_eq!(picker_target(&view, cx), None);
+}
+
+#[gpui::test]
+fn a_click_outside_then_another_messages_button_opens_its_picker(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(
+        cx,
+        vec![message(10_001, &ana(), "hi"), message(10_002, &ana(), "yo")],
+        None,
+    );
+    allow_new_reactions(&session, cx);
+    toggle_picker(
+        &view,
+        emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_001)),
+        cx,
+    );
+    let elsewhere = far_corner(cx);
+    mouse_down_at(elsewhere, cx);
+    assert_eq!(picker_target(&view, cx), None);
+
+    let other = emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_002));
+    toggle_picker(&view, other, cx);
+    assert_eq!(picker_target(&view, cx), Some(other));
+}
+
+#[gpui::test]
+fn ctrl_e_after_a_click_outside_the_picker_opens_it_again(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    focus_composer(&view, cx);
+    toggle_picker(&view, emoji_reactions::EmojiTarget::Composer, cx);
+    let elsewhere = far_corner(cx);
+    mouse_down_at(elsewhere, cx);
+    assert_eq!(picker_target(&view, cx), None);
+
+    focus_composer(&view, cx);
+    press(
+        cx,
+        if cfg!(target_os = "macos") {
+            "cmd-e"
+        } else {
+            "ctrl-e"
+        },
+    );
+    assert_eq!(
+        picker_target(&view, cx),
+        Some(emoji_reactions::EmojiTarget::Composer)
+    );
 }

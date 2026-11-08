@@ -26,7 +26,8 @@ use super::forward::{ForwardFrame, ForwardOrigin};
 use super::link_previews::MessageLinkPreviews;
 use super::markdown_view::{EditedMarker, MessageMarkdown};
 use super::reactions::{
-    MessageReactions, ReactionPill, ReactionToggleHandler, ReactionTooltipBuilder,
+    AddReactionButton, MessageReactions, ReactionPill, ReactionToggleHandler,
+    ReactionTooltipBuilder,
 };
 use super::reply::{ReplyLine, ReplyReference};
 use super::time::{
@@ -92,6 +93,7 @@ pub struct MessageItem {
     can_join_reactions: bool,
     on_toggle_reaction: Option<ReactionToggleHandler>,
     reaction_tooltip: Option<ReactionTooltipBuilder>,
+    add_reaction: Option<AddReactionButton>,
     selection_order: u64,
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
@@ -113,6 +115,7 @@ impl MessageItem {
             can_join_reactions: true,
             on_toggle_reaction: None,
             reaction_tooltip: None,
+            add_reaction: None,
             selection_order: 0,
             on_retry: None,
             on_discard: None,
@@ -166,6 +169,13 @@ impl MessageItem {
         builder: impl Fn(&ReactionPill, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         self.reaction_tooltip = Some(Arc::new(builder));
+        self
+    }
+
+    /// Add reaction after the reaction pills (`canAddNew`).
+    #[must_use]
+    pub fn add_reaction(mut self, add_reaction: Option<AddReactionButton>) -> Self {
+        self.add_reaction = add_reaction;
         self
     }
 
@@ -429,7 +439,8 @@ impl RenderOnce for MessageItem {
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)
                 .can_join(self.can_join_reactions)
-                .tooltip(self.reaction_tooltip);
+                .tooltip(self.reaction_tooltip)
+                .add_button(self.add_reaction);
             match self.on_toggle_reaction {
                 Some(on_toggle) => {
                     reactions.on_toggle(move |key, window, cx| on_toggle(key, window, cx))
