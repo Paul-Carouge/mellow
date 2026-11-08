@@ -82,7 +82,8 @@ impl Entry {
         match self {
             Self::HistoryStart => HISTORY_START_KEY.to_owned(),
             Self::Row(row) => row.key.clone(),
-            Self::BlockedRun(run) => run.key.clone(),
+            // The run's last message: an older page extending the run keeps its key (and focus).
+            Self::BlockedRun(run) => run.anchor_key.clone(),
         }
     }
 
@@ -307,7 +308,7 @@ impl ConversationView {
                 let row = match entry {
                     MessageListEntry::Row(row) => row,
                     MessageListEntry::BlockedRun(run) => {
-                        versions.push((run.key.clone(), blocked_run_version(&run)));
+                        versions.push((run.anchor_key.clone(), blocked_run_version(&run)));
                         entries.push(Entry::BlockedRun(run));
                         continue;
                     }
@@ -349,16 +350,21 @@ impl ConversationView {
     /// Takes the rebuilt rows and tells the list what moved.
     fn apply_rows(&mut self, entries: Vec<Entry>, versions: Vec<(String, u64)>) {
         let update = super::rules::list_update(&self.entry_versions, &versions);
-        // An older page lands while the reader is in the history start: the first old row keeps
-        // its place at the top instead of being pushed down by the page.
+        // An older page lands while the reader is in the history start: the first old entry keeps
+        // its place at the top instead of being pushed down by the page (the web's anchor).
         let scroll_top = self.list.logical_scroll_top();
         let is_reading_history_start =
             scroll_top.item_ix == 0 && !self.entry_versions.is_empty() && !self.is_at_latest();
+        let first_old_key = self.entry_versions.get(1).map(|(key, _)| key.clone());
         if let Some((range, count)) = update.splice.clone() {
-            self.list.splice(range.clone(), count);
-            if is_reading_history_start && range == (1..1) && count > 0 {
+            self.list.splice(range, count);
+            let first_old_index = first_old_key
+                .and_then(|first_old| versions.iter().position(|(key, _)| *key == first_old));
+            if let Some(index) =
+                first_old_index.filter(|&index| is_reading_history_start && index > 1)
+            {
                 self.list.scroll_to(gpui::ListOffset {
-                    item_ix: 1 + count,
+                    item_ix: index,
                     offset_in_item: gpui::px(0.0),
                 });
             }
@@ -929,7 +935,7 @@ impl ConversationView {
         } else {
             catalogue.messages().show_blocked()
         };
-        let is_keyboard_focused = self.focused_row_key.as_deref() == Some(run.key.as_str())
+        let is_keyboard_focused = self.focused_row_key.as_deref() == Some(run.anchor_key.as_str())
             && window.last_input_was_keyboard()
             && self.list_focus.is_focused(window);
         let message_ids = run.message_ids.clone();
@@ -941,7 +947,7 @@ impl ConversationView {
             .children(divider)
             .child(
                 with_type(div(), TYPE_BODY)
-                    .id(SharedString::from(format!("row-{}", run.key)))
+                    .id(SharedString::from(format!("row-{}", run.anchor_key)))
                     .role(Role::ListItem)
                     .aria_label(SharedString::from(sentence.clone()))
                     .aria_expanded(is_revealed)
@@ -971,7 +977,7 @@ impl ConversationView {
                     .child(sentence)
                     .child(
                         div()
-                            .id(SharedString::from(format!("toggle-{}", run.key)))
+                            .id(SharedString::from(format!("toggle-{}", run.anchor_key)))
                             .role(Role::Button)
                             .aria_expanded(is_revealed)
                             .font_weight(FontWeight::SEMIBOLD)

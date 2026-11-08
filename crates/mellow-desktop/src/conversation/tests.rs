@@ -585,6 +585,42 @@ fn a_jump_to_a_loaded_pin_focuses_and_lights_it_and_jump_to_present_comes_back(
 }
 
 #[gpui::test]
+fn an_older_page_extending_a_folded_run_keeps_its_row_and_focus(cx: &mut TestAppContext) {
+    // A full page, all from Ana: the channel has older history.
+    let page: Vec<Message> = (101..=150)
+        .map(|id| message(10_000 + id, &ana(), "blocked"))
+        .collect();
+    let (view, session, cx) = open_general(cx, page, None);
+    block_ana(&session, cx);
+    let run_key = view.read_with(cx, |view, _| view.entries[1].key());
+    view.update(cx, |view, cx| {
+        view.focused_row_key = Some(run_key.clone());
+        view.list.scroll_to(ListOffset::default());
+        view.visit.has_reader_scrolled = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let older: Vec<Message> = (91..=100)
+        .map(|id| message(10_000 + id, &ana(), "older"))
+        .collect();
+    session.update(cx, |session, cx| {
+        let change = session.state_mut().insert_history_page(RUST_GENERAL, older);
+        cx.emit(StateChanged(vec![change]));
+    });
+    cx.run_until_parked();
+
+    assert_eq!(blocked_runs(&view, cx), [(60, false)]);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.entries[1].key(), run_key, "the run keeps its key");
+        assert!(
+            view.focused_blocked_run().is_some(),
+            "keyboard focus stays on the run"
+        );
+    });
+}
+
+#[gpui::test]
 fn a_jump_to_a_message_before_the_channel_start_says_it_is_gone(cx: &mut TestAppContext) {
     let (view, _session, cx) = open_general(cx, many_messages(30), None);
     jump_to(&view, 5, cx);

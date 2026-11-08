@@ -1246,7 +1246,7 @@ impl ConversationView {
     fn focused_blocked_run(&self) -> Option<(Vec<Snowflake>, bool)> {
         let key = self.focused_row_key.as_ref()?;
         self.entries.iter().find_map(|entry| match entry {
-            Entry::BlockedRun(run) if run.key == *key => {
+            Entry::BlockedRun(run) if run.anchor_key == *key => {
                 Some((run.message_ids.clone(), run.is_revealed))
             }
             _ => None,
