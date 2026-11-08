@@ -7,6 +7,8 @@
 
 mod channel_sidebar;
 mod conversation_sheet;
+mod custom_status_dialog;
+mod member_profile;
 mod member_sheet;
 mod notification_settings;
 mod overlays;
@@ -190,6 +192,9 @@ pub struct DuskShell {
     status_menu: Option<(Entity<ContextMenu>, Subscription)>,
     /// The notification choices, opened from the status menu.
     notification_settings: Option<(Entity<ModalDialog>, Subscription)>,
+    custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    /// The profile a member row opened in the side sheet.
+    member_profile: member_profile::MemberProfileState,
     /// Where the user card is drawn, for the status menu to open across it.
     user_card_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// "User ID copied" on the user card, until `copied_label_timer` ends it.
@@ -242,6 +247,8 @@ impl DuskShell {
             quick_switcher: None,
             status_menu: None,
             notification_settings: None,
+            custom_status_dialog: None,
+            member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
             copied_label_timer: None,
@@ -936,6 +943,9 @@ impl Render for DuskShell {
                 root.child(menu.clone())
             })
             .when_some(self.notification_settings.as_ref(), |root, (dialog, _)| {
+                root.child(dialog.clone())
+            })
+            .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             });
         with_tab_navigation(root, &self.root_focus)

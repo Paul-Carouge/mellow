@@ -58,6 +58,9 @@ pub struct CurrentUser {
     pub friend_code: Option<String>,
 }
 
+/// Characters of a custom status, counted as Unicode scalar values of the trimmed text.
+pub const MAXIMUM_CUSTOM_STATUS_LENGTH: usize = 128;
+
 /// The status a user picks for themselves. Others see `Invisible` as offline.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]

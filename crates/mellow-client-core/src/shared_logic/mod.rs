@@ -18,6 +18,7 @@ pub mod message_length;
 pub mod message_rows;
 pub mod notification_settings;
 pub mod notifications;
+pub mod profiles;
 pub mod quick_switcher;
 pub mod role_colors;
 pub mod role_mentions;
