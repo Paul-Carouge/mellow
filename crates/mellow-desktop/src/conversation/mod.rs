@@ -22,6 +22,9 @@ use gpui::{
     AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent,
     ListAlignment, ListOffset, ListState, SharedString, Subscription, Task, Window, px,
 };
+use mellow_client_core::shared_logic::context_menus_people::{
+    MenuLine, MessageMenuAction, MessageMenuFacts, message_menu_actions,
+};
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
 use mellow_client_core::state::{
@@ -44,9 +47,7 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
 use self::rows::Entry;
-use self::rules::{
-    MenuLine, MessageFacts, MessageMenuAction, message_menu_lines, reactor_sentence,
-};
+use self::rules::reactor_sentence;
 
 /// Rows measured beyond the visible part, so scrolling and older pages do not pop in.
 const LIST_OVERDRAW: f32 = COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
@@ -513,7 +514,7 @@ impl ConversationView {
         }
     }
 
-    fn message_facts(&self, message: &Message, cx: &App) -> MessageFacts {
+    fn message_facts(&self, message: &Message, cx: &App) -> MessageMenuFacts {
         let rights = self.permissions(message.channel_id, cx);
         let current_user_id = self
             .session
@@ -521,7 +522,7 @@ impl ConversationView {
             .state()
             .current_user()
             .map(|user| user.id);
-        MessageFacts {
+        MessageMenuFacts {
             is_own: Some(message.author.id) == current_user_id,
             is_forward: message.forwarded_from.is_some(),
             is_rich: message.poll.is_some()
@@ -1154,7 +1155,7 @@ impl ConversationView {
             .map(|reaction| reaction.emoji.clone())
             .collect();
         let view = cx.entity().downgrade();
-        let entries = message_menu_lines(facts, &reaction_keys)
+        let entries = message_menu_actions(facts, &reaction_keys)
             .into_iter()
             .map(|line| {
                 let MenuLine::Action(action) = line else {

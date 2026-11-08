@@ -7,6 +7,7 @@
 
 pub mod channel_order;
 pub mod code_blocks;
+pub mod context_menus_people;
 pub mod custom_emoji;
 pub mod emoji_catalogue;
 pub mod emoji_suggestions;
