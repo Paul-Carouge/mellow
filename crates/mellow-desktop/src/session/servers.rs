@@ -20,6 +20,8 @@ impl Session {
         on_done: impl FnOnce(Result<(), String>, &mut App) + 'static,
     ) {
         let Some(rest) = self.rest_client().cloned() else {
+            // A session being torn down: answer anyway, or the busy dialog could never close.
+            cx.defer(move |cx| on_done(Err(failure_summary), cx));
             return;
         };
         self.run_request(
