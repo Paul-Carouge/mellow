@@ -187,7 +187,9 @@ opt-level = 3
 opt-level = 3
 
 # str0m 0.24.1 with its H.264 FU-A reassembly bounded (ADR-0052): upstream keeps every fragment
-# until an end fragment arrives, so a sender could grow server memory without limit. Drop the
-# patch once an upstream release bounds it.
+# until an end fragment arrives, so a sender could grow server memory without limit. Also, each
+# new m-line's random mid avoids the lines added in the same offer: upstream checks only the
+# negotiated ones, so about one client offer in 500 repeated a mid and the server refused it.
+# Drop the patch once an upstream release fixes both.
 [patch.crates-io]
 str0m = { path = "vendor/str0m" }
