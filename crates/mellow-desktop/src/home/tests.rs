@@ -312,3 +312,16 @@ fn a_groups_menu_renames_it_and_copies_its_id(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(is_group_dialog_open(&shell, cx));
 }
+
+#[gpui::test]
+fn a_menu_change_that_fails_is_said_in_the_notice_bar(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    // Signed out: the instance cannot be asked, as when it is unreachable.
+    let request = PersonMenuRequest::new(person(LEA, "lea", "Léa"), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::AcceptRequest, &request, window, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("shell-notice-bar").is_some());
+}

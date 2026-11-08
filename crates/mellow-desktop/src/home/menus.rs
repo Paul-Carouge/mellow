@@ -479,17 +479,19 @@ impl Home {
         let home = cx.entity().downgrade();
         self.session.update(cx, |session, cx| {
             session.send_friend_request(request, cx, move |answer, cx| {
-                let _ = home.update(cx, |home, cx| {
-                    let outcome = answer.map(|relationship| {
-                        let words = strings(cx).friends();
-                        let person = display_name(&relationship.user);
-                        if relationship.kind == RelationshipKind::Friend {
-                            words.accepted_theirs(person)
-                        } else {
-                            words.sent(person)
-                        }
+                cx.defer(move |cx| {
+                    let _ = home.update(cx, |home, cx| {
+                        let outcome = answer.map(|relationship| {
+                            let words = strings(cx).friends();
+                            let person = display_name(&relationship.user);
+                            if relationship.kind == RelationshipKind::Friend {
+                                words.accepted_theirs(person)
+                            } else {
+                                words.sent(person)
+                            }
+                        });
+                        home.finish_change(outcome, &failure, cx);
                     });
-                    home.finish_change(outcome, &failure, cx);
                 });
             });
         });
@@ -504,9 +506,12 @@ impl Home {
         cx: &mut Context<Self>,
     ) {
         let home = cx.entity().downgrade();
+        // Deferred: a signed-out session answers at once, while Home is still being updated.
         let on_done = move |answer: Result<(), ClientError>, cx: &mut App| {
-            let _ = home.update(cx, |home, cx| {
-                home.finish_change(answer.map(|()| done), &failure, cx);
+            cx.defer(move |cx| {
+                let _ = home.update(cx, |home, cx| {
+                    home.finish_change(answer.map(|()| done), &failure, cx);
+                });
             });
         };
         self.session.update(cx, |session, cx| match kind {
