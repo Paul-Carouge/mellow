@@ -1,7 +1,7 @@
 //! The user card across the navigator's foot (`UserCard.svelte`, ADR-0022 §4): as tall as the
 //! composer's base row and as far from the bottom of its card, so both line up across the window
-//! (`size.dock.*`). The avatar and name open the status menu (DESIGN.md §5.3), which also copies
-//! the user ID and signs out: the desktop has no settings yet to hold "Sign out".
+//! (`size.dock.*`). The avatar and name open the status menu (DESIGN.md §5.3), which also sets
+//! the custom status, copies the user ID and signs out: the desktop has no settings yet to hold "Sign out".
 
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
@@ -11,6 +11,7 @@ use gpui::{
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{ChosenStatus, PublicUser};
 
+use super::custom_status_dialog::CustomStatusForm;
 use super::{DuskShell, profile_picture};
 use crate::components::{
     Avatar, AvatarPerson, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem,
@@ -259,6 +260,21 @@ impl DuskShell {
         let shell = cx.entity().downgrade();
         let user_id = user.id;
         entries.push(MenuEntry::Separator);
+        let dialog_shell = shell.clone();
+        entries.push(MenuEntry::Item(MenuItem::new(
+            if user.custom_status.is_some() {
+                strings.user_card().edit_custom_status()
+            } else {
+                strings.user_card().set_custom_status()
+            },
+            IconName::Smiley,
+            move |window, cx| {
+                let _ = dialog_shell.update(cx, |shell, cx| {
+                    shell.open_custom_status_dialog(window, cx);
+                });
+            },
+        )));
+        entries.push(MenuEntry::Separator);
         entries.push(MenuEntry::Item(MenuItem::new(
             strings.user_card().copy_user_id(),
             IconName::Copy,
@@ -295,6 +311,25 @@ impl DuskShell {
             cx.notify();
         });
         self.status_menu = Some((menu, subscription));
+        cx.notify();
+    }
+
+    /// The custom status dialog; focus goes back to the status button when it closes.
+    pub(super) fn open_custom_status_dialog(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        window.focus(&self.status_button_focus, cx);
+        self.custom_status_dialog = Some(CustomStatusForm::open(
+            self.session.clone(),
+            window,
+            cx,
+            |shell: &mut Self, cx| {
+                shell.custom_status_dialog = None;
+                cx.notify();
+            },
+        ));
         cx.notify();
     }
 

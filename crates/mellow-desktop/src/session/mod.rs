@@ -15,7 +15,7 @@ use mellow_client_core::state::{ClientState, StateChange};
 use mellow_client_core::{
     ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, run_gateway,
 };
-use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake};
+use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake, UserProfile};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
@@ -544,6 +544,65 @@ impl Session {
             },
         );
         cx.notify();
+    }
+
+    /// Replaces the status and custom status (blank clears it), as the web's `updatePresence`;
+    /// `on_done` gets the outcome (the custom status dialog).
+    pub fn update_presence(
+        &mut self,
+        status: ChosenStatus,
+        custom_status: Option<String>,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<(), ClientError>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            // Later, as an answer would come: the caller may still be updating its own view.
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
+            return;
+        };
+        let custom_status = custom_status
+            .map(|text| text.trim().to_owned())
+            .filter(|text| !text.is_empty());
+        self.run_request(
+            cx,
+            async move { rest.update_presence(status, custom_status).await },
+            move |session, answer, cx| match answer {
+                Ok(user) => {
+                    let change = session.state.apply_current_user(user);
+                    cx.emit(StateChanged(vec![change]));
+                    cx.notify();
+                    on_done(Ok(()), cx);
+                }
+                Err(error) => {
+                    session.report_request_error(&error, "change custom status", cx);
+                    on_done(Err(error), cx);
+                }
+            },
+        );
+    }
+
+    /// Reads someone's "about me" and links (ADR-0050) for the profile on screen.
+    pub fn load_user_profile(
+        &mut self,
+        user_id: Snowflake,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<UserProfile, ClientError>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            // Later, as an answer would come: the caller may still be updating its own view.
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
+            return;
+        };
+        self.run_request(
+            cx,
+            async move { rest.user_profile(user_id).await },
+            move |session, answer, cx| {
+                if let Err(error) = &answer {
+                    session.report_request_error(error, "load profile", cx);
+                }
+                on_done(answer, cx);
+            },
+        );
     }
 
     /// Opens the one-to-one conversation with `user_id` (creating it on the instance if needed),
