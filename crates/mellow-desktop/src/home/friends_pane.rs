@@ -331,7 +331,7 @@ impl FriendsPane {
 
     /// After the list changed under a row the reader acted on: focus lands on the row now at its
     /// place once the list without it is drawn, else on the selected tab.
-    fn focus_row_after_change(&mut self, index: usize, cx: &mut Context<Self>) {
+    pub(super) fn focus_row_after_change(&mut self, index: usize, cx: &mut Context<Self>) {
         self.pending_focus_row = Some(index);
         cx.notify();
     }
@@ -950,24 +950,27 @@ impl FriendsPane {
             .relative()
             .on_mouse_down(
                 MouseButton::Right,
-                cx.listener(move |_, event: &MouseDownEvent, _, cx| {
+                cx.listener(move |pane, event: &MouseDownEvent, _, cx| {
                     cx.stop_propagation();
-                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest::new(
-                        pointer_user.clone(),
-                        menu_origin_at_pointer(event.position),
-                    )));
+                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest {
+                        friends_row_index: Some(pane.row_index_of(pointer_user.id, cx)),
+                        ..PersonMenuRequest::new(
+                            pointer_user.clone(),
+                            menu_origin_at_pointer(event.position),
+                        )
+                    }));
                 }),
             )
-            .on_key_down(cx.listener(move |_, event: &KeyDownEvent, _, cx| {
+            .on_key_down(cx.listener(move |pane, event: &KeyDownEvent, _, cx| {
                 if !is_context_menu_keystroke(&event.keystroke) {
                     return;
                 }
                 if let Some(origin) = menu_origin_beside_remembered(&key_bounds, cx) {
                     cx.stop_propagation();
-                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest::new(
-                        key_user.clone(),
-                        origin,
-                    )));
+                    cx.emit(FriendsPaneEvent::OpenPersonMenu(PersonMenuRequest {
+                        friends_row_index: Some(pane.row_index_of(key_user.id, cx)),
+                        ..PersonMenuRequest::new(key_user.clone(), origin)
+                    }));
                 }
             }))
             .child(bounds_recorder(row_bounds))

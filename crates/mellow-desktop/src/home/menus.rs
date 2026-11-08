@@ -46,6 +46,9 @@ pub struct PersonMenuRequest {
     pub conversation_id: Option<Snowflake>,
     /// A member row of this server's side sheet, which shows profiles.
     pub profile_guild_id: Option<Snowflake>,
+    /// A Friends row, at this index: focus goes to the row now in its place when a change removes
+    /// it (the web's `fallbackFocus`).
+    pub friends_row_index: Option<usize>,
 }
 
 impl PersonMenuRequest {
@@ -58,6 +61,7 @@ impl PersonMenuRequest {
             opener: None,
             conversation_id: None,
             profile_guild_id: None,
+            friends_row_index: None,
         }
     }
 }
@@ -228,25 +232,8 @@ impl Home {
         cx: &mut Context<Self>,
     ) {
         let catalogue = strings(cx);
-        let state = self.session.read(cx).state();
-        let current_user_id = self.current_user_id(cx);
         let user = request.user.clone();
-        let lines = person_menu_actions(PersonMenuFacts {
-            is_self: current_user_id == Some(user.id),
-            relationship: state
-                .relationship(user.id)
-                .map(|relationship| relationship.kind),
-            can_show_profile: request.profile_guild_id.is_some(),
-            can_open_conversation: request.conversation_id.is_none(),
-            is_conversation_row: request.conversation_id.is_some(),
-            is_conversation_muted: request.conversation_id.is_some_and(|conversation_id| {
-                is_conversation_muted(current_user_id, conversation_id, cx)
-            }),
-        })
-        .into_iter()
-        // shortcut: the per-place notification dialog comes with step 6.
-        .filter(|line| *line != MenuLine::Action(PersonMenuAction::NotificationSettings))
-        .collect();
+        let lines = self.person_menu_lines(&request, cx);
         let home = cx.entity().downgrade();
         let acting = request.clone();
         let entries = menu_entries(
@@ -262,6 +249,33 @@ impl Home {
         self.show_menu(label, entries, request.origin, request.opener, window, cx);
     }
 
+    /// What a person's menu offers now, from the session's current state.
+    fn person_menu_lines(
+        &self,
+        request: &PersonMenuRequest,
+        cx: &App,
+    ) -> Vec<MenuLine<PersonMenuAction>> {
+        let state = self.session.read(cx).state();
+        let current_user_id = self.current_user_id(cx);
+        let user = &request.user;
+        person_menu_actions(PersonMenuFacts {
+            is_self: current_user_id == Some(user.id),
+            relationship: state
+                .relationship(user.id)
+                .map(|relationship| relationship.kind),
+            can_show_profile: request.profile_guild_id.is_some(),
+            can_open_conversation: request.conversation_id.is_none(),
+            is_conversation_row: request.conversation_id.is_some(),
+            is_conversation_muted: request.conversation_id.is_some_and(|conversation_id| {
+                is_conversation_muted(current_user_id, conversation_id, cx)
+            }),
+        })
+        .into_iter()
+        // shortcut: the per-place notification dialog comes with step 6.
+        .filter(|line| *line != MenuLine::Action(PersonMenuAction::NotificationSettings))
+        .collect()
+    }
+
     pub(super) fn run_person_action(
         &mut self,
         action: PersonMenuAction,
@@ -270,9 +284,18 @@ impl Home {
         cx: &mut Context<Self>,
     ) {
         use PersonMenuAction as Action;
+        // The relationship may have changed while the menu was open (the web rebuilds its items):
+        // an item it no longer offers, such as Cancel once they accepted, must not run.
+        if !self
+            .person_menu_lines(request, cx)
+            .contains(&MenuLine::Action(action))
+        {
+            return;
+        }
         let user = &request.user;
         let person = display_name(user).to_owned();
         let words = strings(cx).friends();
+        let row_index = request.friends_row_index;
         match action {
             Action::Profile => {
                 if let Some(guild_id) = request.profile_guild_id {
@@ -289,25 +312,33 @@ impl Home {
             Action::AcceptRequest => self.change_relationship(
                 user.id,
                 Some(SetRelationshipKind::Friend),
+                row_index,
                 (words.accepted(&person), words.accept_failed(&person)),
+                window,
                 cx,
             ),
             Action::IgnoreRequest => self.change_relationship(
                 user.id,
                 None,
+                row_index,
                 (words.ignored(&person), words.ignore_failed(&person)),
+                window,
                 cx,
             ),
             Action::CancelRequest => self.change_relationship(
                 user.id,
                 None,
+                row_index,
                 (words.cancelled(&person), words.cancel_failed(&person)),
+                window,
                 cx,
             ),
             Action::Unblock => self.change_relationship(
                 user.id,
                 None,
+                row_index,
                 (words.unblocked(&person), words.unblock_failed(&person)),
+                window,
                 cx,
             ),
             Action::Mute | Action::Unmute => {
@@ -332,26 +363,29 @@ impl Home {
                 }
             }
             Action::RemoveFriend => {
-                self.ask_to_change_friendship(user, Confirmed::Remove, window, cx);
+                self.ask_to_change_friendship(user, Confirmed::Remove, row_index, window, cx);
             }
-            Action::Block => self.ask_to_change_friendship(user, Confirmed::Block, window, cx),
+            Action::Block => {
+                self.ask_to_change_friendship(user, Confirmed::Block, row_index, window, cx);
+            }
         }
     }
 
     /// Block, asked in the destructive dialog the Friends space uses, from anywhere.
     pub fn ask_to_block(&mut self, user: &PublicUser, window: &mut Window, cx: &mut Context<Self>) {
-        self.ask_to_change_friendship(user, Confirmed::Block, window, cx);
+        self.ask_to_change_friendship(user, Confirmed::Block, None, window, cx);
     }
 
     fn ask_to_change_friendship(
         &mut self,
         user: &PublicUser,
         confirmed: Confirmed,
+        friends_row_index: Option<usize>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.friends_pane.update(cx, |pane, cx| {
-            pane.confirm(user, confirmed, false, window, cx);
+            pane.confirm(user, confirmed, friends_row_index.is_some(), window, cx);
         });
     }
 
@@ -479,37 +513,46 @@ impl Home {
         let home = cx.entity().downgrade();
         self.session.update(cx, |session, cx| {
             session.send_friend_request(request, cx, move |answer, cx| {
-                cx.defer(move |cx| {
-                    let _ = home.update(cx, |home, cx| {
-                        let outcome = answer.map(|relationship| {
-                            let words = strings(cx).friends();
-                            let person = display_name(&relationship.user);
-                            if relationship.kind == RelationshipKind::Friend {
-                                words.accepted_theirs(person)
-                            } else {
-                                words.sent(person)
-                            }
-                        });
-                        home.finish_change(outcome, &failure, cx);
+                let _ = home.update(cx, |home, cx| {
+                    let outcome = answer.map(|relationship| {
+                        let words = strings(cx).friends();
+                        let person = display_name(&relationship.user);
+                        if relationship.kind == RelationshipKind::Friend {
+                            words.accepted_theirs(person)
+                        } else {
+                            words.sent(person)
+                        }
                     });
+                    home.finish_change(outcome, &failure, cx);
                 });
             });
         });
     }
 
-    /// Accept (`Some(Friend)`), or remove a request or a block (`None`).
+    /// Accept (`Some(Friend)`), or remove a request or a block (`None`). From a Friends row, the
+    /// row leaves its tab: focus goes to the one now in its place if it stayed on the row.
     fn change_relationship(
         &mut self,
         user_id: Snowflake,
         kind: Option<SetRelationshipKind>,
+        friends_row_index: Option<usize>,
         (done, failure): (String, String),
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         let home = cx.entity().downgrade();
-        // Deferred: a signed-out session answers at once, while Home is still being updated.
+        let window_handle = window.window_handle();
+        let focused_on_choice = window.focused(cx);
         let on_done = move |answer: Result<(), ClientError>, cx: &mut App| {
-            cx.defer(move |cx| {
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let has_focus_stayed = window.focused(cx) == focused_on_choice;
                 let _ = home.update(cx, |home, cx| {
+                    if let (Ok(()), Some(index), true) =
+                        (&answer, friends_row_index, has_focus_stayed)
+                    {
+                        home.friends_pane
+                            .update(cx, |pane, cx| pane.focus_row_after_change(index, cx));
+                    }
                     home.finish_change(answer.map(|()| done), &failure, cx);
                 });
             });

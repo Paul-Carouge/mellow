@@ -9,7 +9,7 @@ use mellow_client_core::shared_logic::friends::FriendsTab;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{DirectMessageChannel, Relationship, RelationshipKind, Snowflake};
 
-use super::{FriendsPane, PersonMenuRequest};
+use super::{FriendsPane, FriendsPaneEvent, PersonMenuRequest};
 use crate::components::{MenuOrigin, bind_tab_navigation};
 use crate::navigation::Place;
 use crate::session::Session;
@@ -324,4 +324,49 @@ fn a_menu_change_that_fails_is_said_in_the_notice_bar(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     assert!(cx.debug_bounds("shell-notice-bar").is_some());
+}
+
+#[gpui::test]
+fn a_friend_rows_menu_knows_its_row_so_focus_can_land_in_its_place(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let pane = shell.read_with(cx, |shell, cx| shell.home().read(cx).friends_pane().clone());
+    let opened = std::rc::Rc::new(std::cell::RefCell::new(None));
+    let seen = opened.clone();
+    let _subscription = cx.update(|_, cx| {
+        cx.subscribe(&pane, move |_, event: &FriendsPaneEvent, _| {
+            if let FriendsPaneEvent::OpenPersonMenu(request) = event {
+                *seen.borrow_mut() = Some(request.friends_row_index);
+            }
+        })
+    });
+    pane.update_in(cx, |pane, window, cx| pane.focus_row_at(0, window, cx));
+    cx.run_until_parked();
+    press(cx, "shift-f10");
+    assert_eq!(*opened.borrow(), Some(Some(0)));
+}
+
+#[gpui::test]
+fn an_item_the_menu_no_longer_offers_does_nothing(cx: &mut TestAppContext) {
+    let (shell, cx) = open_home(cx, 1280.0);
+    let home = shell.read_with(cx, |shell, _| shell.home().clone());
+    let lea = person(LEA, "lea", "Léa");
+    let request = PersonMenuRequest::new(lea.clone(), SOMEWHERE);
+    home.update_in(cx, |home, window, cx| {
+        home.open_person_menu(request.clone(), window, cx);
+    });
+    // Léa's request is accepted elsewhere while her menu shows Accept and Ignore.
+    let session = home.read_with(cx, |home, _| home.session.clone());
+    session.update(cx, |session, _| {
+        session.state_mut().apply_relationship(Relationship {
+            user: lea,
+            kind: RelationshipKind::Friend,
+            since_unix_milliseconds: 0,
+        });
+    });
+    home.update_in(cx, |home, window, cx| {
+        home.run_person_action(PersonMenuAction::IgnoreRequest, &request, window, cx);
+    });
+    cx.run_until_parked();
+    // Signed out, a change that ran would fail into the notice bar.
+    assert!(cx.debug_bounds("shell-notice-bar").is_none());
 }
