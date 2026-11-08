@@ -899,6 +899,20 @@ async fn attachments_round_trip(owner: &RestClient, stranger: &RestClient, gener
             .await,
         ApiErrorCode::NotFound,
     );
+    // Through byte ranges, as a played sound is fetched (ADR-0038).
+    assert_eq!(
+        owner
+            .download_in_ranges(DownloadableFile::Attachment(attachment.id), 1024 * 1024)
+            .await
+            .unwrap(),
+        file
+    );
+    assert!(matches!(
+        owner
+            .download_in_ranges(DownloadableFile::Attachment(attachment.id), 1024)
+            .await,
+        Err(ClientError::FileTooLarge)
+    ));
     let too_large = vec![0_u8; usize::try_from(MAXIMUM_ATTACHMENT_BYTES).unwrap() + 1];
     assert!(matches!(
         owner.upload_attachment(general, "big.bin", too_large).await,

@@ -12,7 +12,7 @@ use mellow_protocol::{
     Attachment, BannerCropQuery, Channel, CreateEmojiQuery, CreateSoundQuery, CurrentUser,
     CustomEmoji, Guild, IconCropQuery, Role, Snowflake, SoundboardSound,
 };
-use reqwest::header::{CONTENT_LENGTH, CONTENT_TYPE, ETAG, IF_NONE_MATCH};
+use reqwest::header::{CONTENT_LENGTH, CONTENT_RANGE, CONTENT_TYPE, ETAG, IF_NONE_MATCH, RANGE};
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::de::DeserializeOwned;
 
@@ -189,6 +189,70 @@ impl RestClient {
             content_type,
             entity_tag,
         }))
+    }
+
+    /// Downloads a whole file through byte ranges (ADR-0038), as browsers fetch a played sound:
+    /// the instance answers at most 8 MiB per range, so each answer holds a download slot
+    /// briefly, and the next range is asked for until the file is read. Never more than
+    /// `maximum_bytes` is read, nor asked for once the file's announced size passes it.
+    ///
+    /// # Errors
+    /// As [`Self::download`]; `FileTooLarge` past `maximum_bytes`; `UnexpectedResponse` for a
+    /// range answer that is not the part asked for.
+    pub async fn download_in_ranges(
+        &self,
+        file: DownloadableFile,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, ClientError> {
+        let mut bytes: Vec<u8> = Vec::new();
+        loop {
+            let first_byte = bytes.len() as u64;
+            let room = maximum_bytes.saturating_sub(bytes.len());
+            let builder = self
+                .request(Method::GET, &file.path(), true)?
+                .timeout(transfer_timeout(room as u64))
+                .header(RANGE, format!("bytes={first_byte}-"));
+            let response = tokio::time::timeout(STALLED_DOWNLOAD_TIMEOUT, builder.send())
+                .await
+                .map_err(|_| ClientError::TransferStalled)?
+                .map_err(ClientError::Network)?;
+            let response = Self::api_error_unless_success(response).await?;
+            if response.status() != StatusCode::PARTIAL_CONTENT {
+                // The whole file (an instance without ranges, or an `If-Range` mismatch): only
+                // a first request may take it.
+                if first_byte != 0 {
+                    return Err(unexpected_range("the whole file after a range"));
+                }
+                return Self::body_within(response, maximum_bytes, STALLED_DOWNLOAD_TIMEOUT)
+                    .await?
+                    .ok_or(ClientError::FileTooLarge);
+            }
+            let content_range = response
+                .headers()
+                .get(CONTENT_RANGE)
+                .and_then(|value| value.to_str().ok())
+                .and_then(parse_content_range)
+                .filter(|range| range.first_byte == first_byte)
+                .ok_or_else(|| unexpected_range("a range other than the one asked for"))?;
+            let total_bytes = content_range.total_bytes;
+            if total_bytes > maximum_bytes as u64 {
+                return Err(ClientError::FileTooLarge);
+            }
+            let body = Self::body_within(response, room, STALLED_DOWNLOAD_TIMEOUT)
+                .await?
+                .ok_or(ClientError::FileTooLarge)?;
+            if body.len() as u64 != content_range.length() {
+                return Err(unexpected_range("a part of another length than announced"));
+            }
+            bytes.extend_from_slice(&body);
+            let read = bytes.len() as u64;
+            if read >= total_bytes {
+                return Ok(bytes);
+            }
+            if body.is_empty() {
+                return Err(unexpected_range("an empty part"));
+            }
+        }
     }
 
     /// Sends `bytes` as the raw body, with a deadline that grows with its size.
@@ -421,9 +485,65 @@ impl RestClient {
     }
 }
 
+/// A `206` answer's `Content-Range: bytes first-last/total`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ContentRange {
+    first_byte: u64,
+    last_byte: u64,
+    total_bytes: u64,
+}
+
+impl ContentRange {
+    fn length(self) -> u64 {
+        self.last_byte - self.first_byte + 1
+    }
+}
+
+/// `bytes first-last/total` with `first <= last < total`; anything else is `None`.
+fn parse_content_range(header: &str) -> Option<ContentRange> {
+    let (range, total) = header.strip_prefix("bytes ")?.split_once('/')?;
+    let (first, last) = range.split_once('-')?;
+    let range = ContentRange {
+        first_byte: first.parse().ok()?,
+        last_byte: last.parse().ok()?,
+        total_bytes: total.parse().ok()?,
+    };
+    (range.first_byte <= range.last_byte && range.last_byte < range.total_bytes).then_some(range)
+}
+
+fn unexpected_range(what: &str) -> ClientError {
+    ClientError::UnexpectedResponse(format!("the instance answered {what}"))
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::{Arc, Mutex};
+
+    #[test]
+    fn a_content_range_is_read_only_when_it_is_a_part_of_its_file() {
+        assert_eq!(
+            parse_content_range("bytes 0-8388607/20000000"),
+            Some(ContentRange {
+                first_byte: 0,
+                last_byte: 8_388_607,
+                total_bytes: 20_000_000
+            })
+        );
+        assert_eq!(
+            parse_content_range("bytes 5-5/6").map(ContentRange::length),
+            Some(1)
+        );
+        for malformed in [
+            "bytes */20",
+            "bytes 6-5/10",
+            "bytes 0-10/10",
+            "items 0-1/2",
+            "bytes 0-1",
+            "bytes -1/2",
+        ] {
+            assert_eq!(parse_content_range(malformed), None, "{malformed}");
+        }
+    }
 
     use super::*;
 
