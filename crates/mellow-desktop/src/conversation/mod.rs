@@ -9,6 +9,8 @@
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
 mod chrome;
+mod forward_dialog;
+mod forwarding;
 mod pins_panel;
 mod reactions_dialog;
 mod rows;
@@ -46,6 +48,7 @@ use crate::theme::delay;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
+pub use self::forwarding::OpenForwardOrigin;
 use self::rows::Entry;
 use self::rules::reactor_sentence;
 
@@ -141,6 +144,11 @@ pub struct ConversationView {
     pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
+    /// What went well, said above the composer until the next channel or message sent ("Forwarded
+    /// to #news.").
+    notice: Option<SharedString>,
+    /// A forward's original in another channel, reached once the shell opened that channel.
+    pending_origin_jump: Option<(Snowflake, Snowflake)>,
     /// A refused edit's text, given back to the composer by the next render (which has the
     /// window): the message, the text and whether the editor may reopen on it.
     refused_edit: Option<(Snowflake, String, bool)>,
@@ -231,6 +239,8 @@ impl ConversationView {
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
             action_error: None,
+            notice: None,
+            pending_origin_jump: None,
             refused_edit: None,
             reactor_sentences: HashMap::new(),
             pending_reveal: None,
@@ -317,6 +327,7 @@ impl ConversationView {
             self.confirmation = None;
             self.is_pins_panel_open = false;
             self.action_error = None;
+            self.notice = None;
             self.entries.clear();
             self.entry_versions.clear();
             self.list.reset(0);
@@ -669,6 +680,7 @@ impl ConversationView {
         match event {
             ComposerEvent::Send(message) => {
                 self.action_error = None;
+                self.notice = None;
                 let answer = self.session.update(cx, |session, cx| {
                     session.send_message(
                         message.channel_id,
@@ -1176,6 +1188,11 @@ impl ConversationView {
                         IconName::ArrowBendUpLeft,
                         MenuItemTone::Normal,
                     ),
+                    MessageMenuAction::Forward => (
+                        catalogue.forward().forward().to_owned(),
+                        IconName::ArrowBendUpRight,
+                        MenuItemTone::Normal,
+                    ),
                     MessageMenuAction::Edit => (
                         catalogue.common().edit().to_owned(),
                         IconName::PencilSimple,
@@ -1251,6 +1268,7 @@ impl ConversationView {
         match action {
             MessageMenuAction::ToggleReaction(key) => self.toggle_reaction(message_id, &key, cx),
             MessageMenuAction::Reply => self.start_reply(message_id, window, cx),
+            MessageMenuAction::Forward => self.open_forward_dialog(message_id, window, cx),
             MessageMenuAction::Edit => self.start_edit(message_id, window, cx),
             MessageMenuAction::CopyText => {
                 if let Some(message) = self.cached_message(message_id, cx) {

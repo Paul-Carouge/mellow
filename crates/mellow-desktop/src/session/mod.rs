@@ -23,6 +23,7 @@ use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
 mod blocks;
+mod forwards;
 mod messages;
 mod relationships;
 mod servers;

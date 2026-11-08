@@ -433,6 +433,7 @@ impl Render for ConversationView {
         // with focus outside the view would otherwise leave a stale value.
         self.is_shift_held = window.modifiers().shift;
         self.apply_requested_place(window, cx);
+        self.reach_pending_origin(window, cx);
         if let Some((message_id, text, can_reopen)) = self.refused_edit.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.give_back_refused_edit(message_id, text, can_reopen, window, cx);
@@ -453,6 +454,15 @@ impl Render for ConversationView {
         let jump_bar = self.render_jump_bar(window, cx);
         let pins_panel = self.render_pins_panel(window, cx);
         let drop_overlay = self.render_drop_overlay(cx);
+        // What went well (a forward sent), quietly above the composer; read out by the region below.
+        let notice = self.notice.clone().map(|notice| {
+            with_type(div(), TYPE_BODY)
+                .flex_none()
+                .px(length(COMPONENT_COMPOSER_MARGIN_INLINE))
+                .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
+                .text_color(color(tokens.color_text_secondary))
+                .child(notice)
+        });
         let action_error = self.action_error.clone().map(|error| {
             div()
                 .id("chat-action-error")
@@ -490,6 +500,7 @@ impl Render for ConversationView {
                     .children(jump_bar),
             )
             .child(self.render_typing_line(cx))
+            .children(notice)
             .children(action_error)
             .child(div().flex_none().child(self.composer.clone()))
             // Copies, new messages and other quiet results, for screen readers only.

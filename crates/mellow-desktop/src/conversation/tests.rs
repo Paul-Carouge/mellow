@@ -14,6 +14,8 @@ use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
 
+mod forwards;
+
 fn message(id: u64, author: &PublicUser, content: &str) -> Message {
     Message {
         id: Snowflake::from_raw(id),

@@ -140,7 +140,12 @@ fn message_version(message: &Message, is_original_cached: bool) -> u64 {
         message.pinned,
         message.reply_to_id,
         is_original_cached,
-        message.link_previews.len(),
+        message
+            .link_previews
+            .iter()
+            .map(|preview| preview.id)
+            .collect::<Vec<_>>(),
+        message.forwarded_from.map(|origin| origin.message_id),
     ))
 }
 
@@ -735,7 +740,9 @@ impl ConversationView {
                     });
                     (reference, picture)
                 });
+                // A forward never mentions anyone: its words were written elsewhere (ADR-0039).
                 let is_mentioning_reader = Some(message.author.id) != reader_id
+                    && message.forwarded_from.is_none()
                     && (state.does_message_mention_current_user(message) || body.names_reader);
                 let rights = self.permissions(channel_id, cx);
                 let message_id = message.id;
@@ -779,6 +786,7 @@ impl ConversationView {
                     let _ = toggle_view
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));
                 })
+                .map(|item| self.with_forward_and_previews(item, message, &view, cx))
                 .on_open_author_menu({
                     // The shell hands it to Home, which this view cannot reach.
                     let list_focus = self.list_focus.clone();
@@ -1081,6 +1089,12 @@ impl ConversationView {
                     catalogue.messages().reply(),
                     IconButtonTone::Standard,
                 ),
+                HoverBarAction::Forward => (
+                    "forward",
+                    IconName::ArrowBendUpRight,
+                    catalogue.forward().forward(),
+                    IconButtonTone::Standard,
+                ),
                 HoverBarAction::CopyText => (
                     "copy",
                     IconName::Copy,
@@ -1110,6 +1124,7 @@ impl ConversationView {
                     let _ = view.update(cx, |view, cx| match action {
                         HoverBarAction::Edit => view.start_edit(message_id, window, cx),
                         HoverBarAction::Reply => view.start_reply(message_id, window, cx),
+                        HoverBarAction::Forward => view.open_forward_dialog(message_id, window, cx),
                         HoverBarAction::CopyText => {
                             if let Some(message) = view.cached_message(message_id, cx) {
                                 view.copy_to_clipboard(message.content, None, cx);
