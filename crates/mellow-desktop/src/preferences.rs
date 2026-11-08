@@ -11,22 +11,30 @@ use std::sync::{Mutex, PoisonError};
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, Global};
 use mellow_client_core::InstanceAddress;
+use mellow_client_core::shared_logic::notification_settings::{
+    NotificationSettings, notification_settings_to_json, parse_notification_settings,
+};
 use mellow_protocol::Snowflake;
 
 const FILE_NAME: &str = "preferences";
-/// Ours stays far below; anything larger was not written by Mellow and is not read.
-const MAXIMUM_FILE_LENGTH: u64 = 64 * 1024;
+/// Ours stays far below, even with the notification choices of a few accounts at their bound of
+/// places; anything larger was not written by Mellow and is not read.
+const MAXIMUM_FILE_LENGTH: u64 = 1024 * 1024;
 const INSTANCE_ADDRESS_KEY: &str = "instance-address";
 const PLACE_KEY: &str = "place";
 const CHANNEL_KEY: &str = "channel";
 const MEMBER_SHEET_KEY: &str = "member-sheet";
 const CHANNELS_WIDTH_KEY: &str = "channels-width";
 const MEMBERS_WIDTH_KEY: &str = "members-width";
+const NOTIFICATIONS_KEY: &str = "notifications";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
 /// hostile or corrupted file cannot grow the lists without bound.
 pub const MAXIMUM_REMEMBERED_PLACES: usize = 200;
+/// The accounts whose notification choices are kept, most recent last: each may hold thousands of
+/// places, so only a few accounts fit the file.
+const MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS: usize = 4;
 /// Any width a column may take is far below; larger numbers were not written by Mellow.
 const MAXIMUM_STORED_COLUMN_WIDTH: f32 = 10_000.0;
 
@@ -61,6 +69,9 @@ pub struct Preferences {
     /// pixels; the shell keeps them within each column's bounds.
     pub channels_column_width: Option<f32>,
     pub members_column_width: Option<f32>,
+    /// Each account's notification choices (the web keeps them per user in `localStorage`),
+    /// most recent last.
+    pub notification_settings_by_user: Vec<(Snowflake, NotificationSettings)>,
 }
 
 impl Preferences {
@@ -80,6 +91,32 @@ impl Preferences {
             .retain(|(guild, _)| *guild != guild_id);
         self.last_channel_by_guild.push((guild_id, channel_id));
         keep_latest(&mut self.last_channel_by_guild);
+    }
+
+    /// The notification choices of `user_id`; the defaults when it has none yet.
+    #[must_use]
+    pub fn notification_settings_of(&self, user_id: Snowflake) -> NotificationSettings {
+        self.notification_settings_by_user
+            .iter()
+            .find(|(user, _)| *user == user_id)
+            .map(|(_, settings)| settings.clone())
+            .unwrap_or_default()
+    }
+
+    /// Keeps `settings` as the notification choices of `user_id`.
+    pub fn set_notification_settings(
+        &mut self,
+        user_id: Snowflake,
+        settings: NotificationSettings,
+    ) {
+        self.notification_settings_by_user
+            .retain(|(user, _)| *user != user_id);
+        self.notification_settings_by_user.push((user_id, settings));
+        let excess = self
+            .notification_settings_by_user
+            .len()
+            .saturating_sub(MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS);
+        self.notification_settings_by_user.drain(..excess);
     }
 
     /// Opens or closes the docked member sheet of a server or group, for next time.
@@ -198,6 +235,18 @@ impl Preferences {
                 }
                 CHANNELS_WIDTH_KEY => preferences.channels_column_width = parse_column_width(value),
                 MEMBERS_WIDTH_KEY => preferences.members_column_width = parse_column_width(value),
+                // `<user id>:<the web's JSON>`, validated field by field as the web reads it.
+                NOTIFICATIONS_KEY => {
+                    if let Some((user, json)) = value.split_once(':')
+                        && let Some(user_id) = parse_snowflake(user)
+                        && let Ok(stored) = serde_json::from_str(json)
+                    {
+                        preferences.set_notification_settings(
+                            user_id,
+                            parse_notification_settings(&stored),
+                        );
+                    }
+                }
                 _ => {}
             }
         }
@@ -228,6 +277,11 @@ impl Preferences {
             if let Some(width) = width {
                 let _ = writeln!(text, "{key}={width}");
             }
+        }
+        // Compact JSON escapes line breaks, so each account stays on one line.
+        for (user_id, settings) in &self.notification_settings_by_user {
+            let json = notification_settings_to_json(settings);
+            let _ = writeln!(text, "{NOTIFICATIONS_KEY}={user_id}:{json}");
         }
         text
     }
@@ -333,6 +387,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     member_sheet_place_ids: Vec::new(),
     channels_column_width: None,
     members_column_width: None,
+    notification_settings_by_user: Vec::new(),
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -517,6 +572,38 @@ mod tests {
         );
         preferences.remember_member_sheet(id(5), false);
         assert!(!preferences.member_sheet_place_ids.contains(&id(5)));
+    }
+
+    #[test]
+    fn notification_choices_survive_a_round_trip_per_account_and_stay_bounded() {
+        let mut preferences = Preferences::default();
+        let settings = NotificationSettings {
+            are_desktop_notifications_enabled: true,
+            is_sound_enabled: false,
+            ..NotificationSettings::default()
+        };
+        preferences.set_notification_settings(id(1), settings.clone());
+        let read = Preferences::from_file_text(&preferences.to_file_text());
+        assert_eq!(read.notification_settings_of(id(1)), settings);
+        assert_eq!(
+            read.notification_settings_of(id(2)),
+            NotificationSettings::default()
+        );
+        for raw in 2..=u64::try_from(MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS).unwrap() + 1 {
+            preferences.set_notification_settings(id(raw), NotificationSettings::default());
+        }
+        assert_eq!(
+            preferences.notification_settings_by_user.len(),
+            MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS
+        );
+        assert_eq!(
+            preferences.notification_settings_of(id(1)),
+            NotificationSettings::default(),
+            "the oldest account is forgotten"
+        );
+        let tampered =
+            Preferences::from_file_text("notifications=1:{not json\nnotifications=x:{}\n");
+        assert_eq!(tampered.notification_settings_by_user, []);
     }
 
     #[gpui::test]
