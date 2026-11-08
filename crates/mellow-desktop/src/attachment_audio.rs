@@ -257,11 +257,17 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
             .insert(attachment_id);
         return;
     }
-    let volume = attachment_volume(cx);
     let store = cx.default_global::<AttachmentAudio>();
     let Some(rest) = store.rest.clone() else {
         return;
     };
+    // The sound the player refused stays refused: pressing play again would fetch it again only
+    // to fail the same way.
+    if let Some(status) = store.player.as_ref().map(ClipPlayer::status)
+        && let (Some(refused), ClipPhase::CannotPlay(_)) = (status.clip, status.phase)
+    {
+        store.unplayable.insert(Snowflake::from_raw(refused));
+    }
     store.stop();
     if store.player.is_none() {
         match ClipPlayer::new(Box::new(SystemAudioDevices)) {
@@ -280,6 +286,8 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
             usize::try_from(MAXIMUM_PLAYED_ATTACHMENT_BYTES).unwrap_or(usize::MAX),
         )
         .await
+        // Moved into shared memory here, off the interface thread.
+        .map(Arc::<[u8]>::from)
     });
     let task = cx.spawn(async move |cx| {
         let answer = download.await;
@@ -296,13 +304,16 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
             store.fetching = None;
             match answer {
                 Ok(Ok(bytes)) => {
-                    if let Some(player) = store.player.as_ref() {
-                        player.load_and_play(attachment_id.raw(), Arc::from(bytes), &content_type);
+                    // The volume as it is now (it may have moved during the download), set
+                    // before the sound starts.
+                    apply_volume(attachment_volume(cx), cx);
+                    if let Some(player) = cx.global::<AttachmentAudio>().player.as_ref() {
+                        player.load_and_play(attachment_id.raw(), bytes, &content_type);
                     }
-                    apply_volume(volume, cx);
                 }
-                // The player stays: pressing play again tries again, as on the web, since each
-                // try costs the instance a whole decryption.
+                // The player stays: pressing play again tries again, as on the web, rather than
+                // retrying alone, since each try costs the instance one whole decryption per
+                // 8 MiB range.
                 Ok(Err(error)) => tracing::warn!(%error, "cannot download a sound to play"),
                 Err(_) => tracing::warn!("the sound download stopped"),
             }
