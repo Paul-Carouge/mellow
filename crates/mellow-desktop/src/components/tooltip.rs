@@ -34,6 +34,12 @@ impl Tooltip {
         cx.new(|_| Self::new(label)).into()
     }
 
+    /// A label that arrives after the tooltip shows (who reacted, once the instance answers).
+    pub fn set_label(&mut self, label: impl Into<SharedString>, cx: &mut Context<Self>) {
+        self.label = label.into();
+        cx.notify();
+    }
+
     /// The delay token, kept under reduced motion.
     #[must_use]
     pub fn show_delay() -> Duration {

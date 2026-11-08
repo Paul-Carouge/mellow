@@ -11,16 +11,17 @@ use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher as _};
 
 use gpui::{
-    AnyElement, App, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseDownEvent, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _, relative,
+    Animation, AnimationExt as _, AnyElement, App, Context, FontWeight, Hsla,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, ParentElement as _, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    prelude::FluentBuilder as _, relative,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::markdown::{MarkdownSources, RoleMentionContext};
 use mellow_client_core::shared_logic::mentions::mentionable_people;
 use mellow_client_core::shared_logic::message_rows::{
-    MessageListRow, MessageRowKind, PendingRowFacts, UnreadMarker, build_message_rows,
-    is_unread_start_loaded,
+    BlockedRun, MessageListEntry, MessageListRow, MessageRowKind, PendingRowFacts, UnreadMarker,
+    build_message_rows, collapse_blocked_runs, is_unread_start_loaded,
 };
 use mellow_client_core::shared_logic::role_colors::{highest_coloured_role, readable_role_colour};
 use mellow_protocol::{Message, PublicUser, Snowflake};
@@ -28,14 +29,14 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
-    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, icon,
-    inset_focus_ring, shadow, with_type,
+    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, Tooltip, easing,
+    icon, inset_focus_ring, shadow, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{
     DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, UnreadDivider,
-    day_divider_label, local_date_time, local_day_of, picture_animation, picture_for_box,
-    reaction_pills, reply_reference, time_of_day_label,
+    day_divider_label, local_date_time, local_day_of, message_summary, picture_animation,
+    picture_for_box, reaction_pills, reply_reference, time_of_day_label,
 };
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
@@ -43,14 +44,16 @@ use crate::theme::tokens::{
     COMPONENT_ACTION_BAR_BUTTON_SIZE, COMPONENT_ACTION_BAR_ICON_SIZE,
     COMPONENT_ACTION_BAR_OFFSET_TOP, COMPONENT_ACTION_BAR_OFFSET_TRAILING,
     COMPONENT_ACTION_BAR_RADIUS, COMPONENT_MESSAGE_AVATAR_INSET, COMPONENT_MESSAGE_AVATAR_SIZE,
-    COMPONENT_MESSAGE_CHANNEL_START_GAP, COMPONENT_MESSAGE_CHANNEL_START_ICON_CIRCLE_SIZE,
-    COMPONENT_MESSAGE_CHANNEL_START_ICON_SIZE, COMPONENT_MESSAGE_CHANNEL_START_PADDING_BLOCK,
-    COMPONENT_MESSAGE_GROUP_GAP, COMPONENT_MESSAGE_GUTTER, COMPONENT_MESSAGE_PADDING_BLOCK,
-    COMPONENT_MESSAGE_PADDING_TRAILING, COMPONENT_MESSAGE_REPLY_AVATAR_SIZE,
-    COMPONENT_MESSAGE_SKELETON_BAR_HEIGHT, COMPONENT_MESSAGE_SKELETON_NAME_MAX_WIDTH,
-    MOTION_DELAY_SKELETON, SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY_LG, TYPE_DISPLAY, TYPE_MESSAGE,
+    COMPONENT_MESSAGE_BLOCKED_ICON_SIZE, COMPONENT_MESSAGE_CHANNEL_START_GAP,
+    COMPONENT_MESSAGE_CHANNEL_START_ICON_CIRCLE_SIZE, COMPONENT_MESSAGE_CHANNEL_START_ICON_SIZE,
+    COMPONENT_MESSAGE_CHANNEL_START_PADDING_BLOCK, COMPONENT_MESSAGE_GROUP_GAP,
+    COMPONENT_MESSAGE_GUTTER, COMPONENT_MESSAGE_HIGHLIGHT_DURATION,
+    COMPONENT_MESSAGE_PADDING_BLOCK, COMPONENT_MESSAGE_PADDING_TRAILING,
+    COMPONENT_MESSAGE_REPLY_AVATAR_SIZE, COMPONENT_MESSAGE_SKELETON_BAR_HEIGHT,
+    COMPONENT_MESSAGE_SKELETON_NAME_MAX_WIDTH, MOTION_DELAY_SKELETON, MOTION_EASING_EXIT, SPACE_MD,
+    SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_DISPLAY, TYPE_MESSAGE,
 };
-use crate::theme::{color, delay, length, theme};
+use crate::theme::{animation_duration, color, delay, length, theme};
 
 const HISTORY_START_KEY: &str = "history-start";
 const INITIAL_SKELETON_COUNT: usize = 5;
@@ -70,6 +73,8 @@ pub(super) enum Entry {
     /// Above the oldest message: the hero, the skeletons or the failure.
     HistoryStart,
     Row(MessageListRow),
+    /// A blocked author's messages, folded (ADR-0025).
+    BlockedRun(BlockedRun),
 }
 
 impl Entry {
@@ -77,6 +82,23 @@ impl Entry {
         match self {
             Self::HistoryStart => HISTORY_START_KEY.to_owned(),
             Self::Row(row) => row.key.clone(),
+            // The run's last message: an older page extending the run keeps its key (and focus).
+            Self::BlockedRun(run) => run.anchor_key.clone(),
+        }
+    }
+
+    /// Holds the "New" divider: the list opens on it.
+    fn is_first_unread(&self) -> bool {
+        match self {
+            Self::Row(row) => matches!(
+                row.kind,
+                MessageRowKind::Sent {
+                    is_first_unread: true,
+                    ..
+                }
+            ),
+            Self::BlockedRun(run) => run.is_first_unread,
+            Self::HistoryStart => false,
         }
     }
 
@@ -118,6 +140,51 @@ fn message_version(message: &Message, is_original_cached: bool) -> u64 {
         message.reply_to_id,
         is_original_cached,
         message.link_previews.len(),
+    ))
+}
+
+/// Texts one message may hold in the selection's reading order.
+const SELECTION_ORDERS_PER_ROW: u64 = 1 << 16;
+
+/// Where row `index`'s texts start in the window's reading order: rows in list order.
+fn selection_order(index: usize) -> u64 {
+    u64::try_from(index)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(SELECTION_ORDERS_PER_ROW)
+}
+
+/// The share of the wash's time it holds before fading (`mw-jump-highlight`'s 0–40 % keyframes).
+const JUMP_HIGHLIGHT_HOLD_SHARE: f32 = 0.4;
+
+/// The match wash behind a message reached by a jump: it holds, then fades out; under reduced
+/// motion it holds until the view takes it away (`MOTION_DELAY_JUMP_HIGHLIGHT`).
+fn jump_highlight(generation: u64, cx: &App) -> AnyElement {
+    let wash = div()
+        .absolute()
+        .inset_0()
+        .bg(color(theme(cx).component_message_highlight_background));
+    if cx.reduce_motion() {
+        return wash.into_any_element();
+    }
+    wash.with_animation(
+        SharedString::from(format!("jump-highlight-{generation}")),
+        Animation::new(animation_duration(COMPONENT_MESSAGE_HIGHLIGHT_DURATION, cx))
+            .with_easing(|progress| easing(MOTION_EASING_EXIT).sample(progress)),
+        |wash, progress| {
+            let fade = (progress - JUMP_HIGHLIGHT_HOLD_SHARE) / (1.0 - JUMP_HIGHLIGHT_HOLD_SHARE);
+            wash.opacity(1.0 - fade.clamp(0.0, 1.0))
+        },
+    )
+    .into_any_element()
+}
+
+/// What a folded run shows: a change of any of these may change its height.
+fn blocked_run_version(run: &BlockedRun) -> u64 {
+    version_of((
+        run.is_revealed,
+        &run.message_ids,
+        run.is_first_unread,
+        run.day_start,
     ))
 }
 
@@ -180,7 +247,7 @@ impl ConversationView {
             .use_sources_generation(self.sources.generation);
     }
 
-    /// Builds the rows again from the state and tells the list what moved.
+    /// Builds the rows again from the state.
     pub(super) fn rebuild_rows(&mut self, cx: &App) {
         self.are_rows_stale = false;
         if self.are_sources_stale {
@@ -231,7 +298,21 @@ impl ConversationView {
                     self.sources.generation,
                 )),
             ));
-            for row in rows {
+            self.announce_latest_message(&rows, messages, state, cx);
+            let collapsed = collapse_blocked_runs(
+                &rows,
+                |user_id| state.is_blocked(user_id),
+                &self.revealed_blocked_message_ids,
+            );
+            for entry in collapsed {
+                let row = match entry {
+                    MessageListEntry::Row(row) => row,
+                    MessageListEntry::BlockedRun(run) => {
+                        versions.push((run.anchor_key.clone(), blocked_run_version(&run)));
+                        entries.push(Entry::BlockedRun(run));
+                        continue;
+                    }
+                };
                 let layout = (
                     row.starts_author_group,
                     row.day_start,
@@ -263,17 +344,27 @@ impl ConversationView {
                 entries.push(Entry::Row(row));
             }
         }
+        self.apply_rows(entries, versions);
+    }
+
+    /// Takes the rebuilt rows and tells the list what moved.
+    fn apply_rows(&mut self, entries: Vec<Entry>, versions: Vec<(String, u64)>) {
         let update = super::rules::list_update(&self.entry_versions, &versions);
-        // An older page lands while the reader is in the history start: the first old row keeps
-        // its place at the top instead of being pushed down by the page.
+        // An older page lands while the reader is in the history start: the first old entry keeps
+        // its place at the top instead of being pushed down by the page (the web's anchor).
         let scroll_top = self.list.logical_scroll_top();
         let is_reading_history_start =
             scroll_top.item_ix == 0 && !self.entry_versions.is_empty() && !self.is_at_latest();
+        let first_old_key = self.entry_versions.get(1).map(|(key, _)| key.clone());
         if let Some((range, count)) = update.splice.clone() {
-            self.list.splice(range.clone(), count);
-            if is_reading_history_start && range == (1..1) && count > 0 {
+            self.list.splice(range, count);
+            let first_old_index = first_old_key
+                .and_then(|first_old| versions.iter().position(|(key, _)| *key == first_old));
+            if let Some(index) =
+                first_old_index.filter(|&index| is_reading_history_start && index > 1)
+            {
                 self.list.scroll_to(gpui::ListOffset {
-                    item_ix: 1 + count,
+                    item_ix: index,
                     offset_in_item: gpui::px(0.0),
                 });
             }
@@ -286,24 +377,50 @@ impl ConversationView {
         self.open_on_unread_divider_once();
     }
 
+    /// New messages from others are read out politely (`announceLatestMessage`); the first page,
+    /// the reader's own messages and someone they blocked (ADR-0025) are not.
+    fn announce_latest_message(
+        &mut self,
+        rows: &[MessageListRow],
+        messages: &[Message],
+        state: &mellow_client_core::state::ClientState,
+        cx: &App,
+    ) {
+        let Some(MessageListRow {
+            key,
+            kind: MessageRowKind::Sent { message_index, .. },
+            ..
+        }) = rows.last()
+        else {
+            return;
+        };
+        let Some(message) = messages.get(*message_index) else {
+            return;
+        };
+        let is_new = self
+            .visit
+            .last_announced_key
+            .as_ref()
+            .is_some_and(|announced| announced != key);
+        let is_from_someone_else = state
+            .current_user()
+            .is_none_or(|user| user.id != message.author.id);
+        if is_new && is_from_someone_else && !state.is_blocked(message.author.id) {
+            let catalogue = strings(cx);
+            let author = mellow_client_core::shared_logic::format::display_name(&message.author);
+            let summary = message_summary(message, &self.sources.roles, catalogue);
+            self.announcement = catalogue.messages().author_said(author, &summary).into();
+        }
+        self.visit.last_announced_key = Some(key.clone());
+    }
+
     /// Opening a channel with unread messages shows the first of them (DESIGN.md §5.4); when they
     /// all fit, the list stays at the latest message.
     fn open_on_unread_divider_once(&mut self) {
         if self.visit.has_opened_on_divider || self.visit.unread_marker.is_none() {
             return;
         }
-        let divider_index = self.entries.iter().position(|entry| {
-            matches!(
-                entry,
-                Entry::Row(MessageListRow {
-                    kind: MessageRowKind::Sent {
-                        is_first_unread: true,
-                        ..
-                    },
-                    ..
-                })
-            )
-        });
+        let divider_index = self.entries.iter().position(Entry::is_first_unread);
         if let Some(index) = divider_index {
             self.visit.has_opened_on_divider = true;
             self.list.scroll_to(gpui::ListOffset {
@@ -323,6 +440,7 @@ impl ConversationView {
         match self.entries.get(index).cloned() {
             Some(Entry::HistoryStart) => self.render_history_start(window, cx),
             Some(Entry::Row(row)) => self.render_row(index, &row, window, cx),
+            Some(Entry::BlockedRun(run)) => self.render_blocked_run(&run, window, cx),
             None => div().into_any_element(),
         }
     }
@@ -647,7 +765,15 @@ impl ConversationView {
                         pending: None,
                     },
                 )
+                .selection_order(selection_order(index))
                 .can_join_reactions(rights.can_join_reactions)
+                .reaction_tooltip({
+                    let view = view.clone();
+                    move |pill, cx| {
+                        view.update(cx, |view, cx| view.reactors_tooltip(message_id, pill, cx))
+                            .unwrap_or_else(|_| Tooltip::view(SharedString::default(), cx))
+                    }
+                })
                 .on_toggle_reaction(move |key, _, cx| {
                     let _ = toggle_view
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));
@@ -703,6 +829,7 @@ impl ConversationView {
                         pending: Some(pending.status),
                     },
                 )
+                .selection_order(selection_order(index))
                 .on_retry(move |_, cx| {
                     let _ = retry_view.update(cx, |view, cx| view.retry_message(&retry_nonce, cx));
                 })
@@ -730,6 +857,10 @@ impl ConversationView {
                 self.hovered_message_id == Some(*id) || is_menu_open || has_keyboard_focus_within
             })
             .and_then(|id| self.render_hover_bar(index, id, cx));
+        let highlight = self
+            .highlight
+            .filter(|(highlighted_id, _)| Some(*highlighted_id) == message_id)
+            .map(|(_, generation)| jump_highlight(generation, cx));
         let hover_id = message_id;
         let menu_id = message_id;
         div()
@@ -763,6 +894,7 @@ impl ConversationView {
                             }),
                         )
                     })
+                    .children(highlight)
                     .child(item)
                     .children(hover_bar)
                     .when(is_keyboard_focused, |row| {
@@ -770,6 +902,117 @@ impl ConversationView {
                     }),
             )
             .into_any_element()
+    }
+
+    /// A blocked author's run, folded (ADR-0025): one row with Show and Hide. It holds the list's
+    /// one Tab stop like a message, where Enter or Space toggles it, so its button stays out of
+    /// the Tab order, as on the web.
+    fn render_blocked_run(
+        &mut self,
+        run: &BlockedRun,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = theme(cx);
+        let catalogue = strings(cx);
+        let time_of_first_unread: Option<SharedString> = run
+            .is_first_unread
+            .then(|| time_of_day_label(local_date_time(run.sent_at), catalogue).into());
+        let divider: Option<AnyElement> = if let Some(day) = run.day_start {
+            Some(
+                DayDivider::new(day_divider_label(day, catalogue))
+                    .new_since(time_of_first_unread)
+                    .into_any_element(),
+            )
+        } else {
+            time_of_first_unread.map(|time| UnreadDivider::new(time).into_any_element())
+        };
+        let sentence = catalogue
+            .messages()
+            .blocked_run(i64::try_from(run.message_ids.len()).unwrap_or(i64::MAX));
+        let action = if run.is_revealed {
+            catalogue.messages().hide_blocked()
+        } else {
+            catalogue.messages().show_blocked()
+        };
+        let is_keyboard_focused = self.focused_row_key.as_deref() == Some(run.anchor_key.as_str())
+            && window.last_input_was_keyboard()
+            && self.list_focus.is_focused(window);
+        let message_ids = run.message_ids.clone();
+        let is_revealed = run.is_revealed;
+        div()
+            .w_full()
+            .flex()
+            .flex_col()
+            .children(divider)
+            .child(
+                with_type(div(), TYPE_BODY)
+                    .id(SharedString::from(format!("row-{}", run.anchor_key)))
+                    .role(Role::ListItem)
+                    .aria_label(SharedString::from(sentence.clone()))
+                    .aria_expanded(is_revealed)
+                    .relative()
+                    .mt(length(COMPONENT_MESSAGE_GROUP_GAP))
+                    .flex()
+                    .flex_wrap()
+                    .items_center()
+                    .gap_x(length(SPACE_XS))
+                    .pl(length(COMPONENT_MESSAGE_GUTTER))
+                    .pr(length(COMPONENT_MESSAGE_PADDING_TRAILING))
+                    .py(length(COMPONENT_MESSAGE_PADDING_BLOCK))
+                    .text_color(color(tokens.component_message_blocked_text))
+                    .child(
+                        div()
+                            .absolute()
+                            .left(length(COMPONENT_MESSAGE_AVATAR_INSET))
+                            .w(length(COMPONENT_MESSAGE_AVATAR_SIZE))
+                            .flex()
+                            .justify_center()
+                            .child(icon(
+                                IconName::Prohibit,
+                                COMPONENT_MESSAGE_BLOCKED_ICON_SIZE,
+                                color(tokens.component_message_blocked_text),
+                            )),
+                    )
+                    .child(sentence)
+                    .child(
+                        div()
+                            .id(SharedString::from(format!("toggle-{}", run.anchor_key)))
+                            .role(Role::Button)
+                            .aria_expanded(is_revealed)
+                            .font_weight(FontWeight::SEMIBOLD)
+                            .text_color(color(tokens.component_message_blocked_action_text))
+                            .cursor_pointer()
+                            .hover(gpui::Styled::underline)
+                            .on_click(cx.listener(move |view, _, _, cx| {
+                                view.toggle_blocked_run(&message_ids, is_revealed, cx);
+                            }))
+                            .child(action),
+                    )
+                    .when(is_keyboard_focused, |row| {
+                        row.child(inset_focus_ring(0.0, cx))
+                    }),
+            )
+            .into_any_element()
+    }
+
+    /// Show reveals a run's messages for this visit, by message, so a run an older page extends
+    /// stays shown; Hide folds it again.
+    pub(super) fn toggle_blocked_run(
+        &mut self,
+        message_ids: &[Snowflake],
+        is_revealed: bool,
+        cx: &mut Context<Self>,
+    ) {
+        for message_id in message_ids {
+            if is_revealed {
+                self.revealed_blocked_message_ids.remove(message_id);
+            } else {
+                self.revealed_blocked_message_ids.insert(*message_id);
+            }
+        }
+        self.are_rows_stale = true;
+        cx.notify();
     }
 
     /// Where a menu opened from the hover bar's More goes: by the row from the keyboard, at the

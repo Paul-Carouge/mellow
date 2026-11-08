@@ -11,15 +11,21 @@ use gpui::{App, Context, Task};
 use mellow_client_core::ClientError;
 use mellow_client_core::generate_message_nonce;
 use mellow_client_core::state::{
-    ChangeOutcome, HISTORY_PAGE_SIZE, PendingMessage, PinsAnswer, StateChange,
+    ChangeOutcome, HISTORY_PAGE_SIZE, HistoryReachStep, MAXIMUM_HISTORY_PAGE_SIZE, PendingMessage,
+    PinsAnswer, StateChange,
 };
 use mellow_protocol::{
-    Attachment, EditMessageRequest, GatewayEvent, Message, MessageHistoryQuery, Snowflake,
+    Attachment, EditMessageRequest, GatewayEvent, Message, MessageHistoryQuery, PublicUser,
+    ReactionUsersQuery, Snowflake,
 };
 
 use super::{Session, StateChanged, now_unix_milliseconds};
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings;
+
+/// Who reacted, asked once per emoji: the instance's largest page (the web's
+/// `REACTING_USERS_PAGE_SIZE`).
+const REACTING_USERS_PAGE_SIZE: u32 = 100;
 
 /// Read positions go to the instance at most this often; reads in between only move them (the
 /// web's `READ_STATE_SEND_DELAY_MILLISECONDS`).
@@ -34,6 +40,30 @@ pub struct SendRefused {
     pub nonce: String,
     /// "Couldn't send the message: …".
     pub reason: String,
+}
+
+/// What [`Session::reach_message`] calls back once it knows.
+type ReachDone = Box<dyn FnOnce(HistoryReach, &mut App)>;
+
+/// A jump [`Session::reach_message`] is loading pages for.
+struct ReachRequest {
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    history_generation: u64,
+    /// Whether the view still wants the jump (same channel, no newer jump), the web's `"left"`.
+    is_still_wanted: Box<dyn Fn(&App) -> bool>,
+    on_done: ReachDone,
+}
+
+/// How a jump to a message older than the cached history ended (the web's `HistoryReach`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HistoryReach {
+    Loaded,
+    /// Deleted since, or no longer readable.
+    Missing,
+    /// More than `MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE` pages back.
+    TooFar,
+    Failed,
 }
 
 /// Where a channel's history stands, beyond what the state caches.
@@ -219,6 +249,98 @@ impl Session {
             },
         );
         cx.notify();
+    }
+
+    /// Loads older pages until `message_id` is cached, for a pinned message far back (the web's
+    /// `loadHistoryUntilMessage`); `on_done` is not called if a `Ready` empties the history meanwhile,
+    /// nor once `is_still_wanted` says the reader left or jumped elsewhere: no further page loads.
+    /// `is_still_wanted` is only asked when an answer arrives, never while the caller is updated.
+    pub fn reach_message(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        is_still_wanted: impl Fn(&App) -> bool + 'static,
+        on_done: impl FnOnce(HistoryReach, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let request = ReachRequest {
+            channel_id,
+            message_id,
+            history_generation: self.state.history_generation(),
+            is_still_wanted: Box::new(is_still_wanted),
+            on_done: Box::new(on_done),
+        };
+        self.reach_message_after(request, 0, cx);
+    }
+
+    fn reach_message_after(
+        &mut self,
+        request: ReachRequest,
+        pages_loaded: u32,
+        cx: &mut Context<Self>,
+    ) {
+        let ReachRequest {
+            channel_id,
+            message_id,
+            history_generation,
+            ..
+        } = request;
+        if self.state.history_generation() != history_generation {
+            return;
+        }
+        let rest = self.cloned_rest_client();
+        let (before, rest) = match (
+            self.state
+                .history_reach_step(channel_id, message_id, pages_loaded),
+            rest,
+        ) {
+            (HistoryReachStep::LoadBefore(before), Some(rest)) => (before, rest),
+            (step, _) => {
+                let reach = match step {
+                    HistoryReachStep::Loaded => HistoryReach::Loaded,
+                    HistoryReachStep::Missing => HistoryReach::Missing,
+                    HistoryReachStep::TooFar => HistoryReach::TooFar,
+                    HistoryReachStep::LoadBefore(_) => HistoryReach::Failed,
+                };
+                // Deferred: the view asking is still being updated when the answer is known at once.
+                cx.defer(move |cx| (request.on_done)(reach, cx));
+                return;
+            }
+        };
+        let query = MessageHistoryQuery {
+            before,
+            after: None,
+            limit: Some(MAXIMUM_HISTORY_PAGE_SIZE),
+        };
+        self.run_request(
+            cx,
+            async move { rest.list_messages(channel_id, &query).await },
+            move |session, answer, cx| {
+                if session.state.history_generation() != history_generation
+                    || !(request.is_still_wanted)(cx)
+                {
+                    return;
+                }
+                match answer {
+                    Ok(page) => {
+                        // Only next to the cursor; a page that landed meanwhile is fine too.
+                        if session.state.messages(channel_id).first().map(|m| m.id) == before {
+                            let change = session.state.insert_reach_page(
+                                channel_id,
+                                page,
+                                MAXIMUM_HISTORY_PAGE_SIZE,
+                            );
+                            Self::emit_changes(cx, vec![change]);
+                        }
+                        session.reach_message_after(request, pages_loaded + 1, cx);
+                    }
+                    Err(error) => {
+                        session.report_request_error(&error, "load history around a message", cx);
+                        (request.on_done)(HistoryReach::Failed, cx);
+                    }
+                }
+            },
+        );
     }
 
     /// "Try again": the first page if none loaded, else the older one.
@@ -574,6 +696,37 @@ impl Session {
                     on_failed(sentence, cx);
                 }
             },
+        );
+    }
+
+    /// Who reacted to a message with `emoji`, the first `REACTING_USERS_PAGE_SIZE` by ascending
+    /// id, as the web asks; a failure comes back as a sentence starting with `failure_summary`.
+    pub fn list_reacting_users(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        emoji: String,
+        failure_summary: String,
+        on_done: impl FnOnce(Result<Vec<PublicUser>, String>, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rest) = self.cloned_rest_client() else {
+            cx.defer(move |cx| on_done(Err(failure_summary), cx));
+            return;
+        };
+        let query = ReactionUsersQuery {
+            after: None,
+            limit: Some(REACTING_USERS_PAGE_SIZE),
+        };
+        self.run_conversation_request(
+            cx,
+            async move {
+                rest.list_reacting_users(channel_id, message_id, &emoji, &query)
+                    .await
+            },
+            failure_summary,
+            "load who reacted",
+            move |_, answer, cx| on_done(answer, cx),
         );
     }
 

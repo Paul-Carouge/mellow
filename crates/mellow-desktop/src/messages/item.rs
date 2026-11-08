@@ -22,7 +22,9 @@ use mellow_protocol::{Attachment, PublicUser};
 use super::attachments::MessageAttachments;
 use super::body::MessageBody;
 use super::markdown_view::{EditedMarker, MessageMarkdown};
-use super::reactions::{MessageReactions, ReactionPill, ReactionToggleHandler};
+use super::reactions::{
+    MessageReactions, ReactionPill, ReactionToggleHandler, ReactionTooltipBuilder,
+};
 use super::reply::{ReplyLine, ReplyReference};
 use super::time::{
     full_timestamp_label, local_date_time, message_timestamp_label, time_of_day_label,
@@ -86,6 +88,8 @@ pub struct MessageItem {
     content: MessageItemContent,
     can_join_reactions: bool,
     on_toggle_reaction: Option<ReactionToggleHandler>,
+    reaction_tooltip: Option<ReactionTooltipBuilder>,
+    selection_order: u64,
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
 }
@@ -99,6 +103,8 @@ impl MessageItem {
             content,
             can_join_reactions: true,
             on_toggle_reaction: None,
+            reaction_tooltip: None,
+            selection_order: 0,
             on_retry: None,
             on_discard: None,
         }
@@ -117,6 +123,24 @@ impl MessageItem {
         handler: impl Fn(&str, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_toggle_reaction = Some(Arc::new(handler));
+        self
+    }
+
+    /// Who reacted, named in a pill's tooltip.
+    #[must_use]
+    pub fn reaction_tooltip(
+        mut self,
+        builder: impl Fn(&ReactionPill, &mut App) -> gpui::AnyView + 'static,
+    ) -> Self {
+        self.reaction_tooltip = Some(Arc::new(builder));
+        self
+    }
+
+    /// Where the message's text comes in the window's reading order, for a selection dragged
+    /// across messages.
+    #[must_use]
+    pub fn selection_order(mut self, order: u64) -> Self {
+        self.selection_order = order;
         self
     }
 
@@ -342,14 +366,19 @@ impl RenderOnce for MessageItem {
             } else {
                 tokens.component_message_body_text
             }))
-            .child(MessageMarkdown::new(id.clone(), content.body.clone()).edited(edited));
+            .child(
+                MessageMarkdown::new(id.clone(), content.body.clone())
+                    .edited(edited)
+                    .selection_order(self.selection_order),
+            );
         let attachments = (!content.attachments.is_empty()).then(|| {
             MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
                 .pending(content.pending.is_some())
         });
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)
-                .can_join(self.can_join_reactions);
+                .can_join(self.can_join_reactions)
+                .tooltip(self.reaction_tooltip);
             match self.on_toggle_reaction {
                 Some(on_toggle) => {
                     reactions.on_toggle(move |key, window, cx| on_toggle(key, window, cx))
