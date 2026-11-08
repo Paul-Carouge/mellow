@@ -527,3 +527,33 @@ fn shift_f10_on_a_member_row_opens_their_menu_whose_profile_shows_in_the_sheet(
     assert!(!is_menu_open(cx));
     assert!(cx.debug_bounds("member-profile").is_some());
 }
+
+#[gpui::test]
+fn add_friend_from_a_profile_says_why_it_failed_and_can_be_tried_again(cx: &mut TestAppContext) {
+    use crate::shell_fixtures::{ANA, person};
+
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, secondary("u"));
+    shell.update_in(cx, |shell, window, cx| {
+        shell.show_member_profile(GUILD_RUST, ANA, window, cx);
+        let block_focus = cx.focus_handle();
+        // Signed out: the instance cannot be asked, as when it is unreachable.
+        shell.change_relationship_from_profile(
+            &person(ANA, "ana", "Ana"),
+            member_profile::RelationshipChange::AddFriend,
+            block_focus,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    shell.read_with(cx, |shell, _| {
+        assert!(!shell.member_profile.is_changing_relationship());
+        assert!(
+            shell
+                .member_profile
+                .error()
+                .is_some_and(|error| error.starts_with("Couldn't send the friend request"))
+        );
+    });
+}
