@@ -10,6 +10,7 @@
 
 mod chrome;
 mod pins_panel;
+mod reactions_dialog;
 mod rows;
 pub mod rules;
 #[cfg(test)]
@@ -129,6 +130,7 @@ pub struct ConversationView {
     /// The row keyboard focus is on, while the list has focus (one Tab stop, arrows move).
     focused_row_key: Option<String>,
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
+    /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
     /// Where a click outside closed the pins panel: the toggle under it must not reopen it.
@@ -1032,6 +1034,45 @@ impl ConversationView {
         cx.notify();
     }
 
+    /// Who reacted with what (the menu's Reactions), in the dialog slot the confirmations use.
+    fn open_reactions_dialog(
+        &mut self,
+        message_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(channel_id) = self.open_channel_id() else {
+            return;
+        };
+        let catalogue = strings(cx);
+        let session = self.session.clone();
+        let custom_emojis = self.sources.custom_emojis.clone();
+        let body = cx.new(|cx| {
+            reactions_dialog::ReactionsDialogBody::new(
+                session,
+                channel_id,
+                message_id,
+                custom_emojis,
+                cx,
+            )
+        });
+        let dialog = cx.new(|cx| {
+            ModalDialog::new(
+                catalogue.reactions().reactions(),
+                catalogue.common().close(),
+                window,
+                cx,
+            )
+            .body(body.into())
+        });
+        let subscription = cx.subscribe(&dialog, |view, _, _: &ModalDialogEvent, cx| {
+            view.confirmation = None;
+            cx.notify();
+        });
+        self.confirmation = Some((dialog, subscription));
+        cx.notify();
+    }
+
     /// The message's menu (More, right-click, Shift+F10), with the same items as the web.
     fn open_menu(
         &mut self,
@@ -1090,6 +1131,11 @@ impl ConversationView {
                     MessageMenuAction::Unpin => (
                         catalogue.pins().unpin().to_owned(),
                         IconName::PushPinSlash,
+                        MenuItemTone::Normal,
+                    ),
+                    MessageMenuAction::ViewReactions => (
+                        catalogue.reactions().reactions().to_owned(),
+                        IconName::Users,
                         MenuItemTone::Normal,
                     ),
                     MessageMenuAction::CopyMessageId => (
@@ -1154,6 +1200,7 @@ impl ConversationView {
                     self.ask_to_confirm(Confirmation::Pin(message, is_pinned), window, cx);
                 }
             }
+            MessageMenuAction::ViewReactions => self.open_reactions_dialog(message_id, window, cx),
             MessageMenuAction::CopyMessageId => {
                 let copied = strings(cx).context_menu().message_id_copied();
                 self.copy_to_clipboard(message_id.to_string(), Some(copied), cx);

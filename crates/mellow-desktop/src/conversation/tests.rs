@@ -644,3 +644,28 @@ fn files_dropped_over_the_messages_go_to_the_composer_tray_but_not_a_folder(
     let tray_len = view.read_with(cx, |view, cx| view.composer().read(cx).tray_len());
     assert_eq!(tray_len, 1, "the file, not the folder");
 }
+
+#[gpui::test]
+fn the_menu_opens_who_reacted_in_a_dialog_that_esc_closes(cx: &mut TestAppContext) {
+    let mut liked = message(10_001, &ana(), "hi");
+    liked.reactions = vec![mellow_protocol::ReactionSummary {
+        emoji: "👍".into(),
+        count: 2,
+        me: false,
+    }];
+    let (view, _session, cx) = open_general(cx, vec![liked], None);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.run_menu_action(
+                Snowflake::from_raw(10_001),
+                MessageMenuAction::ViewReactions,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_some()));
+    press(cx, "escape");
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_none()));
+}

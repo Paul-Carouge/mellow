@@ -105,6 +105,8 @@ pub enum MessageMenuAction {
     CopyText,
     Pin,
     Unpin,
+    /// Who reacted with what, in a dialog.
+    ViewReactions,
     CopyMessageId,
     Delete,
 }
@@ -137,6 +139,7 @@ pub fn message_menu_lines(facts: MessageFacts, reaction_keys: &[String]) -> Vec<
         } else {
             Action::Pin
         }),
+        (!reaction_keys.is_empty() && facts.can_join_reactions).then_some(Action::ViewReactions),
         Some(Action::CopyMessageId),
     ]
     .into_iter()
@@ -444,7 +447,7 @@ mod tests {
 
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction};
+        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction, ViewReactions};
         assert_eq!(
             actions(&message_menu_lines(OTHERS_TEXT, &["👍".to_owned()])),
             [
@@ -452,6 +455,7 @@ mod tests {
                 None,
                 Some(Reply),
                 Some(CopyText),
+                Some(ViewReactions),
                 Some(CopyMessageId)
             ]
         );
