@@ -94,25 +94,33 @@ fn a_message_in_the_background_notifies_and_its_click_opens_the_conversation(
 
     receive(
         &session,
-        message(10_001, CONVERSATION_ANA, ANA, "see **you** at 7?"),
+        message(10_001, CONVERSATION_ANA, ANA, "<b>bring</b> tea"),
         cx,
     );
     receive(
         &session,
-        message(10_002, CONVERSATION_ANA, ANA, "<b>bring</b> tea"),
+        message(10_002, CONVERSATION_ANA, ANA, "and <b>cake</b>"),
         cx,
     );
 
     let delivered = cx.delivered_system_notifications();
     assert_eq!(delivered.len(), 1, "one notification per conversation");
     assert_eq!(delivered[0].tag.as_ref(), "mellow-channel-50");
-    assert_eq!(delivered[0].title.as_ref(), "Ana, 2 new messages");
-    let expected_body = if cfg!(all(unix, not(target_os = "macos"))) {
-        "&lt;b&gt;bring&lt;/b&gt; tea"
+    // Where a notification cannot be replaced, the first one stays alone (module doc).
+    let (expected_title, expected_body) = if CAN_REPLACE_SYSTEM_NOTIFICATIONS {
+        ("Ana, 2 new messages", "and <b>cake</b>")
     } else {
-        "<b>bring</b> tea"
+        ("Ana", "&lt;b&gt;bring&lt;/b&gt; tea")
     };
+    assert_eq!(delivered[0].title.as_ref(), expected_title);
     assert_eq!(delivered[0].body.as_ref(), expected_body);
+    assert_eq!(cx.shown_system_notifications().len(), {
+        if CAN_REPLACE_SYSTEM_NOTIFICATIONS {
+            2
+        } else {
+            1
+        }
+    });
     assert_eq!(cx.window_title().as_deref(), Some("(2) Mellow"));
 
     cx.simulate_system_notification_response(SystemNotificationResponse {
@@ -174,6 +182,51 @@ fn only_what_the_rules_allow_notifies(cx: &mut TestAppContext) {
         shown.last().map(|shown| shown.body.as_ref()),
         Some("New message from Zoé")
     );
+}
+
+#[gpui::test]
+fn reading_the_open_conversation_or_signing_out_clears_what_was_shown(cx: &mut TestAppContext) {
+    let (session, shell, notifier, cx) = open_notifier(cx);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_channel(CONVERSATION_ANA, window, cx);
+        });
+    });
+    cx.deactivate_window();
+    cx.run_until_parked();
+    receive(&session, message(10_001, CONVERSATION_ANA, ANA, "hi"), cx);
+    assert_eq!(cx.delivered_system_notifications().len(), 1);
+
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    assert!(
+        cx.delivered_system_notifications().is_empty(),
+        "back on the open conversation, it goes"
+    );
+
+    cx.deactivate_window();
+    cx.run_until_parked();
+    let mut mention = message(10_002, RUST_GENERAL, ZOE, "<@1000> look");
+    mention.mention_ids = vec![ME];
+    receive(&session, mention, cx);
+    assert_eq!(cx.delivered_system_notifications().len(), 1);
+    assert_ne!(cx.window_title().as_deref(), Some("Mellow"));
+    cx.update(|window, cx| notifier.update(cx, |notifier, cx| notifier.end(window, cx)));
+    cx.run_until_parked();
+    assert_eq!(cx.delivered_system_notifications(), []);
+    assert_eq!(cx.window_title().as_deref(), Some("Mellow"));
+}
+
+#[test]
+fn where_notifications_pile_up_a_channel_shows_once_and_a_flood_stops() {
+    assert!(should_show_system_notification(5, 500, true));
+    assert!(should_show_system_notification(1, 0, false));
+    assert!(!should_show_system_notification(2, 0, false));
+    assert!(!should_show_system_notification(
+        1,
+        MAXIMUM_NOTIFICATIONS_WHILE_AWAY,
+        false
+    ));
 }
 
 #[test]

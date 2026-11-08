@@ -9,7 +9,17 @@
 //! to an app bundle: run unbundled (`cargo run -p mellow-desktop`), GPUI logs "system
 //! notifications disabled: not running from an app bundle" once and shows nothing, while the
 //! chime, the title and the Dock badge still work. macOS asks the reader for permission the first
-//! time a notification is shown; when it is refused, nothing shows and nothing fails.
+//! time a notification is shown; when it is refused, nothing shows and nothing fails. GPUI has
+//! no API to read that answer, so the settings dialog cannot say "blocked" as the web does; it
+//! posts a confirmation when the switch is turned on, so the question comes right after the click.
+//!
+//! On Linux and BSD, GPUI 0.3.11 ignores the tag and its dismiss does nothing: a notification is
+//! never replaced, nor taken back when the channel is read or at sign-out, and each one holds a
+//! thread and a D-Bus connection until it closes. So there, a channel notifies once until the
+//! reader looks at it, and at most [`MAXIMUM_NOTIFICATIONS_WHILE_AWAY`] show while the window is
+//! in the background.
+// shortcut: Linux notifications are neither replaced nor dismissed; lift the limit once GPUI keeps
+// the server's id, sends `replaces_id` and closes with `CloseNotification`.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -41,6 +51,12 @@ use crate::window_chrome::WINDOW_TITLE;
 const MINIMUM_TIME_BETWEEN_SOUNDS: Duration = Duration::from_secs(2);
 /// One notification per channel: a newer one replaces it.
 const NOTIFICATION_TAG_PREFIX: &str = "mellow-channel-";
+/// The settings dialog's confirmation; not a channel's, so a click on it opens nothing.
+pub const TURNED_ON_NOTIFICATION_TAG: &str = "mellow-notifications-turned-on";
+/// Whether a newer notification with the same tag replaces the older one, and dismiss works.
+const CAN_REPLACE_SYSTEM_NOTIFICATIONS: bool = !cfg!(all(unix, not(target_os = "macos")));
+/// Where notifications pile up (see the module doc), a flood stops here until the reader is back.
+const MAXIMUM_NOTIFICATIONS_WHILE_AWAY: u32 = 20;
 
 /// The notification choices of `user_id`, as the preferences hold them.
 #[must_use]
@@ -60,6 +76,8 @@ pub struct Notifier {
     last_sound_at: Option<Instant>,
     /// Opened at the first chime; its output closes by itself between sounds.
     sound_player: Option<SoundPlayer>,
+    /// System notifications shown since the window was last active.
+    notifications_shown_while_away: u32,
     shown_attention_count: u32,
     _subscriptions: Vec<Subscription>,
 }
@@ -119,6 +137,7 @@ impl Notifier {
             alert_count_by_channel: HashMap::new(),
             last_sound_at: None,
             sound_player: None,
+            notifications_shown_while_away: 0,
             shown_attention_count: 0,
             _subscriptions: subscriptions,
         };
@@ -126,12 +145,14 @@ impl Notifier {
         notifier
     }
 
-    /// Signed out: its notifications go, and the title and badges are cleared.
+    /// Signed out: its notifications go (not on Linux, see the module doc), and the title and
+    /// badges are cleared.
     pub fn end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         for channel_id in self.alert_count_by_channel.keys() {
             cx.dismiss_system_notification(&notification_tag(*channel_id));
         }
         self.alert_count_by_channel.clear();
+        self.notifications_shown_while_away = 0;
         self.shown_attention_count = 0;
         window.set_window_title(WINDOW_TITLE);
         dock_and_tray::show_attention_count(0, cx);
@@ -188,6 +209,15 @@ impl Notifier {
                 .entry(message.channel_id)
                 .or_insert(0);
             *count = count.saturating_add(1);
+            if !should_show_system_notification(
+                *count,
+                self.notifications_shown_while_away,
+                CAN_REPLACE_SYSTEM_NOTIFICATIONS,
+            ) {
+                return;
+            }
+            self.notifications_shown_while_away =
+                self.notifications_shown_while_away.saturating_add(1);
             let notification = notification_for(
                 state,
                 message,
@@ -209,22 +239,15 @@ impl Notifier {
             return;
         }
         self.last_sound_at = Some(now);
-        if self.sound_player.is_none() {
-            match SoundPlayer::new(Box::new(SystemAudioDevices)) {
-                Ok(player) => self.sound_player = Some(player),
-                Err(error) => {
-                    tracing::warn!(error = %error.kind(), "cannot start the sound player");
-                    return;
-                }
-            }
-        }
-        if let Some(player) = &self.sound_player {
-            player.play_notification_chime();
-        }
+        play_chime_with(&mut self.sound_player);
     }
 
     /// A notification was clicked: the window comes to the front at its channel.
     fn open_channel(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        // A notification left from an account signed out since (Linux keeps them) opens nothing.
+        if place_of(self.session.read(cx).state(), channel_id).is_none() {
+            return;
+        }
         cx.activate(true);
         let shell = self.shell.clone();
         let opened = self.window.update(cx, |_, window, cx| {
@@ -241,6 +264,7 @@ impl Notifier {
         if !window.is_window_active() {
             return;
         }
+        self.notifications_shown_while_away = 0;
         let Some(channel_id) = self
             .shell
             .upgrade()
@@ -269,6 +293,32 @@ impl Notifier {
         window.set_window_title(&window_title(count, WINDOW_TITLE));
         dock_and_tray::show_attention_count(count, cx);
     }
+}
+
+/// Plays the chime, opening the system's output in `player` the first time.
+pub fn play_chime_with(player: &mut Option<SoundPlayer>) {
+    if player.is_none() {
+        match SoundPlayer::new(Box::new(SystemAudioDevices)) {
+            Ok(opened) => *player = Some(opened),
+            Err(error) => {
+                tracing::warn!(error = %error.kind(), "cannot start the sound player");
+                return;
+            }
+        }
+    }
+    if let Some(player) = player {
+        player.play_notification_chime();
+    }
+}
+
+/// Where notifications cannot be replaced, a channel shows only its first one until it is seen,
+/// and a flood stops at [`MAXIMUM_NOTIFICATIONS_WHILE_AWAY`].
+fn should_show_system_notification(
+    count_in_channel: u32,
+    shown_while_away: u32,
+    can_replace: bool,
+) -> bool {
+    can_replace || (count_in_channel == 1 && shown_while_away < MAXIMUM_NOTIFICATIONS_WHILE_AWAY)
 }
 
 fn notification_tag(channel_id: Snowflake) -> String {

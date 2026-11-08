@@ -1,26 +1,31 @@
 //! User settings → Notifications (`NotificationSettings.svelte`): desktop notifications, previews
 //! and the chime, in a dialog opened from the status menu until the desktop has a settings page
 //! (step 6). The choices are the account's, kept in the preferences file as the web keeps them in
-//! the browser.
+//! the browser. GPUI cannot read the system's permission, so the desktop switch is never locked
+//! as the web's is on "blocked"; turning it on posts a confirmation, so macOS asks right then.
 
 use gpui::{
     AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
-    Window, div,
+    SystemNotification, Window, div,
 };
 use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
+use mellow_media::SoundPlayer;
 use mellow_protocol::Snowflake;
 
 use super::DuskShell;
 use crate::components::{ModalDialog, ModalDialogEvent, Switch};
 use crate::i18n::strings;
-use crate::notifier::notification_settings_of;
+use crate::notifier::{TURNED_ON_NOTIFICATION_TAG, notification_settings_of, play_chime_with};
 use crate::preferences::{PreferencesStore, change_preferences};
 use crate::theme::length;
 use crate::theme::tokens::SPACE_SM;
+use crate::window_chrome::WINDOW_TITLE;
 
 /// The dialog's switches; they follow the preferences, so a change elsewhere shows at once.
 pub(super) struct NotificationSettingsBody {
     user_id: Snowflake,
+    /// Opened when the sound is turned on, to play the chime once.
+    sound_player: Option<SoundPlayer>,
     _preferences_subscription: Subscription,
 }
 
@@ -28,6 +33,7 @@ impl NotificationSettingsBody {
     fn new(user_id: Snowflake, cx: &mut Context<Self>) -> Self {
         Self {
             user_id,
+            sound_player: None,
             _preferences_subscription: cx.observe_global::<PreferencesStore>(|_, cx| cx.notify()),
         }
     }
@@ -51,6 +57,7 @@ impl Render for NotificationSettingsBody {
         let words = strings(cx).notifications();
         let settings = notification_settings_of(self.user_id, cx);
         let user_id = self.user_id;
+        let body = cx.entity().downgrade();
         div()
             .flex()
             .flex_col()
@@ -71,6 +78,14 @@ impl Render for NotificationSettingsBody {
                         },
                         cx,
                     );
+                    if is_on {
+                        cx.show_system_notification(SystemNotification {
+                            tag: TURNED_ON_NOTIFICATION_TAG.into(),
+                            title: WINDOW_TITLE.into(),
+                            body: strings(cx).notifications().turned_on().into(),
+                            actions: Vec::new(),
+                        });
+                    }
                 }),
             )
             .child(
@@ -101,6 +116,10 @@ impl Render for NotificationSettingsBody {
                         move |settings| settings.is_sound_enabled = is_on,
                         cx,
                     );
+                    // Turning it on plays it once, so the reader knows what they chose.
+                    if is_on {
+                        let _ = body.update(cx, |body, _| play_chime_with(&mut body.sound_player));
+                    }
                 }),
             )
     }
