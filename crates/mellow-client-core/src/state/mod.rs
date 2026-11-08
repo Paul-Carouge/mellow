@@ -29,7 +29,7 @@ pub use checklists::{
 pub use mentions::{MentionReader, does_message_mention_reader};
 pub use messages::HistoryReachStep;
 pub use optimistic::{ChangeOutcome, ChecklistTickChange, PollVoteChanges, ReactionToggle};
-pub use outbox::{PendingMessage, PendingMessageStatus};
+pub use outbox::{MessageCard, PendingMessage, PendingMessageStatus};
 pub use pins::{PinsAnswer, PinsStatus};
 pub use polls::{PollVoteChange, count_poll_vote, is_poll_ended, own_vote_changes_for_choice};
 pub use reactions::{add_reaction, reaction_key, remove_emoji, remove_reaction, take_emoji_from};

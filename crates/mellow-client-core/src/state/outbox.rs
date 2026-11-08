@@ -1,6 +1,8 @@
 //! Messages we sent that the server has not confirmed yet (the outbox, ARCHITECTURE.md §6).
 
-use mellow_protocol::{Attachment, Message, SendMessageRequest, Snowflake};
+use mellow_protocol::{
+    Attachment, Message, NewChecklist, NewPoll, NewProgressBar, SendMessageRequest, Snowflake,
+};
 
 use super::{ClientState, StateChange};
 
@@ -9,6 +11,14 @@ pub enum PendingMessageStatus {
     Sending,
     /// Kept with its text until the user retries or discards it.
     Failed,
+}
+
+/// A poll, checklist or progress bar, sent alone in its message (ADR-0043, ADR-0047).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum MessageCard {
+    Poll(NewPoll),
+    Checklist(NewChecklist),
+    ProgressBar(NewProgressBar),
 }
 
 /// A message we sent that the server has not confirmed yet.
@@ -22,6 +32,8 @@ pub struct PendingMessage {
     pub reply_to_id: Option<Snowflake>,
     /// Uploaded already (ADR-0020): sent by id with every attempt, shown while it waits.
     pub attachments: Vec<Attachment>,
+    /// Sent instead of text and files.
+    pub card: Option<MessageCard>,
     pub status: PendingMessageStatus,
 }
 
@@ -37,9 +49,18 @@ impl PendingMessage {
                 .map(|attachment| attachment.id)
                 .collect(),
             forwarded_from: None,
-            poll: None,
-            checklist: None,
-            progress_bar: None,
+            poll: match &self.card {
+                Some(MessageCard::Poll(poll)) => Some(poll.clone()),
+                _ => None,
+            },
+            checklist: match &self.card {
+                Some(MessageCard::Checklist(checklist)) => Some(checklist.clone()),
+                _ => None,
+            },
+            progress_bar: match &self.card {
+                Some(MessageCard::ProgressBar(bar)) => Some(bar.clone()),
+                _ => None,
+            },
         }
     }
 }
@@ -73,14 +94,36 @@ impl ClientState {
         attachments: Vec<Attachment>,
         nonce: String,
     ) -> SendMessageRequest {
-        let pending = PendingMessage {
+        self.queue(PendingMessage {
             nonce,
             channel_id,
             content,
             reply_to_id,
             attachments,
+            card: None,
             status: PendingMessageStatus::Sending,
-        };
+        })
+    }
+
+    /// Adds a poll, checklist or progress bar to the outbox, as [`Self::queue_message`].
+    pub fn queue_card_message(
+        &mut self,
+        channel_id: Snowflake,
+        card: MessageCard,
+        nonce: String,
+    ) -> SendMessageRequest {
+        self.queue(PendingMessage {
+            nonce,
+            channel_id,
+            content: String::new(),
+            reply_to_id: None,
+            attachments: Vec::new(),
+            card: Some(card),
+            status: PendingMessageStatus::Sending,
+        })
+    }
+
+    fn queue(&mut self, pending: PendingMessage) -> SendMessageRequest {
         let request = pending.send_request();
         self.pending_messages.push(pending);
         request
@@ -219,5 +262,23 @@ mod tests {
             .next()
             .expect("still waiting");
         assert_eq!(pending.attachments, vec![file]);
+    }
+
+    #[test]
+    fn a_poll_goes_alone_with_every_attempt_of_its_message() {
+        let mut state = ready_state();
+        let poll = NewPoll {
+            question: "Lunch?".into(),
+            answers: vec!["Pizza".into(), "Soup".into()],
+            allows_multiple_answers: false,
+            duration_hours: 24,
+        };
+        let request =
+            state.queue_card_message(GENERAL, MessageCard::Poll(poll.clone()), "n1".into());
+        assert_eq!(request.poll, Some(poll.clone()));
+        assert_eq!((request.content.as_str(), request.checklist), ("", None));
+        state.mark_send_failed("n1");
+        let (_, retry) = state.retry_pending_message("n1").expect("a failed message");
+        assert_eq!(retry.poll, Some(poll));
     }
 }
