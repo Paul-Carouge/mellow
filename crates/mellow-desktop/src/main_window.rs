@@ -6,6 +6,7 @@ use gpui::{
     Subscription, Window, div,
 };
 
+use crate::notifier::Notifier;
 use crate::session::{Session, SessionPhase};
 use crate::shell::DuskShell;
 use crate::sign_in_screen::SignInScreen;
@@ -16,6 +17,8 @@ pub struct MainWindow {
     /// Built when the session ends and dropped once signed in, so no typed password outlives it.
     sign_in_screen: Option<Entity<SignInScreen>>,
     shell: Option<Entity<DuskShell>>,
+    /// Lives with the shell: signed out, nothing more is told.
+    notifier: Option<Entity<Notifier>>,
     _session_subscription: Subscription,
 }
 
@@ -38,6 +41,7 @@ impl MainWindow {
             session,
             sign_in_screen: None,
             shell: None,
+            notifier: None,
             _session_subscription: subscription,
         };
         main_window.follow_session_phase(phase, window, cx);
@@ -52,6 +56,9 @@ impl MainWindow {
     ) {
         match phase {
             SessionPhase::SignedOut => {
+                if let Some(notifier) = self.notifier.take() {
+                    notifier.update(cx, |notifier, cx| notifier.end(window, cx));
+                }
                 self.shell = None;
                 if self.sign_in_screen.is_none() {
                     let session = self.session.clone();
@@ -63,7 +70,9 @@ impl MainWindow {
                 self.sign_in_screen = None;
                 if self.shell.is_none() {
                     let session = self.session.clone();
-                    self.shell = Some(cx.new(|cx| DuskShell::new(session, window, cx)));
+                    let shell = cx.new(|cx| DuskShell::new(session.clone(), window, cx));
+                    self.notifier = Some(cx.new(|cx| Notifier::new(session, &shell, window, cx)));
+                    self.shell = Some(shell);
                 }
             }
         }

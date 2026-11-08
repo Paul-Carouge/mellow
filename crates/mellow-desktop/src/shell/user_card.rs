@@ -259,6 +259,14 @@ impl DuskShell {
         let shell = cx.entity().downgrade();
         let user_id = user.id;
         entries.push(MenuEntry::Separator);
+        let opener = shell.clone();
+        entries.push(MenuEntry::Item(MenuItem::new(
+            strings.notifications().title(),
+            IconName::Bell,
+            move |window, cx| {
+                let _ = opener.update(cx, |shell, cx| shell.open_notification_settings(window, cx));
+            },
+        )));
         entries.push(MenuEntry::Item(MenuItem::new(
             strings.user_card().copy_user_id(),
             IconName::Copy,
