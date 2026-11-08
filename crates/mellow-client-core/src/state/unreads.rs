@@ -8,6 +8,8 @@ use mellow_protocol::{
 
 use super::mentions::{MentionReader, does_message_mention_reader};
 use super::{ClientState, StateChange};
+use crate::shared_logic::notification_settings::NotificationSettings;
+use crate::shared_logic::notifications::{NotificationPlace, is_place_muted};
 
 /// Where the user stands in each channel.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -168,6 +170,29 @@ impl ClientState {
             .iter()
             .map(|channel| self.mention_count(channel.id))
             .fold(0, u32::saturating_add)
+    }
+
+    /// What waits for the reader, for the window title and the app badge (`attentionCount` in
+    /// `notifier.svelte.ts`): every server's mention badges, and the badges of conversations not
+    /// muted.
+    #[must_use]
+    pub fn attention_count(&self, settings: &NotificationSettings, now: u64) -> u32 {
+        let in_servers = self
+            .guilds()
+            .iter()
+            .map(|guild| self.guild_mention_count(guild.id))
+            .fold(0, u32::saturating_add);
+        self.direct_message_channels
+            .iter()
+            .filter(|conversation| {
+                let place = NotificationPlace {
+                    guild_id: None,
+                    channel_id: conversation.id,
+                };
+                !is_place_muted(settings, place, now)
+            })
+            .map(|conversation| self.mention_count(conversation.id))
+            .fold(in_servers, u32::saturating_add)
     }
 
     /// The divider and jump bar for a visit starting now, to ask before `mark_read`: only what
@@ -387,6 +412,76 @@ mod tests {
         state.mark_read(GENERAL, Snowflake::from_raw(21));
         assert_eq!(state.mention_count(GENERAL), 0);
         assert!(!state.has_unread(GENERAL));
+    }
+
+    #[test]
+    fn the_attention_count_adds_server_mentions_and_conversations_not_muted() {
+        use mellow_protocol::DirectMessageChannel;
+
+        use crate::shared_logic::notification_settings::{MuteEnd, PlaceNotificationSettings};
+
+        const CONVERSATION: Snowflake = Snowflake::from_raw(300);
+        let mut state = ready_state();
+        state.upsert_direct_message_channel(DirectMessageChannel {
+            id: CONVERSATION,
+            recipients: vec![message(1, OTHER).author],
+            last_message_id: None,
+            owner_id: None,
+            name: String::new(),
+        });
+        state.apply_event(GatewayEvent::MessageCreate(mentioning_me(11)), NOW);
+        state.apply_event(GatewayEvent::MessageCreate(message(12, OTHER)), NOW);
+        let mut written_to_me = message(13, OTHER);
+        written_to_me.channel_id = CONVERSATION;
+        state.apply_event(GatewayEvent::MessageCreate(written_to_me), NOW);
+
+        let mut settings = NotificationSettings::default();
+        assert_eq!(state.attention_count(&settings, NOW), 2);
+        settings.places.insert(
+            CONVERSATION,
+            PlaceNotificationSettings {
+                level: None,
+                muted_until: Some(MuteEnd::At(NOW + 1)),
+            },
+        );
+        assert_eq!(
+            state.attention_count(&settings, NOW),
+            1,
+            "a muted conversation"
+        );
+        assert_eq!(
+            state.attention_count(&settings, NOW + 1),
+            2,
+            "its mute ended"
+        );
+    }
+
+    #[test]
+    fn only_a_message_new_to_the_session_is_new() {
+        let mut state = ready_state();
+        let ready = ready_with_unreads(
+            &state,
+            vec![ChannelUnread {
+                channel_id: GENERAL,
+                last_message_id: Snowflake::from_raw(20),
+                mention_count: 1,
+            }],
+        );
+        state.apply_ready(ready);
+        assert!(
+            !state.is_message_new_to_session(&message(20, OTHER)),
+            "replayed"
+        );
+        let new = message(21, OTHER);
+        assert!(state.is_message_new_to_session(&new));
+        state.apply_event(GatewayEvent::MessageCreate(new.clone()), NOW);
+        assert!(!state.is_message_new_to_session(&new), "already cached");
+        let mut elsewhere = message(22, OTHER);
+        elsewhere.channel_id = Snowflake::from_raw(999);
+        assert!(
+            !state.is_message_new_to_session(&elsewhere),
+            "unknown channel"
+        );
     }
 
     #[test]
