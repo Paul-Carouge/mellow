@@ -8,6 +8,7 @@
 //! parsed once per version, not on every frame.
 
 mod attachments;
+mod audio_attachment;
 mod body;
 mod code_block;
 mod dividers;

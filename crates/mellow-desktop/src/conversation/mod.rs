@@ -308,6 +308,8 @@ impl ConversationView {
                 is_unread_marker_pending: true,
                 ..Visit::default()
             };
+            // A sound of the channel left stops and is freed, as the web's goes with the page.
+            crate::attachment_audio::stop_attachment_audio(cx);
             self.revealed_blocked_message_ids.clear();
             self.reactor_sentences.clear();
             self.pending_reveal = None;

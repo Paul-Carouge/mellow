@@ -228,6 +228,15 @@ impl MessageSamples {
                 width: None,
                 height: None,
             },
+            // Plays in the app; in the gallery nothing is signed in, so pressing play does nothing.
+            Attachment {
+                id: Snowflake::from_raw(43),
+                file_name: "mémo-vocal.opus".into(),
+                content_type: "audio/ogg".into(),
+                size_bytes: 96_544,
+                width: None,
+                height: None,
+            },
         ];
         let code = message(&ana, today + 10 * MINUTE, CODE_SAMPLE);
         let jumbo = message(&ana, today + 11 * MINUTE, "🎉🎉 <:party:500>");

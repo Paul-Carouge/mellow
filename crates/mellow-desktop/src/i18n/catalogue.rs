@@ -4317,6 +4317,66 @@ impl MessagesStrings {
             Language::French => "Impossible de lire ce fichier ici. Télécharge-le pour l’ouvrir dans une autre application.",
         }
     }
+
+    pub fn play_audio(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Play {file_name}"),
+            Language::French => format!("Lire {file_name}"),
+        }
+    }
+
+    pub fn pause_audio(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Pause {file_name}"),
+            Language::French => format!("Mettre en pause {file_name}"),
+        }
+    }
+
+    pub fn loading_audio(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Loading {file_name}…"),
+            Language::French => format!("Chargement de {file_name}…"),
+        }
+    }
+
+    pub fn audio_position(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Position in {file_name}"),
+            Language::French => format!("Position dans {file_name}"),
+        }
+    }
+
+    pub fn audio_position_value(self, position: &str, duration: &str) -> String {
+        match self.language {
+            Language::English => format!("{position} of {duration}"),
+            Language::French => format!("{position} sur {duration}"),
+        }
+    }
+
+    pub fn audio_volume(self) -> &'static str {
+        "Volume"
+    }
+
+    pub fn mute_audio(self) -> &'static str {
+        match self.language {
+            Language::English => "Mute",
+            Language::French => "Couper le son",
+        }
+    }
+
+    pub fn unmute_audio(self) -> &'static str {
+        match self.language {
+            Language::English => "Unmute",
+            Language::French => "Remettre le son",
+        }
+    }
+
+    pub fn no_audio_output(self) -> &'static str {
+        match self.language {
+            Language::English => "No sound output is available. Plug in speakers or headphones, then press play again.",
+            Language::French => "Aucune sortie audio n’est disponible. Branche des enceintes ou un casque, puis relance la lecture.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

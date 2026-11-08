@@ -664,6 +664,15 @@ export const fr: Catalogue = {
     enlargeVideoTooltip: "Agrandir",
     audioPlayer: (fileName) => `Audio ${fileName}`,
     cannotPlay: "Impossible de lire ce fichier ici. Télécharge-le pour l’ouvrir dans une autre application.",
+    playAudio: (fileName) => `Lire ${fileName}`,
+    pauseAudio: (fileName) => `Mettre en pause ${fileName}`,
+    loadingAudio: (fileName) => `Chargement de ${fileName}…`,
+    audioPosition: (fileName) => `Position dans ${fileName}`,
+    audioPositionValue: (position, duration) => `${position} sur ${duration}`,
+    audioVolume: "Volume",
+    muteAudio: "Couper le son",
+    unmuteAudio: "Remettre le son",
+    noAudioOutput: "Aucune sortie audio n’est disponible. Branche des enceintes ou un casque, puis relance la lecture.",
   },
 
   pictureViewer: {

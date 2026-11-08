@@ -685,6 +685,16 @@ export const en = {
     audioPlayer: (fileName: string) => `Audio ${fileName}`,
     /** Under a video or sound this browser could not play: its codec, or the instance did not serve it. */
     cannotPlay: "Couldn't play this file here. Download it to open it in another app.",
+    /** The desktop app's own sound player (the browser draws its own controls). */
+    playAudio: (fileName: string) => `Play ${fileName}`,
+    pauseAudio: (fileName: string) => `Pause ${fileName}`,
+    loadingAudio: (fileName: string) => `Loading ${fileName}…`,
+    audioPosition: (fileName: string) => `Position in ${fileName}`,
+    audioPositionValue: (position: string, duration: string) => `${position} of ${duration}`,
+    audioVolume: "Volume",
+    muteAudio: "Mute",
+    unmuteAudio: "Unmute",
+    noAudioOutput: "No sound output is available. Plug in speakers or headphones, then press play again.",
   },
 
   pictureViewer: {
