@@ -165,6 +165,35 @@ impl ClientState {
         StateChange::Messages { channel_id }
     }
 
+    /// Our own message sent outside the outbox (a forward and its note, ADR-0039), as the
+    /// instance answered it (`takeInSentMessage` and `keepReadAfterSendingElsewhere`). The instance
+    /// never moves the sender's read position, so a channel the reader had read and is not
+    /// looking at (`is_open`) stays read; anything newer from others stays unread.
+    pub fn take_in_message_sent_elsewhere(
+        &mut self,
+        message: Message,
+        is_open: bool,
+    ) -> StateChange {
+        let channel_id = message.channel_id;
+        let message_id = message.id;
+        let was_read_before = !self.has_unread(channel_id);
+        self.note_direct_message_activity(channel_id, message_id);
+        let change = self.insert_messages(
+            channel_id,
+            vec![Message {
+                nonce: None,
+                ..message
+            }],
+        );
+        let is_behind = self
+            .last_read_message_id(channel_id)
+            .is_none_or(|last_read| last_read < message_id);
+        if was_read_before && !is_open && is_behind {
+            self.mark_read(channel_id, message_id);
+        }
+        change
+    }
+
     fn pending_message_mut(&mut self, nonce: &str) -> Option<&mut PendingMessage> {
         self.pending_messages
             .iter_mut()
@@ -176,7 +205,7 @@ impl ClientState {
 mod tests {
     use mellow_protocol::GatewayEvent;
 
-    use super::super::tests::{GENERAL, ME, NOW, message, ready_state};
+    use super::super::tests::{GENERAL, ME, NOW, OTHER, message, ready_state};
     use super::*;
 
     #[test]
@@ -194,6 +223,26 @@ mod tests {
             "the late answer changes nothing"
         );
         assert_eq!(state.messages(GENERAL).len(), 1);
+    }
+
+    #[test]
+    fn a_forward_sent_elsewhere_leaves_a_read_channel_read_and_an_unread_one_unread() {
+        let mut state = ready_state();
+        state.insert_messages(GENERAL, vec![message(10, OTHER)]);
+        state.take_in_message_sent_elsewhere(message(12, ME), false);
+        assert!(!state.has_unread(GENERAL));
+        assert_eq!(
+            state.last_read_message_id(GENERAL),
+            Some(Snowflake::from_raw(12))
+        );
+
+        state.insert_messages(GENERAL, vec![message(13, OTHER)]);
+        state.take_in_message_sent_elsewhere(message(14, ME), false);
+        assert!(
+            state.has_unread(GENERAL),
+            "others' unseen message stays unread"
+        );
+        assert_eq!(state.messages(GENERAL).len(), 4);
     }
 
     #[test]
