@@ -175,7 +175,7 @@ impl RestClient {
 
     /// The whole body, or `None` as soon as it is known to exceed `maximum_bytes`; `TransferStalled`
     /// when no byte arrives for `stall_timeout`.
-    async fn body_within(
+    pub(crate) async fn body_within(
         mut response: reqwest::Response,
         maximum_bytes: usize,
         stall_timeout: Duration,

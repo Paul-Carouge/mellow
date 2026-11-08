@@ -21,6 +21,7 @@ use crate::theme::ActiveTheme;
 use crate::tokio_bridge::{build_network_runtime, install_network_runtime};
 
 const PASSWORD: &str = "correct horse battery staple";
+const MOCK_KLIPY_APP_KEY: &str = "mock-key";
 /// How long a step may take against the local server before the test fails; never a measure.
 const STEP_DEADLINE: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
@@ -52,6 +53,8 @@ impl RunningInstance {
         .unwrap();
         // The outbox test creates a server with a plain account.
         config.guild_creation = mellow_server::domain::account_rules::GuildCreationPolicy::Everyone;
+        // GIFs on (ADR-0042): the session asks for Klipy's key at `Ready`; nothing reaches Klipy.
+        config.gifs.klipy_app_key = Some(MOCK_KLIPY_APP_KEY.to_owned());
         let (stop, stopped) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
             serve_instance(&config, async {
@@ -256,6 +259,20 @@ fn the_instance_address_is_checked_then_fields_then_credentials(cx: &mut TestApp
             .main_window
             .read_with(cx, |main_window, _| main_window.sign_in_screen().is_none())
     );
+    // The instance has GIFs: the GIF button and Klipy addresses as GIFs follow.
+    wait_until(cx, |cx| {
+        harness
+            .session
+            .read_with(cx, |session, _| session.gif_settings().is_some())
+    });
+    harness.session.read_with(cx, |session, _| {
+        assert_eq!(
+            session
+                .gif_settings()
+                .map(|settings| settings.klipy_app_key.as_str()),
+            Some(MOCK_KLIPY_APP_KEY)
+        );
+    });
     harness.session.read_with(cx, |session, _| {
         assert_eq!(
             session

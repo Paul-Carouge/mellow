@@ -923,7 +923,7 @@ fn picture(file: DownloadableFile, logical_side: f32, window: &Window) -> ImageS
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let side = device_side.ceil().max(1.0) as u32;
     picture_source(PictureRequest {
-        file,
+        file: file.into(),
         animation: Animation::StillFrame,
         display_size: DisplaySize {
             width: side,

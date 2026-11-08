@@ -23,6 +23,7 @@ use mellow_protocol::{Attachment, PublicUser};
 use super::attachments::MessageAttachments;
 use super::body::MessageBody;
 use super::forward::{ForwardFrame, ForwardOrigin};
+use super::gif::MessageGif;
 use super::link_previews::MessageLinkPreviews;
 use super::markdown_view::{EditedMarker, MessageMarkdown};
 use super::reactions::{
@@ -98,6 +99,8 @@ pub struct MessageItem {
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    /// The Klipy address the message is, shown as the GIF itself (ADR-0042).
+    gif_url: Option<SharedString>,
     link_previews: Option<MessageLinkPreviews>,
     forward: Option<(ForwardOrigin, Option<ActivationHandler>)>,
 }
@@ -120,6 +123,7 @@ impl MessageItem {
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            gif_url: None,
             link_previews: None,
             forward: None,
         }
@@ -143,6 +147,14 @@ impl MessageItem {
         let on_open_origin =
             on_open_origin.map(|handler| -> ActivationHandler { Arc::new(handler) });
         self.forward = Some((origin, on_open_origin));
+        self
+    }
+
+    /// Shows the message as this GIF (`message_gif_media_of` accepted its text, and the instance
+    /// has GIFs); its text comes back if the GIF cannot be shown.
+    #[must_use]
+    pub fn gif(mut self, url: Option<SharedString>) -> Self {
+        self.gif_url = url;
         self
     }
 
@@ -427,11 +439,18 @@ impl RenderOnce for MessageItem {
             } else {
                 tokens.component_message_body_text
             }))
-            .child(
-                MessageMarkdown::new(id.clone(), content.body.clone())
+            .child({
+                let markdown = MessageMarkdown::new(id.clone(), content.body.clone())
                     .edited(edited)
-                    .selection_order(self.selection_order),
-            );
+                    .selection_order(self.selection_order)
+                    .into_any_element();
+                match self.gif_url {
+                    Some(url) => {
+                        MessageGif::new(child_id(&id, "gif"), url, markdown).into_any_element()
+                    }
+                    None => markdown,
+                }
+            });
         let attachments = (!content.attachments.is_empty()).then(|| {
             MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
                 .pending(content.pending.is_some())
