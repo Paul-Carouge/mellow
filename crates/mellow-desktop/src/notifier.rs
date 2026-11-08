@@ -25,11 +25,13 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyWindowHandle, App, Context, Entity, SharedString, Subscription, SystemNotification,
+    AnyWindowHandle, App, Context, Entity, SharedString, Subscription, SystemNotification, Task,
     WeakEntity, Window,
 };
 use mellow_client_core::shared_logic::format::display_name;
-use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
+use mellow_client_core::shared_logic::notification_settings::{
+    NotificationSettings, next_mute_end, without_ended_mutes,
+};
 use mellow_client_core::shared_logic::notifications::{
     AlertDelivery, IncomingMessageFacts, MessagePreview, NotificationBody,
     NotificationContentFacts, NotificationPlace, NotificationTitle, PreviewWords, ReaderAttention,
@@ -43,7 +45,7 @@ use mellow_protocol::{Message, Snowflake};
 use crate::dock_and_tray;
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
-use crate::preferences::{PreferencesStore, preferences};
+use crate::preferences::{PreferencesStore, change_preferences, preferences};
 use crate::session::{IncomingMessage, Session, StateChanged, now_unix_milliseconds};
 use crate::shell::DuskShell;
 use crate::window_chrome::WINDOW_TITLE;
@@ -80,6 +82,8 @@ pub struct Notifier {
     /// System notifications shown since the window was last active.
     notifications_shown_while_away: u32,
     shown_attention_count: u32,
+    /// Wakes at the earliest end of a running mute, which it then drops from the preferences.
+    mute_end_timer: Option<(u64, Task<()>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -113,10 +117,17 @@ impl Notifier {
                 window,
                 |notifier, _, _: &StateChanged, window, cx| {
                     notifier.show_attention_count(window, cx);
+                    // The account is known from the first `Ready` on.
+                    if notifier.mute_end_timer.is_none() {
+                        notifier.wake_at_next_mute_end(window, cx);
+                    }
                 },
             ),
             // A mute or a choice changed.
-            cx.observe_global_in::<PreferencesStore>(window, Self::show_attention_count),
+            cx.observe_global_in::<PreferencesStore>(window, |notifier, window, cx| {
+                notifier.show_attention_count(window, cx);
+                notifier.wake_at_next_mute_end(window, cx);
+            }),
             cx.observe_in(shell, window, |notifier, _, window, cx| {
                 notifier.note_open_channel_seen(window, cx);
             }),
@@ -140,9 +151,11 @@ impl Notifier {
             sound_player: None,
             notifications_shown_while_away: 0,
             shown_attention_count: 0,
+            mute_end_timer: None,
             _subscriptions: subscriptions,
         };
         notifier.show_attention_count(window, cx);
+        notifier.wake_at_next_mute_end(window, cx);
         notifier
     }
 
@@ -278,9 +291,53 @@ impl Notifier {
         }
     }
 
+    /// Ends mutes on time, as the web's `refreshClock`: one timer at the earliest end drops the
+    /// mutes that ended from the preferences, so the rows, the rail, the count and the badge
+    /// follow, and the next end is waited for then. Nothing polls.
+    fn wake_at_next_mute_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(user_id) = self
+            .session
+            .read(cx)
+            .state()
+            .current_user()
+            .map(|user| user.id)
+        else {
+            self.mute_end_timer = None;
+            return;
+        };
+        let now = now_unix_milliseconds();
+        let settings = notification_settings_of(user_id, cx);
+        let cleaned = without_ended_mutes(&settings, now);
+        if cleaned != settings {
+            // Saving comes back here through the preferences' observer, which waits for the next.
+            change_preferences(cx, move |preferences| {
+                preferences.set_notification_settings(user_id, cleaned);
+            });
+            return;
+        }
+        let Some(end) = next_mute_end(&settings, now) else {
+            self.mute_end_timer = None;
+            return;
+        };
+        if self
+            .mute_end_timer
+            .as_ref()
+            .is_some_and(|(waited_end, _)| *waited_end == end)
+        {
+            return;
+        }
+        let wait = Duration::from_millis(end.saturating_sub(now).saturating_add(1));
+        let timer = cx.spawn_in(window, async move |notifier, cx| {
+            cx.background_executor().timer(wait).await;
+            let _ = notifier.update_in(cx, |notifier, window, cx| {
+                notifier.mute_end_timer = None;
+                notifier.wake_at_next_mute_end(window, cx);
+            });
+        });
+        self.mute_end_timer = Some((end, timer));
+    }
+
     /// "(3) Mellow" in the title, and the count on the Dock and in the menu bar.
-    // shortcut: a conversation's mute that ends changes the count only at the next state change
-    // or preferences change; add the web's mute-end timer once the desktop can mute (menus).
     fn show_attention_count(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let state = self.session.read(cx).state();
         let count = state.current_user().map_or(0, |user| {

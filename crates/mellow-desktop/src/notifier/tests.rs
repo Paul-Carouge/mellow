@@ -245,3 +245,45 @@ fn text_from_others_reaches_the_system_without_controls_or_markup() {
     );
     assert_eq!(channel_of_tag("someone-else-42"), None);
 }
+
+#[gpui::test]
+fn ended_mutes_are_dropped_and_a_running_one_is_waited_for(cx: &mut TestAppContext) {
+    use mellow_client_core::shared_logic::notification_settings::{
+        MuteEnd, PlaceNotificationSettings, with_place_settings,
+    };
+    let (_session, _shell, notifier, cx) = open_notifier(cx);
+    let far_future = u64::MAX / 2;
+    cx.update(|_, cx| {
+        change_preferences(cx, move |preferences| {
+            let settings = preferences.notification_settings_of(ME);
+            let ended = with_place_settings(
+                &settings,
+                CONVERSATION_ANA,
+                PlaceNotificationSettings {
+                    level: None,
+                    muted_until: Some(MuteEnd::At(1)),
+                },
+            );
+            let running = with_place_settings(
+                &ended,
+                RUST_GENERAL,
+                PlaceNotificationSettings {
+                    level: None,
+                    muted_until: Some(MuteEnd::At(far_future)),
+                },
+            );
+            preferences.set_notification_settings(ME, running);
+        });
+    });
+    cx.run_until_parked();
+    let places = cx.update(|_, cx| notification_settings_of(ME, cx).places);
+    assert!(
+        !places.contains_key(&CONVERSATION_ANA),
+        "an ended mute goes"
+    );
+    assert!(places.contains_key(&RUST_GENERAL));
+    let waited_end = notifier.read_with(cx, |notifier, _| {
+        notifier.mute_end_timer.as_ref().map(|(end, _)| *end)
+    });
+    assert_eq!(waited_end, Some(far_future));
+}
