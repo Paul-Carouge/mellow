@@ -73,6 +73,8 @@ impl Session {
             App::defer(cx, move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
+        // Before sending: the gateway's echo of this message may arrive before the answer.
+        let was_read_before = !self.state.has_unread(channel_id);
         self.run_request(
             cx,
             async move { rest.send_message(channel_id, &request).await },
@@ -80,6 +82,7 @@ impl Session {
                 let answer = answer.map(|message| {
                     let change = session.state.take_in_message_sent_elsewhere(
                         message,
+                        was_read_before,
                         open_channel_id == Some(channel_id),
                     );
                     session.schedule_read_state_send(cx);
