@@ -84,6 +84,7 @@ pub struct RangeField {
     bounds: RangeBounds,
     value_text: ValueText,
     on_change: Option<ChangeHandler>,
+    is_label_shown: bool,
 }
 
 impl RangeField {
@@ -102,7 +103,15 @@ impl RangeField {
             bounds,
             value_text: Arc::new(value_text),
             on_change: None,
+            is_label_shown: true,
         }
+    }
+
+    /// The track alone, its label and value read out but not drawn (a player's seek bar).
+    #[must_use]
+    pub fn label_hidden(mut self) -> Self {
+        self.is_label_shown = false;
+        self
     }
 
     #[must_use]
@@ -245,6 +254,9 @@ impl RenderOnce for RangeField {
                 track.child(focus_ring(RADIUS_SM, cx))
             });
 
+        if !self.is_label_shown {
+            return div().flex().flex_col().min_w_0().child(track);
+        }
         div()
             .flex()
             .flex_col()

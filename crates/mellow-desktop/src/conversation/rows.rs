@@ -140,7 +140,12 @@ fn message_version(message: &Message, is_original_cached: bool) -> u64 {
         message.pinned,
         message.reply_to_id,
         is_original_cached,
-        message.link_previews.len(),
+        message
+            .link_previews
+            .iter()
+            .map(|preview| preview.id)
+            .collect::<Vec<_>>(),
+        message.forwarded_from.map(|origin| origin.message_id),
     ))
 }
 
@@ -736,7 +741,9 @@ impl ConversationView {
                     });
                     (reference, picture)
                 });
+                // A forward never mentions anyone: its words were written elsewhere (ADR-0039).
                 let is_mentioning_reader = Some(message.author.id) != reader_id
+                    && message.forwarded_from.is_none()
                     && (state.does_message_mention_current_user(message) || body.names_reader);
                 let rights = self.permissions(channel_id, cx);
                 let message_id = message.id;
@@ -745,6 +752,15 @@ impl ConversationView {
                     || message.checklist.is_some()
                     || message.progress_bar.is_some())
                 .then(|| message.clone());
+                let is_row_active = self.hovered_message_id == Some(message_id)
+                    || (self.focused_row_key.as_deref() == Some(row.key.as_str())
+                        && self.list_focus.contains_focused(window, cx));
+                let add_reaction = self.reactions_add_button(
+                    message_id,
+                    rights.can_add_reactions,
+                    is_row_active,
+                    cx,
+                );
                 let toggle_view = view.clone();
                 let item = MessageItem::new(
                     row_id.clone(),
@@ -774,6 +790,7 @@ impl ConversationView {
                 )
                 .selection_order(selection_order(index))
                 .can_join_reactions(rights.can_join_reactions)
+                .add_reaction(add_reaction)
                 .reaction_tooltip({
                     let view = view.clone();
                     move |pill, cx| {
@@ -785,6 +802,7 @@ impl ConversationView {
                     let _ = toggle_view
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));
                 })
+                .map(|item| self.with_forward_and_previews(item, message, &view, cx))
                 .on_open_author_menu({
                     // The shell hands it to Home, which this view cannot reach.
                     let list_focus = self.list_focus.clone();
@@ -881,9 +899,12 @@ impl ConversationView {
         });
         let hover_bar = message_id
             .filter(|id| {
-                self.hovered_message_id == Some(*id) || is_menu_open || has_keyboard_focus_within
+                self.hovered_message_id == Some(*id)
+                    || is_menu_open
+                    || has_keyboard_focus_within
+                    || self.message_holding_the_picker() == Some(*id)
             })
-            .and_then(|id| self.render_hover_bar(index, id, cx));
+            .and_then(|id| self.render_hover_bar(index, id, window, cx));
         let highlight = self
             .highlight
             .filter(|(highlighted_id, _)| Some(*highlighted_id) == message_id)
@@ -1069,12 +1090,18 @@ impl ConversationView {
         &self,
         index: usize,
         message_id: Snowflake,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let message = self.cached_message(message_id, cx)?;
         let facts = self.message_facts(&message, cx);
+        let reaction_buttons = if facts.can_add_reactions {
+            self.hover_bar_reaction_buttons(&message, window, cx)
+        } else {
+            Vec::new()
+        };
         let actions = hover_bar_actions(facts, self.is_shift_held);
         let id = |name: &str| SharedString::from(format!("hover-{name}-{}", message_id.raw()));
         let view = cx.entity().downgrade();
@@ -1091,6 +1118,12 @@ impl ConversationView {
                     "reply",
                     IconName::ArrowBendUpLeft,
                     catalogue.messages().reply(),
+                    IconButtonTone::Standard,
+                ),
+                HoverBarAction::Forward => (
+                    "forward",
+                    IconName::ArrowBendUpRight,
+                    catalogue.forward().forward(),
                     IconButtonTone::Standard,
                 ),
                 HoverBarAction::CopyText => (
@@ -1122,6 +1155,7 @@ impl ConversationView {
                     let _ = view.update(cx, |view, cx| match action {
                         HoverBarAction::Edit => view.start_edit(message_id, window, cx),
                         HoverBarAction::Reply => view.start_reply(message_id, window, cx),
+                        HoverBarAction::Forward => view.open_forward_dialog(message_id, window, cx),
                         HoverBarAction::CopyText => {
                             if let Some(message) = view.cached_message(message_id, cx) {
                                 view.copy_to_clipboard(message.content, None, cx);
@@ -1156,6 +1190,7 @@ impl ConversationView {
                 .border_color(color(tokens.component_action_bar_border))
                 .bg(color(tokens.component_action_bar_background))
                 .shadow(shadow(tokens.component_action_bar_shadow))
+                .children(reaction_buttons)
                 .children(buttons)
                 .into_any_element(),
         )

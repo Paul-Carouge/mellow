@@ -48,8 +48,11 @@ pub struct MessageMenuFacts {
     pub can_send_messages: bool,
     /// Delete others' messages: `MANAGE_MESSAGES`.
     pub can_manage_messages: bool,
+    pub has_reactions: bool,
     /// Joining an existing reaction: the channel's history is readable.
     pub can_join_reactions: bool,
+    /// Starting a new one also needs `ADD_REACTIONS`.
+    pub can_add_reactions: bool,
     /// `MANAGE_MESSAGES` in a server channel; any participant in a conversation.
     pub can_manage_pins: bool,
 }
@@ -67,14 +70,18 @@ impl MessageMenuFacts {
 }
 
 /// A message menu item.
-/// shortcut: no Add reaction, Forward or Remove all reactions yet; they come with the emoji
-/// picker, forwards and reaction moderation (M3 steps 5 and 6). The existing reactions are
-/// offered one by one instead, and Copy message ID joins the everyday section.
+/// shortcut: no Remove all reactions yet; it comes with reaction moderation (M3 step 6). Copy
+/// message ID joins the everyday section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageMenuAction {
-    /// Adds or takes back the reader's reaction with this stored key, one per existing reaction.
+    /// A quick reaction: adds or takes back the reader's reaction with this emoji. The web shows
+    /// them as the first row of its phone sheet; here they are items, so the keys reach them.
     ToggleReaction(String),
+    /// Opens the emoji picker to react with any emoji.
+    AddReaction,
     Reply,
+    /// Opens the forward dialog (ADR-0039).
+    Forward,
     Edit,
     CopyText,
     Pin,
@@ -87,18 +94,19 @@ pub enum MessageMenuAction {
     Delete,
 }
 
-/// The More button, a right-click and Shift+F10 open the same menu, as on Discord: reactions,
-/// then the everyday actions, then Delete.
+/// The More button, a right-click and Shift+F10 open the same menu, as on Discord: the quick
+/// reactions and Add reaction, then the everyday actions, then Delete.
 #[must_use]
 pub fn message_menu_actions(
     facts: MessageMenuFacts,
-    reaction_keys: &[String],
+    quick_reactions: &[String],
 ) -> Vec<MenuLine<MessageMenuAction>> {
     use MessageMenuAction as Action;
-    let reactions: Vec<Option<Action>> = if facts.can_join_reactions {
-        reaction_keys
+    let reactions: Vec<Option<Action>> = if facts.can_add_reactions {
+        quick_reactions
             .iter()
-            .map(|key| Some(Action::ToggleReaction(key.clone())))
+            .map(|emoji| Some(Action::ToggleReaction(emoji.clone())))
+            .chain([Some(Action::AddReaction)])
             .collect()
     } else {
         Vec::new()
@@ -107,6 +115,8 @@ pub fn message_menu_actions(
         reactions,
         vec![
             facts.can_send_messages.then_some(Action::Reply),
+            // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough.
+            (!facts.is_rich).then_some(Action::Forward),
             facts.can_edit().then_some(Action::Edit),
             (facts.has_text && !facts.is_rich).then_some(Action::CopyText),
             facts.can_manage_pins.then_some(if facts.is_pinned {
@@ -114,8 +124,7 @@ pub fn message_menu_actions(
             } else {
                 Action::Pin
             }),
-            (!reaction_keys.is_empty() && facts.can_join_reactions)
-                .then_some(Action::ViewReactions),
+            (facts.has_reactions && facts.can_join_reactions).then_some(Action::ViewReactions),
             Some(Action::CopyMessageId),
         ],
         vec![
@@ -247,8 +256,8 @@ mod tests {
             .collect()
     }
 
-    // Ported from `context-menus.test.ts` ("messageMenuActions"): reactions toggle the existing
-    // ones, and Copy message ID joins the everyday section.
+    // Ported from `context-menus.test.ts` ("messageMenuActions"): the quick reactions come before
+    // Add reaction, and Copy message ID joins the everyday section.
 
     const OTHERS_TEXT: MessageMenuFacts = MessageMenuFacts {
         is_own: false,
@@ -259,7 +268,9 @@ mod tests {
         is_pinned: false,
         can_send_messages: true,
         can_manage_messages: false,
+        has_reactions: false,
         can_join_reactions: true,
+        can_add_reactions: true,
         can_manage_pins: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
@@ -269,13 +280,21 @@ mod tests {
 
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Reply, ToggleReaction, ViewReactions};
+        use MessageMenuAction::{
+            AddReaction, CopyMessageId, CopyText, Forward, Reply, ToggleReaction, ViewReactions,
+        };
+        let reacted = MessageMenuFacts {
+            has_reactions: true,
+            ..OTHERS_TEXT
+        };
         assert_eq!(
-            actions(&message_menu_actions(OTHERS_TEXT, &["👍".to_owned()])),
+            actions(&message_menu_actions(reacted, &["👍".to_owned()])),
             [
                 Some(ToggleReaction("👍".to_owned())),
+                Some(AddReaction),
                 None,
                 Some(Reply),
+                Some(Forward),
                 Some(CopyText),
                 Some(ViewReactions),
                 Some(CopyMessageId)
@@ -285,11 +304,16 @@ mod tests {
 
     #[test]
     fn your_own_message_adds_edit_and_delete_last_and_separated() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete, Edit, Reply};
+        use MessageMenuAction::{
+            AddReaction, CopyMessageId, CopyText, Delete, Edit, Forward, Reply,
+        };
         assert_eq!(
             actions(&message_menu_actions(OWN_TEXT, &[])),
             [
+                Some(AddReaction),
+                None,
                 Some(Reply),
+                Some(Forward),
                 Some(Edit),
                 Some(CopyText),
                 Some(CopyMessageId),
@@ -315,11 +339,21 @@ mod tests {
         let lines = message_menu_actions(poll, &[]);
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Edit)));
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::CopyText)));
+        assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Forward)));
+        // Read-only channels still forward: that is where announcements live.
+        let read_only = MessageMenuFacts {
+            can_send_messages: false,
+            ..OTHERS_TEXT
+        };
+        assert!(
+            message_menu_actions(read_only, &[])
+                .contains(&MenuLine::Action(MessageMenuAction::Forward))
+        );
     }
 
     #[test]
     fn the_author_of_an_open_poll_ends_it_from_the_danger_section() {
-        use MessageMenuAction::{CopyMessageId, Delete, EndPoll, Reply};
+        use MessageMenuAction::{AddReaction, CopyMessageId, Delete, EndPoll, Reply};
         let open_poll = MessageMenuFacts {
             is_rich: true,
             is_poll_open: true,
@@ -329,6 +363,8 @@ mod tests {
         assert_eq!(
             actions(&message_menu_actions(open_poll, &[])),
             [
+                Some(AddReaction),
+                None,
                 Some(Reply),
                 Some(CopyMessageId),
                 None,
@@ -366,16 +402,24 @@ mod tests {
     }
 
     #[test]
-    fn a_read_only_channel_leaves_out_reply_edit_and_reactions_without_history() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete};
+    fn a_read_only_channel_leaves_out_reply_edit_and_reactions_without_the_permission() {
+        use MessageMenuAction::{CopyMessageId, CopyText, Delete, Forward};
         let read_only = MessageMenuFacts {
             can_send_messages: false,
+            has_reactions: true,
             can_join_reactions: false,
+            can_add_reactions: false,
             ..OWN_TEXT
         };
         assert_eq!(
             actions(&message_menu_actions(read_only, &["👍".to_owned()])),
-            [Some(CopyText), Some(CopyMessageId), None, Some(Delete)]
+            [
+                Some(Forward),
+                Some(CopyText),
+                Some(CopyMessageId),
+                None,
+                Some(Delete)
+            ]
         );
     }
 

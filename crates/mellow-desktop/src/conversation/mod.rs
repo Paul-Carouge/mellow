@@ -14,6 +14,9 @@ mod cards;
 mod cards_tests;
 mod checklist_editor;
 mod chrome;
+mod emoji_reactions;
+mod forward_dialog;
+mod forwarding;
 mod pins_panel;
 mod poll_voters_dialog;
 mod reactions_dialog;
@@ -33,10 +36,11 @@ use mellow_client_core::shared_logic::context_menus_people::{
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
+use mellow_client_core::shared_logic::role_mentions::roles_writer_may_mention;
 use mellow_client_core::shared_logic::slash_commands::SlashCommandId;
 use mellow_client_core::state::{
-    MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange, UnreadMarker,
-    is_poll_ended,
+    ClientState, MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange,
+    UnreadMarker, is_poll_ended,
 };
 use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
@@ -57,6 +61,8 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
 use self::card_dialogs::CardDialogKind;
+use self::emoji_reactions::is_reaction_given;
+pub use self::forwarding::OpenForwardOrigin;
 use self::rows::Entry;
 use self::rules::reactor_sentence;
 
@@ -145,6 +151,9 @@ pub struct ConversationView {
     /// The row keyboard focus is on, while the list has focus (one Tab stop, arrows move).
     focused_row_key: Option<String>,
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
+    emoji_picker: Option<emoji_reactions::OpenEmojiPicker>,
+    /// Where a click on its opener closed the picker: that click must not reopen it.
+    emoji_picker_dismissed_at: Option<(gpui::Point<gpui::Pixels>, emoji_reactions::EmojiTarget)>,
     /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
@@ -152,6 +161,11 @@ pub struct ConversationView {
     pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
+    /// What went well, said above the composer until the next channel or message sent ("Forwarded
+    /// to #news.").
+    notice: Option<SharedString>,
+    /// A forward's original in another channel, reached once the shell opened that channel.
+    pending_origin_jump: Option<(Snowflake, Snowflake)>,
     /// A refused edit's text, given back to the composer by the next render (which has the
     /// window): the message, the text and whether the editor may reopen on it.
     refused_edit: Option<(Snowflake, String, bool)>,
@@ -239,10 +253,14 @@ impl ConversationView {
             hovered_message_id: None,
             focused_row_key: None,
             menu: None,
+            emoji_picker: None,
+            emoji_picker_dismissed_at: None,
             confirmation: None,
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
             action_error: None,
+            notice: None,
+            pending_origin_jump: None,
             refused_edit: None,
             reactor_sentences: HashMap::new(),
             pending_reveal: None,
@@ -319,6 +337,8 @@ impl ConversationView {
                 is_unread_marker_pending: true,
                 ..Visit::default()
             };
+            // A sound of the channel left stops and is freed, as the web's goes with the page.
+            crate::attachment_audio::stop_attachment_audio(cx);
             self.revealed_blocked_message_ids.clear();
             self.forget_cards_of_channel();
             self.reactor_sentences.clear();
@@ -328,9 +348,12 @@ impl ConversationView {
             self.hovered_message_id = None;
             self.focused_row_key = None;
             self.menu = None;
+            self.emoji_picker = None;
+            self.show_composer_picker_state(cx);
             self.confirmation = None;
             self.is_pins_panel_open = false;
             self.action_error = None;
+            self.notice = None;
             self.entries.clear();
             self.entry_versions.clear();
             self.list.reset(0);
@@ -397,6 +420,8 @@ impl ConversationView {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
+        let (mentionable_roles, can_mention_everyone) =
+            role_mentions_for(state, self.open_conversation.as_ref(), channel_id);
         let rest = session.rest_client().cloned();
         // Per account and instance, and only where the session may keep things on this device.
         let kept_drafts_file = rest
@@ -410,6 +435,7 @@ impl ConversationView {
             composer.set_permissions(can_send, can_attach, cx);
             composer.set_card_permissions(card_rights.0, card_rights.1, cx);
             composer.set_mention_candidates(people, current_user_id, cx);
+            composer.set_role_mentions(mentionable_roles, can_mention_everyone, cx);
             composer.set_uploads(rest, maximum_attachment_bytes, cx);
             composer.keep_drafts_in(kept_drafts_file, cx);
         });
@@ -529,6 +555,8 @@ impl ConversationView {
             can_send,
             can_attach: can_send && has(Permissions::ATTACH_FILES),
             can_join_reactions: can_read_history,
+            can_add_reactions: can_read_history
+                && permissions.is_some_and(|bits| bits.contains(Permissions::ADD_REACTIONS)),
             can_manage_messages,
             can_manage_pins: is_conversation || can_manage_messages,
         }
@@ -556,7 +584,9 @@ impl ConversationView {
             is_pinned: message.pinned,
             can_send_messages: rights.can_send,
             can_manage_messages: rights.can_manage_messages,
+            has_reactions: !message.reactions.is_empty(),
             can_join_reactions: rights.can_join_reactions,
+            can_add_reactions: rights.can_add_reactions,
             can_manage_pins: rights.can_manage_pins,
         }
     }
@@ -693,6 +723,7 @@ impl ConversationView {
         match event {
             ComposerEvent::Send(message) => {
                 self.action_error = None;
+                self.notice = None;
                 let answer = self.session.update(cx, |session, cx| {
                     session.send_message(
                         message.channel_id,
@@ -737,6 +768,12 @@ impl ConversationView {
                     self.open_card_dialog(kind, window, cx);
                 }
             }
+            ComposerEvent::OpenEmojiPicker { anchor } => self.toggle_emoji_picker(
+                emoji_reactions::EmojiTarget::Composer,
+                *anchor,
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -1189,81 +1226,31 @@ impl ConversationView {
         };
         let catalogue = strings(cx);
         let facts = self.message_facts(&message, cx);
-        let reaction_keys: Vec<String> = message
-            .reactions
-            .iter()
-            .map(|reaction| reaction.emoji.clone())
-            .collect();
+        let quick_reactions = self.quick_reactions(cx);
         let view = cx.entity().downgrade();
-        let entries = message_menu_actions(facts, &reaction_keys)
+        let entries = message_menu_actions(facts, &quick_reactions)
             .into_iter()
             .map(|line| {
                 let MenuLine::Action(action) = line else {
                     return MenuEntry::Separator;
                 };
                 let view = view.clone();
-                let (label, icon, tone) = match &action {
-                    MessageMenuAction::ToggleReaction(key) => {
-                        let shown = reaction_label(key, &self.sources.custom_emojis, catalogue);
-                        (
-                            catalogue.reactions().react_with(&shown),
-                            IconName::Smiley,
-                            MenuItemTone::Normal,
-                        )
+                // A quick reaction says whether it is given, as its menuitemcheckbox does on the web.
+                let is_given = match &action {
+                    MessageMenuAction::ToggleReaction(emoji) => {
+                        Some(is_reaction_given(&message, emoji))
                     }
-                    MessageMenuAction::Reply => (
-                        catalogue.messages().reply().to_owned(),
-                        IconName::ArrowBendUpLeft,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Edit => (
-                        catalogue.common().edit().to_owned(),
-                        IconName::PencilSimple,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::CopyText => (
-                        catalogue.messages().copy_text().to_owned(),
-                        IconName::Copy,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Pin => (
-                        catalogue.pins().pin().to_owned(),
-                        IconName::PushPin,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Unpin => (
-                        catalogue.pins().unpin().to_owned(),
-                        IconName::PushPinSlash,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::ViewReactions => (
-                        catalogue.reactions().reactions().to_owned(),
-                        IconName::Users,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::CopyMessageId => (
-                        catalogue.context_menu().copy_message_id().to_owned(),
-                        IconName::Copy,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::EndPoll => (
-                        catalogue.polls().end().to_owned(),
-                        IconName::ChartBarHorizontal,
-                        MenuItemTone::Danger,
-                    ),
-                    MessageMenuAction::Delete => (
-                        catalogue.context_menu().delete_message().to_owned(),
-                        IconName::Trash,
-                        MenuItemTone::Danger,
-                    ),
+                    _ => None,
                 };
+                let (label, icon, tone) = message_menu_item_look(&action, catalogue);
                 MenuEntry::Item(
                     MenuItem::new(label, icon, move |window, cx| {
                         let _ = view.update(cx, |view, cx| {
                             view.run_menu_action(message_id, action.clone(), window, cx);
                         });
                     })
-                    .tone(tone),
+                    .tone(tone)
+                    .checked(is_given),
                 )
             })
             .collect();
@@ -1294,8 +1281,14 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) {
         match action {
-            MessageMenuAction::ToggleReaction(key) => self.toggle_reaction(message_id, &key, cx),
+            MessageMenuAction::ToggleReaction(emoji) => {
+                self.react_with_quick_reaction(message_id, &emoji, cx);
+            }
+            MessageMenuAction::AddReaction => {
+                self.open_reaction_picker_beside_row(message_id, window, cx);
+            }
             MessageMenuAction::Reply => self.start_reply(message_id, window, cx),
+            MessageMenuAction::Forward => self.open_forward_dialog(message_id, window, cx),
             MessageMenuAction::Edit => self.start_edit(message_id, window, cx),
             MessageMenuAction::CopyText => {
                 if let Some(message) = self.cached_message(message_id, cx) {
@@ -1645,6 +1638,32 @@ impl ConversationView {
     }
 }
 
+/// The roles the writer may mention in the open server channel, highest first, and whether they
+/// may mention `@everyone` (ADR-0040); nothing in a conversation.
+fn role_mentions_for(
+    state: &ClientState,
+    open: Option<&OpenConversation>,
+    channel_id: Option<Snowflake>,
+) -> (Vec<Role>, bool) {
+    let (Some(guild_id), Some(channel_id)) = (open.and_then(|open| open.guild_id), channel_id)
+    else {
+        return (Vec::new(), false);
+    };
+    let can_mention_everyone = state
+        .my_channel_permissions(channel_id)
+        .is_some_and(|bits| bits.contains(Permissions::MENTION_EVERYONE));
+    let roles = state
+        .guild(guild_id)
+        .map(|guild| {
+            roles_writer_may_mention(&guild.roles, guild_id, can_mention_everyone)
+                .into_iter()
+                .cloned()
+                .collect()
+        })
+        .unwrap_or_default();
+    (roles, can_mention_everyone)
+}
+
 /// What a channel lets the reader do here (ADR-0007 bits, only to adapt the interface).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[allow(clippy::struct_excessive_bools)] // One flag per permission, as the web's derived values.
@@ -1652,6 +1671,7 @@ struct ChannelRights {
     can_send: bool,
     can_attach: bool,
     can_join_reactions: bool,
+    can_add_reactions: bool,
     can_manage_messages: bool,
     can_manage_pins: bool,
 }
@@ -1667,5 +1687,74 @@ fn reaction_label(
         ReactionAppearance::Unicode(emoji) => emoji,
         ReactionAppearance::Custom(emoji) => format!(":{}:", emoji.name),
         ReactionAppearance::Deleted => catalogue.reactions().deleted_emoji().to_owned(),
+    }
+}
+
+/// The label, icon and tone of a message menu item.
+fn message_menu_item_look(
+    action: &MessageMenuAction,
+    catalogue: crate::i18n::Strings,
+) -> (String, IconName, MenuItemTone) {
+    match action {
+        MessageMenuAction::ToggleReaction(emoji) => (
+            catalogue.reactions().react_with(emoji),
+            IconName::Smiley,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::AddReaction => (
+            catalogue.reactions().add_reaction().to_owned(),
+            IconName::Smiley,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Reply => (
+            catalogue.messages().reply().to_owned(),
+            IconName::ArrowBendUpLeft,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Forward => (
+            catalogue.forward().forward().to_owned(),
+            IconName::ArrowBendUpRight,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Edit => (
+            catalogue.common().edit().to_owned(),
+            IconName::PencilSimple,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::CopyText => (
+            catalogue.messages().copy_text().to_owned(),
+            IconName::Copy,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Pin => (
+            catalogue.pins().pin().to_owned(),
+            IconName::PushPin,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Unpin => (
+            catalogue.pins().unpin().to_owned(),
+            IconName::PushPinSlash,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::ViewReactions => (
+            catalogue.reactions().reactions().to_owned(),
+            IconName::Users,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::CopyMessageId => (
+            catalogue.context_menu().copy_message_id().to_owned(),
+            IconName::Copy,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::EndPoll => (
+            catalogue.polls().end().to_owned(),
+            IconName::ChartBarHorizontal,
+            MenuItemTone::Danger,
+        ),
+        MessageMenuAction::Delete => (
+            catalogue.context_menu().delete_message().to_owned(),
+            IconName::Trash,
+            MenuItemTone::Danger,
+        ),
     }
 }

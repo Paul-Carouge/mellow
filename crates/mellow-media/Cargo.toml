@@ -14,11 +14,15 @@ cpal.workspace = true
 mellow-client-core.workspace = true
 mellow-protocol.workspace = true
 nnnoiseless.workspace = true
+# Audio attachments: Ogg Opus pages, and the other types the instance serves inline, with the
+# decoders the server already uses for transcoding (ADR-0045).
+ogg.workspace = true
 opus.workspace = true
 rtrb.workspace = true
 rubato.workspace = true
 sonora.workspace = true
 str0m.workspace = true
+symphonia.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 yuv.workspace = true

@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 
 mod blocks;
 mod cards;
+mod forwards;
 mod messages;
 mod relationships;
 mod servers;
@@ -31,6 +32,7 @@ mod servers;
 pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
+use crate::attachment_audio::{end_attachment_audio_session, start_attachment_audio_session};
 use crate::composer::{forget_saved_drafts, forget_saved_drafts_now};
 use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;
@@ -273,6 +275,7 @@ impl Session {
         if self.is_kept_on_this_device {
             start_picture_session(rest.clone(), cx);
         }
+        start_attachment_audio_session(rest.clone(), cx);
         let (gateway, commands) = GatewayHandle::new();
         let (sender, mut updates) = mpsc::channel(GATEWAY_UPDATE_QUEUE_CAPACITY);
         let token = Zeroizing::new(rest.token().unwrap_or_default().to_owned());
@@ -466,6 +469,7 @@ impl Session {
         self.member_loads.clear();
         self.status_error = None;
         self.conversation = messages::ConversationRequests::default();
+        end_attachment_audio_session(cx);
         if self.is_kept_on_this_device {
             end_picture_session(cx);
             forget_saved_drafts(cx);

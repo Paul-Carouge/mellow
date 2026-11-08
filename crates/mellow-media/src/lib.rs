@@ -2,7 +2,7 @@
 //! server's exact offer shape, audio devices behind a trait, microphone processing (echo
 //! cancellation, noise suppression, gain), Opus, jitter buffers with loss concealment and drift
 //! steering, mixing, voice activity and push-to-talk, the voice enhancement, reconnection as the
-//! web client does it, voice cues, the message chime and soundboard playback.
+//! web client does it, voice cues, the message chime, soundboard playback and audio attachments.
 //!
 //! Threads: a network thread owns the UDP socket, the peer and the connection's state machine
 //! (a new socket and peer per offer); an audio thread owns the codecs,
@@ -19,6 +19,8 @@ mod camera;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod camera_macos;
+mod clip_decoder;
+mod clip_player;
 mod codec;
 mod connection;
 mod devices;
@@ -48,6 +50,8 @@ mod watch_list;
 pub use camera::{
     CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
 };
+pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
+pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
