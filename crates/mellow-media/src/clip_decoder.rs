@@ -271,8 +271,9 @@ impl ClipDecoder for OggOpusClip {
         }
     }
 
-    // shortcut: a seek decodes again from the start (libopus decodes a 10-minute file in well under
-    // a second); bisect pages with `PacketReader::seek_absgp` if long Opus files show up.
+    // shortcut: a seek decodes again from the start (unmeasured; the player checks its commands
+    // between batches, so pause and stop still answer), so a far seek in a long or hostile file
+    // keeps a core busy while it plays; bisect pages with `PacketReader::seek_absgp` if that shows.
     fn seek(&mut self, frame: u64) -> Result<(), ClipError> {
         let mut reopened = Self::open(Arc::clone(&self.bytes))?;
         reopened.first_wanted_frame = frame;

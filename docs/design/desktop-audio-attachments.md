@@ -37,12 +37,12 @@ Same people and content as the web note: in "Rust Lyon" #general, Ana posts `mé
 
 ## Verified
 
-Headless GPUI tests: the card shows its player, at least the desktop hit size tall, until a file is refused, then the note; the engine plays a WAV to its end on a synthetic output, seeks while paused and reports a refused file with its key; Ogg Opus decodes from its pre-skip to its last granule. Not looked at on screen: no signed-in run of the desktop app has been looked at yet (development notes), and this session could not capture the screen.
+Headless GPUI tests: the card shows its player, at least the desktop hit size tall, until a file is refused, then the note; the engine plays a WAV to its end on a synthetic output, seeks while paused and reports a refused file with its key, hands back to its commands during a long skip ahead, and survives a decoder that panics; Ogg Opus decodes from its pre-skip to its last granule. Not looked at on screen: no signed-in run of the desktop app has been looked at yet (development notes), and this session could not capture the screen.
 
 ## Not done
 
 - Sounds keep playing when their row scrolls far out of the list (the web's element goes with the row).
 - Ogg Vorbis, surround files and files over 64 MiB show the note instead of playing; there is no download button on the desktop yet (M3 step 9).
-- Seeking in Ogg Opus decodes again from the start (fast for the lengths the instance stores).
+- Seeking in Ogg Opus (and ADTS AAC) decodes again from the start. The player checks its commands every 64 silent packets, so pause, stop and another sound still answer at once, but a far seek in a very long or hostile file keeps a core busy while it plays (unmeasured).
 - No output device choice: sounds use the system's default until the desktop has voice settings (M3 step 7).
 - "#" channel references: neither the web nor the protocol has them, so the composer does not suggest them.

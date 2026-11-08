@@ -22,6 +22,9 @@ const OUTPUT_QUEUE_MILLISECONDS: u64 = 40;
 const RESAMPLER_CHUNK_FRAMES: usize = 1_024;
 /// A paused output stays open this long, so pausing and playing again does not reopen it.
 const IDLE_BEFORE_CLOSING: Duration = Duration::from_secs(2);
+/// Packets decoded without output (a seek skipping ahead) before the thread looks at its
+/// commands again: a long skip never holds up pause or stop for more than a moment.
+const MAXIMUM_SILENT_PACKETS_PER_FEED: u64 = 64;
 
 /// Where the loaded sound is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -305,17 +308,23 @@ struct PlayerState {
     samples: Vec<f32>,
 }
 
+impl PlayerState {
+    fn new() -> Self {
+        Self {
+            key: None,
+            loaded: None,
+            output: None,
+            phase: ClipPhase::Paused,
+            volume: 1.0,
+            output_device_id: None,
+            idle_since_paused: Duration::ZERO,
+            samples: Vec::new(),
+        }
+    }
+}
+
 fn run(devices: &dyn AudioDevices, commands: &Receiver<Command>, status: &Mutex<ClipStatus>) {
-    let mut state = PlayerState {
-        key: None,
-        loaded: None,
-        output: None,
-        phase: ClipPhase::Paused,
-        volume: 1.0,
-        output_device_id: None,
-        idle_since_paused: Duration::ZERO,
-        samples: Vec::new(),
-    };
+    let mut state = PlayerState::new();
     loop {
         let command = if state.output.is_some() || state.phase == ClipPhase::Playing {
             match commands.recv_timeout(WORK_PERIOD) {
@@ -355,7 +364,7 @@ fn apply(state: &mut PlayerState, command: Command) {
         } => {
             state.output = None;
             state.key = Some(clip);
-            match open_clip(bytes, &content_type) {
+            match without_panics(|| open_clip(bytes, &content_type)) {
                 Ok(decoder) => {
                     state.loaded = Some(LoadedClip {
                         decoder,
@@ -421,7 +430,7 @@ fn seek_to(state: &mut PlayerState, frame: u64) {
     let Some(loaded) = state.loaded.as_mut() else {
         return;
     };
-    if let Err(error) = loaded.decoder.seek(frame) {
+    if let Err(error) = without_panics(|| loaded.decoder.seek(frame)) {
         state.loaded = None;
         state.output = None;
         state.phase = ClipPhase::CannotPlay(error);
@@ -467,6 +476,7 @@ fn feed(state: &mut PlayerState, devices: &dyn AudioDevices) {
     let Some(output) = state.output.as_mut() else {
         return;
     };
+    let mut silent_packets = 0;
     loop {
         output.push(state.volume);
         if !output.wants_more() {
@@ -478,9 +488,15 @@ fn feed(state: &mut PlayerState, devices: &dyn AudioDevices) {
             }
             return;
         }
+        if silent_packets >= MAXIMUM_SILENT_PACKETS_PER_FEED {
+            return;
+        }
         state.samples.clear();
-        match loaded.decoder.decode_next(&mut state.samples) {
+        match without_panics(|| loaded.decoder.decode_next(&mut state.samples)) {
             Ok(has_more) => {
+                if state.samples.is_empty() {
+                    silent_packets += 1;
+                }
                 let channels = loaded.decoder.channels();
                 loaded.fed_frames += (state.samples.len() / channels) as u64;
                 if !has_more {
@@ -506,6 +522,15 @@ fn feed(state: &mut PlayerState, devices: &dyn AudioDevices) {
             }
         }
     }
+}
+
+/// Runs decoder work so that a panic in a parser fed a hostile file (ogg, libopus, symphonia)
+/// reports the file as damaged instead of ending the thread, and with it every later sound.
+fn without_panics<T>(work: impl FnOnce() -> Result<T, ClipError>) -> Result<T, ClipError> {
+    std::panic::catch_unwind(std::panic::AssertUnwindSafe(work)).unwrap_or_else(|_| {
+        tracing::error!("an attachment's decoder panicked");
+        Err(ClipError::Corrupt)
+    })
 }
 
 fn publish(state: &PlayerState, status: &Mutex<ClipStatus>) {
@@ -539,6 +564,7 @@ fn publish(state: &PlayerState, status: &Mutex<ClipStatus>) {
 
 #[cfg(test)]
 mod tests {
+    use std::sync::atomic::{AtomicU64, Ordering};
     use std::time::Instant;
 
     use super::*;
@@ -610,5 +636,72 @@ mod tests {
             matches!(status.phase, ClipPhase::CannotPlay(_)),
             "{status:?}"
         );
+    }
+
+    /// Decodes nothing, as a long seek does while it skips ahead, for `limit` packets; or panics,
+    /// as a decoder fed a hostile file might.
+    struct SkippingDecoder {
+        decoded_packets: Arc<AtomicU64>,
+        limit: u64,
+        panics: bool,
+    }
+
+    impl ClipDecoder for SkippingDecoder {
+        fn sample_rate(&self) -> u32 {
+            48_000
+        }
+        fn channels(&self) -> usize {
+            1
+        }
+        fn duration_frames(&self) -> Option<u64> {
+            None
+        }
+        fn decode_next(&mut self, _samples: &mut Vec<f32>) -> Result<bool, ClipError> {
+            assert!(!self.panics, "a hostile file");
+            let decoded = self.decoded_packets.fetch_add(1, Ordering::Relaxed) + 1;
+            Ok(decoded < self.limit)
+        }
+        fn seek(&mut self, _frame: u64) -> Result<(), ClipError> {
+            Ok(())
+        }
+    }
+
+    fn playing(decoder: SkippingDecoder) -> PlayerState {
+        let mut state = PlayerState::new();
+        state.key = Some(1);
+        state.loaded = Some(LoadedClip {
+            decoder: Box::new(decoder),
+            base_frame: 0,
+            fed_frames: 0,
+            has_decoded_everything: false,
+        });
+        state.phase = ClipPhase::Playing;
+        state
+    }
+
+    #[test]
+    fn a_long_skip_ahead_hands_back_to_the_commands_between_batches() {
+        let decoded_packets = Arc::new(AtomicU64::new(0));
+        let mut state = playing(SkippingDecoder {
+            decoded_packets: Arc::clone(&decoded_packets),
+            limit: 1_000_000,
+            panics: false,
+        });
+        feed(&mut state, &devices());
+        let decoded = decoded_packets.load(Ordering::Relaxed);
+        assert!(decoded <= MAXIMUM_SILENT_PACKETS_PER_FEED, "{decoded}");
+        assert_eq!(state.phase, ClipPhase::Playing);
+    }
+
+    #[test]
+    fn a_decoder_that_panics_reports_a_damaged_file_and_the_player_lives_on() {
+        let mut state = playing(SkippingDecoder {
+            decoded_packets: Arc::new(AtomicU64::new(0)),
+            limit: 1,
+            panics: true,
+        });
+        feed(&mut state, &devices());
+        assert_eq!(state.phase, ClipPhase::CannotPlay(ClipError::Corrupt));
+        assert!(state.loaded.is_none());
     }
 }
