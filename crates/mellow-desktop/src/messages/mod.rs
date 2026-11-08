@@ -8,11 +8,14 @@
 //! parsed once per version, not on every frame.
 
 mod attachments;
+mod audio_attachment;
 mod body;
 mod code_block;
 mod dividers;
+mod forward;
 mod gif;
 mod item;
+mod link_previews;
 mod markdown_view;
 mod reactions;
 mod reply;
@@ -26,10 +29,14 @@ pub use attachments::MessageAttachments;
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
+pub use forward::ForwardOrigin;
 pub use gif::{MessageGif, message_gif_url};
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};
+pub use link_previews::MessageLinkPreviews;
 pub use markdown_view::{EditedMarker, MessageMarkdown};
-pub use reactions::{MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills};
+pub use reactions::{
+    AddReactionButton, MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills,
+};
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,

@@ -241,6 +241,43 @@ fn tab_inserts_a_mention_and_esc_hides_the_list_until_the_word_changes(cx: &mut 
 }
 
 #[gpui::test]
+fn a_picked_role_is_written_by_name_and_sent_as_its_markup(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let sound_team = mellow_protocol::Role {
+        id: Snowflake::from_raw(70),
+        name: "Équipe son".to_owned(),
+        color: 0xF1_C40F,
+        position: 1,
+        permissions: mellow_protocol::Permissions::empty(),
+        is_displayed_separately: false,
+        is_mentionable: true,
+        icon: None,
+        unicode_emoji: None,
+    };
+    cx.update(|_, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_mention_candidates(vec![person(2, "ana")], None, cx);
+            composer.set_role_mentions(vec![sound_team], false, cx);
+        });
+    });
+    cx.simulate_input("ce soir @équ");
+    cx.simulate_keystrokes("tab");
+    assert_eq!(text(&harness, cx), "ce soir @Équipe son ");
+
+    cx.simulate_keystrokes("enter");
+    assert_eq!(
+        without_typing(take_events(&harness, cx)),
+        [ComposerEvent::Send(ComposedMessage {
+            channel_id: channel(1),
+            text: "ce soir <@&70>".into(),
+            reply_to: None,
+            attachments: Vec::new(),
+        })]
+    );
+}
+
+#[gpui::test]
 fn an_edit_is_saved_with_enter_cancelled_with_esc_and_the_draft_comes_back(
     cx: &mut TestAppContext,
 ) {

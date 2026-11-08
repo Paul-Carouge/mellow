@@ -7,6 +7,7 @@
 
 mod drafts;
 mod editor;
+mod emoji_button;
 mod gif_button;
 mod saved_drafts;
 mod suggestions;
@@ -30,8 +31,9 @@ use mellow_client_core::shared_logic::format::{FileSize, FileSizeUnit, Locale, h
 use mellow_client_core::shared_logic::message_length::{
     MAXIMUM_MESSAGE_LENGTH, MESSAGE_LENGTH_COUNTER_THRESHOLD, message_characters_left,
 };
+use mellow_client_core::shared_logic::role_mentions::with_role_names_as_markup;
 use mellow_client_core::{ClientError, RestClient};
-use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Snowflake};
+use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Role as ServerRole, Snowflake};
 
 use crate::components::{Button, IconButton, focus_ring, is_focus_visible, with_type};
 use crate::i18n::catalogue::KbOrMbOrGb;
@@ -53,7 +55,7 @@ pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
 use saved_drafts::{SavedDraft, WriteRequest};
 pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts, forget_saved_drafts_now};
-use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
+use suggestions::{MentionSources, Suggestion, SuggestionList, SuggestionQuery, SuggestionState};
 
 /// Drafts are written this long after typing pauses, never on every keystroke.
 const DRAFT_WRITE_DELAY: Duration = Duration::from_secs(1);
@@ -98,6 +100,7 @@ pub fn bind_composer_keys(cx: &mut App) {
         KeyBinding::new("shift-tab", ShiftTabInComposer, context),
         KeyBinding::new("escape", EscapeInComposer, context),
     ]);
+    emoji_button::bind_emoji_button_keys(cx, context);
 }
 
 /// The message a reply answers, as the bar names it.
@@ -150,6 +153,11 @@ pub enum ComposerEvent {
     Unblock(BlockedRecipient),
     /// The GIF button: open the GIF picker beside it, or close it.
     ToggleGifPicker,
+    /// The emoji button or Ctrl+E: the chat opens the picker beside the button, drawn at
+    /// `anchor`, and gives the pick back through [`Composer::insert_at_caret`].
+    OpenEmojiPicker {
+        anchor: gpui::Bounds<gpui::Pixels>,
+    },
 }
 
 /// The other person of a one-to-one conversation the user blocked (ADR-0025): the field gives way
@@ -204,7 +212,13 @@ pub struct Composer {
     reply_target: Option<ReplyTarget>,
     channel_label: SharedString,
     mention_candidates: Vec<PublicUser>,
+    /// `mention_candidates`' usernames in lowercase, kept so each render does not rebuild them.
+    mention_candidate_names: std::collections::HashSet<String>,
     current_user_id: Option<Snowflake>,
+    /// The roles "@na" offers after people, highest first; empty outside a server channel.
+    mentionable_roles: Vec<ServerRole>,
+    /// The writer holds `MENTION_EVERYONE` in the open channel (ADR-0040).
+    can_mention_everyone: bool,
     can_send_messages: bool,
     can_attach_files: bool,
     blocked_recipient: Option<BlockedRecipient>,
@@ -224,6 +238,8 @@ pub struct Composer {
     maximum_rows: usize,
     kept_drafts: KeptDrafts,
     gif_button: gif_button::GifButton,
+    emoji_button_bounds: emoji_button::EmojiButtonBounds,
+    is_emoji_picker_open: bool,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -261,7 +277,10 @@ impl Composer {
             reply_target: None,
             channel_label: SharedString::default(),
             mention_candidates: Vec::new(),
+            mention_candidate_names: std::collections::HashSet::new(),
             current_user_id: None,
+            mentionable_roles: Vec::new(),
+            can_mention_everyone: false,
             can_send_messages: true,
             can_attach_files: true,
             blocked_recipient: None,
@@ -284,6 +303,8 @@ impl Composer {
                 window: window.window_handle(),
             },
             gif_button: gif_button::GifButton::new(cx),
+            emoji_button_bounds: cx.new(|_| None),
+            is_emoji_picker_open: false,
             _subscriptions: subscriptions,
         }
     }
@@ -340,10 +361,43 @@ impl Composer {
         current_user_id: Option<Snowflake>,
         cx: &mut Context<Self>,
     ) {
+        self.mention_candidate_names = people
+            .iter()
+            .map(|person| person.username.to_lowercase())
+            .collect();
         self.mention_candidates = people;
         self.current_user_id = current_user_id;
         self.suggestions_read_at = None;
         self.refresh_suggestions(cx);
+    }
+
+    /// The roles the writer may mention in the open channel (`roles_writer_may_mention`), and
+    /// whether they may mention `@everyone`; "@na" offers them after people.
+    pub fn set_role_mentions(
+        &mut self,
+        mentionable_roles: Vec<ServerRole>,
+        can_mention_everyone: bool,
+        cx: &mut Context<Self>,
+    ) {
+        if self.mentionable_roles == mentionable_roles
+            && self.can_mention_everyone == can_mention_everyone
+        {
+            return;
+        }
+        self.mentionable_roles = mentionable_roles;
+        self.can_mention_everyone = can_mention_everyone;
+        self.suggestions_read_at = None;
+        self.refresh_suggestions(cx);
+    }
+
+    /// The text as sent: a picked or typed role's "@Name" becomes `<@&id>` (ADR-0040), never a
+    /// name that is someone's username, so picking a person keeps naming that person.
+    fn text_as_sent(&self, text: &str) -> String {
+        if self.mentionable_roles.is_empty() || !text.contains('@') {
+            return text.to_owned();
+        }
+        let roles: Vec<&ServerRole> = self.mentionable_roles.iter().collect();
+        with_role_names_as_markup(text, &roles, &self.mention_candidate_names)
     }
 
     /// "Send messages" and "Attach files" in the open channel; without the first the field is
@@ -721,8 +775,16 @@ impl Composer {
         self.suggestions_read_at = Some(read_at);
         let caret = (selection.start == selection.end).then_some(selection.end);
         let text = input.value();
-        self.suggestions
-            .refresh(&text, caret, &self.mention_candidates, self.current_user_id);
+        self.suggestions.refresh(
+            &text,
+            caret,
+            MentionSources {
+                people: &self.mention_candidates,
+                writer_id: self.current_user_id,
+                mentionable_roles: &self.mentionable_roles,
+                can_mention_everyone: self.can_mention_everyone,
+            },
+        );
         cx.notify();
     }
 
@@ -730,6 +792,9 @@ impl Composer {
         let Some((suggestion, range)) = self.suggestions.choice(index) else {
             return;
         };
+        if let Suggestion::Emoji(emoji) = &suggestion {
+            crate::emoji_picker::note_emoji_used(self.current_user_id, emoji.emoji, cx);
+        }
         let (text, caret) = replace_in_draft(
             &self.text(cx),
             range.start,
@@ -805,7 +870,8 @@ impl Composer {
             cx.notify();
             return;
         }
-        let text = self.text(cx);
+        // Counted as sent: a role's "@Name" goes out as its longer markup.
+        let text = self.text_as_sent(&self.text(cx));
         if message_characters_left(&text) < 0 {
             self.has_tried_sending_too_long = true;
             cx.notify();
@@ -879,6 +945,7 @@ impl Composer {
             .as_ref()
             .and_then(|session| session.original_text.as_deref())
             .is_some_and(|original_text| original_text.trim() == text.trim());
+        let text = self.text_as_sent(&text);
         let is_too_long = message_characters_left(&text) < 0;
         let Some((message_id, text)) = self.editor.take_text_to_save(text, is_too_long) else {
             cx.notify();
@@ -1195,7 +1262,7 @@ impl Render for Composer {
         let chat = catalogue.chat();
         let entity = cx.entity();
         let text = self.input.read(cx).value();
-        let characters_left = message_characters_left(&text);
+        let characters_left = message_characters_left(&self.text_as_sent(&text));
         let is_too_long = characters_left < 0;
         let is_editing = self.edit_session.is_some();
         let has_tried_too_long = if is_editing {
@@ -1383,6 +1450,8 @@ impl Render for Composer {
                 })
         };
 
+        let emoji_button = self.emoji_button(cx);
+
         // The base row is as tall as the user card; buttons sit centred on it.
         let button_margin = (SIZE_DOCK_HEIGHT - COMPONENT_COMPOSER_ATTACH_BUTTON_SIZE) / 2.0;
         let gif_button = self.render_gif_button(button_margin, is_editing, cx);
@@ -1457,6 +1526,7 @@ impl Render for Composer {
                     )
                 })
                 .children(gif_button)
+                .child(emoji_button)
         } else if let Some(recipient) = self.blocked_recipient.clone() {
             // `Composer.svelte`: the sentence, then "Unblock", wrapping below it when narrow.
             let unblock = entity.clone();
@@ -1538,6 +1608,7 @@ impl Render for Composer {
             .on_action(cx.listener(Self::tab))
             .on_action(|_: &ShiftTabInComposer, window, cx| window.focus_prev(cx))
             .on_action(cx.listener(Self::escape))
+            .on_action(cx.listener(Self::open_emoji_picker))
             .flex_none()
             .flex()
             .flex_col()

@@ -7,12 +7,14 @@
 // encode; only the speed of unwinding a panic in a test is affected.
 #![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
 
+pub mod attachment_audio;
 pub mod column_widths;
 pub mod components;
 pub mod composer;
 pub mod connection_banner;
 pub mod conversation;
 pub mod dock_and_tray;
+pub mod emoji_picker;
 pub mod gif_picker;
 pub mod home;
 pub mod i18n;
@@ -66,6 +68,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     components::bind_tab_navigation(cx);
     shell::bind_shell_keys(cx);
     composer::bind_composer_keys(cx);
+    emoji_picker::bind_emoji_picker_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
     preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();

@@ -1,7 +1,7 @@
 //! What surrounds the rows (`ChatPane.svelte`, `MessageList.svelte`): the list itself with its
 //! keys, the unread bar over its top, the jump bar resting on the composer while older messages
 //! show, the typing line, the failure of the last action, the composer, and the layers (pins
-//! panel, message menu, confirmation).
+//! panel, message menu, emoji picker, confirmation).
 
 use gpui::{
     AnyElement, Context, ExternalPaths, FontWeight, HighlightStyle, InteractiveElement as _,
@@ -434,6 +434,7 @@ impl Render for ConversationView {
         self.is_shift_held = window.modifiers().shift;
         self.apply_requested_place(window, cx);
         self.follow_gif_settings(cx);
+        self.reach_pending_origin(window, cx);
         if let Some((message_id, text, can_reopen)) = self.refused_edit.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.give_back_refused_edit(message_id, text, can_reopen, window, cx);
@@ -454,6 +455,15 @@ impl Render for ConversationView {
         let jump_bar = self.render_jump_bar(window, cx);
         let pins_panel = self.render_pins_panel(window, cx);
         let drop_overlay = self.render_drop_overlay(cx);
+        // What went well (a forward sent), quietly above the composer; read out by the region below.
+        let notice = self.notice.clone().map(|notice| {
+            with_type(div(), TYPE_BODY)
+                .flex_none()
+                .px(length(COMPONENT_COMPOSER_MARGIN_INLINE))
+                .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
+                .text_color(color(tokens.color_text_secondary))
+                .child(notice)
+        });
         let action_error = self.action_error.clone().map(|error| {
             div()
                 .id("chat-action-error")
@@ -491,6 +501,7 @@ impl Render for ConversationView {
                     .children(jump_bar),
             )
             .child(self.render_typing_line(cx))
+            .children(notice)
             .children(action_error)
             .child(div().flex_none().child(self.composer.clone()))
             // Copies, new messages and other quiet results, for screen readers only.
@@ -502,6 +513,9 @@ impl Render for ConversationView {
             .children(pins_panel)
             .when_some(self.menu.as_ref(), |slot, (menu, _, _)| {
                 slot.child(menu.clone())
+            })
+            .when_some(self.emoji_picker.as_ref(), |slot, open| {
+                slot.child(open.picker.clone())
             })
             .when_some(self.confirmation.as_ref(), |slot, (dialog, _)| {
                 slot.child(dialog.clone())

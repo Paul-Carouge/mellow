@@ -388,7 +388,7 @@ impl Session {
     }
 
     /// At most one send per delay: the reads in between only move what it sends.
-    fn schedule_read_state_send(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn schedule_read_state_send(&mut self, cx: &mut Context<Self>) {
         if self.conversation.read_state_send.is_some() || self.rest_client().is_none() {
             return;
         }

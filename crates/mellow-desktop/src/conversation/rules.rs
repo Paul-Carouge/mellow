@@ -32,13 +32,13 @@ pub fn blocked_recipient_of(
 
 // ---- Message actions ----
 
-/// The keys of a message's hover bar, in order (DESIGN.md §5.4).
-/// shortcut: no Forward and no quick reactions yet; they come with forwards and the emoji picker
-/// (M3 step 5).
+/// The keys of a message's hover bar after its reactions, in order (DESIGN.md §5.4). The quick
+/// reactions and Add reaction lead the bar wherever `can_add_reactions` holds.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HoverBarAction {
     Edit,
     Reply,
+    Forward,
     CopyText,
     Delete,
     More,
@@ -53,6 +53,9 @@ pub fn hover_bar_actions(facts: MessageMenuFacts, is_shift_held: bool) -> Vec<Ho
         actions.push(HoverBarAction::Edit);
     } else if facts.can_send_messages {
         actions.push(HoverBarAction::Reply);
+    }
+    if !facts.is_rich {
+        actions.push(HoverBarAction::Forward);
     }
     if !facts.is_rich && facts.has_text {
         actions.push(HoverBarAction::CopyText);
@@ -261,7 +264,9 @@ mod tests {
         is_pinned: false,
         can_send_messages: true,
         can_manage_messages: false,
+        has_reactions: false,
         can_join_reactions: true,
+        can_add_reactions: true,
         can_manage_pins: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
@@ -269,29 +274,35 @@ mod tests {
         ..OTHERS_TEXT
     };
 
-    use HoverBarAction::{CopyText, Delete, Edit, More, Reply};
+    use HoverBarAction::{CopyText, Delete, Edit, Forward, More, Reply};
 
-    // Ported from `message-actions.test.ts`, without Forward (not on the desktop yet).
+    // Ported from `message-actions.test.ts`.
 
     #[test]
-    fn your_own_message_has_edit_copy_and_more_with_delete_left_in_more() {
-        assert_eq!(hover_bar_actions(OWN_TEXT, false), [Edit, CopyText, More]);
+    fn your_own_message_has_edit_forward_copy_and_more_with_delete_left_in_more() {
+        assert_eq!(
+            hover_bar_actions(OWN_TEXT, false),
+            [Edit, Forward, CopyText, More]
+        );
     }
 
     #[test]
-    fn others_messages_have_reply_copy_and_more_even_for_a_moderator() {
+    fn others_messages_have_reply_forward_copy_and_more_even_for_a_moderator() {
         let moderator = MessageMenuFacts {
             can_manage_messages: true,
             ..OTHERS_TEXT
         };
-        assert_eq!(hover_bar_actions(moderator, false), [Reply, CopyText, More]);
+        assert_eq!(
+            hover_bar_actions(moderator, false),
+            [Reply, Forward, CopyText, More]
+        );
     }
 
     #[test]
     fn delete_joins_before_more_only_while_shift_is_held_and_only_where_you_may_delete() {
         assert_eq!(
             hover_bar_actions(OWN_TEXT, true),
-            [Edit, CopyText, Delete, More]
+            [Edit, Forward, CopyText, Delete, More]
         );
         let moderator = MessageMenuFacts {
             can_manage_messages: true,
@@ -307,7 +318,7 @@ mod tests {
             has_text: false,
             ..OTHERS_TEXT
         };
-        assert_eq!(hover_bar_actions(files_only, false), [Reply, More]);
+        assert_eq!(hover_bar_actions(files_only, false), [Reply, Forward, More]);
     }
 
     #[test]
@@ -316,7 +327,10 @@ mod tests {
             is_forward: true,
             ..OWN_TEXT
         };
-        assert_eq!(hover_bar_actions(forward, false), [Reply, CopyText, More]);
+        assert_eq!(
+            hover_bar_actions(forward, false),
+            [Reply, Forward, CopyText, More]
+        );
         let poll = MessageMenuFacts {
             is_rich: true,
             has_text: false,
@@ -331,7 +345,10 @@ mod tests {
             can_send_messages: false,
             ..OWN_TEXT
         };
-        assert_eq!(hover_bar_actions(read_only, false), [CopyText, More]);
+        assert_eq!(
+            hover_bar_actions(read_only, false),
+            [Forward, CopyText, More]
+        );
     }
 
     fn named(id: u64, name: &str) -> PublicUser {
