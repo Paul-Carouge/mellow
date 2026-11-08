@@ -151,6 +151,11 @@ impl ModalDialog {
         self.is_busy
     }
 
+    #[must_use]
+    pub fn is_submit_enabled(&self) -> bool {
+        self.is_submit_enabled
+    }
+
     /// Closes unless busy, giving focus back to the opener first.
     pub fn request_close(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if self.is_busy {

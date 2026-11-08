@@ -343,3 +343,80 @@ fn dragging_the_channel_edge_beside_docked_members_saves_the_width_drawn(cx: &mu
     });
     assert_eq!(dragged, Some(drawn));
 }
+
+#[gpui::test]
+fn choosing_a_member_shows_their_profile_and_back_returns_to_the_list(cx: &mut TestAppContext) {
+    use crate::shell_fixtures::ANA;
+    use mellow_client_core::shared_logic::profiles::UserProfileLoad;
+
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, secondary("u"));
+    assert!(cx.debug_bounds("member-profile").is_none());
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.show_member_profile(GUILD_RUST, ANA, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("member-profile").is_some());
+    let is_back_focused = |cx: &mut VisualTestContext| {
+        cx.update(|window, cx| {
+            shell
+                .read(cx)
+                .member_profile
+                .back_focus()
+                .is_focused(window)
+        })
+    };
+    assert!(is_back_focused(cx), "focus lands on Back");
+    // Without an instance the details cannot be read: the card says so instead of waiting.
+    let load = shell.read_with(cx, |shell, _| shell.member_profile.load().clone());
+    assert_eq!(load, UserProfileLoad::Failed { user_id: ANA });
+
+    // Another server's sheet shows its own list, not this profile.
+    let shown_elsewhere = shell.read_with(cx, |shell, _| {
+        shell.member_profile.shown_user_id(GUILD_BOOKS)
+    });
+    assert_eq!(shown_elsewhere, None);
+
+    press(cx, "enter");
+    assert!(cx.debug_bounds("member-profile").is_none());
+    let focus_is_in_the_sheet = cx.update(|window, cx| {
+        shell
+            .read(cx)
+            .member_sheet_focus
+            .contains_focused(window, cx)
+    });
+    assert!(focus_is_in_the_sheet, "Back returns to the member's row");
+}
+
+#[gpui::test]
+fn the_custom_status_dialog_saves_only_a_changed_status_within_the_limit(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.open_custom_status_dialog(window, cx));
+    });
+    cx.run_until_parked();
+    let dialog = shell
+        .read_with(cx, |shell, _| {
+            shell
+                .custom_status_dialog
+                .as_ref()
+                .map(|(dialog, _)| dialog.clone())
+        })
+        .expect("the dialog opened");
+    let can_save =
+        |cx: &mut VisualTestContext| dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled());
+    assert!(!can_save(cx), "nothing changed yet");
+
+    cx.simulate_input("En réunion");
+    assert!(can_save(cx));
+    cx.simulate_input(&"é".repeat(mellow_protocol::MAXIMUM_CUSTOM_STATUS_LENGTH));
+    assert!(!can_save(cx), "past the limit");
+
+    press(cx, "escape");
+    assert!(shell.read_with(cx, |shell, _| shell.custom_status_dialog.is_none()));
+    let is_status_button_focused =
+        cx.update(|window, cx| shell.read(cx).status_button_focus.is_focused(window));
+    assert!(is_status_button_focused, "focus goes back to the user card");
+}

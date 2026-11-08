@@ -9,7 +9,7 @@ pub const MINIMUM_PASSWORD_LENGTH: usize = 10;
 /// Bounds Argon2 work per request; long enough for any passphrase.
 pub const MAXIMUM_PASSWORD_LENGTH: usize = 256;
 pub const MAXIMUM_DEVICE_NAME_LENGTH: usize = 64;
-pub const MAXIMUM_CUSTOM_STATUS_LENGTH: usize = 128;
+pub use mellow_protocol::MAXIMUM_CUSTOM_STATUS_LENGTH;
 /// A login is a name or an email address, so the longer of the two bounds it.
 pub const MAXIMUM_LOGIN_LENGTH: usize = MAXIMUM_EMAIL_LENGTH;
 

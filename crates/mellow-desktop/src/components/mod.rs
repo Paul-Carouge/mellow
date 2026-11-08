@@ -47,7 +47,7 @@ use gpui::{
 };
 use gpui_base::motion::{Easing, Transition, transition};
 
-pub use avatar::{Avatar, AvatarPerson, GroupAvatar};
+pub use avatar::{Avatar, AvatarPerson, GroupAvatar, avatar_tint};
 pub use badge::{MentionBadge, RoleChip, RoleChips};
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonTone};
 pub use choice::{ChoiceGroup, ChoiceOption, next_choice_index};

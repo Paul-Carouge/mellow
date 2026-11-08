@@ -44,7 +44,10 @@ impl AvatarPerson {
     }
 }
 
-fn tint(tokens: &ThemeTokens, tint_number: u32) -> Hsla {
+/// `color.avatar.tint-N`: the person's own colour, behind their initial or across a profile's
+/// banner strip.
+#[must_use]
+pub fn avatar_tint(tokens: &ThemeTokens, tint_number: u32) -> Hsla {
     color(match tint_number {
         1 => tokens.color_avatar_tint_1,
         2 => tokens.color_avatar_tint_2,
@@ -99,7 +102,7 @@ fn initial_disc(person: &AvatarPerson, size: f32, tokens: &ThemeTokens) -> gpui:
         .flex()
         .items_center()
         .justify_center()
-        .bg(tint(tokens, person.tint_number))
+        .bg(avatar_tint(tokens, person.tint_number))
         .text_color(color(tokens.color_avatar_initial))
         .text_size(length(size * INITIAL_SHARE_OF_AVATAR))
         .font_weight(INITIAL_FONT_WEIGHT)
@@ -223,7 +226,9 @@ mod tests {
 
     #[test]
     fn every_tint_number_maps_to_its_own_token() {
-        let tints: Vec<Hsla> = (1..=8).map(|number| tint(&DARK_THEME, number)).collect();
+        let tints: Vec<Hsla> = (1..=8)
+            .map(|number| avatar_tint(&DARK_THEME, number))
+            .collect();
         assert_eq!(tints[0], color(DARK_THEME.color_avatar_tint_1));
         assert_eq!(tints[7], color(DARK_THEME.color_avatar_tint_8));
         for (index, tint) in tints.iter().enumerate() {
