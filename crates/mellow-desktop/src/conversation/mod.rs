@@ -9,6 +9,7 @@
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
 mod chrome;
+mod gif_picker_host;
 mod pins_panel;
 mod reactions_dialog;
 mod rows;
@@ -139,6 +140,10 @@ pub struct ConversationView {
     is_pins_panel_open: bool,
     /// Where a click outside closed the pins panel: the toggle under it must not reopen it.
     pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The GIF picker while it is open (`gif_picker_host`).
+    gif_picker: Option<(Entity<crate::gif_picker::GifPicker>, Subscription)>,
+    /// Where a click outside closed the GIF picker: the GIF button under it must not reopen it.
+    gif_picker_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
     /// A refused edit's text, given back to the composer by the next render (which has the
@@ -230,6 +235,8 @@ impl ConversationView {
             confirmation: None,
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
+            gif_picker: None,
+            gif_picker_dismissed_by_pointer_at: None,
             action_error: None,
             refused_edit: None,
             reactor_sentences: HashMap::new(),
@@ -316,6 +323,7 @@ impl ConversationView {
             self.menu = None;
             self.confirmation = None;
             self.is_pins_panel_open = false;
+            self.close_gif_picker(cx);
             self.action_error = None;
             self.entries.clear();
             self.entry_versions.clear();
@@ -702,6 +710,7 @@ impl ConversationView {
             ComposerEvent::Cancel(Cancelled::Nothing) => self.mark_as_read(cx),
             ComposerEvent::Cancel(Cancelled::Editing { .. } | Cancelled::Reply) => {}
             ComposerEvent::Unblock(recipient) => self.unblock(recipient, cx),
+            ComposerEvent::ToggleGifPicker => self.toggle_gif_picker(window, cx),
         }
         cx.notify();
     }

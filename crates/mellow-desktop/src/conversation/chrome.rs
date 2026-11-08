@@ -433,6 +433,7 @@ impl Render for ConversationView {
         // with focus outside the view would otherwise leave a stale value.
         self.is_shift_held = window.modifiers().shift;
         self.apply_requested_place(window, cx);
+        self.follow_gif_settings(cx);
         if let Some((message_id, text, can_reopen)) = self.refused_edit.take() {
             self.composer.update(cx, |composer, cx| {
                 composer.give_back_refused_edit(message_id, text, can_reopen, window, cx);
@@ -504,6 +505,9 @@ impl Render for ConversationView {
             })
             .when_some(self.confirmation.as_ref(), |slot, (dialog, _)| {
                 slot.child(dialog.clone())
+            })
+            .when_some(self.gif_picker.as_ref(), |slot, (picker, _)| {
+                slot.child(picker.clone())
             })
     }
 }
