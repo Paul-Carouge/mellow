@@ -861,3 +861,16 @@ fn a_conversation_with_messages_received_offline_is_unread_before_any_is_cached(
     state.mark_read(Snowflake::from_raw(300), Snowflake::from_raw(310));
     assert!(!state.has_unread(Snowflake::from_raw(300)));
 }
+
+#[test]
+fn a_participant_reacts_and_sends_polls_and_checklists_in_a_conversation_as_the_server_allows() {
+    // The server's `direct_message_permissions` for a participant who may write there.
+    let expected = Permissions::VIEW_CHANNEL
+        | Permissions::SEND_MESSAGES
+        | Permissions::READ_MESSAGE_HISTORY
+        | Permissions::ATTACH_FILES
+        | Permissions::ADD_REACTIONS
+        | Permissions::SEND_POLLS
+        | Permissions::SEND_CHECKLISTS;
+    assert_eq!(DIRECT_MESSAGE_PERMISSIONS, expected);
+}

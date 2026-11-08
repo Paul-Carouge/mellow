@@ -60,7 +60,10 @@ pub const TYPING_INDICATOR_LIFETIME_MILLISECONDS: u64 = 8_000;
 const DIRECT_MESSAGE_PERMISSIONS: Permissions = Permissions::VIEW_CHANNEL
     .union(Permissions::SEND_MESSAGES)
     .union(Permissions::READ_MESSAGE_HISTORY)
-    .union(Permissions::ATTACH_FILES);
+    .union(Permissions::ATTACH_FILES)
+    .union(Permissions::ADD_REACTIONS)
+    .union(Permissions::SEND_POLLS)
+    .union(Permissions::SEND_CHECKLISTS);
 
 /// What an update touched, so a UI refreshes only that part.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
