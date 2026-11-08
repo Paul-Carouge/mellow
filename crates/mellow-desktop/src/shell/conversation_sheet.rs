@@ -4,8 +4,8 @@
 //! the sentence a place without one opens with.
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
+    AnyElement, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
     prelude::FluentBuilder as _,
 };
 
@@ -416,15 +416,21 @@ impl DuskShell {
             })
             .when(folds_keys, |header| {
                 let bounds = self.place_menus.more_options_bounds.clone();
+                let is_menu_open = self.is_chat_header_menu_open();
+                let presser = entity.clone();
                 header.child(
                     div()
                         .relative()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            presser.update(cx, |shell, _| shell.note_more_options_press());
+                        })
                         .child(
                             header_button(
                                 "more-options",
                                 IconName::DotsThree,
                                 strings.chat().more_options(),
                             )
+                            .expanded(is_menu_open)
                             .on_click(move |window, cx| {
                                 entity.update(cx, |shell, cx| {
                                     shell.toggle_chat_header_menu(window, cx);

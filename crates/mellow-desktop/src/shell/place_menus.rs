@@ -69,6 +69,9 @@ pub(super) struct PlaceMenus {
     menu: Option<(Entity<ContextMenu>, Subscription, PlaceMenuTarget)>,
     /// Where the chat header's "More options" is drawn, for its menu to open under it.
     pub(super) more_options_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether its menu was open when the button was pressed: the press closes the menu before the
+    /// click, which must then not reopen it (the web's `createPopoverToggle`).
+    was_chat_header_menu_open_at_press: Option<bool>,
     notifications_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     leave_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// "Server ID copied", "#general unmuted.": read out, never shown.
@@ -491,10 +494,12 @@ impl DuskShell {
     /// The chat header's "More options" in a narrow window, under its button; pressed again, it
     /// closes.
     pub(super) fn toggle_chat_header_menu(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if matches!(
-            self.place_menus.menu,
-            Some((_, _, PlaceMenuTarget::ChatHeader))
-        ) {
+        let was_open = self
+            .place_menus
+            .was_chat_header_menu_open_at_press
+            .take()
+            .unwrap_or_else(|| self.is_chat_header_menu_open());
+        if was_open {
             self.place_menus.menu = None;
             cx.notify();
             return;
@@ -512,6 +517,17 @@ impl DuskShell {
             alignment: MenuAlignment::End,
         };
         self.open_place_menu(PlaceMenuTarget::ChatHeader, origin, None, window, cx);
+    }
+
+    pub(super) fn is_chat_header_menu_open(&self) -> bool {
+        matches!(
+            self.place_menus.menu,
+            Some((_, _, PlaceMenuTarget::ChatHeader))
+        )
+    }
+
+    pub(super) fn note_more_options_press(&mut self) {
+        self.place_menus.was_chat_header_menu_open_at_press = Some(self.is_chat_header_menu_open());
     }
 
     fn copy_id(&mut self, id: Snowflake, copied: &'static str, cx: &mut Context<Self>) {

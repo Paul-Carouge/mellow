@@ -277,6 +277,8 @@ pub struct IconButton {
     icon_size: f32,
     tone: IconButtonTone,
     toggled: Option<bool>,
+    /// Whether the menu it opens is open, for a button that opens one.
+    expanded: Option<bool>,
     is_disabled: bool,
     /// The host's handle, to move focus here; otherwise one kept while it is drawn.
     focus_handle: Option<FocusHandle>,
@@ -298,6 +300,7 @@ impl IconButton {
             icon_size: DEFAULT_ICON_BUTTON_ICON_SIZE,
             tone: IconButtonTone::Standard,
             toggled: None,
+            expanded: None,
             is_disabled: false,
             focus_handle: None,
             on_click: None,
@@ -328,6 +331,13 @@ impl IconButton {
     #[must_use]
     pub fn disabled(mut self, is_disabled: bool) -> Self {
         self.is_disabled = is_disabled;
+        self
+    }
+
+    /// Makes it a menu button, telling screen readers whether its menu is open.
+    #[must_use]
+    pub fn expanded(mut self, is_open: bool) -> Self {
+        self.expanded = Some(is_open);
         self
     }
 
@@ -384,6 +394,9 @@ impl RenderOnce for IconButton {
             .aria_label(self.label)
             .when_some(self.toggled, |button, is_on| {
                 button.aria_toggled(if is_on { Toggled::True } else { Toggled::False })
+            })
+            .when_some(self.expanded, |button, is_open| {
+                button.aria_expanded(is_open)
             })
             .track_focus(&focus_handle)
             .relative()

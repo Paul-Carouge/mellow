@@ -192,3 +192,17 @@ fn more_options_records_where_its_button_is_for_the_menu_to_open_under_it(cx: &m
         "{button:?} in {header:?}"
     );
 }
+
+#[gpui::test]
+fn more_options_pressed_again_closes_its_menu(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, BREAKPOINT_NAVIGATOR - 1.0);
+    let button = shell
+        .read_with(cx, |shell, _| shell.place_menus.more_options_bounds.get())
+        .expect("the button's place is recorded");
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(open_target(&shell, cx), Some(PlaceMenuTarget::ChatHeader));
+    cx.simulate_click(button.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert_eq!(open_target(&shell, cx), None);
+}
