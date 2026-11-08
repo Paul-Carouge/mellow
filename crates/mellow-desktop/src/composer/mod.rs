@@ -50,7 +50,7 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 use drafts::ComposerDrafts;
 pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
-use saved_drafts::SavedDraft;
+use saved_drafts::{SavedDraft, WriteRequest};
 pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts};
 use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
 
@@ -232,13 +232,20 @@ impl Composer {
             cx.subscribe_in(&input, window, Self::on_input_event),
             // Caret moves (arrows, clicks) change the word the suggestions read.
             cx.observe(&input, |composer, _, cx| composer.refresh_suggestions(cx)),
-            // Typing within the last second is written before the app goes.
+            // Typing within the last second is written before the app goes: at quit while the
+            // window is open (Cmd+Q), or as the composer goes with its closed window, where quit
+            // observers come too late. The file is small: one blocking write at teardown.
             cx.on_app_quit(|composer, cx| {
                 let write = composer.write_kept_drafts(cx);
                 async move {
                     if let Some(write) = write {
                         write.await;
                     }
+                }
+            }),
+            cx.on_release(|composer, cx| {
+                if let Some((file, drafts, request)) = composer.kept_drafts_to_write(cx) {
+                    file.write(&drafts, request);
                 }
             }),
         ];
@@ -435,6 +442,15 @@ impl Composer {
 
     /// Writes the drafts off the UI thread when they changed; the write, to wait for at quit.
     fn write_kept_drafts(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
+        let (file, drafts, request) = self.kept_drafts_to_write(cx)?;
+        Some(cx.background_spawn(async move { file.write(&drafts, request) }))
+    }
+
+    /// The write the drafts need when they changed since the last one, counted as written.
+    fn kept_drafts_to_write(
+        &mut self,
+        cx: &App,
+    ) -> Option<(SavedDraftsFile, Vec<SavedDraft>, WriteRequest)> {
         let file = self
             .kept_drafts
             .file
@@ -451,7 +467,7 @@ impl Composer {
         }
         self.kept_drafts.written.clone_from(&drafts);
         let request = file.next_write();
-        Some(cx.background_spawn(async move { file.write(&drafts, request) }))
+        Some((file, drafts, request))
     }
 
     /// Where files upload, and the instance's size limit from `Ready` (checked before upload).

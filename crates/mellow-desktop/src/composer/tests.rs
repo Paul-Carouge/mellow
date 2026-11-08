@@ -337,6 +337,25 @@ fn drafts_come_back_after_a_launch_and_leave_the_file_once_sent(cx: &mut TestApp
 }
 
 #[gpui::test]
+fn typing_just_before_the_window_closes_is_written(cx: &mut TestAppContext) {
+    // Closing the last window quits after the composer is gone: quit observers come too late.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let file = SavedDraftsFile::at(directory.path().join("instance-1"));
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let keeping = file.clone();
+    composer.update(cx, |composer, cx| {
+        composer.keep_drafts_in(Some(keeping), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("last words");
+    drop((composer, harness));
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    assert_eq!(file.read(), [(channel(1), "last words".to_owned())]);
+}
+
+#[gpui::test]
 fn a_message_over_the_limit_is_not_sent(cx: &mut TestAppContext) {
     let (harness, cx) = open_composer(cx);
     let composer = composer_of(&harness, cx);
