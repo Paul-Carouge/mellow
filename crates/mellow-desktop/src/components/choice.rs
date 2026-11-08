@@ -75,6 +75,7 @@ pub struct ChoiceGroup {
     options: Vec<ChoiceOption>,
     checked_index: usize,
     on_select: Option<SelectHandler>,
+    should_focus_checked: bool,
 }
 
 impl ChoiceGroup {
@@ -91,7 +92,15 @@ impl ChoiceGroup {
             options,
             checked_index,
             on_select: None,
+            should_focus_checked: false,
         }
+    }
+
+    /// Puts focus on the checked row once drawn: the group a dialog opens on.
+    #[must_use]
+    pub fn focus_checked(mut self, should_focus_checked: bool) -> Self {
+        self.should_focus_checked = should_focus_checked;
+        self
     }
 
     #[must_use]
@@ -152,6 +161,11 @@ impl RenderOnce for ChoiceGroup {
                     .tab_stop(index == self.checked_index)
             })
             .collect();
+        if self.should_focus_checked
+            && let Some(checked) = focus_handles.get(self.checked_index).cloned()
+        {
+            window.defer(cx, move |window, cx| window.focus(&checked, cx));
+        }
         let on_select = self.on_select;
         let key_handles = focus_handles.clone();
         let key_on_select = on_select.clone();
