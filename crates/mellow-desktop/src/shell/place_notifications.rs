@@ -237,6 +237,7 @@ impl Render for PlaceNotificationsBody {
                             mute_options,
                             mute_index,
                         )
+                        .description(notifications.mute_description())
                         .focus_checked(initial_group == Some(InitialGroup::Mute))
                         .on_select({
                             let entity = entity.clone();
