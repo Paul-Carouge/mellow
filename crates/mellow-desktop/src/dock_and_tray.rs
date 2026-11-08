@@ -104,6 +104,8 @@ mod macos {
     /// hold their target weakly.
     struct MenuBarItem {
         item: Retained<NSStatusItem>,
+        /// Without its icon, the item's title carries the name so it stays visible.
+        has_icon: bool,
         _menu: Retained<NSMenu>,
         _target: Retained<MenuBarTarget>,
     }
@@ -115,14 +117,20 @@ mod macos {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let label = badge_label(count).map(|label| NSString::from_str(&label));
+        let label = badge_label(count);
+        let dock_label = label.as_deref().map(NSString::from_str);
         NSApplication::sharedApplication(mtm)
             .dockTile()
-            .setBadgeLabel(label.as_deref());
+            .setBadgeLabel(dock_label.as_deref());
         if let Some(menu_bar_item) = cx.try_global::<MenuBarItem>()
             && let Some(button) = menu_bar_item.item.button(mtm)
         {
-            button.setTitle(&label.unwrap_or_default());
+            let title = match (menu_bar_item.has_icon, label) {
+                (true, label) => label.unwrap_or_default(),
+                (false, Some(label)) => format!("{WINDOW_TITLE} {label}"),
+                (false, None) => WINDOW_TITLE.to_owned(),
+            };
+            button.setTitle(&NSString::from_str(&title));
         }
     }
 
@@ -155,6 +163,7 @@ mod macos {
             menu.addItem(&item);
         }
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
+        let mut has_icon = false;
         if let Some(button) = item.button(mtm) {
             let icon = NSImage::initWithData(
                 NSImage::alloc(),
@@ -168,6 +177,7 @@ mod macos {
                     icon.setTemplate(true);
                     icon.setAccessibilityDescription(Some(&description));
                     button.setImage(Some(&icon));
+                    has_icon = true;
                 }
                 // Older macOS without SVG support for `NSImage`: the name stands in.
                 None => button.setTitle(&description),
@@ -176,6 +186,7 @@ mod macos {
         item.setMenu(Some(&menu));
         cx.set_global(MenuBarItem {
             item,
+            has_icon,
             _menu: menu,
             _target: target,
         });
