@@ -380,6 +380,12 @@ impl Composer {
         self.text(cx)
     }
 
+    /// The files waiting in the tray, for the conversation view's tests.
+    #[cfg(test)]
+    pub(crate) fn tray_len(&self) -> usize {
+        self.drafts.tray().len()
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }

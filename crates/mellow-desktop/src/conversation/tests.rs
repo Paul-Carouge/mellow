@@ -604,3 +604,43 @@ fn a_jump_that_cannot_load_older_history_says_so(cx: &mut TestAppContext) {
         Some("Couldn't open the message".into())
     );
 }
+
+#[gpui::test]
+fn files_dropped_over_the_messages_go_to_the_composer_tray_but_not_a_folder(
+    cx: &mut TestAppContext,
+) {
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    // A conversation lets the reader attach files; the sample server does not.
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.set_place(
+                Some(OpenConversation {
+                    channel_id: crate::shell_fixtures::CONVERSATION_ANA,
+                    guild_id: None,
+                    label: "Ana".to_owned(),
+                    composer_label: "Message @Ana".to_owned(),
+                    hero_icon: IconName::At,
+                    hero_title: "Ana".to_owned(),
+                    hero_sentence: String::new(),
+                    topic: String::new(),
+                }),
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    // Over the messages, well above the composer.
+    let position = gpui::point(px(450.0), px(100.0));
+    cx.simulate_event(gpui::FileDropEvent::Entered {
+        position,
+        paths: gpui::ExternalPaths(vec![file, directory.path().to_path_buf()].into()),
+    });
+    cx.run_until_parked();
+    cx.simulate_event(gpui::FileDropEvent::Submit { position });
+    cx.run_until_parked();
+    let tray_len = view.read_with(cx, |view, cx| view.composer().read(cx).tray_len());
+    assert_eq!(tray_len, 1, "the file, not the folder");
+}
