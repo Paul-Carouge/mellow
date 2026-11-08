@@ -359,7 +359,8 @@ impl Session {
     }
 
     /// Runs `request` on the network runtime, then `on_done` here with its answer, unless the
-    /// session changed in between.
+    /// session changed in between. `on_done` runs while the session is leased: a caller's own
+    /// callback must be deferred (`cx.defer`) before it reads the session.
     fn run_request<T: Send + 'static>(
         &self,
         cx: &mut Context<Self>,
@@ -571,11 +572,11 @@ impl Session {
                     let change = session.state.apply_current_user(user);
                     cx.emit(StateChanged(vec![change]));
                     cx.notify();
-                    on_done(Ok(()), cx);
+                    cx.defer(move |cx| on_done(Ok(()), cx));
                 }
                 Err(error) => {
                     session.report_request_error(&error, "change custom status", cx);
-                    on_done(Err(error), cx);
+                    cx.defer(move |cx| on_done(Err(error), cx));
                 }
             },
         );
@@ -600,7 +601,7 @@ impl Session {
                 if let Err(error) = &answer {
                     session.report_request_error(error, "load profile", cx);
                 }
-                on_done(answer, cx);
+                cx.defer(move |cx| on_done(answer, cx));
             },
         );
     }
@@ -626,12 +627,12 @@ impl Session {
                     let change = session.state.upsert_direct_message_channel(conversation);
                     cx.emit(StateChanged(vec![change]));
                     cx.notify();
-                    on_done(Ok(conversation_id), cx);
+                    cx.defer(move |cx| on_done(Ok(conversation_id), cx));
                 }
                 Err(error) => {
                     let message = describe_error(&error, &failure_summary, strings(cx));
                     session.report_request_error(&error, "open conversation", cx);
-                    on_done(Err(message), cx);
+                    cx.defer(move |cx| on_done(Err(message), cx));
                 }
             },
         );
