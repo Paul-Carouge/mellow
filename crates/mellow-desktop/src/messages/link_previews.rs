@@ -268,6 +268,9 @@ fn title_link(
         .text_color(color(tokens.component_link_preview_title_text))
         .cursor_pointer()
         .when(is_hovered, gpui::Styled::underline)
+        // The real address, as a browser's status bar shows it: the card's text is the page's own.
+        .tooltip(link_address_tooltip(&url))
+        .tooltip_show_delay(Tooltip::show_delay())
         .on_hover(move |is_hovered, _, cx| {
             hover.update(cx, |remembered, cx| {
                 *remembered = *is_hovered;
@@ -283,13 +286,12 @@ fn title_link(
 }
 
 /// A preview's picture in a box of `width` × `height` token pixels, cropped to fill it; a
-/// picture the instance cannot serve leaves the box's placeholder (or nothing, `keeps_box`).
+/// picture the instance cannot serve leaves the box's placeholder, never a blank focusable hole.
 fn picture(
     file: DownloadableFile,
     width: f32,
     height: f32,
     radius: f32,
-    keeps_box: bool,
     window: &mut Window,
     cx: &App,
 ) -> AnyElement {
@@ -302,9 +304,7 @@ fn picture(
         .aspect_ratio(width / height)
         .overflow_hidden()
         .rounded(length(radius))
-        .when(keeps_box, |frame| {
-            frame.bg(color(tokens.component_link_preview_picture_placeholder))
-        })
+        .bg(color(tokens.component_link_preview_picture_placeholder))
         .child(
             img(source)
                 .size_full()
@@ -312,6 +312,12 @@ fn picture(
                 .with_fallback(|| div().into_any_element()),
         )
         .into_any_element()
+}
+
+/// The link's full address, shown before it opens.
+fn link_address_tooltip(url: &str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
+    let address = SharedString::from(url.to_owned());
+    move |_, cx| Tooltip::view(address.clone(), cx)
 }
 
 /// A picture that repeats the title link for the pointer only (`tabindex="-1"`, `aria-hidden`).
@@ -322,6 +328,8 @@ fn picture_link(url: &str, picture: AnyElement, id: ElementId) -> AnyElement {
         .flex_none()
         .max_w_full()
         .cursor_pointer()
+        .tooltip(link_address_tooltip(&url))
+        .tooltip_show_delay(Tooltip::show_delay())
         .on_click(move |_, _, cx| open_message_link(&url, cx))
         .child(picture)
         .into_any_element()
@@ -351,7 +359,6 @@ fn picture_only(shown: &Shown<'_>, window: &mut Window, cx: &mut App) -> AnyElem
         .into();
     let url = shown.preview.url.clone();
     let focus = remembered_focus_handle(&shown.id, window, cx);
-    let tooltip = SharedString::from(shown.preview.url.clone());
     div()
         .id(shown.id.clone())
         .role(Role::Link)
@@ -360,7 +367,7 @@ fn picture_only(shown: &Shown<'_>, window: &mut Window, cx: &mut App) -> AnyElem
         .relative()
         .max_w_full()
         .cursor_pointer()
-        .tooltip(move |_, cx| Tooltip::view(tooltip.clone(), cx))
+        .tooltip(link_address_tooltip(&url))
         .tooltip_show_delay(Tooltip::show_delay())
         .on_click(move |_, _, cx| open_message_link(&url, cx))
         .child(picture(
@@ -368,7 +375,6 @@ fn picture_only(shown: &Shown<'_>, window: &mut Window, cx: &mut App) -> AnyElem
             width,
             height,
             COMPONENT_ATTACHMENT_IMAGE_RADIUS,
-            false,
             window,
             cx,
         ))
@@ -402,7 +408,6 @@ fn plain_card(
                     width,
                     height,
                     COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-                    true,
                     window,
                     cx,
                 ),
@@ -423,7 +428,6 @@ fn plain_card(
                     shown_width,
                     shown_width * height / width,
                     COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-                    true,
                     window,
                     cx,
                 ),
@@ -654,7 +658,6 @@ fn music_card(shown: &Shown<'_>, artist: &str, window: &mut Window, cx: &mut App
             cover_size,
             cover_size,
             COMPONENT_LINK_PREVIEW_COVER_RADIUS,
-            true,
             window,
             cx,
         ),
@@ -827,7 +830,6 @@ fn github_repository_card(
             avatar_size,
             avatar_size,
             COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-            true,
             window,
             cx,
         ),
@@ -1143,7 +1145,6 @@ fn wikipedia_card(
                     width,
                     height,
                     COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-                    true,
                     window,
                     cx,
                 ),
