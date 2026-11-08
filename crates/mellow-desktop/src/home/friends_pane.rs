@@ -105,7 +105,6 @@ pub struct FriendsPane {
     name_form: AddFriendForm,
     code_form: AddFriendForm,
     is_friend_code_copied: bool,
-    friend_code_copy_error: Option<String>,
     copied_label_timer: Option<Task<()>>,
     menu: Option<(Entity<ContextMenu>, Subscription)>,
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
@@ -159,7 +158,6 @@ impl FriendsPane {
                 result: None,
             },
             is_friend_code_copied: false,
-            friend_code_copy_error: None,
             copied_label_timer: None,
             menu: None,
             confirmation: None,
@@ -213,6 +211,8 @@ impl FriendsPane {
     ) {
         self.tab = tab;
         self.action_error = None;
+        // A row of the tab left behind must not pull focus back once it answers.
+        self.pending_focus_row = None;
         if tab == FriendsTab::Add && should_focus_field {
             self.name_form
                 .input
@@ -263,31 +263,46 @@ impl FriendsPane {
 
     /// Runs one row action; the row may leave the list, and focus moves to the one now at its
     /// place if it was on it.
-    fn act(&mut self, user: &PublicUser, action: RowAction, cx: &mut Context<Self>) {
+    fn act(
+        &mut self,
+        user: &PublicUser,
+        action: RowAction,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let user_id = user.id;
         let person = display_name(user).to_owned();
         let row_index = self.row_index_of(user_id, cx);
         self.busy_user_ids.insert(user_id);
         self.action_error = None;
         let pane = cx.entity().downgrade();
+        let window_handle = window.window_handle();
+        let focused_on_press = window.focused(cx);
         let on_done = move |answer: Result<(), ClientError>, cx: &mut App| {
-            let _ = pane.update(cx, |pane, cx| {
-                pane.busy_user_ids.remove(&user_id);
-                let words = strings(cx).friends();
-                match answer {
-                    Ok(()) => {
-                        pane.announcement = action.done(words, &person);
-                        pane.focus_row_after_change(row_index, cx);
+            let _ = window_handle.update(cx, |_, window, cx| {
+                // No dialog holds the reader here: focus only follows them if they stayed put
+                // (the web's `isFocusLost`), never out of a field they moved to meanwhile.
+                let has_focus_stayed = window.focused(cx) == focused_on_press;
+                let _ = pane.update(cx, |pane, cx| {
+                    pane.busy_user_ids.remove(&user_id);
+                    let words = strings(cx).friends();
+                    match answer {
+                        Ok(()) => {
+                            pane.announcement = action.done(words, &person);
+                            if has_focus_stayed {
+                                pane.focus_row_after_change(row_index, cx);
+                            }
+                        }
+                        Err(error) => {
+                            pane.action_error = Some(describe_error(
+                                &error,
+                                &action.failed(words, &person),
+                                crate::strings_pending_i18n::strings(cx),
+                            ));
+                        }
                     }
-                    Err(error) => {
-                        pane.action_error = Some(describe_error(
-                            &error,
-                            &action.failed(words, &person),
-                            crate::strings_pending_i18n::strings(cx),
-                        ));
-                    }
-                }
-                cx.notify();
+                    cx.notify();
+                });
             });
         };
         self.session.update(cx, |session, cx| match action {
@@ -553,7 +568,6 @@ impl FriendsPane {
 
     fn copy_friend_code(&mut self, code: String, cx: &mut Context<Self>) {
         cx.write_to_clipboard(ClipboardItem::new_string(code));
-        self.friend_code_copy_error = None;
         self.is_friend_code_copied = true;
         strings(cx)
             .friend_code()
@@ -841,8 +855,8 @@ impl FriendsPane {
                         label,
                         tone,
                         is_busy,
-                        move |_, cx| {
-                            pane.update(cx, |pane, cx| pane.act(&user, row_action, cx));
+                        move |window, cx| {
+                            pane.update(cx, |pane, cx| pane.act(&user, row_action, window, cx));
                         },
                         window,
                         cx,
@@ -858,8 +872,10 @@ impl FriendsPane {
                     words.cancel(&person),
                     ActionTone::Danger,
                     is_busy,
-                    move |_, cx| {
-                        pane.update(cx, |pane, cx| pane.act(&user, RowAction::Cancel, cx));
+                    move |window, cx| {
+                        pane.update(cx, |pane, cx| {
+                            pane.act(&user, RowAction::Cancel, window, cx);
+                        });
                     },
                     window,
                     cx,
@@ -871,20 +887,16 @@ impl FriendsPane {
                 let user = user.clone();
                 let pane = pane.clone();
                 push((
-                    div()
-                        .id(ElementId::from(("friend-unblock-label", user.id.raw())))
-                        .aria_label(words.unblock_label(&person))
-                        .child(
-                            Button::new(id, words.unblock())
-                                .variant(ButtonVariant::Secondary)
-                                .disabled(is_busy)
-                                .track_focus(&focus)
-                                .on_click(move |_, cx| {
-                                    pane.update(cx, |pane, cx| {
-                                        pane.act(&user, RowAction::Unblock, cx);
-                                    });
-                                }),
-                        )
+                    Button::new(id, words.unblock())
+                        .accessible_label(words.unblock_label(&person))
+                        .variant(ButtonVariant::Secondary)
+                        .disabled(is_busy)
+                        .track_focus(&focus)
+                        .on_click(move |window, cx| {
+                            pane.update(cx, |pane, cx| {
+                                pane.act(&user, RowAction::Unblock, window, cx);
+                            });
+                        })
                         .into_any_element(),
                     focus,
                 ));
@@ -1146,15 +1158,6 @@ impl FriendsPane {
                     .text_color(color(tokens.color_text_secondary))
                     .child(words.hint()),
             )
-            .when_some(self.friend_code_copy_error.clone(), |block, error| {
-                block.child(
-                    with_type(div(), TYPE_BODY_SM)
-                        .id("friend-code-error")
-                        .role(Role::Alert)
-                        .text_color(color(tokens.color_text_danger))
-                        .child(error),
-                )
-            })
             .into_any_element()
     }
 
