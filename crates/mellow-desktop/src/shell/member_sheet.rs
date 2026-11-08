@@ -206,79 +206,82 @@ impl DuskShell {
                             let is_ring_shown = is_focus_visible(&focus_handle, window);
                             let user_id = user.id;
                             let row_entity = entity.clone();
+                            let row = div()
+                                .id(row_id)
+                                .role(Role::Button)
+                                .aria_label(label)
+                                .track_focus(&focus_handle)
+                                .relative()
+                                .mx(length(COMPONENT_MEMBER_ROW_MARGIN_INLINE))
+                                .mt(length(COMPONENT_MEMBER_ROW_GAP))
+                                .h(length(COMPONENT_MEMBER_ROW_HEIGHT))
+                                .px(length(COMPONENT_MEMBER_ROW_PADDING_INLINE))
+                                .flex()
+                                .items_center()
+                                .gap(length(SPACE_SM))
+                                .rounded(length(COMPONENT_MEMBER_ROW_RADIUS))
+                                .when(is_hovered, |row| {
+                                    row.bg(color(tokens.component_member_row_background_hover))
+                                })
+                                .cursor_pointer()
+                                .on_hover(move |is_hovered, _, cx| {
+                                    hover.update(cx, |remembered, cx| {
+                                        *remembered = *is_hovered;
+                                        cx.notify();
+                                    });
+                                })
+                                .on_click(move |_, window, cx| {
+                                    row_entity.update(cx, |shell, cx| {
+                                        shell.show_member_profile(guild_id, user_id, window, cx);
+                                    });
+                                })
+                                .child(
+                                    Avatar::new(
+                                        AvatarPerson::from_user(user, picture),
+                                        COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                                    )
+                                    .presence(
+                                        shown_presence(presence),
+                                        color(tokens.component_side_sheet_background),
+                                    )
+                                    .dimmed(presence == PresenceStatus::Offline),
+                                )
+                                .child(
+                                    div()
+                                        .flex_1()
+                                        .min_w_0()
+                                        .flex()
+                                        .flex_col()
+                                        .child(
+                                            with_type(div(), TYPE_MEMBER_NAME)
+                                                .truncate()
+                                                .text_color(color(if is_hovered {
+                                                    tokens.component_member_row_name_text_hover
+                                                } else {
+                                                    tokens.component_member_row_name_text
+                                                }))
+                                                .child(name),
+                                        )
+                                        .when_some(custom_status, |lines, status| {
+                                            lines.child(
+                                                with_type(div(), TYPE_BODY_SM)
+                                                    .truncate()
+                                                    .text_color(color(
+                                                        tokens.component_member_row_activity_text,
+                                                    ))
+                                                    .child(status),
+                                            )
+                                        }),
+                                )
+                                .when(is_ring_shown, |row| {
+                                    row.child(inset_focus_ring(COMPONENT_MEMBER_ROW_RADIUS, cx))
+                                });
+                            // A list item holding its button, as the web's `<li><button>`.
                             rows.push(
                                 div()
-                                    .id(row_id)
-                                    .role(Role::Button)
-                                    .aria_label(label)
-                                    .track_focus(&focus_handle)
-                                    .relative()
-                                    .mx(length(COMPONENT_MEMBER_ROW_MARGIN_INLINE))
-                                    .mt(length(COMPONENT_MEMBER_ROW_GAP))
-                                    .h(length(COMPONENT_MEMBER_ROW_HEIGHT))
-                                    .px(length(COMPONENT_MEMBER_ROW_PADDING_INLINE))
-                                    .flex()
-                                    .items_center()
-                                    .gap(length(SPACE_SM))
-                                    .rounded(length(COMPONENT_MEMBER_ROW_RADIUS))
-                                    .when(is_hovered, |row| {
-                                        row.bg(color(tokens.component_member_row_background_hover))
-                                    })
-                                    .cursor_pointer()
-                                    .on_hover(move |is_hovered, _, cx| {
-                                        hover.update(cx, |remembered, cx| {
-                                            *remembered = *is_hovered;
-                                            cx.notify();
-                                        });
-                                    })
-                                    .on_click(move |_, window, cx| {
-                                        row_entity.update(cx, |shell, cx| {
-                                            shell
-                                                .show_member_profile(guild_id, user_id, window, cx);
-                                        });
-                                    })
-                                    .child(
-                                        Avatar::new(
-                                            AvatarPerson::from_user(user, picture),
-                                            COMPONENT_MEMBER_ROW_AVATAR_SIZE,
-                                        )
-                                        .presence(
-                                            shown_presence(presence),
-                                            color(tokens.component_side_sheet_background),
-                                        )
-                                        .dimmed(presence == PresenceStatus::Offline),
-                                    )
-                                    .child(
-                                        div()
-                                            .flex_1()
-                                            .min_w_0()
-                                            .flex()
-                                            .flex_col()
-                                            .child(
-                                                with_type(div(), TYPE_MEMBER_NAME)
-                                                    .truncate()
-                                                    .text_color(color(if is_hovered {
-                                                        tokens.component_member_row_name_text_hover
-                                                    } else {
-                                                        tokens.component_member_row_name_text
-                                                    }))
-                                                    .child(name),
-                                            )
-                                            .when_some(custom_status, |lines, status| {
-                                                lines.child(
-                                                    with_type(div(), TYPE_BODY_SM)
-                                                        .truncate()
-                                                        .text_color(color(
-                                                            tokens
-                                                                .component_member_row_activity_text,
-                                                        ))
-                                                        .child(status),
-                                                )
-                                            }),
-                                    )
-                                    .when(is_ring_shown, |row| {
-                                        row.child(inset_focus_ring(COMPONENT_MEMBER_ROW_RADIUS, cx))
-                                    })
+                                    .id(("member-item", user_id.raw()))
+                                    .role(Role::ListItem)
+                                    .child(row)
                                     .into_any_element(),
                             );
                         }
@@ -362,7 +365,9 @@ impl DuskShell {
             .child(
                 div()
                     .id("member-list")
-                    .role(Role::List)
+                    // The profile replaces the list in the same scroller; it is no list.
+                    .when(profile_user.is_none(), |list| list.role(Role::List))
+                    .track_scroll(self.member_profile.list_scroll())
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

@@ -10,8 +10,9 @@ use std::rc::Rc;
 
 use gpui::{
     AnyElement, App, Context, ElementId, FocusHandle, InteractiveElement as _, IntoElement,
-    ObjectFit, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
+    ObjectFit, ParentElement as _, Pixels, Point, Role, ScrollHandle, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Window, div, img,
+    prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
@@ -53,10 +54,15 @@ pub(super) struct MemberProfileState {
     shown: Option<ShownProfile>,
     loader: UserProfileLoader,
     /// "About me" parsed once per text.
-    about: Option<(String, Rc<MessageBody>)>,
+    parsed_about_me: Option<(String, Rc<MessageBody>)>,
     is_opening_conversation: bool,
-    error: Option<String>,
+    open_conversation_error: Option<String>,
     back_focus: FocusHandle,
+    /// The sheet's scroller, shared by the list and the profile.
+    list_scroll: ScrollHandle,
+    /// Where the list was scrolled when the profile opened, restored by Back: focus alone does
+    /// not scroll the row into view.
+    list_offset: Point<Pixels>,
     /// The row Back returns to, focused once the list is drawn again.
     row_to_focus: Option<Snowflake>,
 }
@@ -66,10 +72,12 @@ impl MemberProfileState {
         Self {
             shown: None,
             loader: UserProfileLoader::default(),
-            about: None,
+            parsed_about_me: None,
             is_opening_conversation: false,
-            error: None,
+            open_conversation_error: None,
             back_focus: cx.focus_handle().tab_stop(true),
+            list_scroll: ScrollHandle::new(),
+            list_offset: Point::default(),
             row_to_focus: None,
         }
     }
@@ -81,6 +89,10 @@ impl MemberProfileState {
 
     pub(super) fn back_focus(&self) -> &FocusHandle {
         &self.back_focus
+    }
+
+    pub(super) fn list_scroll(&self) -> &ScrollHandle {
+        &self.list_scroll
     }
 
     /// The person shown in `guild_id`'s sheet; another server's sheet shows its list.
@@ -103,19 +115,23 @@ impl MemberProfileState {
     fn forget(&mut self) {
         self.shown = None;
         self.loader.show(None);
-        self.error = None;
+        self.open_conversation_error = None;
     }
 
     fn about_body(&mut self, about_me: &str) -> Option<Rc<MessageBody>> {
-        if self.about.as_ref().is_none_or(|(text, _)| text != about_me) {
+        if self
+            .parsed_about_me
+            .as_ref()
+            .is_none_or(|(text, _)| text != about_me)
+        {
             let body = MessageBody {
                 blocks: parse_inline_markdown(about_me),
                 is_jumbo: false,
                 names_reader: false,
             };
-            self.about = Some((about_me.to_owned(), Rc::new(body)));
+            self.parsed_about_me = Some((about_me.to_owned(), Rc::new(body)));
         }
-        self.about
+        self.parsed_about_me
             .as_ref()
             .filter(|(_, body)| !body.blocks.is_empty())
             .map(|(_, body)| Rc::clone(body))
@@ -132,8 +148,12 @@ impl DuskShell {
         cx: &mut Context<Self>,
     ) {
         let profile = &mut self.member_profile;
+        if profile.shown.is_none() {
+            profile.list_offset = profile.list_scroll.offset();
+        }
+        profile.list_scroll.set_offset(Point::default());
         profile.shown = Some(ShownProfile { guild_id, user_id });
-        profile.error = None;
+        profile.open_conversation_error = None;
         profile.is_opening_conversation = false;
         if let Some(ticket) = profile.loader.show(Some(user_id)) {
             let shell = cx.entity().downgrade();
@@ -153,8 +173,10 @@ impl DuskShell {
 
     /// Back: the list again, focus on the row the profile came from.
     pub(super) fn show_member_list(&mut self, cx: &mut Context<Self>) {
-        self.member_profile.row_to_focus = self.member_profile.shown.map(|shown| shown.user_id);
-        self.member_profile.forget();
+        let profile = &mut self.member_profile;
+        profile.row_to_focus = profile.shown.map(|shown| shown.user_id);
+        profile.list_scroll.set_offset(profile.list_offset);
+        profile.forget();
         cx.notify();
     }
 
@@ -169,7 +191,7 @@ impl DuskShell {
             return;
         }
         self.member_profile.is_opening_conversation = true;
-        self.member_profile.error = None;
+        self.member_profile.open_conversation_error = None;
         let failure = strings(cx).members().open_conversation_failed().to_owned();
         let shell = cx.entity().downgrade();
         let window_handle = window.window_handle();
@@ -188,7 +210,9 @@ impl DuskShell {
                                     conversation.focus_composer(window, cx);
                                 });
                             }
-                            Err(message) => shell.member_profile.error = Some(message),
+                            Err(message) => {
+                                shell.member_profile.open_conversation_error = Some(message);
+                            }
                         }
                         cx.notify();
                     });
@@ -223,8 +247,9 @@ impl DuskShell {
                 )
             }),
         );
+        let tint = avatar_tint(tokens, person.tint_number);
         let banner = match user.banner {
-            // A picture that fails leaves the banner colour in its place.
+            // A picture that fails gives way to the avatar tint, as on the web.
             Some(banner) => div()
                 .flex_none()
                 .w_full()
@@ -239,14 +264,15 @@ impl DuskShell {
                         window,
                     ))
                     .size_full()
-                    .object_fit(ObjectFit::Cover),
+                    .object_fit(ObjectFit::Cover)
+                    .with_fallback(move || div().size_full().bg(tint).into_any_element()),
                 ),
             // No banner picture: the strip takes the person's avatar tint, as in the Dusk mockup.
             None => div()
                 .flex_none()
                 .w_full()
                 .h(length(COMPONENT_PROFILE_POPOVER_BANNER_HEIGHT))
-                .bg(avatar_tint(tokens, person.tint_number)),
+                .bg(tint),
         };
         let name = display_name(user).to_owned();
         let state = self.session.read(cx).state();
@@ -328,14 +354,18 @@ impl DuskShell {
                 }),
             )
         });
-        let error = self.member_profile.error.clone().map(|error| {
-            with_type(div(), TYPE_BODY)
-                .id("profile-error")
-                .role(Role::Alert)
-                .aria_label(error.clone())
-                .text_color(color(tokens.component_profile_popover_error_text))
-                .child(error)
-        });
+        let error = self
+            .member_profile
+            .open_conversation_error
+            .clone()
+            .map(|error| {
+                with_type(div(), TYPE_BODY)
+                    .id("profile-error")
+                    .role(Role::Alert)
+                    .aria_label(error.clone())
+                    .text_color(color(tokens.component_profile_popover_error_text))
+                    .child(error)
+            });
 
         // The ring is drawn outside the avatar, so the avatar keeps the card's padding and sits
         // one gap below the banner's middle line.
@@ -429,6 +459,7 @@ fn link_row(index: usize, link: ShownProfileLink, window: &mut Window, cx: &mut 
         "{name} ({})",
         catalogue.profile_details().opens_in_new_tab()
     );
+    let fallback_glyph_colour = color(tokens.component_profile_popover_link_icon_fallback);
     let plate = div()
         .flex_none()
         .size(length(COMPONENT_PROFILE_POPOVER_LINK_ICON_PLATE_SIZE))
@@ -449,17 +480,15 @@ fn link_row(index: usize, link: ShownProfileLink, window: &mut Window, cx: &mut 
                     window,
                 ))
                 .size(length(COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE))
-                .object_fit(ObjectFit::Contain),
+                .object_fit(ObjectFit::Contain)
+                .with_fallback(move || link_glyph(fallback_glyph_colour).into_any_element()),
             ),
-        None => plate.child(icon(
-            IconName::LinkSimple,
-            COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE,
-            color(tokens.component_profile_popover_link_icon_fallback),
-        )),
+        None => plate.child(link_glyph(fallback_glyph_colour)),
     };
     let url = link.url.clone();
     let tooltip: SharedString = link.url.into();
-    div()
+    let item_id = ElementId::NamedInteger("profile-link-item".into(), index as u64);
+    let row = div()
         .id(id)
         .role(Role::Link)
         .aria_label(accessible_name)
@@ -491,6 +520,20 @@ fn link_row(index: usize, link: ShownProfileLink, window: &mut Window, cx: &mut 
         )
         .when(is_ring_shown, |row| {
             row.child(inset_focus_ring(RADIUS_XS, cx))
-        })
+        });
+    div()
+        .id(item_id)
+        .role(Role::ListItem)
+        .child(row)
         .into_any_element()
+}
+
+/// The link glyph: a link without a stored icon, or whose icon failed to load (the web's
+/// `onerror`).
+fn link_glyph(colour: gpui::Hsla) -> impl IntoElement {
+    icon(
+        IconName::LinkSimple,
+        COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE,
+        colour,
+    )
 }
