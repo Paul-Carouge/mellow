@@ -246,11 +246,9 @@ impl RestClient {
             }
             bytes.extend_from_slice(&body);
             let read = bytes.len() as u64;
+            // Every part holds at least one byte (`parse_content_range`), so the loop advances.
             if read >= total_bytes {
                 return Ok(bytes);
-            }
-            if body.is_empty() {
-                return Err(unexpected_range("an empty part"));
             }
         }
     }
