@@ -94,10 +94,18 @@ impl RenderOnce for MessageGif {
             animation,
             window,
         );
+        // The last shape seen holds while another request loads (played after being kept still,
+        // another zoom), so the box keeps its width.
+        let known_size = window.use_keyed_state(child_id(&id, "size"), cx, |_, _| None);
         let picture_size = match picture_status(request.clone(), cx) {
             PictureStatus::Failed => return self.fallback,
-            PictureStatus::Ready { width, height } => Some((width, height)),
-            PictureStatus::Loading => None,
+            PictureStatus::Ready { width, height } => {
+                if *known_size.read(cx) != Some((width, height)) {
+                    known_size.update(cx, |size, _| *size = Some((width, height)));
+                }
+                Some((width, height))
+            }
+            PictureStatus::Loading => *known_size.read(cx),
         };
         let tokens = theme(cx);
         let label = strings(cx).gifs().message_gif();

@@ -19,9 +19,11 @@ leaves out.
 - The session asks `GET /api/v1/gifs/settings` at a `Ready` until it knows them; `404` keeps GIFs
   off without a word. Favourites go through the instance's routes, as on the web.
 - Klipy's pictures load through the picture pipeline (`PictureFile::Klipy`), decoded off the main
-  thread within its size and frame caps, with six downloads at a time. They stay in the memory
-  cache of decoded pictures only, never on disk: Klipy's terms forbid copies and caches beyond what
-  a browser keeps.
+  thread within its size and frame caps, with six downloads at a time, one per address however
+  many views ask. Their bytes stay in the loader's memory cache of files and their decoded frames
+  in the store's, never on disk: Klipy's terms forbid copies and caches beyond what a browser
+  keeps. A GIF played after being kept still is decoded again from memory, and its message box
+  keeps the shape it last had while it does.
 
 ## The picker
 

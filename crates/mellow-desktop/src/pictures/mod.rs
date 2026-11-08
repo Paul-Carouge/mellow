@@ -79,7 +79,8 @@ impl DisplaySize {
 }
 
 /// Where a picture comes from: the instance, or Klipy's media hosts (ADR-0042), loaded from the
-/// address Klipy returned and kept in memory only, since Klipy's terms forbid copies and caches.
+/// address Klipy returned and kept in memory only, since Klipy's terms forbid copies and caches
+/// beyond what a browser keeps.
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum PictureFile {
     Instance(DownloadableFile),
@@ -419,7 +420,7 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
     let download = spawn_on_network_runtime(cx, async move {
         match fetched_file {
             PictureFile::Instance(file) => fetch_loader.fetch(file).await,
-            PictureFile::Klipy(url) => fetch_loader.fetch_klipy(&url).await,
+            PictureFile::Klipy(url) => fetch_loader.fetch_klipy(url).await,
         }
     });
     let (animation, display_size) = (request.animation, request.display_size);
@@ -430,9 +431,7 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
                     .background_executor()
                     .spawn(async move { decode::decode_frames(&bytes, animation, display_size) });
                 let decoded = decoding.await;
-                if decoded.is_err()
-                    && let PictureFile::Instance(file) = file
-                {
+                if decoded.is_err() {
                     // A cached copy that does not decode is fetched again next time.
                     cx.update(|cx| {
                         spawn_on_network_runtime(cx, async move { loader.forget(file).await })
