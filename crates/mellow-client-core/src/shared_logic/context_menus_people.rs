@@ -68,8 +68,8 @@ impl MessageMenuFacts {
 }
 
 /// A message menu item.
-/// shortcut: no Forward, End poll or Remove all reactions yet; they come with forwards, polls and
-/// reaction moderation (M3 steps 5 and 6). Copy message ID joins the everyday section.
+/// shortcut: no End poll or Remove all reactions yet; they come with polls and reaction
+/// moderation (M3 steps 5 and 6). Copy message ID joins the everyday section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageMenuAction {
     /// A quick reaction: adds or takes back the reader's reaction with this emoji. The web shows
@@ -78,6 +78,8 @@ pub enum MessageMenuAction {
     /// Opens the emoji picker to react with any emoji.
     AddReaction,
     Reply,
+    /// Opens the forward dialog (ADR-0039).
+    Forward,
     Edit,
     CopyText,
     Pin,
@@ -109,6 +111,8 @@ pub fn message_menu_actions(
         reactions,
         vec![
             facts.can_send_messages.then_some(Action::Reply),
+            // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough.
+            (!facts.is_rich).then_some(Action::Forward),
             facts.can_edit().then_some(Action::Edit),
             (facts.has_text && !facts.is_rich).then_some(Action::CopyText),
             facts.can_manage_pins.then_some(if facts.is_pinned {
@@ -269,7 +273,7 @@ mod tests {
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
         use MessageMenuAction::{
-            AddReaction, CopyMessageId, CopyText, Reply, ToggleReaction, ViewReactions,
+            AddReaction, CopyMessageId, CopyText, Forward, Reply, ToggleReaction, ViewReactions,
         };
         let reacted = MessageMenuFacts {
             has_reactions: true,
@@ -282,6 +286,7 @@ mod tests {
                 Some(AddReaction),
                 None,
                 Some(Reply),
+                Some(Forward),
                 Some(CopyText),
                 Some(ViewReactions),
                 Some(CopyMessageId)
@@ -291,13 +296,16 @@ mod tests {
 
     #[test]
     fn your_own_message_adds_edit_and_delete_last_and_separated() {
-        use MessageMenuAction::{AddReaction, CopyMessageId, CopyText, Delete, Edit, Reply};
+        use MessageMenuAction::{
+            AddReaction, CopyMessageId, CopyText, Delete, Edit, Forward, Reply,
+        };
         assert_eq!(
             actions(&message_menu_actions(OWN_TEXT, &[])),
             [
                 Some(AddReaction),
                 None,
                 Some(Reply),
+                Some(Forward),
                 Some(Edit),
                 Some(CopyText),
                 Some(CopyMessageId),
@@ -323,6 +331,16 @@ mod tests {
         let lines = message_menu_actions(poll, &[]);
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Edit)));
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::CopyText)));
+        assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Forward)));
+        // Read-only channels still forward: that is where announcements live.
+        let read_only = MessageMenuFacts {
+            can_send_messages: false,
+            ..OTHERS_TEXT
+        };
+        assert!(
+            message_menu_actions(read_only, &[])
+                .contains(&MenuLine::Action(MessageMenuAction::Forward))
+        );
     }
 
     #[test]
@@ -346,7 +364,7 @@ mod tests {
 
     #[test]
     fn a_read_only_channel_leaves_out_reply_edit_and_reactions_without_the_permission() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete};
+        use MessageMenuAction::{CopyMessageId, CopyText, Delete, Forward};
         let read_only = MessageMenuFacts {
             can_send_messages: false,
             has_reactions: true,
@@ -356,7 +374,13 @@ mod tests {
         };
         assert_eq!(
             actions(&message_menu_actions(read_only, &["👍".to_owned()])),
-            [Some(CopyText), Some(CopyMessageId), None, Some(Delete)]
+            [
+                Some(Forward),
+                Some(CopyText),
+                Some(CopyMessageId),
+                None,
+                Some(Delete)
+            ]
         );
     }
 

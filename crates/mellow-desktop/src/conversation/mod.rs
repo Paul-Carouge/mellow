@@ -10,6 +10,8 @@
 
 mod chrome;
 mod emoji_reactions;
+mod forward_dialog;
+mod forwarding;
 mod pins_panel;
 mod reactions_dialog;
 mod rows;
@@ -48,6 +50,7 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
 use self::emoji_reactions::is_reaction_given;
+pub use self::forwarding::OpenForwardOrigin;
 use self::rows::Entry;
 use self::rules::reactor_sentence;
 
@@ -146,6 +149,11 @@ pub struct ConversationView {
     pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
+    /// What went well, said above the composer until the next channel or message sent ("Forwarded
+    /// to #news.").
+    notice: Option<SharedString>,
+    /// A forward's original in another channel, reached once the shell opened that channel.
+    pending_origin_jump: Option<(Snowflake, Snowflake)>,
     /// A refused edit's text, given back to the composer by the next render (which has the
     /// window): the message, the text and whether the editor may reopen on it.
     refused_edit: Option<(Snowflake, String, bool)>,
@@ -238,6 +246,8 @@ impl ConversationView {
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
             action_error: None,
+            notice: None,
+            pending_origin_jump: None,
             refused_edit: None,
             reactor_sentences: HashMap::new(),
             pending_reveal: None,
@@ -326,6 +336,7 @@ impl ConversationView {
             self.confirmation = None;
             self.is_pins_panel_open = false;
             self.action_error = None;
+            self.notice = None;
             self.entries.clear();
             self.entry_versions.clear();
             self.list.reset(0);
@@ -682,6 +693,7 @@ impl ConversationView {
         match event {
             ComposerEvent::Send(message) => {
                 self.action_error = None;
+                self.notice = None;
                 let answer = self.session.update(cx, |session, cx| {
                     session.send_message(
                         message.channel_id,
@@ -1184,58 +1196,7 @@ impl ConversationView {
                     }
                     _ => None,
                 };
-                let (label, icon, tone) = match &action {
-                    MessageMenuAction::ToggleReaction(emoji) => (
-                        catalogue.reactions().react_with(emoji),
-                        IconName::Smiley,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::AddReaction => (
-                        catalogue.reactions().add_reaction().to_owned(),
-                        IconName::Smiley,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Reply => (
-                        catalogue.messages().reply().to_owned(),
-                        IconName::ArrowBendUpLeft,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Edit => (
-                        catalogue.common().edit().to_owned(),
-                        IconName::PencilSimple,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::CopyText => (
-                        catalogue.messages().copy_text().to_owned(),
-                        IconName::Copy,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Pin => (
-                        catalogue.pins().pin().to_owned(),
-                        IconName::PushPin,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Unpin => (
-                        catalogue.pins().unpin().to_owned(),
-                        IconName::PushPinSlash,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::ViewReactions => (
-                        catalogue.reactions().reactions().to_owned(),
-                        IconName::Users,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::CopyMessageId => (
-                        catalogue.context_menu().copy_message_id().to_owned(),
-                        IconName::Copy,
-                        MenuItemTone::Normal,
-                    ),
-                    MessageMenuAction::Delete => (
-                        catalogue.context_menu().delete_message().to_owned(),
-                        IconName::Trash,
-                        MenuItemTone::Danger,
-                    ),
-                };
+                let (label, icon, tone) = message_menu_item_look(&action, catalogue);
                 MenuEntry::Item(
                     MenuItem::new(label, icon, move |window, cx| {
                         let _ = view.update(cx, |view, cx| {
@@ -1281,6 +1242,7 @@ impl ConversationView {
                 self.open_reaction_picker_beside_row(message_id, window, cx);
             }
             MessageMenuAction::Reply => self.start_reply(message_id, window, cx),
+            MessageMenuAction::Forward => self.open_forward_dialog(message_id, window, cx),
             MessageMenuAction::Edit => self.start_edit(message_id, window, cx),
             MessageMenuAction::CopyText => {
                 if let Some(message) = self.cached_message(message_id, cx) {
@@ -1652,5 +1614,69 @@ fn reaction_label(
         ReactionAppearance::Unicode(emoji) => emoji,
         ReactionAppearance::Custom(emoji) => format!(":{}:", emoji.name),
         ReactionAppearance::Deleted => catalogue.reactions().deleted_emoji().to_owned(),
+    }
+}
+
+/// The label, icon and tone of a message menu item.
+fn message_menu_item_look(
+    action: &MessageMenuAction,
+    catalogue: crate::i18n::Strings,
+) -> (String, IconName, MenuItemTone) {
+    match action {
+        MessageMenuAction::ToggleReaction(emoji) => (
+            catalogue.reactions().react_with(emoji),
+            IconName::Smiley,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::AddReaction => (
+            catalogue.reactions().add_reaction().to_owned(),
+            IconName::Smiley,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Reply => (
+            catalogue.messages().reply().to_owned(),
+            IconName::ArrowBendUpLeft,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Forward => (
+            catalogue.forward().forward().to_owned(),
+            IconName::ArrowBendUpRight,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Edit => (
+            catalogue.common().edit().to_owned(),
+            IconName::PencilSimple,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::CopyText => (
+            catalogue.messages().copy_text().to_owned(),
+            IconName::Copy,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Pin => (
+            catalogue.pins().pin().to_owned(),
+            IconName::PushPin,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Unpin => (
+            catalogue.pins().unpin().to_owned(),
+            IconName::PushPinSlash,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::ViewReactions => (
+            catalogue.reactions().reactions().to_owned(),
+            IconName::Users,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::CopyMessageId => (
+            catalogue.context_menu().copy_message_id().to_owned(),
+            IconName::Copy,
+            MenuItemTone::Normal,
+        ),
+        MessageMenuAction::Delete => (
+            catalogue.context_menu().delete_message().to_owned(),
+            IconName::Trash,
+            MenuItemTone::Danger,
+        ),
     }
 }
