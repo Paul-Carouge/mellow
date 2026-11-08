@@ -14,6 +14,7 @@ use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Channel, ChannelKind, DirectMessageChannel, Permissions, Snowflake};
 
+use super::regions::{Region, RovingTabStop};
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
@@ -132,11 +133,18 @@ impl DuskShell {
             ),
         };
         let is_home = guild.is_none();
+        let has_selected_row = self.navigation.selected_channel_id().is_some()
+            || (guild.is_none() && self.navigation.place().is_some());
+        let mut tab_stop = self
+            .regions
+            .channel_list
+            .tab_stop_chooser(has_selected_row, window);
         let rows = match guild {
-            Some(guild) => self.guild_rows(&guild.channels, guild.id, window, cx),
-            None => self.conversation_rows(window, cx),
+            Some(guild) => self.guild_rows(&guild.channels, guild.id, &mut tab_stop, window, cx),
+            None => self.conversation_rows(&mut tab_stop, window, cx),
         };
         let entity = cx.entity();
+        self.regions.channel_list.keep_rows(tab_stop, cx);
 
         div()
             .debug_selector(|| "channel-column".to_owned())
@@ -182,6 +190,11 @@ impl DuskShell {
                     .id("channel-list")
                     .role(Role::Navigation)
                     .aria_label(list_label)
+                    .track_focus(&self.regions.channel_list.focus)
+                    .track_scroll(&self.regions.channel_list.scroll)
+                    .on_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
+                        shell.move_in_list(Region::ChannelList, event, window, cx);
+                    }))
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()
@@ -196,6 +209,7 @@ impl DuskShell {
         &mut self,
         channels: &[Channel],
         guild_id: Snowflake,
+        tab_stop: &mut RovingTabStop,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -225,7 +239,13 @@ impl DuskShell {
                 .as_ref()
                 .is_some_and(|category| self.collapsed_category_ids.contains(&category.id));
             if let Some(category) = &section.category {
-                rows.push(Self::category_row(category, is_collapsed, window, cx));
+                rows.push(Self::category_row(
+                    category,
+                    is_collapsed,
+                    (tab_stop, rows.len()),
+                    window,
+                    cx,
+                ));
             }
             for channel in &section.channels {
                 let state = self.session.read(cx).state();
@@ -288,6 +308,7 @@ impl DuskShell {
                         mention_count,
                         channel_id: Some(channel.id),
                     },
+                    (tab_stop, rows.len()),
                     window,
                     cx,
                 ));
@@ -299,12 +320,18 @@ impl DuskShell {
     fn category_row(
         category: &Channel,
         is_collapsed: bool,
+        (tab_stop, child_index): (&mut RovingTabStop, usize),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tokens = theme(cx);
         let id = ElementId::from(("category-row", category.id.raw()));
-        let focus_handle = remembered_focus_handle(&id, window, cx);
+        let focus_handle = tab_stop.row(
+            &id,
+            remembered_focus_handle(&id, window, cx),
+            false,
+            child_index,
+        );
         let hover = remembered_hover(&id, window, cx);
         let ink = if *hover.read(cx) {
             tokens.component_category_text_hover
@@ -486,6 +513,7 @@ impl DuskShell {
     /// Home: Friends, then the conversations, most recent first.
     fn conversation_rows(
         &mut self,
+        tab_stop: &mut RovingTabStop,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Vec<AnyElement> {
@@ -520,6 +548,7 @@ impl DuskShell {
                 mention_count: u32::try_from(incoming).unwrap_or(u32::MAX),
                 channel_id: None,
             },
+            (tab_stop, 0),
             window,
             cx,
         )];
@@ -616,6 +645,7 @@ impl DuskShell {
             } else {
                 name.clone()
             };
+            let child_index = rows.len();
             rows.push(Self::sidebar_row(
                 SidebarRow {
                     id: ElementId::from(("conversation-row", conversation.id.raw())),
@@ -631,6 +661,7 @@ impl DuskShell {
                     mention_count,
                     channel_id: Some(conversation.id),
                 },
+                (tab_stop, child_index),
                 window,
                 cx,
             ));
@@ -641,9 +672,19 @@ impl DuskShell {
     /// A channel or conversation row (`sidebarRowClasses`): the unread pill at the strip's edge,
     /// the selected wash, unread names brighter, the mention badge last. `channel_id` `None` is
     /// the Friends row, which opens Home.
-    fn sidebar_row(row: SidebarRow, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
+    fn sidebar_row(
+        row: SidebarRow,
+        (tab_stop, child_index): (&mut RovingTabStop, usize),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
         let tokens = theme(cx);
-        let focus_handle = remembered_focus_handle(&row.id, window, cx);
+        let focus_handle = tab_stop.row(
+            &row.id,
+            remembered_focus_handle(&row.id, window, cx),
+            row.is_selected,
+            child_index,
+        );
         let hover = remembered_hover(&row.id, window, cx);
         let is_hovered = *hover.read(cx);
         let ink = row_ink(row.is_selected, row.has_unread, is_hovered, cx);

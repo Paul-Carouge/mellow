@@ -13,6 +13,7 @@ mod member_sheet;
 mod notification_settings;
 mod overlays;
 pub mod quick_switcher;
+mod regions;
 mod resize_handle;
 mod server_rail;
 mod user_card;
@@ -53,6 +54,8 @@ use crate::theme::{SANS_FONT_FAMILY, color, length, theme, window_width_at_defau
 use crate::window_chrome::{TITLE_BAR_BAND_HEIGHT, TOP_BAND_HEIGHT};
 
 use self::quick_switcher::{QuickSwitcher, QuickSwitcherEvent};
+pub use self::regions::Region;
+use self::regions::{NextRegion, PreviousRegion, RegionFocus};
 
 actions!(
     mellow_shell,
@@ -114,6 +117,7 @@ pub fn bind_shell_keys(cx: &mut App) {
         KeyBinding::new(secondary!("k"), ToggleQuickSwitcher, context),
         KeyBinding::new(secondary!("u"), ToggleMemberSheet, context),
     ]);
+    regions::bind_region_keys(cx, context);
 }
 
 /// Which cards fit beside each other at a window width (DESIGN.md §4.2 "Breakpoints").
@@ -218,6 +222,8 @@ pub struct DuskShell {
     member_sheet_focus: FocusHandle,
     status_button_focus: FocusHandle,
     root_focus: FocusHandle,
+    /// F6 between regions, and one Tab stop per navigator list.
+    regions: RegionFocus,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -273,6 +279,7 @@ impl DuskShell {
             member_sheet_focus: cx.focus_handle(),
             status_button_focus: cx.focus_handle().tab_stop(true),
             root_focus,
+            regions: RegionFocus::new(cx),
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
@@ -1050,6 +1057,12 @@ impl Render for DuskShell {
                     shell.open_direct_conversation_with(action.user_id, window, cx);
                 }),
             )
+            .on_action(cx.listener(|shell, _: &NextRegion, window, cx| {
+                shell.move_to_region(Direction::Next, window, cx);
+            }))
+            .on_action(cx.listener(|shell, _: &PreviousRegion, window, cx| {
+                shell.move_to_region(Direction::Previous, window, cx);
+            }))
             .on_mouse_move(cx.listener(Self::follow_column_drag))
             .capture_any_mouse_up(cx.listener(|shell, _, _, cx| shell.end_column_drag(cx)))
             .when(TITLE_BAR_BAND_HEIGHT > 0.0, |root| {
@@ -1077,6 +1090,11 @@ impl Render for DuskShell {
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             });
+        if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
+            cx.defer_in(window, |shell, window, cx| {
+                shell.focus_pending_region(window, cx);
+            });
+        }
         with_tab_navigation(root, &self.root_focus)
     }
 }

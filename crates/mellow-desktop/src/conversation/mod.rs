@@ -22,6 +22,7 @@ use gpui::{
     AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent,
     ListAlignment, ListOffset, ListState, SharedString, Subscription, Task, Window, px,
 };
+use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
 use mellow_client_core::state::{
     MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange, UnreadMarker,
@@ -32,7 +33,9 @@ use crate::components::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
     ModalDialog, ModalDialogEvent, Tooltip,
 };
-use crate::composer::{Cancelled, Composer, ComposerEvent, ReplyTarget};
+use crate::composer::{
+    BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
+};
 use crate::i18n::strings;
 use crate::messages::{MessageBodyCache, ReactionPill};
 use crate::session::{HistoryReach, HistoryStatus, SendRefused, Session, StateChanged};
@@ -265,6 +268,17 @@ impl ConversationView {
         }
     }
 
+    /// The message list's focus, for the shell's `F6`.
+    #[must_use]
+    pub fn message_list_focus(&self) -> &FocusHandle {
+        &self.list_focus
+    }
+
+    /// `F6` into the message list: its rows take arrows from there.
+    pub fn focus_message_list(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.list_focus, cx);
+    }
+
     /// Puts focus in the composer (after a place opens from the switcher, or Jump to present).
     pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer
@@ -333,6 +347,19 @@ impl ConversationView {
         let state = session.state();
         let channel_id = self.open_channel_id();
         let permissions = channel_id.map(|channel_id| self.permissions(channel_id, cx));
+        let current_user_id = state.current_user().map(|user| user.id);
+        // `permissions` locks the conversation already; the notice names whom to unblock.
+        let blocked_recipient = channel_id
+            .and_then(|channel_id| state.direct_message_channel(channel_id))
+            .and_then(|conversation| {
+                rules::blocked_recipient_of(conversation, current_user_id, |user_id| {
+                    state.is_blocked(user_id)
+                })
+            })
+            .map(|recipient| BlockedRecipient {
+                user_id: recipient.id,
+                name: display_name(recipient).to_owned().into(),
+            });
         let can_send = permissions.is_none_or(|permissions| permissions.can_send);
         let can_attach = permissions.is_none_or(|permissions| permissions.can_attach);
         let people = match &self.open_conversation {
@@ -350,13 +377,20 @@ impl ConversationView {
                 .unwrap_or_default(),
             None => Vec::new(),
         };
-        let current_user_id = state.current_user().map(|user| user.id);
         let rest = session.rest_client().cloned();
+        // Per account and instance, and only where the session may keep things on this device.
+        let kept_drafts_file = rest
+            .as_ref()
+            .zip(current_user_id)
+            .filter(|_| session.is_kept_on_this_device())
+            .and_then(|(rest, user_id)| SavedDraftsFile::for_account(rest.instance(), user_id));
         let maximum_attachment_bytes = state.maximum_attachment_bytes();
         self.composer.update(cx, |composer, cx| {
+            composer.set_blocked_recipient(blocked_recipient, cx);
             composer.set_permissions(can_send, can_attach, cx);
             composer.set_mention_candidates(people, current_user_id, cx);
             composer.set_uploads(rest, maximum_attachment_bytes, cx);
+            composer.keep_drafts_in(kept_drafts_file, cx);
         });
     }
 
@@ -666,8 +700,29 @@ impl ConversationView {
             ComposerEvent::EditLast => self.edit_last_own_message(window, cx),
             ComposerEvent::Cancel(Cancelled::Nothing) => self.mark_as_read(cx),
             ComposerEvent::Cancel(Cancelled::Editing { .. } | Cancelled::Reply) => {}
+            ComposerEvent::Unblock(recipient) => self.unblock(recipient, cx),
         }
         cx.notify();
+    }
+
+    /// "Unblock" on the composer's notice; a failure is said above the composer.
+    fn unblock(&mut self, recipient: &BlockedRecipient, cx: &mut Context<Self>) {
+        self.action_error = None;
+        let failure = strings(cx).friends().unblock_failed(&recipient.name);
+        let view = cx.entity().downgrade();
+        let user_id = recipient.user_id;
+        self.session.update(cx, |session, cx| {
+            session.unblock(user_id, failure, cx, move |answer, cx| {
+                let _ = view.update(cx, |view, cx| {
+                    let is_unblocked = answer.is_ok();
+                    view.action_error = answer.err().map(SharedString::from);
+                    view.composer.update(cx, |composer, cx| {
+                        composer.finish_unblocking(is_unblocked, cx);
+                    });
+                    cx.notify();
+                });
+            });
+        });
     }
 
     /// A send refused for good: its text goes back to an empty composer with the reason; when the

@@ -4,7 +4,7 @@
 //! the mention badge sits on the icon's corner. Tooltips name each icon at once.
 
 use gpui::{
-    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
+    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ObjectFit,
     ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
 };
@@ -13,6 +13,7 @@ use mellow_client_core::shared_logic::format::server_initials;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Guild, Snowflake};
 
+use super::regions::{Region, RovingTabStop};
 use super::{DuskShell, icon_picture};
 use crate::components::{
     MentionBadge, Tooltip, child_id, easing, focus_ring, icon, is_focus_visible,
@@ -94,6 +95,8 @@ impl DuskShell {
             })
             .collect();
 
+        let has_selected_row = self.navigation.place().is_some();
+        let mut tab_stop = self.regions.rail.tab_stop_chooser(has_selected_row, window);
         let mut items: Vec<AnyElement> = Vec::with_capacity(servers.len() + 2);
         items.push(Self::rail_item(
             &RailMark::Home,
@@ -101,6 +104,7 @@ impl DuskShell {
             is_home_selected,
             has_unread_conversation,
             conversations_mention_count,
+            (&mut tab_stop, items.len()),
             window,
             cx,
         ));
@@ -116,22 +120,30 @@ impl DuskShell {
         for (guild, has_unread, mention_count) in servers {
             let is_selected = selected_guild_id == Some(guild.id);
             let name = SharedString::from(guild.name.clone());
+            let child_index = items.len();
             items.push(Self::rail_item(
                 &RailMark::Server(guild),
                 &name,
                 is_selected,
                 has_unread,
                 mention_count,
+                (&mut tab_stop, child_index),
                 window,
                 cx,
             ));
         }
+        self.regions.rail.keep_rows(tab_stop, cx);
 
         div()
             .debug_selector(|| "server-rail".to_owned())
             .id("server-rail")
             .role(Role::Navigation)
             .aria_label(strings.rail().servers())
+            .track_focus(&self.regions.rail.focus)
+            .track_scroll(&self.regions.rail.scroll)
+            .on_key_down(cx.listener(|shell, event: &KeyDownEvent, window, cx| {
+                shell.move_in_list(Region::ServerRail, event, window, cx);
+            }))
             .flex_none()
             .w(length(COMPONENT_NAVIGATOR_STRIP_WIDTH))
             .h_full()
@@ -151,6 +163,7 @@ impl DuskShell {
         is_selected: bool,
         has_unread: bool,
         mention_count: u32,
+        (tab_stop, child_index): (&mut RovingTabStop, usize),
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
@@ -164,7 +177,12 @@ impl DuskShell {
             Some(guild_id) => ElementId::from(("rail-server", guild_id.raw())),
             None => ElementId::from("rail-home"),
         };
-        let focus_handle = remembered_focus_handle(&id, window, cx);
+        let focus_handle = tab_stop.row(
+            &id,
+            remembered_focus_handle(&id, window, cx),
+            is_selected,
+            child_index,
+        );
         let hover = remembered_hover(&id, window, cx);
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let is_active = is_selected || *hover.read(cx) || is_ring_shown;

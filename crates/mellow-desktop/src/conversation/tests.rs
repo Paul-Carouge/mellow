@@ -751,3 +751,43 @@ fn the_menu_opens_who_reacted_in_a_dialog_that_esc_closes(cx: &mut TestAppContex
     press(cx, "escape");
     assert!(view.read_with(cx, |view, _| view.confirmation.is_none()));
 }
+
+#[gpui::test]
+fn a_conversation_with_someone_blocked_locks_the_composer_until_unblocked(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, Vec::new(), None);
+    block_ana(&session, cx);
+    let conversation_with_ana = OpenConversation {
+        channel_id: crate::shell_fixtures::CONVERSATION_ANA,
+        guild_id: None,
+        label: "Ana".to_owned(),
+        composer_label: "Message @Ana".to_owned(),
+        hero_icon: IconName::ChatCircle,
+        hero_title: "Ana".to_owned(),
+        hero_sentence: String::new(),
+        topic: String::new(),
+    };
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.set_place(Some(conversation_with_ana), cx);
+        });
+    });
+    cx.run_until_parked();
+    let locking = |view: &Entity<ConversationView>, cx: &mut VisualTestContext| {
+        cx.update(|_, cx| {
+            let composer = view.read(cx).composer().clone();
+            composer
+                .read(cx)
+                .locking_recipient()
+                .map(|recipient| (recipient.user_id, recipient.name.to_string()))
+        })
+    };
+    assert_eq!(locking(&view, cx), Some((ANA, "Ana".to_owned())));
+
+    // Unblocked (here or in another session): the field comes back.
+    session.update(cx, |session, cx| {
+        session.state_mut().forget_relationship(ANA);
+        cx.emit(StateChanged(vec![StateChange::Relationships]));
+    });
+    cx.run_until_parked();
+    assert_eq!(locking(&view, cx), None);
+}

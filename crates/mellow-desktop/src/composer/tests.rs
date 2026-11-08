@@ -9,8 +9,9 @@ use std::path::PathBuf;
 use mellow_protocol::{PublicUser, Snowflake};
 
 use super::{
-    Cancelled, ComposedMessage, Composer, ComposerEvent, MAXIMUM_ATTACHMENTS_PER_MESSAGE,
-    ReplyTarget, TrayItemStatus, bind_composer_keys, read_file_within,
+    Cancelled, ComposedMessage, Composer, ComposerEvent, DRAFT_WRITE_DELAY,
+    MAXIMUM_ATTACHMENTS_PER_MESSAGE, ReplyTarget, SavedDraftsFile, TrayItemStatus,
+    bind_composer_keys, read_file_within,
 };
 use crate::components::bind_tab_navigation;
 use crate::theme::ActiveTheme;
@@ -293,6 +294,65 @@ fn each_channel_keeps_its_own_draft(cx: &mut TestAppContext) {
     assert_eq!(text(&harness, cx), "");
     open(1, cx);
     assert_eq!(text(&harness, cx), "first");
+}
+
+#[gpui::test]
+fn drafts_come_back_after_a_launch_and_leave_the_file_once_sent(cx: &mut TestAppContext) {
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let file = SavedDraftsFile::at(directory.path().join("instance-1"));
+    file.write(
+        &[
+            (channel(1), "kept one".to_owned()),
+            (channel(2), "kept two".to_owned()),
+        ],
+        file.next_write(),
+    );
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let keeping = file.clone();
+    composer.update(cx, |composer, cx| {
+        composer.keep_drafts_in(Some(keeping), cx);
+    });
+    cx.run_until_parked();
+    assert_eq!(text(&harness, cx), "kept one");
+
+    // Written once typing pauses, not on each keystroke.
+    cx.simulate_input(" more");
+    cx.run_until_parked();
+    assert_eq!(file.read()[0], (channel(1), "kept one".to_owned()));
+    cx.executor().advance_clock(DRAFT_WRITE_DELAY);
+    cx.run_until_parked();
+    assert_eq!(
+        file.read(),
+        [
+            (channel(1), "kept one more".to_owned()),
+            (channel(2), "kept two".to_owned()),
+        ]
+    );
+
+    cx.simulate_keystrokes("enter");
+    cx.executor().advance_clock(DRAFT_WRITE_DELAY);
+    cx.run_until_parked();
+    assert_eq!(file.read(), [(channel(2), "kept two".to_owned())]);
+}
+
+#[gpui::test]
+fn typing_just_before_the_window_closes_is_written(cx: &mut TestAppContext) {
+    // Closing the last window quits after the composer is gone: quit observers come too late.
+    let directory = tempfile::tempdir().expect("a temporary directory");
+    let file = SavedDraftsFile::at(directory.path().join("instance-1"));
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let keeping = file.clone();
+    composer.update(cx, |composer, cx| {
+        composer.keep_drafts_in(Some(keeping), cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_input("last words");
+    drop((composer, harness));
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    assert_eq!(file.read(), [(channel(1), "last words".to_owned())]);
 }
 
 #[gpui::test]

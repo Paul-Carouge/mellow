@@ -344,6 +344,84 @@ fn dragging_the_channel_edge_beside_docked_members_saves_the_width_drawn(cx: &mu
     assert_eq!(dragged, Some(drawn));
 }
 
+fn focused_region(shell: &Entity<DuskShell>, cx: &mut VisualTestContext) -> Option<Region> {
+    cx.update(|window, cx| shell.read(cx).focused_region(window, cx))
+}
+
+#[gpui::test]
+fn f6_goes_round_the_regions_and_shift_f6_back(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.open_channel(RUST_GENERAL, window, cx));
+    });
+    cx.run_until_parked();
+    // Without the side sheet, F6 skips it.
+    let mut regions = Vec::new();
+    for _ in 0..5 {
+        press(cx, "f6");
+        regions.push(focused_region(&shell, cx));
+    }
+    assert_eq!(
+        regions,
+        [
+            Some(Region::ServerRail),
+            Some(Region::ChannelList),
+            Some(Region::MessageList),
+            Some(Region::Composer),
+            Some(Region::ServerRail),
+        ]
+    );
+    press(cx, secondary("u"));
+    press(cx, "shift-f6");
+    assert_eq!(focused_region(&shell, cx), Some(Region::SideSheet));
+    press(cx, "shift-f6");
+    assert_eq!(focused_region(&shell, cx), Some(Region::Composer));
+}
+
+#[gpui::test]
+fn the_rail_is_one_tab_stop_whose_arrows_move_between_servers(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    // F6 lands on the open server; Up reaches Home, End the last server.
+    press(cx, "f6");
+    press(cx, "up");
+    press(cx, "enter");
+    assert_eq!(
+        shell.read_with(cx, |shell, _| shell.navigation().selected_guild_id()),
+        None
+    );
+    press(cx, "end");
+    press(cx, "enter");
+    assert_eq!(
+        shell.read_with(cx, |shell, _| shell.navigation().selected_guild_id()),
+        Some(GUILD_BOOKS)
+    );
+    // Tab leaves the rail at once, for the channel list's single stop: the open channel.
+    press(cx, "tab");
+    assert_eq!(focused_region(&shell, cx), Some(Region::ChannelList));
+    press(cx, "enter");
+    assert_eq!(selected_channel(&shell, cx), Some(BOOKS_READING));
+    press(cx, "shift-tab");
+    assert_eq!(focused_region(&shell, cx), Some(Region::ServerRail));
+}
+
+#[gpui::test]
+fn in_a_narrow_window_f6_opens_the_drawer_for_the_navigator_and_closes_it_after(
+    cx: &mut TestAppContext,
+) {
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
+    let is_drawer_open = |cx: &mut VisualTestContext| {
+        shell.read_with(cx, |shell, _| shell.is_navigation_drawer_open())
+    };
+    press(cx, "f6");
+    assert!(is_drawer_open(cx));
+    assert_eq!(focused_region(&shell, cx), Some(Region::ServerRail));
+    press(cx, "f6");
+    assert_eq!(focused_region(&shell, cx), Some(Region::ChannelList));
+    press(cx, "f6");
+    assert!(!is_drawer_open(cx));
+    assert_eq!(focused_region(&shell, cx), Some(Region::MessageList));
+}
+
 #[gpui::test]
 fn choosing_a_member_shows_their_profile_and_back_returns_to_the_list(cx: &mut TestAppContext) {
     use crate::shell_fixtures::ANA;
