@@ -202,6 +202,8 @@ pub struct Composer {
     reply_target: Option<ReplyTarget>,
     channel_label: SharedString,
     mention_candidates: Vec<PublicUser>,
+    /// `mention_candidates`' usernames in lowercase, kept so each render does not rebuild them.
+    mention_candidate_names: std::collections::HashSet<String>,
     current_user_id: Option<Snowflake>,
     /// The roles "@na" offers after people, highest first; empty outside a server channel.
     mentionable_roles: Vec<ServerRole>,
@@ -262,6 +264,7 @@ impl Composer {
             reply_target: None,
             channel_label: SharedString::default(),
             mention_candidates: Vec::new(),
+            mention_candidate_names: std::collections::HashSet::new(),
             current_user_id: None,
             mentionable_roles: Vec::new(),
             can_mention_everyone: false,
@@ -342,6 +345,10 @@ impl Composer {
         current_user_id: Option<Snowflake>,
         cx: &mut Context<Self>,
     ) {
+        self.mention_candidate_names = people
+            .iter()
+            .map(|person| person.username.to_lowercase())
+            .collect();
         self.mention_candidates = people;
         self.current_user_id = current_user_id;
         self.suggestions_read_at = None;
@@ -370,16 +377,11 @@ impl Composer {
     /// The text as sent: a picked or typed role's "@Name" becomes `<@&id>` (ADR-0040), never a
     /// name that is someone's username, so picking a person keeps naming that person.
     fn text_as_sent(&self, text: &str) -> String {
-        if self.mentionable_roles.is_empty() {
+        if self.mentionable_roles.is_empty() || !text.contains('@') {
             return text.to_owned();
         }
-        let people_names: std::collections::HashSet<String> = self
-            .mention_candidates
-            .iter()
-            .map(|person| person.username.to_lowercase())
-            .collect();
         let roles: Vec<&ServerRole> = self.mentionable_roles.iter().collect();
-        with_role_names_as_markup(text, &roles, &people_names)
+        with_role_names_as_markup(text, &roles, &self.mention_candidate_names)
     }
 
     /// "Send messages" and "Attach files" in the open channel; without the first the field is
