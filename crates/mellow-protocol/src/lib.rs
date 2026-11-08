@@ -17,8 +17,8 @@ mod two_factor;
 
 pub use accounts::{
     ApiErrorBody, ApiErrorCode, ChangePasswordRequest, ChosenStatus, CurrentUser, LoginRequest,
-    NameAvailability, RegisterRequest, SessionCreated, UpdateCurrentUserRequest,
-    UpdatePresenceRequest,
+    MAXIMUM_CUSTOM_STATUS_LENGTH, NameAvailability, RegisterRequest, SessionCreated,
+    UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
 pub use direct_messages::{
     CreateGroupConversationRequest, DirectMessageChannel, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,

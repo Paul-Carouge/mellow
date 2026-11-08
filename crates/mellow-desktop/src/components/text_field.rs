@@ -39,6 +39,7 @@ pub struct TextField {
     leading_icon: Option<IconName>,
     password_toggle: Option<PasswordToggle>,
     is_monospace: bool,
+    is_read_only: bool,
 }
 
 impl TextField {
@@ -58,6 +59,7 @@ impl TextField {
             leading_icon: None,
             password_toggle: None,
             is_monospace: false,
+            is_read_only: false,
         }
     }
 
@@ -90,6 +92,13 @@ impl TextField {
     #[must_use]
     pub fn monospace(mut self) -> Self {
         self.is_monospace = true;
+        self
+    }
+
+    /// Focusable and selectable, but not editable (the web's `readonly`, while a form saves).
+    #[must_use]
+    pub fn read_only(mut self, is_read_only: bool) -> Self {
+        self.is_read_only = is_read_only;
         self
     }
 }
@@ -156,6 +165,7 @@ impl RenderOnce for TextField {
                     .child(
                         Input::new(&self.state)
                             .appearance(false)
+                            .readonly(self.is_read_only)
                             .aria_label(self.label.clone())
                             .when_some(description, |input, description| {
                                 input.aria_label(SharedString::from(format!(
