@@ -1,6 +1,7 @@
 //! Each channel keeps its own unsent text and attached files (`composer-drafts.svelte.ts`,
 //! DESIGN.md §5.5): the open channel's tray lives here and its text in the field; the others wait
-//! aside, in memory. Files stay with their channel: they were uploaded to it.
+//! aside, in memory. Files stay with their channel: they were uploaded to it. The texts, most
+//! recent first, are what `saved_drafts` keeps across launches.
 
 use std::collections::HashMap;
 use std::path::PathBuf;
@@ -40,6 +41,8 @@ pub enum TrayItemStatus {
 struct ChannelDraft {
     text: String,
     tray: Vec<TrayItem>,
+    /// When the draft was last left: the most recent are kept across launches first.
+    left_at: u64,
 }
 
 #[derive(Debug, Default)]
@@ -49,6 +52,7 @@ pub struct ComposerDrafts {
     drafts_aside: HashMap<Snowflake, ChannelDraft>,
     // Shared by every channel: a tray brought back never meets a key it already holds.
     next_tray_item_key: u64,
+    next_left_at: u64,
 }
 
 impl ComposerDrafts {
@@ -66,11 +70,13 @@ impl ComposerDrafts {
         if let Some(open_channel_id) = self.open_channel_id {
             let tray = std::mem::take(&mut self.tray);
             if !open_text.is_empty() || !tray.is_empty() {
+                let left_at = self.next_left_at();
                 self.drafts_aside.insert(
                     open_channel_id,
                     ChannelDraft {
                         text: open_text,
                         tray,
+                        left_at,
                     },
                 );
             }
@@ -81,6 +87,53 @@ impl ComposerDrafts {
             .unwrap_or_default();
         self.tray = draft.tray;
         Some(draft.text)
+    }
+
+    fn next_left_at(&mut self) -> u64 {
+        self.next_left_at += 1;
+        self.next_left_at
+    }
+
+    /// Every channel's unsent text, the open one's (`open_text`) first, then the most recently
+    /// left: what is kept for the next launch.
+    #[must_use]
+    pub fn texts_to_keep(&self, open_text: &str) -> Vec<(Snowflake, String)> {
+        let mut aside: Vec<(&Snowflake, &ChannelDraft)> = self
+            .drafts_aside
+            .iter()
+            .filter(|(_, draft)| !draft.text.is_empty())
+            .collect();
+        aside.sort_by_key(|(_, draft)| std::cmp::Reverse(draft.left_at));
+        self.open_channel_id
+            .filter(|_| !open_text.is_empty())
+            .map(|channel_id| (channel_id, open_text.to_owned()))
+            .into_iter()
+            .chain(
+                aside
+                    .into_iter()
+                    .map(|(channel_id, draft)| (*channel_id, draft.text.clone())),
+            )
+            .collect()
+    }
+
+    /// Brings back the texts kept last time (most recent first) where nothing was typed since;
+    /// returns the open channel's, for its empty field.
+    pub fn restore_texts(&mut self, kept: Vec<(Snowflake, String)>) -> Option<String> {
+        let mut open_text = None;
+        // Oldest first, so the most recent is left last.
+        for (channel_id, text) in kept.into_iter().rev() {
+            if Some(channel_id) == self.open_channel_id {
+                open_text = Some(text);
+                continue;
+            }
+            let left_at = self.next_left_at();
+            let draft = self.drafts_aside.entry(channel_id).or_default();
+            if draft.text.is_empty() {
+                draft.text = text;
+                draft.left_at = left_at;
+            }
+        }
+        open_text
     }
 
     #[must_use]
@@ -322,5 +375,45 @@ mod tests {
         let _ = drafts.remove_tray_item(failed);
         assert_eq!(names(&drafts), ["uploaded.png"]);
         assert_eq!(drafts.tray_room(), MAXIMUM_ATTACHMENTS_PER_MESSAGE - 1);
+    }
+
+    #[test]
+    fn keeps_the_open_text_then_the_most_recently_left_ones_never_empty_ones() {
+        let mut drafts = ComposerDrafts::default();
+        drafts.open(Some(channel(1)), String::new());
+        drafts.open(Some(channel(2)), "first".into());
+        attach(&mut drafts, "only-a-file.png");
+        drafts.open(Some(channel(3)), String::new());
+        drafts.open(Some(channel(4)), "second".into());
+        assert_eq!(
+            drafts.texts_to_keep("open"),
+            [
+                (channel(4), "open".to_owned()),
+                (channel(3), "second".to_owned()),
+                (channel(1), "first".to_owned()),
+            ]
+        );
+        assert_eq!(drafts.texts_to_keep("").len(), 2);
+    }
+
+    #[test]
+    fn restores_kept_texts_without_replacing_what_was_typed_since() {
+        let mut drafts = ComposerDrafts::default();
+        drafts.open(Some(channel(1)), String::new());
+        // Channel 1 is left with text typed before the kept drafts were read; 2 is open.
+        drafts.open(Some(channel(2)), "typed since".into());
+        let open_text = drafts.restore_texts(vec![
+            (channel(2), "kept 2".to_owned()),
+            (channel(3), "kept 3".to_owned()),
+            (channel(1), "kept 1".to_owned()),
+        ]);
+        assert_eq!(open_text, Some("kept 2".to_owned()));
+        assert_eq!(
+            drafts.texts_to_keep(""),
+            [
+                (channel(3), "kept 3".to_owned()),
+                (channel(1), "typed since".to_owned()),
+            ]
+        );
     }
 }

@@ -7,6 +7,7 @@
 
 mod drafts;
 mod editor;
+mod saved_drafts;
 mod suggestions;
 mod tray;
 
@@ -16,10 +17,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
-    Focusable as _, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _,
-    PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, actions, deferred, div, prelude::FluentBuilder as _, relative,
+    AnyWindowHandle, App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter,
+    ExternalPaths, Focusable as _, InteractiveElement as _, IntoElement, KeyBinding,
+    ParentElement as _, PathPromptOptions, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, actions, deferred,
+    div, prelude::FluentBuilder as _, relative,
 };
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use mellow_client_core::shared_logic::emoji_suggestions::replace_in_draft;
@@ -30,7 +32,7 @@ use mellow_client_core::shared_logic::message_length::{
 use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Snowflake};
 
-use crate::components::{IconButton, focus_ring, is_focus_visible, with_type};
+use crate::components::{Button, IconButton, focus_ring, is_focus_visible, with_type};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{Language, Strings, strings};
 use crate::theme::icons::IconName;
@@ -39,8 +41,8 @@ use crate::theme::tokens::{
     COMPONENT_COMPOSER_ICON_SIZE, COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_RADIUS,
     COMPONENT_COMPOSER_REPLY_BAR_BUTTON_SIZE, COMPONENT_COMPOSER_REPLY_BAR_ICON_SIZE,
     COMPONENT_COMPOSER_REPLY_BAR_MIN_HEIGHT, COMPONENT_COMPOSER_REPLY_BAR_PADDING_INLINE,
-    COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT, SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_XS,
-    TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
+    COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT, SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_SM,
+    SPACE_XS, TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
 };
 use crate::theme::{color, length, theme};
 use crate::tokio_bridge::spawn_on_network_runtime;
@@ -48,7 +50,12 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 use drafts::ComposerDrafts;
 pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
+use saved_drafts::{SavedDraft, WriteRequest};
+pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts, forget_saved_drafts_now};
 use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
+
+/// Drafts are written this long after typing pauses, never on every keystroke.
+const DRAFT_WRITE_DELAY: Duration = Duration::from_secs(1);
 
 /// Typing notices go out at most this often, as the web client sends them.
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(5);
@@ -137,6 +144,17 @@ pub enum ComposerEvent {
     /// Up in an empty field: edit the last own message of the open channel.
     EditLast,
     Cancel(Cancelled),
+    /// "Unblock" on the notice of a conversation locked by a block; the answer comes back through
+    /// [`Composer::finish_unblocking`].
+    Unblock(BlockedRecipient),
+}
+
+/// The other person of a one-to-one conversation the user blocked (ADR-0025): the field gives way
+/// to a notice with "Unblock".
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockedRecipient {
+    pub user_id: Snowflake,
+    pub name: SharedString,
 }
 
 /// A failure said above the box until the next send.
@@ -152,6 +170,20 @@ fn is_typing_notice_due(last_sent_at: Option<Instant>, now: Instant) -> bool {
         .is_none_or(|sent_at| now.saturating_duration_since(sent_at) >= TYPING_SEND_INTERVAL)
 }
 
+/// The drafts kept across launches (`saved_drafts`): where, and what the file holds.
+#[derive(Debug)]
+struct KeptDrafts {
+    file: Option<SavedDraftsFile>,
+    /// The kept drafts are still being read: nothing is written until they are merged in.
+    is_reading: bool,
+    /// What the file holds, so an unchanged set is not written again.
+    written: Vec<SavedDraft>,
+    /// Writes once typing pauses; replaced (so cancelled) by every keystroke.
+    pending_write: Option<Task<()>>,
+    /// The window of the field the open channel's kept text goes back to.
+    window: AnyWindowHandle,
+}
+
 /// The draft put aside while a message is edited in the same field, and the edit's original.
 #[derive(Debug)]
 struct EditSession {
@@ -160,6 +192,7 @@ struct EditSession {
     original_text: Option<String>,
 }
 
+#[allow(clippy::struct_excessive_bools)] // Independent flags of one view, each read on its own.
 pub struct Composer {
     input: Entity<TextareaState>,
     drafts: ComposerDrafts,
@@ -171,6 +204,10 @@ pub struct Composer {
     current_user_id: Option<Snowflake>,
     can_send_messages: bool,
     can_attach_files: bool,
+    blocked_recipient: Option<BlockedRecipient>,
+    is_unblocking: bool,
+    /// The field takes focus at the next render, once it is drawn again (after an unblock).
+    is_field_focus_pending: bool,
     rest: Option<RestClient>,
     maximum_attachment_bytes: Option<u64>,
     suggestions: SuggestionState,
@@ -182,6 +219,7 @@ pub struct Composer {
     announcement: SharedString,
     last_typing_sent_at: Option<Instant>,
     maximum_rows: usize,
+    kept_drafts: KeptDrafts,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -194,6 +232,22 @@ impl Composer {
             cx.subscribe_in(&input, window, Self::on_input_event),
             // Caret moves (arrows, clicks) change the word the suggestions read.
             cx.observe(&input, |composer, _, cx| composer.refresh_suggestions(cx)),
+            // Typing within the last second is written before the app goes: at quit while the
+            // window is open (Cmd+Q), or as the composer goes with its closed window, where quit
+            // observers come too late. The file is small: one blocking write at teardown.
+            cx.on_app_quit(|composer, cx| {
+                let write = composer.write_kept_drafts(cx);
+                async move {
+                    if let Some(write) = write {
+                        write.await;
+                    }
+                }
+            }),
+            cx.on_release(|composer, cx| {
+                if let Some((file, drafts, request)) = composer.kept_drafts_to_write(cx) {
+                    file.write(&drafts, request);
+                }
+            }),
         ];
         Self {
             input,
@@ -206,6 +260,9 @@ impl Composer {
             current_user_id: None,
             can_send_messages: true,
             can_attach_files: true,
+            blocked_recipient: None,
+            is_unblocking: false,
+            is_field_focus_pending: false,
             rest: None,
             maximum_attachment_bytes: None,
             suggestions: SuggestionState::default(),
@@ -215,6 +272,13 @@ impl Composer {
             announcement: SharedString::default(),
             last_typing_sent_at: None,
             maximum_rows: 1,
+            kept_drafts: KeptDrafts {
+                file: None,
+                is_reading: false,
+                written: Vec::new(),
+                pending_write: None,
+                window: window.window_handle(),
+            },
             _subscriptions: subscriptions,
         }
     }
@@ -288,6 +352,122 @@ impl Composer {
         self.can_send_messages = can_send_messages;
         self.can_attach_files = can_attach_files;
         cx.notify();
+    }
+
+    /// The person whose block locks the open conversation, if any; `set_permissions` says the
+    /// reader cannot send there too.
+    pub fn set_blocked_recipient(
+        &mut self,
+        blocked_recipient: Option<BlockedRecipient>,
+        cx: &mut Context<Self>,
+    ) {
+        if self.blocked_recipient != blocked_recipient {
+            self.blocked_recipient = blocked_recipient;
+            cx.notify();
+        }
+    }
+
+    /// The instance answered "Unblock": on success the field, back once the conversation unlocks,
+    /// takes focus, as on the web.
+    pub fn finish_unblocking(&mut self, is_unblocked: bool, cx: &mut Context<Self>) {
+        self.is_unblocking = false;
+        self.is_field_focus_pending = is_unblocked;
+        cx.notify();
+    }
+
+    /// Where the drafts are kept across launches (`None`: in memory only). A new file is read
+    /// first: its drafts come back where nothing was typed since, the open channel's in its field.
+    pub fn keep_drafts_in(&mut self, file: Option<SavedDraftsFile>, cx: &mut Context<Self>) {
+        if self.kept_drafts.file == file {
+            return;
+        }
+        self.kept_drafts.file.clone_from(&file);
+        self.kept_drafts.is_reading = file.is_some();
+        self.kept_drafts.written.clear();
+        self.kept_drafts.pending_write = None;
+        let Some(file) = file else {
+            return;
+        };
+        let reading = file.clone();
+        let read = cx.background_spawn(async move { reading.read() });
+        let window = self.kept_drafts.window;
+        cx.spawn(async move |composer, cx| {
+            let kept = read.await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                composer.update(cx, |composer, cx| {
+                    composer.restore_kept_drafts(&file, kept, window, cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    fn restore_kept_drafts(
+        &mut self,
+        file: &SavedDraftsFile,
+        kept: Vec<SavedDraft>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.kept_drafts.file.as_ref() != Some(file) || !self.kept_drafts.is_reading {
+            return;
+        }
+        self.kept_drafts.is_reading = false;
+        self.kept_drafts.written.clone_from(&kept);
+        let open_text = self.drafts.restore_texts(kept);
+        if let Some(text) = open_text
+            && self.edit_session.is_none()
+            && self.text(cx).is_empty()
+        {
+            self.set_text(text, window, cx);
+        }
+        // Something typed while the file was read is written now.
+        self.schedule_kept_drafts_write(cx);
+        cx.notify();
+    }
+
+    /// Writes the drafts once typing pauses.
+    fn schedule_kept_drafts_write(&mut self, cx: &mut Context<Self>) {
+        if self.kept_drafts.file.is_none() || self.kept_drafts.is_reading {
+            return;
+        }
+        self.kept_drafts.pending_write = Some(cx.spawn(async move |composer, cx| {
+            cx.background_executor().timer(DRAFT_WRITE_DELAY).await;
+            let write = composer.update(cx, Self::write_kept_drafts).ok().flatten();
+            if let Some(write) = write {
+                write.await;
+            }
+        }));
+    }
+
+    /// Writes the drafts off the UI thread when they changed; the write, to wait for at quit.
+    fn write_kept_drafts(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
+        let (file, drafts, request) = self.kept_drafts_to_write(cx)?;
+        Some(cx.background_spawn(async move { file.write(&drafts, request) }))
+    }
+
+    /// The write the drafts need when they changed since the last one, counted as written.
+    fn kept_drafts_to_write(
+        &mut self,
+        cx: &App,
+    ) -> Option<(SavedDraftsFile, Vec<SavedDraft>, WriteRequest)> {
+        let file = self
+            .kept_drafts
+            .file
+            .clone()
+            .filter(|_| !self.kept_drafts.is_reading)?;
+        // During an edit the field holds the message; the draft waits aside.
+        let open_text = match &self.edit_session {
+            Some(session) => session.draft_aside.clone(),
+            None => self.text(cx),
+        };
+        let drafts = self.drafts.texts_to_keep(&open_text);
+        if drafts == self.kept_drafts.written {
+            return None;
+        }
+        self.kept_drafts.written.clone_from(&drafts);
+        let request = file.next_write();
+        Some((file, drafts, request))
     }
 
     /// Where files upload, and the instance's size limit from `Ready` (checked before upload).
@@ -374,10 +554,30 @@ impl Composer {
         true
     }
 
+    /// Who locks the open conversation, for the conversation view's tests.
+    #[cfg(test)]
+    pub(crate) fn locking_recipient(&self) -> Option<&BlockedRecipient> {
+        self.blocked_recipient
+            .as_ref()
+            .filter(|_| !self.can_send_messages)
+    }
+
     /// The field's text, for the conversation view's tests.
     #[cfg(test)]
     pub(crate) fn text_in_field(&self, cx: &App) -> String {
         self.text(cx)
+    }
+
+    /// The field's focus, for the shell's `F6`.
+    #[must_use]
+    pub fn field_focus(&self, cx: &App) -> gpui::FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
+    /// Whether the field is drawn: the reader may send in the open channel.
+    #[must_use]
+    pub fn has_field(&self) -> bool {
+        self.can_send_messages
     }
 
     /// The files waiting in the tray, for the conversation view's tests.
@@ -477,6 +677,7 @@ impl Composer {
     ) {
         match event {
             InputEvent::Change => {
+                self.schedule_kept_drafts_write(cx);
                 self.note_typing(cx);
                 self.suggestions_read_at = None;
                 self.refresh_suggestions(cx);
@@ -633,6 +834,7 @@ impl Composer {
             let _ = window.drop_image(preview);
         }
         self.set_text(String::new(), window, cx);
+        self.schedule_kept_drafts_write(cx);
         cx.emit(ComposerEvent::Send(message));
         cx.notify();
     }
@@ -979,6 +1181,10 @@ impl Render for Composer {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         self.follow_window_height(window, cx);
+        if self.is_field_focus_pending && self.can_send_messages {
+            self.is_field_focus_pending = false;
+            self.focus(window, cx);
+        }
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let chat = catalogue.chat();
@@ -1245,6 +1451,38 @@ impl Render for Composer {
                             .child(characters_left.to_string()),
                     )
                 })
+        } else if let Some(recipient) = self.blocked_recipient.clone() {
+            // `Composer.svelte`: the sentence, then "Unblock", wrapping below it when narrow.
+            let unblock = entity.clone();
+            div()
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_between()
+                .gap_x(length(SPACE_SM))
+                .gap_y(length(SPACE_2XS))
+                .min_h(length(SIZE_DOCK_HEIGHT))
+                .px(length(SPACE_XS))
+                .py(length(SPACE_2XS))
+                .child(
+                    with_type(div(), TYPE_MESSAGE)
+                        .text_color(color(tokens.component_composer_locked_text))
+                        .child(chat.you_blocked(&recipient.name)),
+                )
+                .child(
+                    Button::new("composer-unblock", catalogue.friends().unblock())
+                        .disabled(self.is_unblocking)
+                        .on_click(move |_, cx| {
+                            unblock.update(cx, |composer, cx| {
+                                if composer.is_unblocking {
+                                    return;
+                                }
+                                composer.is_unblocking = true;
+                                cx.emit(ComposerEvent::Unblock(recipient.clone()));
+                                cx.notify();
+                            });
+                        }),
+                )
         } else {
             with_type(div(), TYPE_MESSAGE)
                 .flex()

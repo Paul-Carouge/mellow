@@ -22,10 +22,12 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
+mod blocks;
 mod messages;
 
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
+use crate::composer::{forget_saved_drafts, forget_saved_drafts_now};
 use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;
 use crate::sign_in_form::describe_error;
@@ -462,6 +464,7 @@ impl Session {
         self.conversation = messages::ConversationRequests::default();
         if self.is_kept_on_this_device {
             end_picture_session(cx);
+            forget_saved_drafts(cx);
             // The previous forget keeps running when detached; only the latest matters at quit.
             if let Some(previous_forget) = self.stored_session_forget_in_flight.take() {
                 previous_forget.detach();
@@ -777,6 +780,12 @@ impl Session {
             .take()
             .filter(|connection| is_signing_out || !connection.is_session_stored)
             .map(|connection| connection.rest);
+        // A revoked session, or a sign-out just made, leaves no drafts: the next launch is signed
+        // out, and a deletion left running at sign-out may never finish.
+        if self.is_kept_on_this_device && (session_to_revoke.is_some() || pending_forget.is_some())
+        {
+            forget_saved_drafts_now();
+        }
         if session_to_revoke.is_none() && pending_forget.is_none() && acknowledge.is_none() {
             return;
         }

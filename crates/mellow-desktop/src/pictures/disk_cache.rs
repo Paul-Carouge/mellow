@@ -20,7 +20,7 @@ use super::lru::ByteBoundedLru;
 
 /// About two thousand avatars and emoji at their stored sizes.
 pub(crate) const DISK_CACHE_CAPACITY_BYTES: usize = 128 * 1024 * 1024;
-const APPLICATION_DIRECTORY: &str = "mellow";
+pub(crate) const APPLICATION_DIRECTORY: &str = "mellow";
 const PICTURES_DIRECTORY: &str = "pictures";
 const PARTIAL_FILE_SUFFIX: &str = ".partial";
 
@@ -63,7 +63,7 @@ pub(crate) fn instance_directory_name(instance: &InstanceAddress) -> String {
         .collect()
 }
 
-fn create_private_directory(directory: &Path) -> io::Result<()> {
+pub(crate) fn create_private_directory(directory: &Path) -> io::Result<()> {
     let mut builder = fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
