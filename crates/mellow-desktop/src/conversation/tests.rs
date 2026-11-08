@@ -585,6 +585,52 @@ fn a_jump_to_a_loaded_pin_focuses_and_lights_it_and_jump_to_present_comes_back(
 }
 
 #[gpui::test]
+fn a_jump_replaced_by_another_drops_its_late_answer(cx: &mut TestAppContext) {
+    // A full first page: the first jump has to load older history, which fails without an
+    // instance; its answer comes after the second jump started and must not reach the view.
+    let (view, _session, cx) = open_general(cx, many_messages(60), None);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.jump_to_message(Snowflake::from_raw(5), window, cx);
+            view.jump_to_message(Snowflake::from_raw(10_005), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.action_error, None,
+            "the first jump's failure is dropped"
+        );
+        assert_eq!(view.highlight.map(|(id, _)| id.raw()), Some(10_005));
+    });
+}
+
+#[gpui::test]
+fn an_earlier_jumps_timer_never_puts_out_a_later_highlight(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, many_messages(40), None);
+    let half = delay(MOTION_DELAY_JUMP_HIGHLIGHT) / 2;
+    jump_to(&view, 10_005, cx);
+    cx.executor().advance_clock(half);
+    let help = OpenConversation {
+        channel_id: RUST_HELP,
+        label: "#help".to_owned(),
+        ..general()
+    };
+    for place in [help, general()] {
+        cx.update(|_, cx| view.update(cx, |view, cx| view.set_place(Some(place), cx)));
+        cx.run_until_parked();
+    }
+    jump_to(&view, 10_006, cx);
+    // The first jump's timer ends here; the second one's has half its time left.
+    cx.executor().advance_clock(half);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.highlight.map(|(id, _)| id.raw())),
+        Some(10_006)
+    );
+}
+
+#[gpui::test]
 fn an_older_page_extending_a_folded_run_keeps_its_row_and_focus(cx: &mut TestAppContext) {
     // A full page, all from Ana: the channel has older history.
     let page: Vec<Message> = (101..=150)

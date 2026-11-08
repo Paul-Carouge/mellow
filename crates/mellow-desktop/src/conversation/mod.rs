@@ -146,6 +146,10 @@ pub struct ConversationView {
     pending_reveal: Option<Snowflake>,
     /// The message lit after a jump, and which jump lit it.
     highlight: Option<(Snowflake, u64)>,
+    /// Counts lit messages, so an earlier one's timer never puts out a later one.
+    highlight_generation: u64,
+    /// Counts jumps and channel changes: a jump's late answer is dropped once another started.
+    jump_generation: u64,
     /// Read out politely (copied, new messages).
     announcement: SharedString,
     is_shift_held: bool,
@@ -227,6 +231,8 @@ impl ConversationView {
             reactor_sentences: HashMap::new(),
             pending_reveal: None,
             highlight: None,
+            highlight_generation: 0,
+            jump_generation: 0,
             announcement: SharedString::default(),
             is_shift_held: false,
             list_focus: cx.focus_handle().tab_stop(true),
@@ -289,6 +295,7 @@ impl ConversationView {
             self.reactor_sentences.clear();
             self.pending_reveal = None;
             self.highlight = None;
+            self.jump_generation += 1;
             self.hovered_message_id = None;
             self.focused_row_key = None;
             self.menu = None;
@@ -1421,14 +1428,24 @@ impl ConversationView {
         let Some(channel_id) = self.open_channel_id() else {
             return;
         };
+        self.jump_generation += 1;
+        let jump_generation = self.jump_generation;
         let view = cx.entity().downgrade();
+        let wanting_view = view.clone();
         self.session.update(cx, |session, cx| {
             session.reach_message(
                 channel_id,
                 message_id,
+                move |cx| {
+                    wanting_view
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).jump_generation == jump_generation)
+                },
                 move |reach, cx| {
                     let _ = view.update(cx, |view, cx| {
-                        view.finish_reaching(channel_id, message_id, reach, cx);
+                        if view.jump_generation == jump_generation {
+                            view.finish_reaching(channel_id, message_id, reach, cx);
+                        }
                     });
                 },
                 cx,
@@ -1504,7 +1521,8 @@ impl ConversationView {
 
     /// The row takes the match wash, which fades; under reduced motion it holds, then goes.
     fn highlight_briefly(&mut self, message_id: Snowflake, cx: &mut Context<Self>) {
-        let generation = self.highlight.map_or(0, |(_, generation)| generation + 1);
+        self.highlight_generation += 1;
+        let generation = self.highlight_generation;
         self.highlight = Some((message_id, generation));
         cx.spawn(async move |view, cx| {
             cx.background_executor()

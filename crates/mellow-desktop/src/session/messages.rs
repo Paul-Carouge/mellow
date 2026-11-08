@@ -45,6 +45,16 @@ pub struct SendRefused {
 /// What [`Session::reach_message`] calls back once it knows.
 type ReachDone = Box<dyn FnOnce(HistoryReach, &mut App)>;
 
+/// A jump [`Session::reach_message`] is loading pages for.
+struct ReachRequest {
+    channel_id: Snowflake,
+    message_id: Snowflake,
+    history_generation: u64,
+    /// Whether the view still wants the jump (same channel, no newer jump), the web's `"left"`.
+    is_still_wanted: Box<dyn Fn(&App) -> bool>,
+    on_done: ReachDone,
+}
+
 /// How a jump to a message older than the cached history ended (the web's `HistoryReach`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum HistoryReach {
@@ -242,34 +252,39 @@ impl Session {
     }
 
     /// Loads older pages until `message_id` is cached, for a pinned message far back (the web's
-    /// `loadHistoryUntilMessage`); `on_done` is not called if a `Ready` empties the history meanwhile.
+    /// `loadHistoryUntilMessage`); `on_done` is not called if a `Ready` empties the history meanwhile,
+    /// nor once `is_still_wanted` says the reader left or jumped elsewhere: no further page loads.
+    /// `is_still_wanted` is only asked when an answer arrives, never while the caller is updated.
     pub fn reach_message(
         &mut self,
         channel_id: Snowflake,
         message_id: Snowflake,
+        is_still_wanted: impl Fn(&App) -> bool + 'static,
         on_done: impl FnOnce(HistoryReach, &mut App) + 'static,
         cx: &mut Context<Self>,
     ) {
-        let history_generation = self.state.history_generation();
-        self.reach_message_after(
+        let request = ReachRequest {
             channel_id,
             message_id,
-            0,
-            history_generation,
-            Box::new(on_done),
-            cx,
-        );
+            history_generation: self.state.history_generation(),
+            is_still_wanted: Box::new(is_still_wanted),
+            on_done: Box::new(on_done),
+        };
+        self.reach_message_after(request, 0, cx);
     }
 
     fn reach_message_after(
         &mut self,
-        channel_id: Snowflake,
-        message_id: Snowflake,
+        request: ReachRequest,
         pages_loaded: u32,
-        history_generation: u64,
-        on_done: ReachDone,
         cx: &mut Context<Self>,
     ) {
+        let ReachRequest {
+            channel_id,
+            message_id,
+            history_generation,
+            ..
+        } = request;
         if self.state.history_generation() != history_generation {
             return;
         }
@@ -288,7 +303,7 @@ impl Session {
                     HistoryReachStep::LoadBefore(_) => HistoryReach::Failed,
                 };
                 // Deferred: the view asking is still being updated when the answer is known at once.
-                cx.defer(move |cx| on_done(reach, cx));
+                cx.defer(move |cx| (request.on_done)(reach, cx));
                 return;
             }
         };
@@ -301,7 +316,9 @@ impl Session {
             cx,
             async move { rest.list_messages(channel_id, &query).await },
             move |session, answer, cx| {
-                if session.state.history_generation() != history_generation {
+                if session.state.history_generation() != history_generation
+                    || !(request.is_still_wanted)(cx)
+                {
                     return;
                 }
                 match answer {
@@ -315,18 +332,11 @@ impl Session {
                             );
                             Self::emit_changes(cx, vec![change]);
                         }
-                        session.reach_message_after(
-                            channel_id,
-                            message_id,
-                            pages_loaded + 1,
-                            history_generation,
-                            on_done,
-                            cx,
-                        );
+                        session.reach_message_after(request, pages_loaded + 1, cx);
                     }
                     Err(error) => {
                         session.report_request_error(&error, "load history around a message", cx);
-                        on_done(HistoryReach::Failed, cx);
+                        (request.on_done)(HistoryReach::Failed, cx);
                     }
                 }
             },
