@@ -33,8 +33,8 @@ Favourites when the member has some, else on Trending; a tab or a search chosen 
 - **Contact sheet.** `gif_picker::layout::justified_rows` works out the web's `flex-wrap` by hand
   (GPUI's flexbox does not wrap with grow): each tile's basis is the row height times its shape,
   the free space goes by shape, and the last row keeps its tiles near their shape (the web's
-  spacer). Rows are the scrolled sheet's children, so a tile reached by the keyboard scrolls its
-  row into view.
+  spacer). A tile reached by the keyboard scrolls its row into view by the shortest distance
+  (`scrollIntoView({ block: "nearest" })`), set as an offset since the rows sit inside the grid.
 - **Lazy pictures.** Only rows within half a sheet of the visible part draw their picture (the
   web's `loading="lazy"`); the next page is asked for when the end is half a sheet away, and "Plus
   de GIF" stays for keyboards.

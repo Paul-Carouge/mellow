@@ -225,3 +225,37 @@ fn a_refused_star_says_why_in_the_webs_words() {
         catalogue.gifs().favourites_busy()
     );
 }
+
+#[gpui::test]
+fn the_sheet_follows_the_active_tile_down_and_back_up(cx: &mut TestAppContext) {
+    let (harness, cx) = open_picker(cx);
+    let picker = picker_of(&harness, cx);
+    let slugs: Vec<String> = (0..24).map(|index| format!("g{index}")).collect();
+    picker.update(cx, |picker, cx| {
+        picker.show_items(slugs.iter().map(|slug| gif(slug)).collect(), cx);
+    });
+    cx.run_until_parked();
+    let scrolled = |cx: &mut VisualTestContext| {
+        picker.read_with(cx, |picker, _| -f32::from(picker.scroll.offset().y))
+    };
+
+    cx.simulate_keystrokes("down");
+    cx.simulate_keystrokes("end");
+    cx.run_until_parked();
+    assert_eq!(active_index(&harness, cx), 23);
+    assert!(scrolled(cx) > 0.0, "the last row is brought into view");
+
+    cx.simulate_keystrokes("home");
+    cx.run_until_parked();
+    assert!(scrolled(cx).abs() < f32::EPSILON, "and the first one again");
+}
+
+#[test]
+fn a_row_is_scrolled_into_view_by_the_shortest_distance() {
+    // Already visible: the sheet stays.
+    assert!((scrolled_to_show(100.0, 200.0, 50.0, 300.0) - 50.0).abs() < f32::EPSILON);
+    // Below the visible part: its bottom meets the sheet's bottom.
+    assert!((scrolled_to_show(400.0, 500.0, 50.0, 300.0) - 200.0).abs() < f32::EPSILON);
+    // Above it: its top meets the sheet's top.
+    assert!((scrolled_to_show(10.0, 110.0, 50.0, 300.0) - 10.0).abs() < f32::EPSILON);
+}

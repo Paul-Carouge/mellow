@@ -221,6 +221,19 @@ fn favourite_failure_sentence(
     }
 }
 
+/// How far the sheet is scrolled once the row from `top` to `bottom` is in view: unchanged when it
+/// already is, else by the shortest distance (the web's `scrollIntoView({ block: "nearest" })`).
+/// All in one unit; `scrolled` is measured from the sheet's top, `visible` is its visible height.
+fn scrolled_to_show(top: f32, bottom: f32, scrolled: f32, visible: f32) -> f32 {
+    if top < scrolled {
+        top
+    } else if bottom > scrolled + visible {
+        bottom - visible
+    } else {
+        scrolled
+    }
+}
+
 /// The tile key an arrow names, as `nextGifTile` reads `event.key`.
 fn tile_key(key: &str) -> Option<GifTileKey> {
     Some(match key {
@@ -782,14 +795,20 @@ impl GifPicker {
     fn focus_tile(&mut self, gif_index: usize, window: &mut Window, cx: &mut Context<Self>) {
         self.active_index = gif_index;
         window.focus(&self.grid_focus, cx);
-        // Scroll the tile's row into view: rows are the scrolled sheet's children.
-        let bounds = self.gif_bounds(window);
-        if let Some(tile) = bounds.get(gif_index) {
-            let row_step = COMPONENT_GIF_ROW_HEIGHT + COMPONENT_GIF_TILE_GAP;
-            // A row index: a few hundred at most.
-            #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-            let row = (tile.top / row_step).round() as usize;
-            self.scroll.scroll_to_item(row);
+        // Scroll the tile's row into view by offset: the rows sit inside the grid, not directly
+        // in the scrolled sheet, so `scroll_to_item` would not know their bounds.
+        let visible = f32::from(self.scroll.bounds().size.height);
+        if let Some(tile) = self.gif_bounds(window).get(gif_index)
+            && visible > 0.0
+        {
+            let pixels_per_token = f32::from(window.rem_size()) / TOKEN_PIXELS_PER_REM;
+            let scrolled = scrolled_to_show(
+                tile.top * pixels_per_token,
+                (tile.top + tile.height) * pixels_per_token,
+                -f32::from(self.scroll.offset().y),
+                visible,
+            );
+            self.scroll.set_offset(point(px(0.0), px(-scrolled)));
         }
         cx.notify();
     }
@@ -962,7 +981,7 @@ impl GifPicker {
             .into_any_element()
     }
 
-    /// Rows of tiles from `placements`, each row a child of the scrolled sheet.
+    /// Rows of tiles from `placements`, each row a child of the grid.
     fn rows_of(placements: &[TileBounds], mut tiles: Vec<AnyElement>) -> Vec<AnyElement> {
         let mut rows: Vec<AnyElement> = Vec::new();
         let mut current: Vec<AnyElement> = Vec::new();
