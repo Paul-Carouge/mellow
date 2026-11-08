@@ -89,6 +89,7 @@ pub struct MessageItem {
     can_join_reactions: bool,
     on_toggle_reaction: Option<ReactionToggleHandler>,
     reaction_tooltip: Option<ReactionTooltipBuilder>,
+    selection_order: u64,
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
 }
@@ -103,6 +104,7 @@ impl MessageItem {
             can_join_reactions: true,
             on_toggle_reaction: None,
             reaction_tooltip: None,
+            selection_order: 0,
             on_retry: None,
             on_discard: None,
         }
@@ -131,6 +133,14 @@ impl MessageItem {
         builder: impl Fn(&ReactionPill, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         self.reaction_tooltip = Some(Arc::new(builder));
+        self
+    }
+
+    /// Where the message's text comes in the window's reading order, for a selection dragged
+    /// across messages.
+    #[must_use]
+    pub fn selection_order(mut self, order: u64) -> Self {
+        self.selection_order = order;
         self
     }
 
@@ -356,7 +366,11 @@ impl RenderOnce for MessageItem {
             } else {
                 tokens.component_message_body_text
             }))
-            .child(MessageMarkdown::new(id.clone(), content.body.clone()).edited(edited));
+            .child(
+                MessageMarkdown::new(id.clone(), content.body.clone())
+                    .edited(edited)
+                    .selection_order(self.selection_order),
+            );
         let attachments = (!content.attachments.is_empty()).then(|| {
             MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
                 .pending(content.pending.is_some())

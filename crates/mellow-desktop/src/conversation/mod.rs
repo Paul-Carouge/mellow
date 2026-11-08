@@ -1339,6 +1339,16 @@ impl ConversationView {
                     None => false,
                 }
             }
+            // Copies text selected in the messages; the message's own Copy text stays in the menu.
+            "c" if is_secondary && !modifiers.shift && !modifiers.alt => {
+                if gpui_base::TextSelection::has_selection(window, cx) {
+                    let selected = gpui_base::TextSelection::selected_text(window, cx);
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                    true
+                } else {
+                    false
+                }
+            }
             "f10" if modifiers.shift && !modifiers.control && !modifiers.alt => {
                 self.open_menu_of_focused_row(window, cx);
                 true

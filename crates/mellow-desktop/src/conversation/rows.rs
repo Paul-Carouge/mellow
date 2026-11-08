@@ -142,6 +142,16 @@ fn message_version(message: &Message, is_original_cached: bool) -> u64 {
     ))
 }
 
+/// Texts one message may hold in the selection's reading order.
+const SELECTION_ORDERS_PER_ROW: u64 = 1 << 16;
+
+/// Where row `index`'s texts start in the window's reading order: rows in list order.
+fn selection_order(index: usize) -> u64 {
+    u64::try_from(index)
+        .unwrap_or(u64::MAX)
+        .saturating_mul(SELECTION_ORDERS_PER_ROW)
+}
+
 /// The share of the wash's time it holds before fading (`mw-jump-highlight`'s 0–40 % keyframes).
 const JUMP_HIGHLIGHT_HOLD_SHARE: f32 = 0.4;
 
@@ -749,6 +759,7 @@ impl ConversationView {
                         pending: None,
                     },
                 )
+                .selection_order(selection_order(index))
                 .can_join_reactions(rights.can_join_reactions)
                 .reaction_tooltip({
                     let view = view.clone();
@@ -812,6 +823,7 @@ impl ConversationView {
                         pending: Some(pending.status),
                     },
                 )
+                .selection_order(selection_order(index))
                 .on_retry(move |_, cx| {
                     let _ = retry_view.update(cx, |view, cx| view.retry_message(&retry_nonce, cx));
                 })
