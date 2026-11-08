@@ -179,6 +179,11 @@ impl PictureLoader {
         self.once_at_a_time(file, self.download_klipy(url)).await
     }
 
+    /// Klipy's client, for the GIF picker to share its connections.
+    pub(crate) fn klipy(&self) -> Option<&KlipyClient> {
+        self.klipy.as_ref()
+    }
+
     /// Runs `download` unless `file` is already being downloaded, in which case it waits for
     /// that answer instead.
     async fn once_at_a_time(

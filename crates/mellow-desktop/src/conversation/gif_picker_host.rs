@@ -9,6 +9,7 @@ use mellow_client_core::KlipyClient;
 
 use super::ConversationView;
 use crate::gif_picker::{GifPicker, GifPickerEvent};
+use crate::pictures::klipy_client;
 
 impl ConversationView {
     /// The composer's GIF button: opens the picker, or closes it.
@@ -32,9 +33,11 @@ impl ConversationView {
             return;
         };
         let session = self.session.clone();
-        let klipy = KlipyClient::new()
-            .inspect_err(|error| tracing::warn!(%error, "cannot reach KLIPY"))
-            .ok();
+        let klipy = klipy_client(cx).or_else(|| {
+            KlipyClient::new()
+                .inspect_err(|error| tracing::warn!(%error, "cannot reach KLIPY"))
+                .ok()
+        });
         let picker = cx.new(|cx| GifPicker::new(session, settings, klipy, anchor, window, cx));
         let subscription = cx.subscribe_in(&picker, window, Self::follow_gif_picker);
         self.gif_picker = Some((picker, subscription));

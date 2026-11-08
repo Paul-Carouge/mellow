@@ -25,7 +25,7 @@ use std::time::{Duration, Instant};
 use gpui::{
     App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, SharedString, Window,
 };
-use mellow_client_core::{DownloadableFile, RestClient};
+use mellow_client_core::{DownloadableFile, KlipyClient, RestClient};
 use tokio::sync::oneshot;
 
 pub(crate) use self::decode::decode_frames;
@@ -296,6 +296,16 @@ pub fn start_picture_session(rest: RestClient, cx: &mut App) {
     for view in waiting_views {
         cx.notify(view);
     }
+}
+
+/// The picture loader's Klipy client, so the GIF picker shares its connections; `None` before the
+/// session's loader is ready.
+pub(crate) fn klipy_client(cx: &App) -> Option<KlipyClient> {
+    cx.try_global::<PictureStore>()?
+        .loader
+        .as_ref()?
+        .klipy()
+        .cloned()
 }
 
 /// Signs the pictures out: memory caches emptied, and the disk cache deleted (every instance's)
