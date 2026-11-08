@@ -2349,6 +2349,10 @@ export const en = {
   desktop: {
     /** The application menu's item that ends the app. */
     quitMellow: "Quit Mellow",
+    /** The menu bar item's entry that brings the window to the front. */
+    openMellow: "Open Mellow",
+    /** The notification settings dialog's sentence: the choices stay in the app on this computer. */
+    notificationsIntro: "While your status is Do not disturb, nothing notifies you. These settings stay on this computer.",
   },
 };
 

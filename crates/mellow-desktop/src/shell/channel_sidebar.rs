@@ -39,7 +39,7 @@ use crate::theme::{color, length, theme};
 
 /// A group's own name when it has one, else its people's names; a one-to-one is the other person
 /// (`conversationDisplayName` in `group-conversations.ts`).
-pub(super) fn conversation_display_name(
+pub(crate) fn conversation_display_name(
     conversation: &DirectMessageChannel,
     current_user_id: Option<Snowflake>,
     strings: Strings,

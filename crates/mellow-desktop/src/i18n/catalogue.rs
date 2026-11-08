@@ -14606,6 +14606,20 @@ impl DesktopStrings {
             Language::French => "Quitter Mellow",
         }
     }
+
+    pub fn open_mellow(self) -> &'static str {
+        match self.language {
+            Language::English => "Open Mellow",
+            Language::French => "Ouvrir Mellow",
+        }
+    }
+
+    pub fn notifications_intro(self) -> &'static str {
+        match self.language {
+            Language::English => "While your status is Do not disturb, nothing notifies you. These settings stay on this computer.",
+            Language::French => "Quand ton statut est «\u{a0}Ne pas déranger\u{a0}», rien ne te notifie. Ces réglages restent sur cet ordinateur.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

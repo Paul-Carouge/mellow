@@ -2313,5 +2313,7 @@ export const fr: Catalogue = {
 
   desktop: {
     quitMellow: "Quitter Mellow",
+    openMellow: "Ouvrir Mellow",
+    notificationsIntro: `Quand ton statut est «${NO_BREAK_SPACE}Ne pas déranger${NO_BREAK_SPACE}», rien ne te notifie. Ces réglages restent sur cet ordinateur.`,
   },
 };
