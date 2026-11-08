@@ -30,7 +30,9 @@ use crate::components::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
     ModalDialog, ModalDialogEvent,
 };
-use crate::composer::{BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget};
+use crate::composer::{
+    BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
+};
 use crate::i18n::strings;
 use crate::messages::MessageBodyCache;
 use crate::session::{HistoryStatus, SendRefused, Session, StateChanged};
@@ -331,12 +333,19 @@ impl ConversationView {
             None => Vec::new(),
         };
         let rest = session.rest_client().cloned();
+        // Per account and instance, and only where the session may keep things on this device.
+        let kept_drafts_file = rest
+            .as_ref()
+            .zip(current_user_id)
+            .filter(|_| session.is_kept_on_this_device())
+            .and_then(|(rest, user_id)| SavedDraftsFile::for_account(rest.instance(), user_id));
         let maximum_attachment_bytes = state.maximum_attachment_bytes();
         self.composer.update(cx, |composer, cx| {
             composer.set_blocked_recipient(blocked_recipient, cx);
             composer.set_permissions(can_send, can_attach, cx);
             composer.set_mention_candidates(people, current_user_id, cx);
             composer.set_uploads(rest, maximum_attachment_bytes, cx);
+            composer.keep_drafts_in(kept_drafts_file, cx);
         });
     }
 

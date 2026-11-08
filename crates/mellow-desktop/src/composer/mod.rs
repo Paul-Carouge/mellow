@@ -7,6 +7,7 @@
 
 mod drafts;
 mod editor;
+mod saved_drafts;
 mod suggestions;
 mod tray;
 
@@ -16,10 +17,11 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter, ExternalPaths,
-    Focusable as _, InteractiveElement as _, IntoElement, KeyBinding, ParentElement as _,
-    PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, actions, deferred, div, prelude::FluentBuilder as _, relative,
+    AnyWindowHandle, App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter,
+    ExternalPaths, Focusable as _, InteractiveElement as _, IntoElement, KeyBinding,
+    ParentElement as _, PathPromptOptions, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, actions, deferred,
+    div, prelude::FluentBuilder as _, relative,
 };
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
 use mellow_client_core::shared_logic::emoji_suggestions::replace_in_draft;
@@ -48,7 +50,12 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 use drafts::ComposerDrafts;
 pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
+use saved_drafts::SavedDraft;
+pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts};
 use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
+
+/// Drafts are written this long after typing pauses, never on every keystroke.
+const DRAFT_WRITE_DELAY: Duration = Duration::from_secs(1);
 
 /// Typing notices go out at most this often, as the web client sends them.
 const TYPING_SEND_INTERVAL: Duration = Duration::from_secs(5);
@@ -163,6 +170,20 @@ fn is_typing_notice_due(last_sent_at: Option<Instant>, now: Instant) -> bool {
         .is_none_or(|sent_at| now.saturating_duration_since(sent_at) >= TYPING_SEND_INTERVAL)
 }
 
+/// The drafts kept across launches (`saved_drafts`): where, and what the file holds.
+#[derive(Debug)]
+struct KeptDrafts {
+    file: Option<SavedDraftsFile>,
+    /// The kept drafts are still being read: nothing is written until they are merged in.
+    is_reading: bool,
+    /// What the file holds, so an unchanged set is not written again.
+    written: Vec<SavedDraft>,
+    /// Writes once typing pauses; replaced (so cancelled) by every keystroke.
+    pending_write: Option<Task<()>>,
+    /// The window of the field the open channel's kept text goes back to.
+    window: AnyWindowHandle,
+}
+
 /// The draft put aside while a message is edited in the same field, and the edit's original.
 #[derive(Debug)]
 struct EditSession {
@@ -198,6 +219,7 @@ pub struct Composer {
     announcement: SharedString,
     last_typing_sent_at: Option<Instant>,
     maximum_rows: usize,
+    kept_drafts: KeptDrafts,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -210,6 +232,15 @@ impl Composer {
             cx.subscribe_in(&input, window, Self::on_input_event),
             // Caret moves (arrows, clicks) change the word the suggestions read.
             cx.observe(&input, |composer, _, cx| composer.refresh_suggestions(cx)),
+            // Typing within the last second is written before the app goes.
+            cx.on_app_quit(|composer, cx| {
+                let write = composer.write_kept_drafts(cx);
+                async move {
+                    if let Some(write) = write {
+                        write.await;
+                    }
+                }
+            }),
         ];
         Self {
             input,
@@ -234,6 +265,13 @@ impl Composer {
             announcement: SharedString::default(),
             last_typing_sent_at: None,
             maximum_rows: 1,
+            kept_drafts: KeptDrafts {
+                file: None,
+                is_reading: false,
+                written: Vec::new(),
+                pending_write: None,
+                window: window.window_handle(),
+            },
             _subscriptions: subscriptions,
         }
     }
@@ -328,6 +366,92 @@ impl Composer {
         self.is_unblocking = false;
         self.is_field_focus_pending = is_unblocked;
         cx.notify();
+    }
+
+    /// Where the drafts are kept across launches (`None`: in memory only). A new file is read
+    /// first: its drafts come back where nothing was typed since, the open channel's in its field.
+    pub fn keep_drafts_in(&mut self, file: Option<SavedDraftsFile>, cx: &mut Context<Self>) {
+        if self.kept_drafts.file == file {
+            return;
+        }
+        self.kept_drafts.file.clone_from(&file);
+        self.kept_drafts.is_reading = file.is_some();
+        self.kept_drafts.written.clear();
+        self.kept_drafts.pending_write = None;
+        let Some(file) = file else {
+            return;
+        };
+        let reading = file.clone();
+        let read = cx.background_spawn(async move { reading.read() });
+        let window = self.kept_drafts.window;
+        cx.spawn(async move |composer, cx| {
+            let kept = read.await;
+            let _ = cx.update_window(window, |_, window, cx| {
+                composer.update(cx, |composer, cx| {
+                    composer.restore_kept_drafts(&file, kept, window, cx);
+                })
+            });
+        })
+        .detach();
+    }
+
+    fn restore_kept_drafts(
+        &mut self,
+        file: &SavedDraftsFile,
+        kept: Vec<SavedDraft>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.kept_drafts.file.as_ref() != Some(file) || !self.kept_drafts.is_reading {
+            return;
+        }
+        self.kept_drafts.is_reading = false;
+        self.kept_drafts.written.clone_from(&kept);
+        let open_text = self.drafts.restore_texts(kept);
+        if let Some(text) = open_text
+            && self.edit_session.is_none()
+            && self.text(cx).is_empty()
+        {
+            self.set_text(text, window, cx);
+        }
+        // Something typed while the file was read is written now.
+        self.schedule_kept_drafts_write(cx);
+        cx.notify();
+    }
+
+    /// Writes the drafts once typing pauses.
+    fn schedule_kept_drafts_write(&mut self, cx: &mut Context<Self>) {
+        if self.kept_drafts.file.is_none() || self.kept_drafts.is_reading {
+            return;
+        }
+        self.kept_drafts.pending_write = Some(cx.spawn(async move |composer, cx| {
+            cx.background_executor().timer(DRAFT_WRITE_DELAY).await;
+            let write = composer.update(cx, Self::write_kept_drafts).ok().flatten();
+            if let Some(write) = write {
+                write.await;
+            }
+        }));
+    }
+
+    /// Writes the drafts off the UI thread when they changed; the write, to wait for at quit.
+    fn write_kept_drafts(&mut self, cx: &mut Context<Self>) -> Option<Task<()>> {
+        let file = self
+            .kept_drafts
+            .file
+            .clone()
+            .filter(|_| !self.kept_drafts.is_reading)?;
+        // During an edit the field holds the message; the draft waits aside.
+        let open_text = match &self.edit_session {
+            Some(session) => session.draft_aside.clone(),
+            None => self.text(cx),
+        };
+        let drafts = self.drafts.texts_to_keep(&open_text);
+        if drafts == self.kept_drafts.written {
+            return None;
+        }
+        self.kept_drafts.written.clone_from(&drafts);
+        let request = file.next_write();
+        Some(cx.background_spawn(async move { file.write(&drafts, request) }))
     }
 
     /// Where files upload, and the instance's size limit from `Ready` (checked before upload).
@@ -519,6 +643,7 @@ impl Composer {
     ) {
         match event {
             InputEvent::Change => {
+                self.schedule_kept_drafts_write(cx);
                 self.note_typing(cx);
                 self.suggestions_read_at = None;
                 self.refresh_suggestions(cx);
@@ -675,6 +800,7 @@ impl Composer {
             let _ = window.drop_image(preview);
         }
         self.set_text(String::new(), window, cx);
+        self.schedule_kept_drafts_write(cx);
         cx.emit(ComposerEvent::Send(message));
         cx.notify();
     }

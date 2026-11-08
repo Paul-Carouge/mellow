@@ -25,6 +25,7 @@ mod messages;
 
 pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
+use crate::composer::forget_saved_drafts;
 use crate::pictures::{end_picture_session, start_picture_session};
 use crate::session_store;
 use crate::sign_in_form::describe_error;
@@ -443,6 +444,7 @@ impl Session {
         self.conversation = messages::ConversationRequests::default();
         if self.is_kept_on_this_device {
             end_picture_session(cx);
+            forget_saved_drafts(cx);
             // The previous forget keeps running when detached; only the latest matters at quit.
             if let Some(previous_forget) = self.stored_session_forget_in_flight.take() {
                 previous_forget.detach();

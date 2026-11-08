@@ -13,7 +13,7 @@ mod av1;
 mod avif;
 mod colour;
 mod decode;
-mod disk_cache;
+pub(crate) mod disk_cache;
 mod limiter;
 mod loader;
 mod lru;
