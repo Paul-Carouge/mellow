@@ -791,3 +791,19 @@ fn a_conversation_with_someone_blocked_locks_the_composer_until_unblocked(cx: &m
     cx.run_until_parked();
     assert_eq!(locking(&view, cx), None);
 }
+
+#[gpui::test]
+fn shift_f10_or_the_menu_key_on_a_focused_message_opens_its_menu(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
+    for key in ["shift-f10", "menu"] {
+        focus_list(&view, cx);
+        press(cx, "up");
+        press(cx, key);
+        assert!(
+            view.read_with(cx, |view, _| view.menu.is_some()),
+            "{key} opens the message's menu"
+        );
+        press(cx, "escape");
+        assert!(view.read_with(cx, |view, _| view.menu.is_none()));
+    }
+}

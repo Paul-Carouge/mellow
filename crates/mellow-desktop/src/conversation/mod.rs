@@ -34,7 +34,7 @@ use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
 use crate::components::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent, Tooltip,
+    ModalDialog, ModalDialogEvent, Tooltip, is_context_menu_keystroke,
 };
 use crate::composer::{
     BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
@@ -1275,14 +1275,17 @@ impl ConversationView {
         }
     }
 
-    /// The menu of the focused row, from the keyboard (Shift+F10), lined up with the row.
+    /// The menu of the focused row, from the keyboard (Shift+F10, the Menu key), lined up with
+    /// the row.
     fn open_menu_of_focused_row(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some((index, message_id)) = self.focused_message() else {
             return;
         };
-        let Some(bounds) = self.list.bounds_for_item(index) else {
-            return;
-        };
+        // A row the list has not measured yet: beside the list instead, never nowhere.
+        let bounds = self
+            .list
+            .bounds_for_item(index)
+            .unwrap_or_else(|| self.list.viewport_bounds());
         let origin = MenuOrigin::Anchor {
             bounds: MenuAnchor {
                 top: f32::from(bounds.top()),
@@ -1412,7 +1415,7 @@ impl ConversationView {
                     false
                 }
             }
-            "f10" if modifiers.shift && !modifiers.control && !modifiers.alt => {
+            _ if is_context_menu_keystroke(keystroke) => {
                 self.open_menu_of_focused_row(window, cx);
                 true
             }
