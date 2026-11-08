@@ -31,7 +31,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo deny check
 cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon, web app icons and the desktop's tokens.rs and icons.rs after editing design/ (--check in CI)
-cargo run -p mellow-desktop # the desktop client (Linux needs GPUI's packages, see DESKTOP_BUILD_PACKAGES in ci.yml)
+cargo run -p mellow-desktop # the desktop client (Linux needs GPUI's and the voice engine's packages, see DESKTOP_BUILD_PACKAGES and SERVER_BUILD_PACKAGES in ci.yml)
 cd web && npm ci && npm run check && npm test && npm run build
 ```
 Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (GPUI desktop client), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.

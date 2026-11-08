@@ -227,39 +227,18 @@ impl DuskShell {
             return;
         };
         let session = self.session.clone();
-        let mut entries: Vec<MenuEntry> = CHOSEN_STATUSES
-            .into_iter()
-            .map(|status| {
-                let session = session.clone();
-                let mut item = MenuItem::choice(
-                    status_name(strings, status),
-                    shown_status(status),
-                    status == user.status,
-                    move |_, cx: &mut App| {
-                        let failure = strings.user_card().status_failed();
-                        session.update(cx, |session, cx| {
-                            if session.state().current_user().map(|user| user.status)
-                                != Some(status)
-                            {
-                                session.choose_status(status, failure, cx);
-                            }
-                        });
-                    },
-                );
-                let hint = match status {
-                    ChosenStatus::DoNotDisturb => Some(strings.user_card().do_not_disturb_hint()),
-                    ChosenStatus::Invisible => Some(strings.user_card().invisible_hint()),
-                    ChosenStatus::Online | ChosenStatus::Idle => None,
-                };
-                if let Some(hint) = hint {
-                    item = item.description(hint);
-                }
-                MenuEntry::Item(item)
-            })
-            .collect();
+        let mut entries = status_choice_entries(&session, strings, user.status);
         let shell = cx.entity().downgrade();
         let user_id = user.id;
         entries.push(MenuEntry::Separator);
+        let opener = shell.clone();
+        entries.push(MenuEntry::Item(MenuItem::new(
+            strings.notifications().title(),
+            IconName::Bell,
+            move |window, cx| {
+                let _ = opener.update(cx, |shell, cx| shell.open_notification_settings(window, cx));
+            },
+        )));
         let dialog_shell = shell.clone();
         entries.push(MenuEntry::Item(MenuItem::new(
             if user.custom_status.is_some() {
@@ -349,4 +328,40 @@ impl DuskShell {
         }));
         cx.notify();
     }
+}
+
+/// One menu choice per status the user can pick, the current one checked.
+fn status_choice_entries(
+    session: &gpui::Entity<Session>,
+    strings: Strings,
+    current_status: ChosenStatus,
+) -> Vec<MenuEntry> {
+    CHOSEN_STATUSES
+        .into_iter()
+        .map(|status| {
+            let session = session.clone();
+            let mut item = MenuItem::choice(
+                status_name(strings, status),
+                shown_status(status),
+                status == current_status,
+                move |_, cx: &mut App| {
+                    let failure = strings.user_card().status_failed();
+                    session.update(cx, |session, cx| {
+                        if session.state().current_user().map(|user| user.status) != Some(status) {
+                            session.choose_status(status, failure, cx);
+                        }
+                    });
+                },
+            );
+            let hint = match status {
+                ChosenStatus::DoNotDisturb => Some(strings.user_card().do_not_disturb_hint()),
+                ChosenStatus::Invisible => Some(strings.user_card().invisible_hint()),
+                ChosenStatus::Online | ChosenStatus::Idle => None,
+            };
+            if let Some(hint) = hint {
+                item = item.description(hint);
+            }
+            MenuEntry::Item(item)
+        })
+        .collect()
 }

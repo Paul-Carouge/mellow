@@ -81,6 +81,19 @@ impl ClientState {
             .is_some_and(|history| history.has_reached_channel_start)
     }
 
+    /// Whether a `MESSAGE_CREATE` brings a message new to this session, asked before applying it:
+    /// in a known channel, not already cached, not a replay `Ready` already counted. The
+    /// notifier tells about such messages only (`onIncomingMessage` in `client.svelte.ts`).
+    #[must_use]
+    pub fn is_message_new_to_session(&self, message: &Message) -> bool {
+        let channel_id = message.channel_id;
+        self.is_known_channel(channel_id)
+            && self
+                .cached_history_message(channel_id, message.id)
+                .is_none()
+            && !self.reads.is_counted_by_ready(channel_id, message.id)
+    }
+
     /// `MESSAGE_CREATE`, once its channel is known.
     pub(super) fn take_in_new_message(&mut self, message: Message) -> StateChange {
         let channel_id = message.channel_id;

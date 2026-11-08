@@ -12,12 +12,14 @@ pub mod components;
 pub mod composer;
 pub mod connection_banner;
 pub mod conversation;
+pub mod dock_and_tray;
 pub mod home;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
 pub mod messages;
 pub mod navigation;
+pub mod notifier;
 pub mod pictures;
 pub mod preferences;
 pub mod session;
@@ -43,6 +45,9 @@ use crate::window_chrome::WINDOW_TITLE;
 
 actions!(mellow, [Quit]);
 
+/// The app's identity for the system's notifications, as the secret store names it.
+const APP_IDENTIFIER: &str = "org.mellow.desktop";
+
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
 #[cfg(not(target_os = "macos"))]
@@ -64,6 +69,8 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     preferences::load_preferences_in_background(cx);
     let strings = Language::of_the_system().strings();
     cx.set_global(ActiveStrings(strings));
+    // Before any notification: Linux names the app with it, Windows groups its toasts by it.
+    cx.set_app_identity(APP_IDENTIFIER, WINDOW_TITLE);
     let session = cx.new(Session::new_restoring_stored_session);
     Session::end_connection_when_the_app_quits(&session, cx);
 
@@ -75,6 +82,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     cx.set_menus([
         Menu::new(WINDOW_TITLE).items([MenuItem::action(catalogue.desktop().quit_mellow(), Quit)])
     ]);
+    dock_and_tray::install_menu_bar_item(cx);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
         if cx.windows().is_empty() {

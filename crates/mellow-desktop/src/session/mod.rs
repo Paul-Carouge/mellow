@@ -15,7 +15,9 @@ use mellow_client_core::state::{ClientState, StateChange};
 use mellow_client_core::{
     ClientError, GatewayHandle, GatewayUpdate, InstanceAddress, RestClient, run_gateway,
 };
-use mellow_protocol::{ChosenStatus, Message, SendMessageRequest, Snowflake, UserProfile};
+use mellow_protocol::{
+    ChosenStatus, GatewayEvent, Message, SendMessageRequest, Snowflake, UserProfile,
+};
 use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
@@ -66,6 +68,11 @@ pub enum MembersLoad {
 /// What a burst of gateway updates touched, so views refresh only that.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateChanged(pub Vec<StateChange>);
+
+/// A message new to this session, once the state took it in (the web's `onIncomingMessage`):
+/// the notifier decides whether to tell.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct IncomingMessage(pub Message);
 
 struct Connection {
     rest: RestClient,
@@ -121,6 +128,7 @@ impl std::fmt::Debug for Session {
 
 impl EventEmitter<StateChanged> for Session {}
 impl EventEmitter<SendRefused> for Session {}
+impl EventEmitter<IncomingMessage> for Session {}
 
 impl Session {
     /// A session that first looks for one kept in the secret store.
@@ -305,6 +313,7 @@ impl Session {
         }
         let mut changes: Vec<StateChange> = Vec::new();
         let mut should_resend_failed_messages = false;
+        let mut incoming_messages = Vec::new();
         let now = now_unix_milliseconds();
         for update in burst {
             let change = match update {
@@ -316,7 +325,14 @@ impl Session {
                     self.conversation.forget_history();
                     self.state.apply_ready(*ready)
                 }
-                GatewayUpdate::Event(event) => self.state.apply_event(event, now),
+                GatewayUpdate::Event(event) => {
+                    if let GatewayEvent::MessageCreate(message) = &event
+                        && self.state.is_message_new_to_session(message)
+                    {
+                        incoming_messages.push(message.clone());
+                    }
+                    self.state.apply_event(event, now)
+                }
                 GatewayUpdate::Resumed => {
                     self.status = ConnectionStatus::Connected;
                     should_resend_failed_messages = true;
@@ -348,6 +364,9 @@ impl Session {
         }
         if !changes.is_empty() {
             cx.emit(StateChanged(changes));
+        }
+        for message in incoming_messages {
+            cx.emit(IncomingMessage(message));
         }
         cx.notify();
     }

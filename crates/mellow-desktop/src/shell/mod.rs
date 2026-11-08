@@ -10,6 +10,7 @@ mod conversation_sheet;
 mod custom_status_dialog;
 mod member_profile;
 mod member_sheet;
+mod notification_settings;
 mod overlays;
 pub mod quick_switcher;
 mod resize_handle;
@@ -201,6 +202,8 @@ pub struct DuskShell {
     column_drag: Option<ColumnDrag>,
     quick_switcher: Option<(Entity<QuickSwitcher>, Subscription)>,
     status_menu: Option<(Entity<ContextMenu>, Subscription)>,
+    /// The notification choices, opened from the status menu.
+    notification_settings: Option<(Entity<ModalDialog>, Subscription)>,
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// The profile a member row opened in the side sheet.
     member_profile: member_profile::MemberProfileState,
@@ -259,6 +262,7 @@ impl DuskShell {
             column_drag: None,
             quick_switcher: None,
             status_menu: None,
+            notification_settings: None,
             custom_status_dialog: None,
             member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
@@ -1067,6 +1071,9 @@ impl Render for DuskShell {
                 root.child(menu.clone())
             })
             .child(self.home.clone())
+            .when_some(self.notification_settings.as_ref(), |root, (dialog, _)| {
+                root.child(dialog.clone())
+            })
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             });
