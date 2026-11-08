@@ -29,8 +29,8 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
-    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, easing, icon,
-    inset_focus_ring, shadow, with_type,
+    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, Tooltip, easing,
+    icon, inset_focus_ring, shadow, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{
@@ -750,6 +750,13 @@ impl ConversationView {
                     },
                 )
                 .can_join_reactions(rights.can_join_reactions)
+                .reaction_tooltip({
+                    let view = view.clone();
+                    move |pill, cx| {
+                        view.update(cx, |view, cx| view.reactors_tooltip(message_id, pill, cx))
+                            .unwrap_or_else(|_| Tooltip::view(SharedString::default(), cx))
+                    }
+                })
                 .on_toggle_reaction(move |key, _, cx| {
                     let _ = toggle_view
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));

@@ -7,7 +7,7 @@ use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
+    AnyElement, AnyView, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, StyledImage as _, Toggled, Window, div, img, prelude::FluentBuilder as _,
 };
@@ -31,6 +31,8 @@ use crate::theme::{color, length, theme};
 
 /// What a pill reports when it is activated: the reaction's stored key.
 pub type ReactionToggleHandler = Arc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
+/// The tooltip a pill shows: who reacted, which the host may have to ask the instance for.
+pub type ReactionTooltipBuilder = Arc<dyn Fn(&ReactionPill, &mut App) -> AnyView + 'static>;
 
 /// One reaction as a pill shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -74,6 +76,7 @@ pub struct MessageReactions {
     /// Joining an existing reaction: the reader sees the message's history.
     can_join: bool,
     on_toggle: Option<ReactionToggleHandler>,
+    tooltip: Option<ReactionTooltipBuilder>,
 }
 
 impl MessageReactions {
@@ -84,6 +87,7 @@ impl MessageReactions {
             pills,
             can_join: true,
             on_toggle: None,
+            tooltip: None,
         }
     }
 
@@ -96,6 +100,14 @@ impl MessageReactions {
     #[must_use]
     pub fn on_toggle(mut self, handler: impl Fn(&str, &mut Window, &mut App) + 'static) -> Self {
         self.on_toggle = Some(Arc::new(handler));
+        self
+    }
+
+    /// Names who reacted on hover and focus instead of the pill's label (`MessageReactions`'
+    /// tooltip).
+    #[must_use]
+    pub fn tooltip(mut self, builder: Option<ReactionTooltipBuilder>) -> Self {
+        self.tooltip = builder;
         self
     }
 }
@@ -114,7 +126,10 @@ impl RenderOnce for MessageReactions {
                     id,
                     pill,
                     is_usable,
-                    self.on_toggle.clone(),
+                    PillHandlers {
+                        on_toggle: self.on_toggle.clone(),
+                        tooltip: self.tooltip.clone(),
+                    },
                     strings,
                     window,
                     cx,
@@ -136,15 +151,60 @@ impl RenderOnce for MessageReactions {
     }
 }
 
+/// A reaction's emoji at the pill's size: the character, the server emoji's picture, or a dashed
+/// outline for a deleted one.
+fn reaction_emoji(
+    appearance: &ReactionAppearance,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let tokens = theme(cx);
+    match appearance {
+        ReactionAppearance::Custom(emoji) => img(picture_for_box(
+            DownloadableFile::Icon(emoji.id),
+            COMPONENT_REACTION_EMOJI_SIZE,
+            COMPONENT_REACTION_EMOJI_SIZE,
+            picture_animation(cx),
+            window,
+        ))
+        .flex_none()
+        .size(length(COMPONENT_REACTION_EMOJI_SIZE))
+        .object_fit(ObjectFit::Contain)
+        .into_any_element(),
+        ReactionAppearance::Unicode(emoji) => div()
+            .text_size(length(COMPONENT_REACTION_EMOJI_SIZE))
+            .line_height(length(COMPONENT_REACTION_EMOJI_SIZE))
+            .child(emoji.clone())
+            .into_any_element(),
+        // A dashed outline where the deleted emoji's picture was, as the web's `ReactionEmoji`.
+        ReactionAppearance::Deleted => div()
+            .flex_none()
+            .size(length(COMPONENT_REACTION_EMOJI_SIZE))
+            .rounded(length(COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS))
+            .border(length(COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH))
+            .border_dashed()
+            .border_color(color(tokens.component_custom_emoji_missing_border))
+            .into_any_element(),
+    }
+}
+
+/// What a pill's activation and tooltip ask of the host.
+#[derive(Clone)]
+struct PillHandlers {
+    on_toggle: Option<ReactionToggleHandler>,
+    tooltip: Option<ReactionTooltipBuilder>,
+}
+
 fn render_pill(
     id: ElementId,
     pill: ReactionPill,
     is_usable: bool,
-    on_toggle: Option<ReactionToggleHandler>,
+    handlers: PillHandlers,
     strings: Strings,
     window: &mut Window,
     cx: &mut App,
 ) -> AnyElement {
+    let PillHandlers { on_toggle, tooltip } = handlers;
     let tokens = theme(cx);
     let focus_handle = remembered_focus_handle(&id, window, cx);
     let hover = remembered_hover(&id, window, cx);
@@ -173,33 +233,8 @@ fn render_pill(
     let label = appearance_label(&pill.appearance, strings);
     let count = i64::from(pill.count);
     let accessible_label: SharedString = strings.reactions().chip(&label, count).into();
-    let emoji = match &pill.appearance {
-        ReactionAppearance::Custom(emoji) => img(picture_for_box(
-            DownloadableFile::Icon(emoji.id),
-            COMPONENT_REACTION_EMOJI_SIZE,
-            COMPONENT_REACTION_EMOJI_SIZE,
-            picture_animation(cx),
-            window,
-        ))
-        .flex_none()
-        .size(length(COMPONENT_REACTION_EMOJI_SIZE))
-        .object_fit(ObjectFit::Contain)
-        .into_any_element(),
-        ReactionAppearance::Unicode(emoji) => div()
-            .text_size(length(COMPONENT_REACTION_EMOJI_SIZE))
-            .line_height(length(COMPONENT_REACTION_EMOJI_SIZE))
-            .child(emoji.clone())
-            .into_any_element(),
-        // A dashed outline where the deleted emoji's picture was, as the web's `ReactionEmoji`.
-        ReactionAppearance::Deleted => div()
-            .flex_none()
-            .size(length(COMPONENT_REACTION_EMOJI_SIZE))
-            .rounded(length(COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS))
-            .border(length(COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH))
-            .border_dashed()
-            .border_color(color(tokens.component_custom_emoji_missing_border))
-            .into_any_element(),
-    };
+    let emoji = reaction_emoji(&pill.appearance, window, cx);
+    let tooltip_pill = pill.clone();
     let key = pill.key;
     let is_ring_shown = is_focus_visible(&focus_handle, window);
     with_type(div(), TYPE_BODY_SM)
@@ -225,7 +260,10 @@ fn render_pill(
         .text_color(color(text))
         .font_weight(gpui::FontWeight(f32::from(FONT_WEIGHT_SEMIBOLD)))
         .when(is_usable, gpui::Styled::cursor_pointer)
-        .tooltip(move |_, cx| Tooltip::view(accessible_label.clone(), cx))
+        .tooltip(move |_, cx| match &tooltip {
+            Some(tooltip) => tooltip(&tooltip_pill, cx),
+            None => Tooltip::view(accessible_label.clone(), cx),
+        })
         .tooltip_show_delay(Tooltip::show_delay())
         .on_hover(move |is_hovered, _, cx| {
             hover.update(cx, |remembered, cx| {

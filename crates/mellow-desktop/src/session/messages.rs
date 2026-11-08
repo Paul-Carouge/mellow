@@ -15,12 +15,17 @@ use mellow_client_core::state::{
     PinsAnswer, StateChange,
 };
 use mellow_protocol::{
-    Attachment, EditMessageRequest, GatewayEvent, Message, MessageHistoryQuery, Snowflake,
+    Attachment, EditMessageRequest, GatewayEvent, Message, MessageHistoryQuery, PublicUser,
+    ReactionUsersQuery, Snowflake,
 };
 
 use super::{Session, StateChanged, now_unix_milliseconds};
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings;
+
+/// Who reacted, asked once per emoji: the instance's largest page (the web's
+/// `REACTING_USERS_PAGE_SIZE`).
+const REACTING_USERS_PAGE_SIZE: u32 = 100;
 
 /// Read positions go to the instance at most this often; reads in between only move them (the
 /// web's `READ_STATE_SEND_DELAY_MILLISECONDS`).
@@ -681,6 +686,37 @@ impl Session {
                     on_failed(sentence, cx);
                 }
             },
+        );
+    }
+
+    /// Who reacted to a message with `emoji`, the first `REACTING_USERS_PAGE_SIZE` by ascending
+    /// id, as the web asks; a failure comes back as a sentence starting with `failure_summary`.
+    pub fn list_reacting_users(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        emoji: String,
+        failure_summary: String,
+        on_done: impl FnOnce(Result<Vec<PublicUser>, String>, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rest) = self.cloned_rest_client() else {
+            cx.defer(move |cx| on_done(Err(failure_summary), cx));
+            return;
+        };
+        let query = ReactionUsersQuery {
+            after: None,
+            limit: Some(REACTING_USERS_PAGE_SIZE),
+        };
+        self.run_conversation_request(
+            cx,
+            async move {
+                rest.list_reacting_users(channel_id, message_id, &emoji, &query)
+                    .await
+            },
+            failure_summary,
+            "load who reacted",
+            move |_, answer, cx| on_done(answer, cx),
         );
     }
 

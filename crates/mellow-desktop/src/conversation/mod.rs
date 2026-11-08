@@ -18,8 +18,8 @@ mod tests;
 use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, ListAlignment,
-    ListOffset, ListState, SharedString, Subscription, Task, Window, px,
+    AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent,
+    ListAlignment, ListOffset, ListState, SharedString, Subscription, Task, Window, px,
 };
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
 use mellow_client_core::state::{
@@ -29,23 +29,27 @@ use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
 use crate::components::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent,
+    ModalDialog, ModalDialogEvent, Tooltip,
 };
 use crate::composer::{Cancelled, Composer, ComposerEvent, ReplyTarget};
 use crate::i18n::strings;
-use crate::messages::MessageBodyCache;
+use crate::messages::{MessageBodyCache, ReactionPill};
 use crate::session::{HistoryReach, HistoryStatus, SendRefused, Session, StateChanged};
 use crate::theme::delay;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
 use self::rows::Entry;
-use self::rules::{MenuLine, MessageFacts, MessageMenuAction, message_menu_lines};
+use self::rules::{
+    MenuLine, MessageFacts, MessageMenuAction, message_menu_lines, reactor_sentence,
+};
 
 /// Rows measured beyond the visible part, so scrolling and older pages do not pop in.
 const LIST_OVERDRAW: f32 = COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
 /// Page Up and Page Down scroll this share of the list's height.
 const PAGE_SCROLL_SHARE: f32 = 0.9;
+/// Who-reacted sentences kept before the cache starts over: one per pill hovered in a visit.
+const MAXIMUM_REACTOR_SENTENCES: usize = 256;
 /// The typing line forgets people whose notice expired; refreshed this often while it shows.
 const TYPING_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -134,6 +138,8 @@ pub struct ConversationView {
     /// A refused edit's text, given back to the composer by the next render (which has the
     /// window): the message, the text and whether the editor may reopen on it.
     refused_edit: Option<(Snowflake, String, bool)>,
+    /// Who reacted, by message and emoji, for the count it had: a new count asks again.
+    reactor_sentences: HashMap<(Snowflake, String), (u32, SharedString)>,
     /// A pinned message reached: revealed by the next render, which has the window.
     pending_reveal: Option<Snowflake>,
     /// The message lit after a jump, and which jump lit it.
@@ -216,6 +222,7 @@ impl ConversationView {
             pins_dismissed_by_pointer_at: None,
             action_error: None,
             refused_edit: None,
+            reactor_sentences: HashMap::new(),
             pending_reveal: None,
             highlight: None,
             announcement: SharedString::default(),
@@ -277,6 +284,7 @@ impl ConversationView {
                 ..Visit::default()
             };
             self.revealed_blocked_message_ids.clear();
+            self.reactor_sentences.clear();
             self.pending_reveal = None;
             self.highlight = None;
             self.hovered_message_id = None;
@@ -866,6 +874,68 @@ impl ConversationView {
                 cx,
             );
         });
+    }
+
+    /// A reaction pill's tooltip: who reacted, asked from the instance only when it shows, and
+    /// kept while the count stays the same.
+    fn reactors_tooltip(
+        &mut self,
+        message_id: Snowflake,
+        pill: &ReactionPill,
+        cx: &mut Context<Self>,
+    ) -> AnyView {
+        let catalogue = strings(cx);
+        let cache_key = (message_id, pill.key.clone());
+        if let Some((count, sentence)) = self.reactor_sentences.get(&cache_key)
+            && *count == pill.count
+        {
+            return Tooltip::view(sentence.clone(), cx);
+        }
+        let tooltip = cx.new(|_| Tooltip::new(catalogue.reactions().loading_who()));
+        let Some(channel_id) = self.open_channel_id() else {
+            return tooltip.into();
+        };
+        let reader_id = self
+            .session
+            .read(cx)
+            .state()
+            .current_user()
+            .map(|user| user.id);
+        let emoji = reaction_label(&pill.key, &self.sources.custom_emojis, catalogue);
+        let (count, is_mine) = (pill.count, pill.is_mine);
+        let shown = tooltip.downgrade();
+        let view = cx.entity().downgrade();
+        self.session.update(cx, |session, cx| {
+            session.list_reacting_users(
+                channel_id,
+                message_id,
+                cache_key.1.clone(),
+                catalogue.reactions().who_failed().to_owned(),
+                move |answer, cx| {
+                    let catalogue = strings(cx);
+                    let sentence: SharedString = match answer {
+                        Ok(users) => {
+                            let sentence: SharedString = reactor_sentence(
+                                &users, count, is_mine, reader_id, &emoji, catalogue,
+                            )
+                            .into();
+                            let _ = view.update(cx, |view, _| {
+                                if view.reactor_sentences.len() >= MAXIMUM_REACTOR_SENTENCES {
+                                    view.reactor_sentences.clear();
+                                }
+                                view.reactor_sentences
+                                    .insert(cache_key, (count, sentence.clone()));
+                            });
+                            sentence
+                        }
+                        Err(_) => catalogue.reactions().who_failed().into(),
+                    };
+                    let _ = shown.update(cx, |tooltip, cx| tooltip.set_label(sentence, cx));
+                },
+                cx,
+            );
+        });
+        tooltip.into()
     }
 
     fn set_pinned_now(&mut self, message: Message, is_pinned: bool, cx: &mut Context<Self>) {
