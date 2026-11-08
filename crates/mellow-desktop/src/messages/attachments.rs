@@ -1,9 +1,9 @@
 //! The pictures of `MessageAttachments.svelte` (DESIGN.md §5.4 "Attachments"): a previewable
-//! picture inline, in a box its stored size fixes before it loads; anything else as a card with
-//! its name and size.
+//! picture inline, in a box its stored size fixes before it loads; a sound with its player
+//! (`audio_attachment`); anything else as a card with its name and size.
 //!
-//! shortcut: no picture viewer, no download, no video or sound player yet; files show as cards
-//! without a link. They come with the picture viewer and downloads (M3 steps 3 and 9).
+//! shortcut: no picture viewer, no download, no video player yet; files show as cards without a
+//! link. They come with the picture viewer and downloads (M3 steps 3 and 9).
 
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
@@ -14,8 +14,10 @@ use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::{FileSize, FileSizeUnit, human_file_size};
 use mellow_protocol::Attachment;
 
+use super::audio_attachment::AudioAttachment;
 use super::time::locale;
 use super::{picture_animation, picture_for_box};
+use crate::attachment_audio::is_played_in_app;
 use crate::components::{Tooltip, child_id, icon, with_type};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{self, Strings};
@@ -162,6 +164,16 @@ impl RenderOnce for MessageAttachments {
             .attachments
             .iter()
             .map(|attachment| {
+                if !self.is_pending && is_played_in_app(attachment) {
+                    return AudioAttachment::new(
+                        ElementId::NamedChild(
+                            std::sync::Arc::new(self.id.clone()),
+                            attachment.id.to_string().into(),
+                        ),
+                        attachment.clone(),
+                    )
+                    .into_any_element();
+                }
                 if self.is_pending
                     || !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str())
                 {

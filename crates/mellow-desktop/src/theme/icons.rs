@@ -64,6 +64,7 @@ pub enum IconName {
     MonitorArrowUp,
     MusicNotes,
     PaperPlaneRight,
+    Pause,
     PawPrint,
     PencilSimple,
     PhoneDisconnect,
@@ -109,7 +110,7 @@ pub enum IconName {
 }
 
 impl IconName {
-    pub const ALL: [Self; 100] = [
+    pub const ALL: [Self; 101] = [
         Self::AirplaneTilt,
         Self::ArrowBendUpLeft,
         Self::ArrowBendUpRight,
@@ -168,6 +169,7 @@ impl IconName {
         Self::MonitorArrowUp,
         Self::MusicNotes,
         Self::PaperPlaneRight,
+        Self::Pause,
         Self::PawPrint,
         Self::PencilSimple,
         Self::PhoneDisconnect,
@@ -274,6 +276,7 @@ impl IconName {
             Self::MonitorArrowUp => "icons/monitor-arrow-up.svg",
             Self::MusicNotes => "icons/music-notes.svg",
             Self::PaperPlaneRight => "icons/paper-plane-right.svg",
+            Self::Pause => "icons/pause.svg",
             Self::PawPrint => "icons/paw-print.svg",
             Self::PencilSimple => "icons/pencil-simple.svg",
             Self::PhoneDisconnect => "icons/phone-disconnect.svg",
@@ -380,6 +383,7 @@ impl IconName {
             "icons/monitor-arrow-up.svg" => Some(Self::MonitorArrowUp),
             "icons/music-notes.svg" => Some(Self::MusicNotes),
             "icons/paper-plane-right.svg" => Some(Self::PaperPlaneRight),
+            "icons/pause.svg" => Some(Self::Pause),
             "icons/paw-print.svg" => Some(Self::PawPrint),
             "icons/pencil-simple.svg" => Some(Self::PencilSimple),
             "icons/phone-disconnect.svg" => Some(Self::PhoneDisconnect),
@@ -487,6 +491,7 @@ impl IconName {
             Self::MonitorArrowUp => include_bytes!("../../../../design/icons/monitor-arrow-up.svg"),
             Self::MusicNotes => include_bytes!("../../../../design/icons/music-notes.svg"),
             Self::PaperPlaneRight => include_bytes!("../../../../design/icons/paper-plane-right.svg"),
+            Self::Pause => include_bytes!("../../../../design/icons/pause.svg"),
             Self::PawPrint => include_bytes!("../../../../design/icons/paw-print.svg"),
             Self::PencilSimple => include_bytes!("../../../../design/icons/pencil-simple.svg"),
             Self::PhoneDisconnect => include_bytes!("../../../../design/icons/phone-disconnect.svg"),

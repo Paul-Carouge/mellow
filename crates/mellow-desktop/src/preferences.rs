@@ -28,6 +28,8 @@ const MEMBER_SHEET_KEY: &str = "member-sheet";
 const CHANNELS_WIDTH_KEY: &str = "channels-width";
 const MEMBERS_WIDTH_KEY: &str = "members-width";
 const NOTIFICATIONS_KEY: &str = "notifications";
+const MEDIA_VOLUME_KEY: &str = "media-volume";
+const MEDIA_MUTED_KEY: &str = "media-muted";
 const RECENT_EMOJI_KEY: &str = "recent-emoji";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
@@ -76,6 +78,10 @@ pub struct Preferences {
     /// Each account's notification choices (the web keeps them per user in `localStorage`),
     /// most recent last.
     pub notification_settings_by_user: Vec<(Snowflake, NotificationSettings)>,
+    /// The volume (0 to 1) every attachment starts at, as the web's `mellow.media-volume`; the
+    /// file's own volume when unset.
+    pub media_volume: Option<f32>,
+    pub is_media_muted: bool,
     /// Each account's recently used emoji, latest first (the web keeps them in `localStorage`),
     /// accounts most recent last.
     pub recent_emoji_by_user: Vec<(Snowflake, Vec<String>)>,
@@ -204,6 +210,12 @@ fn parse_snowflake(text: &str) -> Option<Snowflake> {
     is_decimal.then(|| text.parse().ok()).flatten()
 }
 
+fn parse_media_volume(text: &str) -> Option<f32> {
+    text.parse::<f32>()
+        .ok()
+        .filter(|volume| (0.0..=1.0).contains(volume))
+}
+
 fn parse_column_width(text: &str) -> Option<f32> {
     text.parse::<f32>()
         .ok()
@@ -268,6 +280,8 @@ impl Preferences {
                 }
                 CHANNELS_WIDTH_KEY => preferences.channels_column_width = parse_column_width(value),
                 MEMBERS_WIDTH_KEY => preferences.members_column_width = parse_column_width(value),
+                MEDIA_VOLUME_KEY => preferences.media_volume = parse_media_volume(value),
+                MEDIA_MUTED_KEY => preferences.is_media_muted = value == "true",
                 // `<user id>:<the web's JSON>`, validated field by field as the web reads it.
                 NOTIFICATIONS_KEY => {
                     if let Some((user, json)) = value.split_once(':')
@@ -326,6 +340,12 @@ impl Preferences {
             if let Some(width) = width {
                 let _ = writeln!(text, "{key}={width}");
             }
+        }
+        if let Some(volume) = self.media_volume {
+            let _ = writeln!(text, "{MEDIA_VOLUME_KEY}={volume}");
+        }
+        if self.is_media_muted {
+            let _ = writeln!(text, "{MEDIA_MUTED_KEY}=true");
         }
         // Compact JSON escapes line breaks, so each account stays on one line.
         for (user_id, settings) in &self.notification_settings_by_user {
@@ -441,6 +461,8 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     channels_column_width: None,
     members_column_width: None,
     notification_settings_by_user: Vec::new(),
+    media_volume: None,
+    is_media_muted: false,
     recent_emoji_by_user: Vec::new(),
 };
 
@@ -520,6 +542,8 @@ mod tests {
         preferences.remember_member_sheet(id(1), true);
         preferences.channels_column_width = Some(300.0);
         preferences.members_column_width = Some(264.0);
+        preferences.media_volume = Some(0.25);
+        preferences.is_media_muted = true;
 
         write_atomically(&path, &preferences.to_file_text()).unwrap();
         assert_eq!(Preferences::load_from(&path), preferences);
@@ -603,7 +627,8 @@ mod tests {
     #[test]
     fn tampered_navigation_lines_are_ignored() {
         let text = "place=server:abc\nchannel=1:-2\nchannel=1\nmember-sheet=99999999999999999999999\n\
-            channels-width=NaN\nmembers-width=-4\nplace=home:\n";
+            channels-width=NaN\nmembers-width=-4\nplace=home:\nmedia-volume=1.5\nmedia-volume=NaN\n\
+            media-muted=yes\n";
         let preferences = Preferences::from_file_text(text);
         assert_eq!(preferences, Preferences::default());
     }
