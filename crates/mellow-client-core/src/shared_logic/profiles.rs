@@ -36,7 +36,12 @@ pub fn shown_profile_links(links: &[ProfileLink]) -> Vec<ShownProfileLink> {
         .iter()
         .filter_map(|link| {
             let url = safe_http_url(&link.url)?;
-            let host = Url::parse(&url).ok()?.host_str()?.to_owned();
+            // As the web's `URL.host`: a port other than the scheme's default is part of it.
+            let parsed = Url::parse(&url).ok()?;
+            let host = match parsed.port() {
+                Some(port) => format!("{}:{port}", parsed.host_str()?),
+                None => parsed.host_str()?.to_owned(),
+            };
             let label = link
                 .label
                 .as_deref()
@@ -218,6 +223,11 @@ mod tests {
                 label: Some("   ".to_owned()),
                 icon_id: None,
             },
+            ProfileLink {
+                url: "https://example.net:8443/".to_owned(),
+                label: None,
+                icon_id: None,
+            },
         ];
         assert_eq!(
             shown_profile_links(&links),
@@ -231,6 +241,12 @@ mod tests {
                 ShownProfileLink {
                     url: "https://example.com/".to_owned(),
                     host: "example.com".to_owned(),
+                    label: None,
+                    icon_id: None,
+                },
+                ShownProfileLink {
+                    url: "https://example.net:8443/".to_owned(),
+                    host: "example.net:8443".to_owned(),
                     label: None,
                     icon_id: None,
                 },
