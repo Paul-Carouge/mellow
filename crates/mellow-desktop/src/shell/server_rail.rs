@@ -10,9 +10,12 @@ use gpui::{
 };
 use gpui_base::motion::{Transition, transition};
 use mellow_client_core::shared_logic::format::server_initials;
+use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
+use mellow_client_core::shared_logic::notifications::{NotificationPlace, is_place_muted};
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Guild, Snowflake};
 
+use super::place_menus::{MenuRow, PlaceMenuTarget, is_target_muted, with_place_menu};
 use super::regions::{Region, RovingTabStop};
 use super::{DuskShell, icon_picture};
 use crate::components::{
@@ -20,6 +23,7 @@ use crate::components::{
     remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
+use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BADGE_RING_WIDTH, COMPONENT_NAVIGATOR_STRIP_WIDTH, COMPONENT_RAIL_ICON_RADIUS_ACTIVE,
@@ -33,9 +37,9 @@ use crate::theme::tokens::{
 use crate::theme::{animation_duration, color, delay, length, theme};
 
 /// What a rail entry shows.
-enum RailMark {
+enum RailMark<'a> {
     Home,
-    Server(Guild),
+    Server { guild: &'a Guild, is_muted: bool },
 }
 
 /// "Rust Lyon, 3 mentions, unread" (DESIGN.md §7.3): the count first, the state last
@@ -60,12 +64,22 @@ pub(super) fn name_with_unread_state(
     }
 }
 
-/// Whether any of the server's channels has unread messages.
-pub(super) fn has_unread_server(state: &ClientState, guild: &Guild) -> bool {
-    guild
-        .channels
-        .iter()
-        .any(|channel| state.has_unread(channel.id))
+/// Whether any of the server's channels not muted has unread messages; a muted server shows none
+/// (DESIGN.md §5.3).
+pub(super) fn has_unread_server(
+    state: &ClientState,
+    guild: &Guild,
+    settings: &NotificationSettings,
+    now: u64,
+) -> bool {
+    !is_target_muted(settings, guild.id, now)
+        && guild.channels.iter().any(|channel| {
+            let place = NotificationPlace {
+                guild_id: Some(guild.id),
+                channel_id: channel.id,
+            };
+            !is_place_muted(settings, place, now) && state.has_unread(channel.id)
+        })
 }
 
 impl DuskShell {
@@ -78,18 +92,35 @@ impl DuskShell {
         let state = self.session.read(cx).state();
         let selected_guild_id = self.navigation.selected_guild_id();
         let is_home_selected = self.navigation.place().is_some() && selected_guild_id.is_none();
-        let conversations = state.direct_message_channels();
-        let has_unread_conversation = conversations
+        let settings = self.notification_settings(cx);
+        let now = now_unix_milliseconds();
+        // A muted conversation raises nothing at Home: every message of a conversation counts.
+        let audible_conversations: Vec<Snowflake> = state
+            .direct_message_channels()
             .iter()
-            .any(|conversation| state.has_unread(conversation.id));
-        let conversations_mention_count = state.direct_messages_mention_count();
+            .map(|conversation| conversation.id)
+            .filter(|channel_id| {
+                let place = NotificationPlace {
+                    guild_id: None,
+                    channel_id: *channel_id,
+                };
+                !is_place_muted(&settings, place, now)
+            })
+            .collect();
+        let has_unread_conversation = audible_conversations
+            .iter()
+            .any(|channel_id| state.has_unread(*channel_id));
+        let conversations_mention_count = audible_conversations
+            .iter()
+            .map(|channel_id| state.mention_count(*channel_id))
+            .fold(0, u32::saturating_add);
         let servers: Vec<(Guild, bool, u32)> = state
             .guilds()
             .iter()
             .map(|guild| {
                 (
                     guild.clone(),
-                    has_unread_server(state, guild),
+                    has_unread_server(state, guild, &settings, now),
                     state.guild_mention_count(guild.id),
                 )
             })
@@ -121,8 +152,12 @@ impl DuskShell {
             let is_selected = selected_guild_id == Some(guild.id);
             let name = SharedString::from(guild.name.clone());
             let child_index = items.len();
+            let is_muted = is_target_muted(&settings, guild.id, now);
             items.push(Self::rail_item(
-                &RailMark::Server(guild),
+                &RailMark::Server {
+                    guild: &guild,
+                    is_muted,
+                },
                 &name,
                 is_selected,
                 has_unread,
@@ -158,7 +193,7 @@ impl DuskShell {
 
     #[allow(clippy::too_many_arguments, clippy::too_many_lines)] // One rail entry, as the web's snippet.
     fn rail_item(
-        mark: &RailMark,
+        mark: &RailMark<'_>,
         name: &SharedString,
         is_selected: bool,
         has_unread: bool,
@@ -169,9 +204,9 @@ impl DuskShell {
     ) -> AnyElement {
         let tokens = theme(cx);
         let strings = strings(cx);
-        let guild_id: Option<Snowflake> = match mark {
-            RailMark::Home => None,
-            RailMark::Server(guild) => Some(guild.id),
+        let (guild_id, is_muted) = match mark {
+            RailMark::Home => (None, false),
+            RailMark::Server { guild, is_muted } => (Some(guild.id), *is_muted),
         };
         let id = match guild_id {
             Some(guild_id) => ElementId::from(("rail-server", guild_id.raw())),
@@ -217,11 +252,11 @@ impl DuskShell {
         );
         let (fill, ink) = match (mark, is_active) {
             (RailMark::Home, true) => (tokens.color_accent_fill, tokens.color_text_on_accent),
-            (RailMark::Home | RailMark::Server(_), false) => (
+            (RailMark::Home | RailMark::Server { .. }, false) => (
                 tokens.component_rail_icon_background_rest,
                 tokens.component_rail_icon_text_rest,
             ),
-            (RailMark::Server(_), true) => (
+            (RailMark::Server { .. }, true) => (
                 tokens.component_rail_icon_background_active,
                 tokens.component_rail_icon_text_active,
             ),
@@ -233,7 +268,7 @@ impl DuskShell {
                 color(ink),
             )
             .into_any_element(),
-            RailMark::Server(guild) => match guild.icon {
+            RailMark::Server { guild, .. } => match guild.icon {
                 Some(picture) => img(icon_picture(picture, COMPONENT_RAIL_ITEM_SIZE, window))
                     .size_full()
                     .object_fit(ObjectFit::Cover)
@@ -252,7 +287,16 @@ impl DuskShell {
                     .into_any_element(),
             },
         };
-        let label = name_with_unread_state(strings, name, has_unread, mention_count);
+        let label = name_with_unread_state(
+            strings,
+            &if is_muted {
+                strings.notifications().with_muted(name)
+            } else {
+                name.to_string()
+            },
+            has_unread,
+            mention_count,
+        );
         let tooltip = name.clone();
         let pill_colour = if is_selected {
             tokens.component_rail_pill_color_selected
@@ -260,6 +304,7 @@ impl DuskShell {
             tokens.component_rail_pill_color
         };
 
+        let menu_focus = focus_handle.clone();
         let button = div()
             .id(id.clone())
             .role(Role::Button)
@@ -310,6 +355,19 @@ impl DuskShell {
                         ),
                 )
             });
+        let button = match guild_id {
+            Some(guild_id) => with_place_menu(
+                button,
+                MenuRow {
+                    target: PlaceMenuTarget::Server(guild_id),
+                    region: Region::ServerRail,
+                    child_index,
+                },
+                menu_focus,
+                cx,
+            ),
+            None => button,
+        };
 
         div()
             .relative()

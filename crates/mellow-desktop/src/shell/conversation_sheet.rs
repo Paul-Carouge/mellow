@@ -4,8 +4,8 @@
 //! the sentence a place without one opens with.
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    AnyElement, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
+    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
     prelude::FluentBuilder as _,
 };
 
@@ -274,6 +274,8 @@ impl DuskShell {
             )
         };
         let is_member_sheet_shown = self.is_member_sheet_shown(window, cx);
+        let is_conversation_open = self.navigation.selected_channel_id().is_some();
+        let folds_keys = has_navigation_drawer && is_conversation_open;
         // The Friends tabs sit in the header after a divider where the navigator is docked.
         let friends_tabs = (self.navigation.place()
             == Some(Place::Home {
@@ -367,18 +369,21 @@ impl DuskShell {
                 (subject.topic.is_none() || has_navigation_drawer) && !has_friends_tabs,
                 |header| header.child(div().flex_1()),
             )
-            .child({
+            // In a narrow window Go to and the pins fold into "More options", as on phones.
+            .when(!folds_keys, |header| {
                 let entity = entity.clone();
-                header_button(
-                    "go-to",
-                    IconName::MagnifyingGlass,
-                    strings.chat().go_to_label(),
+                header.child(
+                    header_button(
+                        "go-to",
+                        IconName::MagnifyingGlass,
+                        strings.chat().go_to_label(),
+                    )
+                    .on_click(move |window, cx| {
+                        entity.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
+                    }),
                 )
-                .on_click(move |window, cx| {
-                    entity.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
-                })
             })
-            .when(self.navigation.selected_channel_id().is_some(), |header| {
+            .when(is_conversation_open && !folds_keys, |header| {
                 let conversation = self.conversation.clone();
                 let is_open = conversation.read(cx).is_pins_panel_open();
                 header.child(
@@ -396,6 +401,7 @@ impl DuskShell {
                 )
             })
             .when(subject.has_member_sheet, |header| {
+                let entity = entity.clone();
                 header.child(
                     header_button(
                         "member-list-toggle",
@@ -406,6 +412,42 @@ impl DuskShell {
                     .on_click(move |window, cx| {
                         entity.update(cx, |shell, cx| shell.toggle_member_sheet(window, cx));
                     }),
+                )
+            })
+            .when(folds_keys, |header| {
+                let bounds = self.place_menus.more_options_bounds.clone();
+                let is_menu_open = self.is_chat_header_menu_open();
+                let presser = entity.clone();
+                header.child(
+                    div()
+                        .relative()
+                        .on_mouse_down(MouseButton::Left, move |_, _, cx| {
+                            presser.update(cx, |shell, _| shell.note_more_options_press());
+                        })
+                        .child(
+                            header_button(
+                                "more-options",
+                                IconName::DotsThree,
+                                strings.chat().more_options(),
+                            )
+                            .expanded(is_menu_open)
+                            .on_click(move |window, cx| {
+                                entity.update(cx, |shell, cx| {
+                                    shell.toggle_chat_header_menu(window, cx);
+                                });
+                            }),
+                        )
+                        // Records where the button is, for its menu to open under it.
+                        .child(
+                            canvas(
+                                move |button_bounds, _, _| bounds.set(Some(button_bounds)),
+                                |_, (), _, _| {},
+                            )
+                            .absolute()
+                            .top_0()
+                            .left_0()
+                            .size_full(),
+                        ),
                 )
             })
     }

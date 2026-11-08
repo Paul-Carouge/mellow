@@ -58,6 +58,17 @@ pub fn time_of_day_label(moment: LocalDateTime, strings: Strings) -> String {
     format_time_of_day(locale(strings), moment)
 }
 
+/// A moment to come (`upcomingTimeLabel`): its time today, else its short date and time ("Until
+/// 06:30 PM", "Until 11/9/2026 08:00 AM").
+#[must_use]
+pub fn upcoming_time_label(moment: LocalDateTime, now: LocalDateTime, strings: Strings) -> String {
+    if moment.date == now.date {
+        format_time_of_day(locale(strings), moment)
+    } else {
+        format_short_date_and_time(locale(strings), moment)
+    }
+}
+
 /// "Monday, October 19, 2026 at 8:30 AM": tooltips and screen readers.
 #[must_use]
 pub fn full_timestamp_label(moment: LocalDateTime, strings: Strings) -> String {
@@ -103,6 +114,14 @@ mod tests {
             message_timestamp_label(at(6, 9, 12), now, french),
             "Hier à 09:12"
         );
+    }
+
+    #[test]
+    fn an_upcoming_moment_shows_its_time_today_and_its_date_later() {
+        let english = Strings::new(Language::English);
+        let now = at(7, 18, 0);
+        assert_eq!(upcoming_time_label(at(7, 18, 15), now, english), "06:15 PM");
+        assert_ne!(upcoming_time_label(at(8, 2, 0), now, english), "02:00 AM");
     }
 
     #[test]
