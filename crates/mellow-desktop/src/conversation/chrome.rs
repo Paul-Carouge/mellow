@@ -35,6 +35,24 @@ use crate::theme::{color, length, theme};
 
 const LIST_KEY_CONTEXT: &str = "MessageList";
 
+/// Read out politely by screen readers each time `text` changes, as the web's `aria-live="polite"`.
+/// GPUI has no live-region setter, so the node is marked live through its AccessKit node; AccessKit
+/// announces a live node whose value changes (`NSAccessibilityAnnouncementRequestedNotification`
+/// on macOS, a text change event on AT-SPI). The same text twice in a row is read once.
+fn polite_live_region(id: &'static str, text: SharedString) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::Status)
+        .when(!text.is_empty(), |region| region.aria_value(text))
+        .a11y_synthetic_children(|subtree| {
+            subtree
+                .parent_node()
+                .set_live(gpui::accesskit::Live::Polite);
+        })
+        .size_0()
+        .overflow_hidden()
+}
+
 impl ConversationView {
     /// "3 new messages since today at 14:32", while the visit's unread messages are not seen.
     pub(super) fn unread_bar_sentence(&self, cx: &gpui::App) -> Option<String> {
@@ -388,15 +406,11 @@ impl Render for ConversationView {
             .child(self.render_typing_line(cx))
             .children(action_error)
             .child(div().flex_none().child(self.composer.clone()))
-            .child(
-                // Copies and other quiet results, for screen readers only.
-                div()
-                    .id("conversation-announcement")
-                    .role(Role::Status)
-                    .aria_label(self.announcement.clone())
-                    .size_0()
-                    .overflow_hidden(),
-            )
+            // Copies, new messages and other quiet results, for screen readers only.
+            .child(polite_live_region(
+                "conversation-announcement",
+                self.announcement.clone(),
+            ))
             .children(pins_panel)
             .when_some(self.menu.as_ref(), |slot, (menu, _, _)| {
                 slot.child(menu.clone())

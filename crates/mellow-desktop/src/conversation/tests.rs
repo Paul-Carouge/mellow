@@ -194,7 +194,7 @@ fn the_new_divider_sits_above_the_first_unread_message_until_esc_in_the_composer
                 } => Some(message_id),
                 _ => None,
             },
-            rows::Entry::HistoryStart => None,
+            rows::Entry::HistoryStart | rows::Entry::BlockedRun(_) => None,
         })
     };
     view.read_with(cx, |view, cx| {
@@ -464,4 +464,97 @@ fn an_older_page_landing_at_the_history_start_keeps_the_rows_read_in_place(
             "the first row read stays at the top, below the ten new ones"
         );
     });
+}
+
+fn block_ana(session: &Entity<Session>, cx: &mut VisualTestContext) {
+    session.update(cx, |session, cx| {
+        session
+            .state_mut()
+            .apply_relationship(mellow_protocol::Relationship {
+                user: ana(),
+                kind: mellow_protocol::RelationshipKind::Blocked,
+                since_unix_milliseconds: 0,
+            });
+        cx.emit(StateChanged(vec![StateChange::Relationships]));
+    });
+    cx.run_until_parked();
+}
+
+fn blocked_runs(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> Vec<(usize, bool)> {
+    view.read_with(cx, |view, _| {
+        view.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                rows::Entry::BlockedRun(run) => Some((run.message_ids.len(), run.is_revealed)),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn a_blocked_authors_run_folds_into_one_row_that_enter_shows_and_hides(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(
+        cx,
+        vec![
+            message(10_001, &ana(), "one"),
+            message(10_002, &ana(), "two"),
+            message(10_003, &me(), "mine"),
+        ],
+        None,
+    );
+    block_ana(&session, cx);
+    assert_eq!(blocked_runs(&view, cx), [(2, false)]);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.entries.len()),
+        3,
+        "the history start, the folded run and the reader's message"
+    );
+
+    focus_list(&view, cx);
+    press(cx, "up");
+    press(cx, "up");
+    press(cx, "enter");
+    assert_eq!(blocked_runs(&view, cx), [(2, true)]);
+    assert_eq!(view.read_with(cx, |view, _| view.entries.len()), 5);
+
+    press(cx, "enter");
+    assert_eq!(blocked_runs(&view, cx), [(2, false)]);
+}
+
+#[gpui::test]
+fn a_new_message_from_someone_else_is_read_out_but_not_the_first_page_or_a_blocked_one(
+    cx: &mut TestAppContext,
+) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hello")], None);
+    let announcement =
+        |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.announcement.to_string());
+    assert_eq!(announcement(cx), "", "the first page is not read out");
+
+    let arrive = |message: Message, cx: &mut VisualTestContext| {
+        session.update(cx, |session, cx| {
+            let change = session
+                .state_mut()
+                .apply_event(mellow_protocol::GatewayEvent::MessageCreate(message), 0);
+            cx.emit(StateChanged(vec![change]));
+        });
+        cx.run_until_parked();
+    };
+    arrive(message(10_002, &ana(), "are you there?"), cx);
+    assert_eq!(announcement(cx), "Ana: are you there?");
+
+    arrive(message(10_003, &me(), "yes"), cx);
+    assert_eq!(
+        announcement(cx),
+        "Ana: are you there?",
+        "the reader's own is not"
+    );
+
+    block_ana(&session, cx);
+    arrive(message(10_004, &ana(), "hidden"), cx);
+    assert_eq!(
+        announcement(cx),
+        "Ana: are you there?",
+        "a blocked author is not"
+    );
 }

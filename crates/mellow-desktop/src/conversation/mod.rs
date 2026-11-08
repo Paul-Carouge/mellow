@@ -15,7 +15,7 @@ pub mod rules;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, ListAlignment,
@@ -75,6 +75,8 @@ struct Visit {
     has_reader_scrolled: bool,
     /// The list opened on the "New" divider once; later rows never move it again.
     has_opened_on_divider: bool,
+    /// The newest row already read out: rows that come after it are new to announce.
+    last_announced_key: Option<String>,
 }
 
 /// What a confirmation dialog will do once confirmed.
@@ -113,6 +115,8 @@ pub struct ConversationView {
     sources: MessageMarkupSources,
     body_cache: MessageBodyCache,
     visit: Visit,
+    /// A blocked author's messages the reader chose to show, for this visit only.
+    revealed_blocked_message_ids: HashSet<Snowflake>,
     /// The message row under the pointer: its hover bar shows.
     hovered_message_id: Option<Snowflake>,
     /// The row keyboard focus is on, while the list has focus (one Tab stop, arrows move).
@@ -196,6 +200,7 @@ impl ConversationView {
             sources: MessageMarkupSources::default(),
             body_cache: MessageBodyCache::new(),
             visit: Visit::default(),
+            revealed_blocked_message_ids: HashSet::new(),
             hovered_message_id: None,
             focused_row_key: None,
             menu: None,
@@ -262,6 +267,7 @@ impl ConversationView {
                 is_unread_marker_pending: true,
                 ..Visit::default()
             };
+            self.revealed_blocked_message_ids.clear();
             self.hovered_message_id = None;
             self.focused_row_key = None;
             self.menu = None;
@@ -1108,6 +1114,17 @@ impl ConversationView {
             .and_then(|index| self.entries[index].message_id().map(|id| (index, id)))
     }
 
+    /// The folded run keyboard focus is on: its messages and whether they show.
+    fn focused_blocked_run(&self) -> Option<(Vec<Snowflake>, bool)> {
+        let key = self.focused_row_key.as_ref()?;
+        self.entries.iter().find_map(|entry| match entry {
+            Entry::BlockedRun(run) if run.key == *key => {
+                Some((run.message_ids.clone(), run.is_revealed))
+            }
+            _ => None,
+        })
+    }
+
     /// Up and Down move between messages, as on Discord; the list keeps one Tab stop.
     fn move_row_focus(&mut self, step: isize, cx: &mut Context<Self>) {
         let rows: Vec<usize> = (0..self.entries.len())
@@ -1184,6 +1201,15 @@ impl ConversationView {
                 self.jump_to_present(cx);
                 self.focus_composer(window, cx);
                 true
+            }
+            "enter" | "space" if !modifiers.modified() && self.list_focus.is_focused(window) => {
+                match self.focused_blocked_run() {
+                    Some((message_ids, is_revealed)) => {
+                        self.toggle_blocked_run(&message_ids, is_revealed, cx);
+                        true
+                    }
+                    None => false,
+                }
             }
             "f10" if modifiers.shift && !modifiers.control && !modifiers.alt => {
                 self.open_menu_of_focused_row(window, cx);
