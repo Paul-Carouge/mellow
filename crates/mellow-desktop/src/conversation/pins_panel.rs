@@ -12,7 +12,6 @@ use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::state::PinsStatus;
 
 use super::ConversationView;
-use super::rows::Entry;
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, IconButton, icon, shadow, with_type,
 };
@@ -110,8 +109,6 @@ impl ConversationView {
                 )
                 .into_any_element(),
             Some(PinsStatus::Loaded) => {
-                let loaded_ids: Vec<_> =
-                    self.entries.iter().filter_map(Entry::message_id).collect();
                 let items = state.pinned_messages(channel_id).iter().map(|message| {
                     let message_id = message.id;
                     let author_name = display_name(&message.author).to_owned();
@@ -190,25 +187,25 @@ impl ConversationView {
                                         .flex()
                                         .flex_wrap()
                                         .gap(length(SPACE_XS))
-                                        .when(loaded_ids.contains(&message_id), |actions| {
-                                            actions.child(
-                                                Button::new(
-                                                    SharedString::from(format!(
-                                                        "pin-jump-{}",
-                                                        message_id.raw()
-                                                    )),
-                                                    pins.jump(),
-                                                )
-                                                .variant(ButtonVariant::Secondary)
-                                                .on_click(move |window, cx| {
+                                        .child(
+                                            Button::new(
+                                                SharedString::from(format!(
+                                                    "pin-jump-{}",
+                                                    message_id.raw()
+                                                )),
+                                                pins.jump(),
+                                            )
+                                            .variant(ButtonVariant::Secondary)
+                                            .on_click(
+                                                move |window, cx| {
                                                     let _ = jump_view.update(cx, |view, cx| {
                                                         view.jump_to_message(
                                                             message_id, window, cx,
                                                         );
                                                     });
-                                                }),
-                                            )
-                                        })
+                                                },
+                                            ),
+                                        )
                                         .when(rights.can_manage_pins, |actions| {
                                             actions.child(
                                                 Button::new(

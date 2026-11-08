@@ -4,8 +4,8 @@
 //! panel, message menu, confirmation).
 
 use gpui::{
-    AnyElement, Context, FontWeight, HighlightStyle, InteractiveElement as _, IntoElement,
-    ModifiersChangedEvent, ParentElement as _, Render, Role, SharedString,
+    AnyElement, Context, ExternalPaths, FontWeight, HighlightStyle, InteractiveElement as _,
+    IntoElement, ModifiersChangedEvent, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledText, Window, div, list,
     prelude::FluentBuilder as _,
 };
@@ -27,13 +27,35 @@ use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_COMPOSER_ERROR_PADDING_BLOCK, COMPONENT_COMPOSER_MARGIN_INLINE,
-    COMPONENT_COMPOSER_TYPING_HEIGHT, COMPONENT_JUMP_BAR_HEIGHT, COMPONENT_JUMP_BAR_ICON_SIZE,
-    COMPONENT_JUMP_BAR_RADIUS, COMPONENT_NOTICE_BAR_ICON_SIZE, RADIUS_SM, SPACE_2XS, SPACE_3XS,
-    SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BUTTON, TYPE_TYPING,
+    COMPONENT_COMPOSER_TYPING_HEIGHT, COMPONENT_DROP_OVERLAY_BORDER_INSET,
+    COMPONENT_DROP_OVERLAY_BORDER_WIDTH, COMPONENT_DROP_OVERLAY_GAP,
+    COMPONENT_DROP_OVERLAY_ICON_SIZE, COMPONENT_DROP_OVERLAY_MAX_WIDTH,
+    COMPONENT_DROP_OVERLAY_PADDING, COMPONENT_DROP_OVERLAY_RADIUS, COMPONENT_JUMP_BAR_HEIGHT,
+    COMPONENT_JUMP_BAR_ICON_SIZE, COMPONENT_JUMP_BAR_RADIUS, COMPONENT_NOTICE_BAR_ICON_SIZE,
+    RADIUS_SM, SPACE_2XS, SPACE_3XS, SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BUTTON,
+    TYPE_HEADING_XL, TYPE_TYPING,
 };
 use crate::theme::{color, length, theme};
 
 const LIST_KEY_CONTEXT: &str = "MessageList";
+
+/// Read out politely by screen readers each time `text` changes, as the web's `aria-live="polite"`.
+/// GPUI has no live-region setter, so the node is marked live through its AccessKit node; AccessKit
+/// announces a live node whose value changes (`NSAccessibilityAnnouncementRequestedNotification`
+/// on macOS, a text change event on AT-SPI). The same text twice in a row is read once.
+fn polite_live_region(id: &'static str, text: SharedString) -> impl IntoElement {
+    div()
+        .id(id)
+        .role(Role::Status)
+        .when(!text.is_empty(), |region| region.aria_value(text))
+        .a11y_synthetic_children(|subtree| {
+            subtree
+                .parent_node()
+                .set_live(gpui::accesskit::Live::Polite);
+        })
+        .size_0()
+        .overflow_hidden()
+}
 
 impl ConversationView {
     /// "3 new messages since today at 14:32", while the visit's unread messages are not seen.
@@ -303,6 +325,84 @@ impl ConversationView {
             .child(StyledText::new(sentence).with_highlights(name_ranges))
     }
 
+    /// "Drop to attach to #general" over the whole conversation while files are dragged over it
+    /// (`ChatPane.svelte`); a drop anywhere adds them to the composer's tray, which keeps only
+    /// files, never a folder's contents. Pointer feedback only: the attach button does the same.
+    fn render_drop_overlay(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let open = self.open_conversation.as_ref()?;
+        // Only during a drag: the overlay waits invisible for a file drag to come over it.
+        if !cx.has_active_drag() || !self.permissions(open.channel_id, cx).can_attach {
+            return None;
+        }
+        let tokens = theme(cx);
+        let chat = strings(cx).chat();
+        let is_one_to_one = self
+            .session
+            .read(cx)
+            .state()
+            .direct_message_channel(open.channel_id)
+            .is_some_and(|conversation| conversation.owner_id.is_none());
+        let target = if is_one_to_one {
+            format!("@{}", open.label)
+        } else {
+            open.label.clone()
+        };
+        let composer = self.composer.clone();
+        Some(
+            div()
+                .id("conversation-drop")
+                .absolute()
+                .inset_0()
+                .flex()
+                .items_center()
+                .justify_center()
+                .p(length(SPACE_MD))
+                .bg(color(tokens.component_drop_overlay_scrim))
+                .opacity(0.0)
+                .can_drop(|dragged, _, _| dragged.is::<ExternalPaths>())
+                .drag_over::<ExternalPaths>(|style, _, _, _| style.opacity(1.0))
+                .on_drop(move |paths: &ExternalPaths, window, cx| {
+                    composer.update(cx, |composer, cx| {
+                        composer.attach_files(paths.paths().to_vec(), window, cx);
+                    });
+                })
+                .child(
+                    div()
+                        .relative()
+                        .w_full()
+                        .max_w(length(COMPONENT_DROP_OVERLAY_MAX_WIDTH))
+                        .flex()
+                        .flex_col()
+                        .items_center()
+                        .gap(length(COMPONENT_DROP_OVERLAY_GAP))
+                        .p(length(COMPONENT_DROP_OVERLAY_PADDING))
+                        .rounded(length(COMPONENT_DROP_OVERLAY_RADIUS))
+                        .bg(color(tokens.component_drop_overlay_background))
+                        .text_color(color(tokens.component_drop_overlay_text))
+                        .text_center()
+                        .child(
+                            div()
+                                .absolute()
+                                .inset(length(COMPONENT_DROP_OVERLAY_BORDER_INSET))
+                                .rounded(length(COMPONENT_DROP_OVERLAY_RADIUS))
+                                .border(length(COMPONENT_DROP_OVERLAY_BORDER_WIDTH))
+                                .border_dashed()
+                                .border_color(color(tokens.component_drop_overlay_text)),
+                        )
+                        .child(icon(
+                            IconName::FileArrowUp,
+                            COMPONENT_DROP_OVERLAY_ICON_SIZE,
+                            color(tokens.component_drop_overlay_text),
+                        ))
+                        .child(
+                            with_type(div(), TYPE_HEADING_XL).child(chat.drop_to_attach(&target)),
+                        )
+                        .child(with_type(div(), TYPE_BODY).child(chat.drop_hint())),
+                )
+                .into_any_element(),
+        )
+    }
+
     fn render_list(&self, cx: &mut Context<Self>) -> impl IntoElement {
         let label = self
             .open_conversation
@@ -340,6 +440,9 @@ impl Render for ConversationView {
         }
         if self.are_rows_stale {
             self.rebuild_rows(cx);
+            if let Some(message_id) = self.pending_reveal.take() {
+                self.reveal_message(message_id, window, cx);
+            }
             // New rows move the list in its layout (opening, the divider, a page): what follows
             // from where it lands is read once that layout is done.
             cx.defer_in(window, |view, window, cx| view.follow_reading(window, cx));
@@ -349,6 +452,7 @@ impl Render for ConversationView {
         let unread_bar = self.render_unread_bar(window, cx);
         let jump_bar = self.render_jump_bar(window, cx);
         let pins_panel = self.render_pins_panel(window, cx);
+        let drop_overlay = self.render_drop_overlay(cx);
         let action_error = self.action_error.clone().map(|error| {
             div()
                 .id("chat-action-error")
@@ -388,15 +492,12 @@ impl Render for ConversationView {
             .child(self.render_typing_line(cx))
             .children(action_error)
             .child(div().flex_none().child(self.composer.clone()))
-            .child(
-                // Copies and other quiet results, for screen readers only.
-                div()
-                    .id("conversation-announcement")
-                    .role(Role::Status)
-                    .aria_label(self.announcement.clone())
-                    .size_0()
-                    .overflow_hidden(),
-            )
+            // Copies, new messages and other quiet results, for screen readers only.
+            .child(polite_live_region(
+                "conversation-announcement",
+                self.announcement.clone(),
+            ))
+            .children(drop_overlay)
             .children(pins_panel)
             .when_some(self.menu.as_ref(), |slot, (menu, _, _)| {
                 slot.child(menu.clone())
