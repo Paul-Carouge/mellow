@@ -51,7 +51,7 @@ use drafts::ComposerDrafts;
 pub use drafts::{MAXIMUM_ATTACHMENTS_PER_MESSAGE, TrayItem, TrayItemStatus};
 use editor::MessageEditor;
 use saved_drafts::{SavedDraft, WriteRequest};
-pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts};
+pub use saved_drafts::{SavedDraftsFile, forget_saved_drafts, forget_saved_drafts_now};
 use suggestions::{SuggestionList, SuggestionQuery, SuggestionState};
 
 /// Drafts are written this long after typing pauses, never on every keystroke.

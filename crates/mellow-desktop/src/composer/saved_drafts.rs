@@ -130,10 +130,11 @@ impl SavedDraftsFile {
 #[derive(Debug, Clone, Copy)]
 pub struct WriteRequest(u64);
 
-/// `<user data>/mellow/drafts`.
+/// `<user data>/mellow/drafts`, never in a Windows roaming profile: people's words stay on this
+/// machine.
 fn drafts_directory() -> Option<PathBuf> {
     Some(
-        dirs::data_dir()?
+        dirs::data_local_dir()?
             .join(APPLICATION_DIRECTORY)
             .join(DRAFTS_DIRECTORY),
     )
@@ -143,19 +144,27 @@ fn drafts_directory() -> Option<PathBuf> {
 /// Writes asked for before never land afterwards.
 pub fn forget_saved_drafts(cx: &App) {
     SESSION_EPOCH.fetch_add(1, Ordering::SeqCst);
+    cx.background_spawn(async { delete_saved_drafts() })
+        .detach();
+}
+
+/// The same, blocking: at exit, where a detached deletion might never run.
+pub fn forget_saved_drafts_now() {
+    SESSION_EPOCH.fetch_add(1, Ordering::SeqCst);
+    delete_saved_drafts();
+}
+
+fn delete_saved_drafts() {
     let Some(directory) = drafts_directory() else {
         return;
     };
-    cx.background_spawn(async move {
-        let _access = FILE_ACCESS.lock().unwrap_or_else(PoisonError::into_inner);
-        match std::fs::remove_dir_all(&directory) {
-            Err(error) if error.kind() != io::ErrorKind::NotFound => {
-                tracing::warn!(error = %error.kind(), "cannot delete the drafts after signing out");
-            }
-            _ => {}
+    let _access = FILE_ACCESS.lock().unwrap_or_else(PoisonError::into_inner);
+    match std::fs::remove_dir_all(&directory) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => {
+            tracing::warn!(error = %error.kind(), "cannot delete the drafts after signing out");
         }
-    })
-    .detach();
+        _ => {}
+    }
 }
 
 /// A crash or a full disk mid-write leaves the previous file, never half of the new one; the
