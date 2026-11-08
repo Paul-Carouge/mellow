@@ -248,6 +248,21 @@ mod tests {
         assert!(sdp.contains("a=simulcast:send q;l;h"), "{sdp}");
     }
 
+    /// `str0m` draws each new line's mid at random (3 characters) and once checked it only
+    /// against the lines already negotiated, not those added in the same offer: about one offer
+    /// in 500 named two of its 31 lines alike, and the server refused it (`InvalidOffer`), which
+    /// failed a join or a reconnection. 3 000 lines in one offer collided almost surely.
+    #[test]
+    fn every_line_of_one_offer_gets_its_own_mid() {
+        let mut rtc = Rtc::builder().build(Instant::now());
+        let mut change = rtc.sdp_api();
+        let mids: Vec<Mid> = (0..3_000)
+            .map(|_| change.add_media(MediaKind::Audio, Direction::RecvOnly, None, None, None))
+            .collect();
+        let distinct: std::collections::HashSet<&Mid> = mids.iter().collect();
+        assert_eq!(distinct.len(), mids.len());
+    }
+
     #[test]
     fn mids_are_told_apart_by_their_place() {
         let peer = offer();
