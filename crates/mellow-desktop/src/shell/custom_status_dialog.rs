@@ -190,7 +190,7 @@ fn failure_message(
 impl Render for CustomStatusForm {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalogue = strings(cx);
-        let left = custom_status_characters_left(&self.draft(cx));
+        let characters_left = custom_status_characters_left(&self.draft(cx));
         let is_busy = self
             .dialog()
             .is_some_and(|dialog| dialog.read(cx).is_busy());
@@ -207,7 +207,8 @@ impl Render for CustomStatusForm {
                         catalogue.custom_status().field(),
                         &self.input,
                     )
-                    .helper(catalogue.custom_status().characters_left(left)),
+                    .helper(catalogue.custom_status().characters_left(characters_left))
+                    .read_only(is_busy),
                 ),
             )
             .when(!self.saved.is_empty(), |form| {
