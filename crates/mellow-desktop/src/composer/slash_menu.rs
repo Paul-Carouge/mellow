@@ -8,7 +8,7 @@
 
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
+    ScrollHandle, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _, px, relative,
 };
 use mellow_client_core::shared_logic::slash_commands::{
@@ -139,6 +139,8 @@ pub struct SlashMenuState {
     /// Esc hides the list until the word changes: where the "/" it was pressed on starts.
     dismissed_start: Option<usize>,
     active_index: usize,
+    /// Keeps the active row in view: the list shows about eight of its rows.
+    scroll: ScrollHandle,
     /// "Send polls" and "Send checklists" in the open channel offer their commands.
     can_create_polls: bool,
     can_create_checklists: bool,
@@ -158,6 +160,7 @@ impl SlashMenuState {
             != self.query.as_ref().map(|query| (query.start, &query.query))
         {
             self.active_index = 0;
+            self.scroll.scroll_to_item(0);
         }
         if query.as_ref().map(|query| query.start) != self.dismissed_start {
             self.dismissed_start = None;
@@ -236,10 +239,16 @@ impl SlashMenuState {
         match next_menu_item_index(key, Some(self.active_index()), self.visible().len()) {
             Some(index) => {
                 self.active_index = index;
+                self.scroll.scroll_to_item(index);
                 true
             }
             None => false,
         }
+    }
+
+    #[must_use]
+    pub fn scroll_handle(&self) -> &ScrollHandle {
+        &self.scroll
     }
 
     pub fn hover(&mut self, index: usize) {
@@ -276,6 +285,8 @@ pub struct SlashMenuList {
     pub count_sentence: SharedString,
     pub commands: Vec<NamedSlashCommand>,
     pub active_index: usize,
+    /// The listbox's scroll, moved by the arrows to the active row.
+    pub scroll: ScrollHandle,
     pub on_choose: RowHandler,
     pub on_hover: RowHandler,
 }
@@ -403,6 +414,7 @@ impl RenderOnce for SlashMenuList {
                     .min_h(px(0.0))
                     .flex_shrink(1.0)
                     .h(relative(1.0))
+                    .track_scroll(&self.scroll)
                     .overflow_y_scroll()
                     .flex()
                     .flex_col()
@@ -491,5 +503,17 @@ mod tests {
         assert_eq!(state.visible(), []);
         state.refresh("a\n/cod", Some(6), french());
         assert_eq!(state.visible().len(), 2);
+    }
+
+    #[test]
+    fn up_from_the_first_command_reaches_the_last_of_the_full_list() {
+        let mut state = SlashMenuState::default();
+        state.refresh("/", Some(1), french());
+        let last = state.visible().len() - 1;
+        assert!(last > 8, "more commands than the list shows at once");
+        assert!(state.move_active("up"));
+        assert_eq!(state.active_index(), last);
+        assert!(state.move_active("down"));
+        assert_eq!(state.active_index(), 0);
     }
 }

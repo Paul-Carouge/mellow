@@ -1258,6 +1258,7 @@ impl Composer {
                     count_sentence: chat.slash_command_suggestions_count(count).into(),
                     commands,
                     active_index: self.slash_menu.active_index(),
+                    scroll: self.slash_menu.scroll_handle().clone(),
                     on_choose: Arc::new(move |index, window, cx| {
                         entity.update(cx, |composer, cx| {
                             composer.choose_slash_command(index, window, cx);
