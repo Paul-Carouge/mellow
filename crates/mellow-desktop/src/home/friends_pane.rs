@@ -26,12 +26,12 @@ use mellow_protocol::{
     SetRelationshipKind, Snowflake,
 };
 
-use super::presence_name;
+use super::{presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, MentionBadge, MenuAlignment,
     MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin, ModalDialog, ModalDialogEvent,
-    ShownStatus, Tooltip, focus_ring, icon, is_focus_visible, next_tab_index,
-    remembered_focus_handle, remembered_hover, with_type,
+    Tooltip, focus_ring, icon, is_focus_visible, next_tab_index, remembered_focus_handle,
+    remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
@@ -1298,15 +1298,6 @@ fn group_label(catalogue: Strings, kind: FriendsGroupKind) -> &'static str {
         FriendsGroupKind::Incoming => groups.incoming(),
         FriendsGroupKind::Outgoing => groups.outgoing(),
         FriendsGroupKind::Blocked => groups.blocked(),
-    }
-}
-
-pub(super) fn shown_presence(status: PresenceStatus) -> ShownStatus {
-    match status {
-        PresenceStatus::Online => ShownStatus::Online,
-        PresenceStatus::Idle => ShownStatus::Idle,
-        PresenceStatus::DoNotDisturb => ShownStatus::DoNotDisturb,
-        PresenceStatus::Offline => ShownStatus::Offline,
     }
 }
 

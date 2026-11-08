@@ -11,8 +11,7 @@ use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::search_text::fold_for_search;
 use mellow_protocol::{DirectMessageChannel, PresenceStatus, PublicUser};
 
-use super::friends_pane::shown_presence;
-use super::{Home, presence_name};
+use super::{Home, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, IconButton, IconButtonTone, icon, inset_focus_ring, is_focus_visible,
     remembered_focus_handle, remembered_hover, with_type,

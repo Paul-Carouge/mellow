@@ -28,7 +28,7 @@ use mellow_protocol::{
 pub use friends_pane::{FriendsPane, FriendsPaneEvent};
 pub use people_picker::{PeoplePicker, PeoplePickerEvent};
 
-use crate::components::{ModalDialog, ModalDialogEvent, TextField};
+use crate::components::{ModalDialog, ModalDialogEvent, ShownStatus, TextField};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::sign_in_form::describe_error;
@@ -64,6 +64,15 @@ pub fn participant_names_of(
         .map(display_name)
         .collect();
     strings.groups().participant_names(&names)
+}
+
+pub(crate) fn shown_presence(status: PresenceStatus) -> ShownStatus {
+    match status {
+        PresenceStatus::Online => ShownStatus::Online,
+        PresenceStatus::Idle => ShownStatus::Idle,
+        PresenceStatus::DoNotDisturb => ShownStatus::DoNotDisturb,
+        PresenceStatus::Offline => ShownStatus::Offline,
+    }
 }
 
 pub(crate) fn presence_name(strings: Strings, status: PresenceStatus) -> &'static str {

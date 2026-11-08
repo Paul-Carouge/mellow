@@ -15,9 +15,9 @@ use mellow_client_core::shared_logic::member_order::{
 use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
-use crate::components::{Avatar, AvatarPerson, Button, IconButton, ShownStatus, with_type};
-use crate::home::conversation_display_name;
+use crate::components::{Avatar, AvatarPerson, Button, IconButton, with_type};
 use crate::home::group_sheet::group_sheet_rows;
+use crate::home::{conversation_display_name, presence_name, shown_presence};
 use crate::i18n::strings;
 use crate::session::MembersLoad;
 use crate::theme::icons::IconName;
@@ -30,15 +30,6 @@ use crate::theme::tokens::{
     TYPE_CATEGORY, TYPE_HEADING_MD, TYPE_MEMBER_NAME,
 };
 use crate::theme::{color, length, theme};
-
-pub(super) fn shown_presence(status: PresenceStatus) -> ShownStatus {
-    match status {
-        PresenceStatus::Online => ShownStatus::Online,
-        PresenceStatus::Idle => ShownStatus::Idle,
-        PresenceStatus::DoNotDisturb => ShownStatus::DoNotDisturb,
-        PresenceStatus::Offline => ShownStatus::Offline,
-    }
-}
 
 impl DuskShell {
     /// "Members of Rust", or of the open group.
@@ -311,15 +302,5 @@ impl DuskShell {
                     .pb(length(SPACE_MD))
                     .children(body),
             )
-    }
-}
-
-fn presence_name(strings: crate::i18n::Strings, status: PresenceStatus) -> &'static str {
-    let presence = strings.presence();
-    match status {
-        PresenceStatus::Online => presence.online(),
-        PresenceStatus::Idle => presence.idle(),
-        PresenceStatus::DoNotDisturb => presence.do_not_disturb(),
-        PresenceStatus::Offline => presence.offline(),
     }
 }

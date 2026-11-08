@@ -14,14 +14,14 @@ use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Channel, ChannelKind, DirectMessageChannel, Permissions, Snowflake};
 
-use super::member_sheet::shown_presence;
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, icon,
     inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
-use crate::i18n::{Strings, strings};
+use crate::home::{conversation_display_name, shown_presence};
+use crate::i18n::strings;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_CATEGORY_ADD_ICON_SIZE, COMPONENT_CATEGORY_CHEVRON_SIZE, COMPONENT_CATEGORY_HEIGHT,
@@ -37,15 +37,6 @@ use crate::theme::tokens::{
     SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
-
-/// A group's own name when it has one, else its people's names; a one-to-one is the other person.
-pub(super) fn conversation_display_name(
-    conversation: &DirectMessageChannel,
-    current_user_id: Option<Snowflake>,
-    strings: Strings,
-) -> String {
-    crate::home::conversation_display_name(conversation, current_user_id, strings)
-}
 
 /// Whether the reader may send in a channel; a read-only one shows a lock (DESIGN.md §5.3).
 pub(super) fn can_send_in(state: &ClientState, channel_id: Snowflake) -> bool {

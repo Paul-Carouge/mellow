@@ -11,11 +11,12 @@ use gpui::{
 
 use mellow_client_core::shared_logic::format::display_name;
 
-use super::channel_sidebar::{can_send_in, conversation_display_name};
+use super::channel_sidebar::can_send_in;
 use super::{DuskShell, ShellLayout};
 use crate::components::{IconButton, icon, with_type};
 use crate::conversation::OpenConversation;
 use crate::home::FriendsPane;
+use crate::home::conversation_display_name;
 use crate::i18n::strings;
 use crate::navigation::Place;
 use crate::theme::icons::IconName;
