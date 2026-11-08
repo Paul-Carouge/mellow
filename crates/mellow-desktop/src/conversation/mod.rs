@@ -239,6 +239,17 @@ impl ConversationView {
         }
     }
 
+    /// The message list's focus, for the shell's `F6`.
+    #[must_use]
+    pub fn message_list_focus(&self) -> &FocusHandle {
+        &self.list_focus
+    }
+
+    /// `F6` into the message list: its rows take arrows from there.
+    pub fn focus_message_list(&self, window: &mut Window, cx: &mut App) {
+        window.focus(&self.list_focus, cx);
+    }
+
     /// Puts focus in the composer (after a place opens from the switcher, or Jump to present).
     pub fn focus_composer(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.composer

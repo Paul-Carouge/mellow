@@ -552,6 +552,18 @@ impl Composer {
         self.text(cx)
     }
 
+    /// The field's focus, for the shell's `F6`.
+    #[must_use]
+    pub fn field_focus(&self, cx: &App) -> gpui::FocusHandle {
+        self.input.read(cx).focus_handle(cx)
+    }
+
+    /// Whether the field is drawn: the reader may send in the open channel.
+    #[must_use]
+    pub fn has_field(&self) -> bool {
+        self.can_send_messages
+    }
+
     pub fn focus(&self, window: &mut Window, cx: &mut Context<Self>) {
         self.input.update(cx, |input, cx| input.focus(window, cx));
     }
