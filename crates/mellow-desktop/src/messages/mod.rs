@@ -39,7 +39,7 @@ pub use time::{
 use crate::pictures::{Animation, DisplaySize, PictureFile, PictureRequest, picture_source};
 
 /// Lengths in tokens are logical pixels at the default 16 px root size; zoom changes the root.
-const TOKEN_PIXELS_PER_REM: f32 = 16.0;
+pub(crate) const TOKEN_PIXELS_PER_REM: f32 = 16.0;
 
 /// Animated pictures play unless motion is reduced, as `isPictureAnimationWanted` decides.
 pub(crate) fn picture_animation(cx: &App) -> Animation {

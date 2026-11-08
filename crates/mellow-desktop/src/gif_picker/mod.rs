@@ -41,7 +41,7 @@ use crate::components::{
     shadow, with_type,
 };
 use crate::i18n::{Strings, strings};
-use crate::messages::{picture_animation, picture_for_box};
+use crate::messages::{TOKEN_PIXELS_PER_REM, picture_animation, picture_for_box};
 use crate::pictures::{Animation, PictureFile};
 use crate::session::{ConnectionStatus, Session};
 use crate::sign_in_form::describe_error;
@@ -67,8 +67,6 @@ const PLACEHOLDER_ASPECT_RATIOS: [f32; 9] = [1.3, 0.8, 1.0, 1.6, 1.0, 0.75, 1.2,
 const PICTURE_LOAD_MARGIN_IN_SHEETS: f32 = 0.5;
 /// The next page is asked for once the end is this close (the web's 50 % root margin).
 const NEXT_PAGE_DISTANCE_IN_SHEETS: f32 = 0.5;
-/// Lengths in tokens are logical pixels at the default 16 px root size.
-const TOKEN_PIXELS_PER_REM: f32 = 16.0;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GifPickerEvent {
