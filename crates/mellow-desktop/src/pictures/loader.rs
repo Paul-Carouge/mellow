@@ -1,18 +1,24 @@
 //! Picture bytes from the instance, on the network runtime: one authenticated client, one request
 //! per file at a time however many views ask, within the server's download budget, retried once
 //! like the web client's `image-retry.ts`, and cached by kind (disk or memory, see `disk_cache`).
+//! Klipy's media come on their own client and are kept in memory only, never on disk.
 
 use std::collections::HashMap;
+use std::future::Future;
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 use std::time::Duration;
 
-use mellow_client_core::{ClientError, Download, DownloadableFile, RestClient};
-use tokio::sync::oneshot;
+use mellow_client_core::{
+    ClientError, Download, DownloadableFile, KlipyClient, KlipyError, RestClient,
+};
+use tokio::sync::{Semaphore, oneshot};
 
-use super::PictureLoadError;
+use gpui::SharedString;
+
 use super::disk_cache::{DiskCache, disk_file_name};
 use super::limiter::{BUDGET_WINDOW, CONCURRENT_DOWNLOADS, DOWNLOADS_PER_WINDOW, DownloadLimiter};
 use super::lru::ByteBoundedLru;
+use super::{PictureFile, PictureLoadError};
 
 /// The web client's `IMAGE_RETRY_DELAY_MILLISECONDS`: long enough for a busy instance to free a
 /// download slot, short enough to go unnoticed.
@@ -21,9 +27,13 @@ const RETRY_DELAY: Duration = Duration::from_secs(2);
 const MAXIMUM_PROFILE_PICTURE_BYTES: usize = 16 * 1024 * 1024;
 /// Attachments over 16 MP keep their uploaded file (ADR-0033), which can be a large PNG.
 const MAXIMUM_ATTACHMENT_PICTURE_BYTES: usize = 128 * 1024 * 1024;
-/// Conversation pictures kept in memory, as files, so a revalidation answered `304` costs no
-/// transfer. Decoded pictures have their own cache in the store.
+/// Conversation pictures and Klipy's media kept in memory, as files, so a revalidation answered
+/// `304` costs no transfer and a new decode of a GIF (played after being kept still, another size)
+/// does not download it again. Decoded pictures have their own cache in the store.
 pub(crate) const FILES_IN_MEMORY_CAPACITY_BYTES: usize = 64 * 1024 * 1024;
+/// Klipy's pictures loaded at once: a page of the GIF picker asks for 24, as a browser would
+/// spread them over a few connections.
+const CONCURRENT_KLIPY_DOWNLOADS: usize = 6;
 
 pub(crate) type PictureBytes = Arc<[u8]>;
 type FetchResult = Result<PictureBytes, PictureLoadError>;
@@ -48,6 +58,16 @@ fn maximum_bytes(file: DownloadableFile) -> usize {
     }
 }
 
+impl From<KlipyError> for PictureLoadError {
+    fn from(error: KlipyError) -> Self {
+        match error {
+            KlipyError::Unreachable | KlipyError::RateLimited => Self::Unavailable,
+            KlipyError::TooLarge => Self::TooLarge,
+            KlipyError::Refused | KlipyError::Failed => Self::Refused,
+        }
+    }
+}
+
 impl From<ClientError> for PictureLoadError {
     fn from(error: ClientError) -> Self {
         match error {
@@ -63,10 +83,13 @@ pub(crate) struct PictureLoader {
     rest: RestClient,
     limiter: DownloadLimiter,
     disk_cache: Option<Arc<DiskCache>>,
-    files_in_memory: Mutex<ByteBoundedLru<DownloadableFile, FileInMemory>>,
+    files_in_memory: Mutex<ByteBoundedLru<PictureFile, FileInMemory>>,
     /// Files being downloaded, with the callers waiting for the first caller's answer.
-    in_flight: Mutex<HashMap<DownloadableFile, Vec<oneshot::Sender<FetchResult>>>>,
+    in_flight: Mutex<HashMap<PictureFile, Vec<oneshot::Sender<FetchResult>>>>,
     retry_delay: Duration,
+    /// Klipy's media (ADR-0042), on its own client: no Mellow token, no disk cache.
+    klipy: Option<KlipyClient>,
+    klipy_downloads: Semaphore,
 }
 
 /// Lock a map that holds no invariant a panicking holder could break halfway.
@@ -78,7 +101,7 @@ fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
 /// `Unavailable` from their closed channel instead of waiting forever.
 struct InFlightEntry<'a> {
     loader: &'a PictureLoader,
-    file: DownloadableFile,
+    file: PictureFile,
 }
 
 impl InFlightEntry<'_> {
@@ -113,6 +136,10 @@ impl PictureLoader {
             files_in_memory: Mutex::new(ByteBoundedLru::new(FILES_IN_MEMORY_CAPACITY_BYTES)),
             in_flight: Mutex::new(HashMap::new()),
             retry_delay: RETRY_DELAY,
+            klipy: KlipyClient::new()
+                .inspect_err(|error| tracing::warn!(%error, "cannot load GIFs from KLIPY"))
+                .ok(),
+            klipy_downloads: Semaphore::new(CONCURRENT_KLIPY_DOWNLOADS),
         }
     }
 
@@ -135,6 +162,35 @@ impl PictureLoader {
                 return Ok(bytes.into());
             }
         }
+        self.once_at_a_time(
+            PictureFile::Instance(file),
+            self.download_retrying_once(file),
+        )
+        .await
+    }
+
+    /// A picture on Klipy's media hosts, from the address Klipy returned: from memory, or from
+    /// Klipy. Never written to disk, as a browser's memory cache would keep it.
+    pub(crate) async fn fetch_klipy(&self, url: SharedString) -> FetchResult {
+        let file = PictureFile::Klipy(url.clone());
+        if let Some(copy) = lock(&self.files_in_memory).get(&file) {
+            return Ok(Arc::clone(&copy.bytes));
+        }
+        self.once_at_a_time(file, self.download_klipy(url)).await
+    }
+
+    /// Klipy's client, for the GIF picker to share its connections.
+    pub(crate) fn klipy(&self) -> Option<&KlipyClient> {
+        self.klipy.as_ref()
+    }
+
+    /// Runs `download` unless `file` is already being downloaded, in which case it waits for
+    /// that answer instead.
+    async fn once_at_a_time(
+        &self,
+        file: PictureFile,
+        download: impl Future<Output = FetchResult>,
+    ) -> FetchResult {
         let waiter = {
             let mut in_flight = lock(&self.in_flight);
             if let Some(waiters) = in_flight.get_mut(&file) {
@@ -142,7 +198,7 @@ impl PictureLoader {
                 waiters.push(sender);
                 Some(receiver)
             } else {
-                in_flight.insert(file, Vec::new());
+                in_flight.insert(file.clone(), Vec::new());
                 None
             }
         };
@@ -150,11 +206,34 @@ impl PictureLoader {
             return receiver.await.unwrap_or(Err(PictureLoadError::Unavailable));
         }
         let entry = InFlightEntry { loader: self, file };
-        let result = self.download_retrying_once(file).await;
+        let result = download.await;
         for waiter in entry.finish() {
             let _ = waiter.send(result.clone());
         }
         result
+    }
+
+    async fn download_klipy(&self, url: SharedString) -> FetchResult {
+        let Some(klipy) = &self.klipy else {
+            return Err(PictureLoadError::Unavailable);
+        };
+        let bytes: PictureBytes = {
+            // Closed only with the loader, which nobody waits on then.
+            let Ok(_permit) = self.klipy_downloads.acquire().await else {
+                return Err(PictureLoadError::Unavailable);
+            };
+            klipy.media(&url).await?.into()
+        };
+        let byte_count = bytes.len();
+        lock(&self.files_in_memory).insert(
+            PictureFile::Klipy(url),
+            FileInMemory {
+                bytes: Arc::clone(&bytes),
+                entity_tag: None,
+            },
+            byte_count,
+        );
+        Ok(bytes)
     }
 
     async fn download_retrying_once(&self, file: DownloadableFile) -> FetchResult {
@@ -168,7 +247,9 @@ impl PictureLoader {
     }
 
     async fn download(&self, file: DownloadableFile) -> Result<PictureBytes, ClientError> {
-        let in_memory = lock(&self.files_in_memory).get(&file).cloned();
+        let in_memory = lock(&self.files_in_memory)
+            .get(&PictureFile::Instance(file))
+            .cloned();
         let answer = {
             let _permit = self.limiter.start_download().await;
             self.rest
@@ -201,7 +282,7 @@ impl PictureLoader {
         } else {
             let byte_count = bytes.len();
             lock(&self.files_in_memory).insert(
-                file,
+                PictureFile::Instance(file),
                 FileInMemory {
                     bytes: Arc::clone(&bytes),
                     entity_tag: downloaded.entity_tag,
@@ -220,9 +301,11 @@ impl PictureLoader {
     }
 
     /// Drops a cached copy that did not decode, so the next view downloads it again.
-    pub(crate) async fn forget(&self, file: DownloadableFile) {
+    pub(crate) async fn forget(&self, file: PictureFile) {
         lock(&self.files_in_memory).remove(&file);
-        if let Some((disk_cache, name)) = self.disk_cache_and_name(file) {
+        if let PictureFile::Instance(file) = file
+            && let Some((disk_cache, name)) = self.disk_cache_and_name(file)
+        {
             let _ = tokio::task::spawn_blocking(move || disk_cache.remove(&name)).await;
         }
     }

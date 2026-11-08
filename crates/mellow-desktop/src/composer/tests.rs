@@ -584,3 +584,49 @@ fn reads_a_file_only_up_to_the_limit() {
     assert_eq!(read_file_within(&path, 5).unwrap(), Some(vec![b'x'; 5]));
     assert_eq!(read_file_within(&path, 4).unwrap(), None);
 }
+
+#[gpui::test]
+fn the_gif_button_shows_with_gifs_and_a_gif_goes_out_with_the_reply_leaving_the_text(
+    cx: &mut TestAppContext,
+) {
+    const GIF: &str = "https://static.klipy.com/ii/a/b/md.webp";
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let gif_button_bounds =
+        |cx: &mut VisualTestContext| cx.update(|_, cx| composer.read(cx).gif_button_bounds(cx));
+    assert_eq!(gif_button_bounds(cx), None, "no GIFs on this instance");
+
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.set_can_choose_gifs(true, cx)));
+    cx.run_until_parked();
+    let bounds = gif_button_bounds(cx).expect("the GIF button is drawn");
+    cx.simulate_click(bounds.center(), gpui::Modifiers::none());
+    cx.run_until_parked();
+    assert_eq!(take_events(&harness, cx), [ComposerEvent::ToggleGifPicker]);
+
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.set_reply_target(
+                Some(ReplyTarget {
+                    message_id: Snowflake::from_raw(77),
+                    author_name: "Ana".into(),
+                }),
+                window,
+                cx,
+            );
+            composer.focus(window, cx);
+        });
+    });
+    cx.simulate_input("still writing");
+    take_events(&harness, cx);
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.send_gif(GIF.into(), cx)));
+    assert_eq!(
+        take_events(&harness, cx),
+        [ComposerEvent::Send(ComposedMessage {
+            channel_id: channel(1),
+            text: GIF.into(),
+            reply_to: Some(Snowflake::from_raw(77)),
+            attachments: Vec::new(),
+        })]
+    );
+    assert_eq!(text(&harness, cx), "still writing");
+}

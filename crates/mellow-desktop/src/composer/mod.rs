@@ -8,6 +8,7 @@
 mod drafts;
 mod editor;
 mod emoji_button;
+mod gif_button;
 mod saved_drafts;
 mod slash_menu;
 mod suggestions;
@@ -155,6 +156,8 @@ pub enum ComposerEvent {
     Unblock(BlockedRecipient),
     /// "/poll", "/checklist" or "/progress" chose a dialog; the "/query" is gone already.
     OpenCardDialog(SlashCommandId),
+    /// The GIF button: open the GIF picker beside it, or close it.
+    ToggleGifPicker,
     /// The emoji button or Ctrl+E: the chat opens the picker beside the button, drawn at
     /// `anchor`, and gives the pick back through [`Composer::insert_at_caret`].
     OpenEmojiPicker {
@@ -240,6 +243,7 @@ pub struct Composer {
     last_typing_sent_at: Option<Instant>,
     maximum_rows: usize,
     kept_drafts: KeptDrafts,
+    gif_button: gif_button::GifButton,
     emoji_button_bounds: emoji_button::EmojiButtonBounds,
     is_emoji_picker_open: bool,
     _subscriptions: Vec<Subscription>,
@@ -305,6 +309,7 @@ impl Composer {
                 pending_write: None,
                 window: window.window_handle(),
             },
+            gif_button: gif_button::GifButton::new(cx),
             emoji_button_bounds: cx.new(|_| None),
             is_emoji_picker_open: false,
             _subscriptions: subscriptions,
@@ -1548,11 +1553,12 @@ impl Render for Composer {
         };
 
         let emoji_button = self.emoji_button(cx);
-        let tray = (self.can_send_messages && !self.drafts.tray().is_empty())
-            .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
 
         // The base row is as tall as the user card; buttons sit centred on it.
         let button_margin = (SIZE_DOCK_HEIGHT - COMPONENT_COMPOSER_ATTACH_BUTTON_SIZE) / 2.0;
+        let gif_button = self.render_gif_button(button_margin, is_editing, cx);
+        let tray = (self.can_send_messages && !self.drafts.tray().is_empty())
+            .then(|| tray::tray(self.drafts.tray(), &entity, catalogue, window, cx));
         let base_row = if self.can_send_messages {
             let attach = entity.clone();
             let paste = entity.clone();
@@ -1621,6 +1627,7 @@ impl Render for Composer {
                             .child(characters_left.to_string()),
                     )
                 })
+                .children(gif_button)
                 .child(emoji_button)
         } else if let Some(recipient) = self.blocked_recipient.clone() {
             // `Composer.svelte`: the sentence, then "Unblock", wrapping below it when narrow.

@@ -15,6 +15,7 @@ pub mod connection_banner;
 pub mod conversation;
 pub mod dock_and_tray;
 pub mod emoji_picker;
+pub mod gif_picker;
 pub mod home;
 pub mod i18n;
 mod local_widgets;

@@ -17,6 +17,7 @@ mod chrome;
 mod emoji_reactions;
 mod forward_dialog;
 mod forwarding;
+mod gif_picker_host;
 mod pins_panel;
 mod poll_voters_dialog;
 mod reactions_dialog;
@@ -159,6 +160,10 @@ pub struct ConversationView {
     is_pins_panel_open: bool,
     /// Where a click outside closed the pins panel: the toggle under it must not reopen it.
     pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
+    /// The GIF picker while it is open (`gif_picker_host`).
+    gif_picker: Option<(Entity<crate::gif_picker::GifPicker>, Subscription)>,
+    /// Where a click outside closed the GIF picker: the GIF button under it must not reopen it.
+    gif_picker_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
     /// What went well, said above the composer until the next channel or message sent ("Forwarded
@@ -258,6 +263,8 @@ impl ConversationView {
             confirmation: None,
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
+            gif_picker: None,
+            gif_picker_dismissed_by_pointer_at: None,
             action_error: None,
             notice: None,
             pending_origin_jump: None,
@@ -352,6 +359,7 @@ impl ConversationView {
             self.show_composer_picker_state(cx);
             self.confirmation = None;
             self.is_pins_panel_open = false;
+            self.close_gif_picker(cx);
             self.action_error = None;
             self.notice = None;
             self.entries.clear();
@@ -768,6 +776,7 @@ impl ConversationView {
                     self.open_card_dialog(kind, window, cx);
                 }
             }
+            ComposerEvent::ToggleGifPicker => self.toggle_gif_picker(window, cx),
             ComposerEvent::OpenEmojiPicker { anchor } => self.toggle_emoji_picker(
                 emoji_reactions::EmojiTarget::Composer,
                 *anchor,

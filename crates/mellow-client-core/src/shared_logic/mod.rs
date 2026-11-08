@@ -17,6 +17,7 @@ pub mod format;
 pub mod forward_messages;
 pub mod friends;
 pub mod group_conversations;
+pub mod klipy;
 mod linguist_colours;
 pub mod link_previews;
 pub mod markdown;
