@@ -9,6 +9,7 @@
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
 mod chrome;
+mod emoji_reactions;
 mod pins_panel;
 mod reactions_dialog;
 mod rows;
@@ -46,6 +47,7 @@ use crate::theme::delay;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
+use self::emoji_reactions::is_reaction_given;
 use self::rows::Entry;
 use self::rules::reactor_sentence;
 
@@ -134,6 +136,9 @@ pub struct ConversationView {
     /// The row keyboard focus is on, while the list has focus (one Tab stop, arrows move).
     focused_row_key: Option<String>,
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
+    emoji_picker: Option<emoji_reactions::OpenEmojiPicker>,
+    /// Where a click on its opener closed the picker: that click must not reopen it.
+    emoji_picker_dismissed_at: Option<(gpui::Point<gpui::Pixels>, emoji_reactions::EmojiTarget)>,
     /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
@@ -227,6 +232,8 @@ impl ConversationView {
             hovered_message_id: None,
             focused_row_key: None,
             menu: None,
+            emoji_picker: None,
+            emoji_picker_dismissed_at: None,
             confirmation: None,
             is_pins_panel_open: false,
             pins_dismissed_by_pointer_at: None,
@@ -314,6 +321,8 @@ impl ConversationView {
             self.hovered_message_id = None;
             self.focused_row_key = None;
             self.menu = None;
+            self.emoji_picker = None;
+            self.show_composer_picker_state(cx);
             self.confirmation = None;
             self.is_pins_panel_open = false;
             self.action_error = None;
@@ -509,6 +518,8 @@ impl ConversationView {
             can_send,
             can_attach: can_send && has(Permissions::ATTACH_FILES),
             can_join_reactions: can_read_history,
+            can_add_reactions: can_read_history
+                && permissions.is_some_and(|bits| bits.contains(Permissions::ADD_REACTIONS)),
             can_manage_messages,
             can_manage_pins: is_conversation || can_manage_messages,
         }
@@ -532,7 +543,9 @@ impl ConversationView {
             is_pinned: message.pinned,
             can_send_messages: rights.can_send,
             can_manage_messages: rights.can_manage_messages,
+            has_reactions: !message.reactions.is_empty(),
             can_join_reactions: rights.can_join_reactions,
+            can_add_reactions: rights.can_add_reactions,
             can_manage_pins: rights.can_manage_pins,
         }
     }
@@ -702,6 +715,12 @@ impl ConversationView {
             ComposerEvent::Cancel(Cancelled::Nothing) => self.mark_as_read(cx),
             ComposerEvent::Cancel(Cancelled::Editing { .. } | Cancelled::Reply) => {}
             ComposerEvent::Unblock(recipient) => self.unblock(recipient, cx),
+            ComposerEvent::OpenEmojiPicker { anchor } => self.toggle_emoji_picker(
+                emoji_reactions::EmojiTarget::Composer,
+                *anchor,
+                window,
+                cx,
+            ),
         }
         cx.notify();
     }
@@ -1149,28 +1168,33 @@ impl ConversationView {
         };
         let catalogue = strings(cx);
         let facts = self.message_facts(&message, cx);
-        let reaction_keys: Vec<String> = message
-            .reactions
-            .iter()
-            .map(|reaction| reaction.emoji.clone())
-            .collect();
+        let quick_reactions = self.quick_reactions(cx);
         let view = cx.entity().downgrade();
-        let entries = message_menu_actions(facts, &reaction_keys)
+        let entries = message_menu_actions(facts, &quick_reactions)
             .into_iter()
             .map(|line| {
                 let MenuLine::Action(action) = line else {
                     return MenuEntry::Separator;
                 };
                 let view = view.clone();
-                let (label, icon, tone) = match &action {
-                    MessageMenuAction::ToggleReaction(key) => {
-                        let shown = reaction_label(key, &self.sources.custom_emojis, catalogue);
-                        (
-                            catalogue.reactions().react_with(&shown),
-                            IconName::Smiley,
-                            MenuItemTone::Normal,
-                        )
+                // A quick reaction says whether it is given, as its menuitemcheckbox does on the web.
+                let is_given = match &action {
+                    MessageMenuAction::ToggleReaction(emoji) => {
+                        Some(is_reaction_given(&message, emoji))
                     }
+                    _ => None,
+                };
+                let (label, icon, tone) = match &action {
+                    MessageMenuAction::ToggleReaction(emoji) => (
+                        catalogue.reactions().react_with(emoji),
+                        IconName::Smiley,
+                        MenuItemTone::Normal,
+                    ),
+                    MessageMenuAction::AddReaction => (
+                        catalogue.reactions().add_reaction().to_owned(),
+                        IconName::Smiley,
+                        MenuItemTone::Normal,
+                    ),
                     MessageMenuAction::Reply => (
                         catalogue.messages().reply().to_owned(),
                         IconName::ArrowBendUpLeft,
@@ -1218,7 +1242,8 @@ impl ConversationView {
                             view.run_menu_action(message_id, action.clone(), window, cx);
                         });
                     })
-                    .tone(tone),
+                    .tone(tone)
+                    .checked(is_given),
                 )
             })
             .collect();
@@ -1249,7 +1274,12 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) {
         match action {
-            MessageMenuAction::ToggleReaction(key) => self.toggle_reaction(message_id, &key, cx),
+            MessageMenuAction::ToggleReaction(emoji) => {
+                self.react_with_quick_reaction(message_id, &emoji, cx);
+            }
+            MessageMenuAction::AddReaction => {
+                self.open_reaction_picker_beside_row(message_id, window, cx);
+            }
             MessageMenuAction::Reply => self.start_reply(message_id, window, cx),
             MessageMenuAction::Edit => self.start_edit(message_id, window, cx),
             MessageMenuAction::CopyText => {
@@ -1606,6 +1636,7 @@ struct ChannelRights {
     can_send: bool,
     can_attach: bool,
     can_join_reactions: bool,
+    can_add_reactions: bool,
     can_manage_messages: bool,
     can_manage_pins: bool,
 }
