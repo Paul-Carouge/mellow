@@ -48,6 +48,7 @@ pub struct MessageMarkdown {
     id: ElementId,
     body: Rc<MessageBody>,
     edited: Option<EditedMarker>,
+    selection_order: u64,
 }
 
 impl MessageMarkdown {
@@ -57,12 +58,20 @@ impl MessageMarkdown {
             id: id.into(),
             body,
             edited: None,
+            selection_order: 0,
         }
     }
 
     #[must_use]
     pub fn edited(mut self, edited: Option<EditedMarker>) -> Self {
         self.edited = edited;
+        self
+    }
+
+    /// Where the body's texts start in the window's reading order; its texts follow one by one.
+    #[must_use]
+    pub fn selection_order(mut self, order: u64) -> Self {
+        self.selection_order = order;
         self
     }
 }
@@ -77,6 +86,7 @@ struct BlockContext<'a> {
     is_jumbo: bool,
     /// Numbers the texts and code blocks, so each keeps its own state between frames.
     next_index: usize,
+    selection_order: u64,
 }
 
 impl BlockContext<'_> {
@@ -114,14 +124,16 @@ impl BlockContext<'_> {
         } else {
             COMPONENT_CUSTOM_EMOJI_INLINE_SIZE
         };
+        let id = self.next_id("text");
         RichTextElement::new(
-            self.next_id("text"),
+            id,
             rich_text,
             picture_side,
             Some(self.revealed_spoilers.clone()),
             self.tokens,
             window,
         )
+        .selection_order(self.selection_order + self.next_index as u64)
     }
 }
 
@@ -304,6 +316,7 @@ impl RenderOnce for MessageMarkdown {
             revealed: &revealed,
             is_jumbo: self.body.is_jumbo,
             next_index: 0,
+            selection_order: self.selection_order,
         };
         // A jumbo paragraph's size would carry over to "(edited)": it goes on its own line.
         let ends_in_text = !self.body.is_jumbo

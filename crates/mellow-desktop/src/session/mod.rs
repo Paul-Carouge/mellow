@@ -23,7 +23,7 @@ use zeroize::Zeroizing;
 mod blocks;
 mod messages;
 
-pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
+pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
 use crate::composer::{forget_saved_drafts, forget_saved_drafts_now};
 use crate::pictures::{end_picture_session, start_picture_session};

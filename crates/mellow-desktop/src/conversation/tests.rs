@@ -194,7 +194,7 @@ fn the_new_divider_sits_above_the_first_unread_message_until_esc_in_the_composer
                 } => Some(message_id),
                 _ => None,
             },
-            rows::Entry::HistoryStart => None,
+            rows::Entry::HistoryStart | rows::Entry::BlockedRun(_) => None,
         })
     };
     view.read_with(cx, |view, cx| {
@@ -466,9 +466,7 @@ fn an_older_page_landing_at_the_history_start_keeps_the_rows_read_in_place(
     });
 }
 
-#[gpui::test]
-fn a_conversation_with_someone_blocked_locks_the_composer_until_unblocked(cx: &mut TestAppContext) {
-    let (view, session, cx) = open_general(cx, Vec::new(), None);
+fn block_ana(session: &Entity<Session>, cx: &mut VisualTestContext) {
     session.update(cx, |session, cx| {
         session
             .state_mut()
@@ -479,6 +477,285 @@ fn a_conversation_with_someone_blocked_locks_the_composer_until_unblocked(cx: &m
             });
         cx.emit(StateChanged(vec![StateChange::Relationships]));
     });
+    cx.run_until_parked();
+}
+
+fn blocked_runs(view: &Entity<ConversationView>, cx: &mut VisualTestContext) -> Vec<(usize, bool)> {
+    view.read_with(cx, |view, _| {
+        view.entries
+            .iter()
+            .filter_map(|entry| match entry {
+                rows::Entry::BlockedRun(run) => Some((run.message_ids.len(), run.is_revealed)),
+                _ => None,
+            })
+            .collect()
+    })
+}
+
+#[gpui::test]
+fn a_blocked_authors_run_folds_into_one_row_that_enter_shows_and_hides(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(
+        cx,
+        vec![
+            message(10_001, &ana(), "one"),
+            message(10_002, &ana(), "two"),
+            message(10_003, &me(), "mine"),
+        ],
+        None,
+    );
+    block_ana(&session, cx);
+    assert_eq!(blocked_runs(&view, cx), [(2, false)]);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.entries.len()),
+        3,
+        "the history start, the folded run and the reader's message"
+    );
+
+    focus_list(&view, cx);
+    press(cx, "up");
+    press(cx, "up");
+    press(cx, "enter");
+    assert_eq!(blocked_runs(&view, cx), [(2, true)]);
+    assert_eq!(view.read_with(cx, |view, _| view.entries.len()), 5);
+
+    press(cx, "enter");
+    assert_eq!(blocked_runs(&view, cx), [(2, false)]);
+}
+
+#[gpui::test]
+fn a_new_message_from_someone_else_is_read_out_but_not_the_first_page_or_a_blocked_one(
+    cx: &mut TestAppContext,
+) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hello")], None);
+    let announcement =
+        |cx: &mut VisualTestContext| view.read_with(cx, |view, _| view.announcement.to_string());
+    assert_eq!(announcement(cx), "", "the first page is not read out");
+
+    let arrive = |message: Message, cx: &mut VisualTestContext| {
+        session.update(cx, |session, cx| {
+            let change = session
+                .state_mut()
+                .apply_event(mellow_protocol::GatewayEvent::MessageCreate(message), 0);
+            cx.emit(StateChanged(vec![change]));
+        });
+        cx.run_until_parked();
+    };
+    arrive(message(10_002, &ana(), "are you there?"), cx);
+    assert_eq!(announcement(cx), "Ana: are you there?");
+
+    arrive(message(10_003, &me(), "yes"), cx);
+    assert_eq!(
+        announcement(cx),
+        "Ana: are you there?",
+        "the reader's own is not"
+    );
+
+    block_ana(&session, cx);
+    arrive(message(10_004, &ana(), "hidden"), cx);
+    assert_eq!(
+        announcement(cx),
+        "Ana: are you there?",
+        "a blocked author is not"
+    );
+}
+
+fn jump_to(view: &Entity<ConversationView>, message_id: u64, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.jump_to_message(Snowflake::from_raw(message_id), window, cx);
+        });
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn a_jump_to_a_loaded_pin_focuses_and_lights_it_and_jump_to_present_comes_back(
+    cx: &mut TestAppContext,
+) {
+    let (view, _session, cx) = open_general(cx, many_messages(40), None);
+    jump_to(&view, 10_005, cx);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.focused_row_key.as_deref(), Some("10005"));
+        assert_eq!(view.highlight.map(|(id, _)| id.raw()), Some(10_005));
+        assert!(!view.is_at_latest());
+    });
+    cx.update(|_, cx| view.update(cx, ConversationView::jump_to_present));
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.is_at_latest()));
+}
+
+#[gpui::test]
+fn a_jump_replaced_by_another_drops_its_late_answer(cx: &mut TestAppContext) {
+    // A full first page: the first jump has to load older history, which fails without an
+    // instance; its answer comes after the second jump started and must not reach the view.
+    let (view, _session, cx) = open_general(cx, many_messages(60), None);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.jump_to_message(Snowflake::from_raw(5), window, cx);
+            view.jump_to_message(Snowflake::from_raw(10_005), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    view.read_with(cx, |view, _| {
+        assert_eq!(
+            view.action_error, None,
+            "the first jump's failure is dropped"
+        );
+        assert_eq!(view.highlight.map(|(id, _)| id.raw()), Some(10_005));
+    });
+}
+
+#[gpui::test]
+fn an_earlier_jumps_timer_never_puts_out_a_later_highlight(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, many_messages(40), None);
+    let half = delay(MOTION_DELAY_JUMP_HIGHLIGHT) / 2;
+    jump_to(&view, 10_005, cx);
+    cx.executor().advance_clock(half);
+    let help = OpenConversation {
+        channel_id: RUST_HELP,
+        label: "#help".to_owned(),
+        ..general()
+    };
+    for place in [help, general()] {
+        cx.update(|_, cx| view.update(cx, |view, cx| view.set_place(Some(place), cx)));
+        cx.run_until_parked();
+    }
+    jump_to(&view, 10_006, cx);
+    // The first jump's timer ends here; the second one's has half its time left.
+    cx.executor().advance_clock(half);
+    cx.run_until_parked();
+    assert_eq!(
+        view.read_with(cx, |view, _| view.highlight.map(|(id, _)| id.raw())),
+        Some(10_006)
+    );
+}
+
+#[gpui::test]
+fn an_older_page_extending_a_folded_run_keeps_its_row_and_focus(cx: &mut TestAppContext) {
+    // A full page, all from Ana: the channel has older history.
+    let page: Vec<Message> = (101..=150)
+        .map(|id| message(10_000 + id, &ana(), "blocked"))
+        .collect();
+    let (view, session, cx) = open_general(cx, page, None);
+    block_ana(&session, cx);
+    let run_key = view.read_with(cx, |view, _| view.entries[1].key());
+    view.update(cx, |view, cx| {
+        view.focused_row_key = Some(run_key.clone());
+        view.list.scroll_to(ListOffset::default());
+        view.visit.has_reader_scrolled = true;
+        cx.notify();
+    });
+    cx.run_until_parked();
+
+    let older: Vec<Message> = (91..=100)
+        .map(|id| message(10_000 + id, &ana(), "older"))
+        .collect();
+    session.update(cx, |session, cx| {
+        let change = session.state_mut().insert_history_page(RUST_GENERAL, older);
+        cx.emit(StateChanged(vec![change]));
+    });
+    cx.run_until_parked();
+
+    assert_eq!(blocked_runs(&view, cx), [(60, false)]);
+    view.read_with(cx, |view, _| {
+        assert_eq!(view.entries[1].key(), run_key, "the run keeps its key");
+        assert!(
+            view.focused_blocked_run().is_some(),
+            "keyboard focus stays on the run"
+        );
+    });
+}
+
+#[gpui::test]
+fn a_jump_to_a_message_before_the_channel_start_says_it_is_gone(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, many_messages(30), None);
+    jump_to(&view, 5, cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.action_error.clone()),
+        Some("This message was deleted, or you can no longer read it.".into())
+    );
+}
+
+#[gpui::test]
+fn a_jump_that_cannot_load_older_history_says_so(cx: &mut TestAppContext) {
+    // A full first page: older history exists, and this session has no instance to ask.
+    let (view, _session, cx) = open_general(cx, many_messages(60), None);
+    jump_to(&view, 5, cx);
+    assert_eq!(
+        view.read_with(cx, |view, _| view.action_error.clone()),
+        Some("Couldn't open the message".into())
+    );
+}
+
+#[gpui::test]
+fn files_dropped_over_the_messages_go_to_the_composer_tray_but_not_a_folder(
+    cx: &mut TestAppContext,
+) {
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    // A conversation lets the reader attach files; the sample server does not.
+    cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            view.set_place(
+                Some(OpenConversation {
+                    channel_id: crate::shell_fixtures::CONVERSATION_ANA,
+                    guild_id: None,
+                    label: "Ana".to_owned(),
+                    composer_label: "Message @Ana".to_owned(),
+                    hero_icon: IconName::At,
+                    hero_title: "Ana".to_owned(),
+                    hero_sentence: String::new(),
+                    topic: String::new(),
+                }),
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    let directory = tempfile::tempdir().unwrap();
+    let file = directory.path().join("notes.txt");
+    std::fs::write(&file, b"notes").unwrap();
+    // Over the messages, well above the composer.
+    let position = gpui::point(px(450.0), px(100.0));
+    cx.simulate_event(gpui::FileDropEvent::Entered {
+        position,
+        paths: gpui::ExternalPaths(vec![file, directory.path().to_path_buf()].into()),
+    });
+    cx.run_until_parked();
+    cx.simulate_event(gpui::FileDropEvent::Submit { position });
+    cx.run_until_parked();
+    let tray_len = view.read_with(cx, |view, cx| view.composer().read(cx).tray_len());
+    assert_eq!(tray_len, 1, "the file, not the folder");
+}
+
+#[gpui::test]
+fn the_menu_opens_who_reacted_in_a_dialog_that_esc_closes(cx: &mut TestAppContext) {
+    let mut liked = message(10_001, &ana(), "hi");
+    liked.reactions = vec![mellow_protocol::ReactionSummary {
+        emoji: "👍".into(),
+        count: 2,
+        me: false,
+    }];
+    let (view, _session, cx) = open_general(cx, vec![liked], None);
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.run_menu_action(
+                Snowflake::from_raw(10_001),
+                MessageMenuAction::ViewReactions,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_some()));
+    press(cx, "escape");
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_none()));
+}
+
+#[gpui::test]
+fn a_conversation_with_someone_blocked_locks_the_composer_until_unblocked(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, Vec::new(), None);
+    block_ana(&session, cx);
     let conversation_with_ana = OpenConversation {
         channel_id: crate::shell_fixtures::CONVERSATION_ANA,
         guild_id: None,

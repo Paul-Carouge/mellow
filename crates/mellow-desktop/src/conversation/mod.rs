@@ -10,42 +10,50 @@
 
 mod chrome;
 mod pins_panel;
+mod reactions_dialog;
 mod rows;
 pub mod rules;
 #[cfg(test)]
 mod tests;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use gpui::{
-    App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent, ListAlignment,
-    ListOffset, ListState, SharedString, Subscription, Task, Window, px,
+    AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent,
+    ListAlignment, ListOffset, ListState, SharedString, Subscription, Task, Window, px,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
-use mellow_client_core::state::{StateChange, UnreadMarker};
+use mellow_client_core::state::{
+    MAXIMUM_HISTORY_PAGE_SIZE, MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE, StateChange, UnreadMarker,
+};
 use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
 use crate::components::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent,
+    ModalDialog, ModalDialogEvent, Tooltip,
 };
 use crate::composer::{
     BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
 };
 use crate::i18n::strings;
-use crate::messages::MessageBodyCache;
-use crate::session::{HistoryStatus, SendRefused, Session, StateChanged};
+use crate::messages::{MessageBodyCache, ReactionPill};
+use crate::session::{HistoryReach, HistoryStatus, SendRefused, Session, StateChanged};
+use crate::theme::delay;
 use crate::theme::icons::IconName;
-use crate::theme::tokens::COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
+use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
 use self::rows::Entry;
-use self::rules::{MenuLine, MessageFacts, MessageMenuAction, message_menu_lines};
+use self::rules::{
+    MenuLine, MessageFacts, MessageMenuAction, message_menu_lines, reactor_sentence,
+};
 
 /// Rows measured beyond the visible part, so scrolling and older pages do not pop in.
 const LIST_OVERDRAW: f32 = COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
 /// Page Up and Page Down scroll this share of the list's height.
 const PAGE_SCROLL_SHARE: f32 = 0.9;
+/// Who-reacted sentences kept before the cache starts over: one per pill hovered in a visit.
+const MAXIMUM_REACTOR_SENTENCES: usize = 256;
 /// The typing line forgets people whose notice expired; refreshed this often while it shows.
 const TYPING_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
@@ -78,6 +86,8 @@ struct Visit {
     has_reader_scrolled: bool,
     /// The list opened on the "New" divider once; later rows never move it again.
     has_opened_on_divider: bool,
+    /// The newest row already read out: rows that come after it are new to announce.
+    last_announced_key: Option<String>,
 }
 
 /// What a confirmation dialog will do once confirmed.
@@ -116,11 +126,14 @@ pub struct ConversationView {
     sources: MessageMarkupSources,
     body_cache: MessageBodyCache,
     visit: Visit,
+    /// A blocked author's messages the reader chose to show, for this visit only.
+    revealed_blocked_message_ids: HashSet<Snowflake>,
     /// The message row under the pointer: its hover bar shows.
     hovered_message_id: Option<Snowflake>,
     /// The row keyboard focus is on, while the list has focus (one Tab stop, arrows move).
     focused_row_key: Option<String>,
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
+    /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
     /// Where a click outside closed the pins panel: the toggle under it must not reopen it.
@@ -130,6 +143,16 @@ pub struct ConversationView {
     /// A refused edit's text, given back to the composer by the next render (which has the
     /// window): the message, the text and whether the editor may reopen on it.
     refused_edit: Option<(Snowflake, String, bool)>,
+    /// Who reacted, by message and emoji, for the count it had: a new count asks again.
+    reactor_sentences: HashMap<(Snowflake, String), (u32, SharedString)>,
+    /// A pinned message reached: revealed by the next render, which has the window.
+    pending_reveal: Option<Snowflake>,
+    /// The message lit after a jump, and which jump lit it.
+    highlight: Option<(Snowflake, u64)>,
+    /// Counts lit messages, so an earlier one's timer never puts out a later one.
+    highlight_generation: u64,
+    /// Counts jumps and channel changes: a jump's late answer is dropped once another started.
+    jump_generation: u64,
     /// Read out politely (copied, new messages).
     announcement: SharedString,
     is_shift_held: bool,
@@ -199,6 +222,7 @@ impl ConversationView {
             sources: MessageMarkupSources::default(),
             body_cache: MessageBodyCache::new(),
             visit: Visit::default(),
+            revealed_blocked_message_ids: HashSet::new(),
             hovered_message_id: None,
             focused_row_key: None,
             menu: None,
@@ -207,6 +231,11 @@ impl ConversationView {
             pins_dismissed_by_pointer_at: None,
             action_error: None,
             refused_edit: None,
+            reactor_sentences: HashMap::new(),
+            pending_reveal: None,
+            highlight: None,
+            highlight_generation: 0,
+            jump_generation: 0,
             announcement: SharedString::default(),
             is_shift_held: false,
             list_focus: cx.focus_handle().tab_stop(true),
@@ -276,6 +305,11 @@ impl ConversationView {
                 is_unread_marker_pending: true,
                 ..Visit::default()
             };
+            self.revealed_blocked_message_ids.clear();
+            self.reactor_sentences.clear();
+            self.pending_reveal = None;
+            self.highlight = None;
+            self.jump_generation += 1;
             self.hovered_message_id = None;
             self.focused_row_key = None;
             self.menu = None;
@@ -906,6 +940,68 @@ impl ConversationView {
         });
     }
 
+    /// A reaction pill's tooltip: who reacted, asked from the instance only when it shows, and
+    /// kept while the count stays the same.
+    fn reactors_tooltip(
+        &mut self,
+        message_id: Snowflake,
+        pill: &ReactionPill,
+        cx: &mut Context<Self>,
+    ) -> AnyView {
+        let catalogue = strings(cx);
+        let cache_key = (message_id, pill.key.clone());
+        if let Some((count, sentence)) = self.reactor_sentences.get(&cache_key)
+            && *count == pill.count
+        {
+            return Tooltip::view(sentence.clone(), cx);
+        }
+        let tooltip = cx.new(|_| Tooltip::new(catalogue.reactions().loading_who()));
+        let Some(channel_id) = self.open_channel_id() else {
+            return tooltip.into();
+        };
+        let reader_id = self
+            .session
+            .read(cx)
+            .state()
+            .current_user()
+            .map(|user| user.id);
+        let emoji = reaction_label(&pill.key, &self.sources.custom_emojis, catalogue);
+        let (count, is_mine) = (pill.count, pill.is_mine);
+        let shown = tooltip.downgrade();
+        let view = cx.entity().downgrade();
+        self.session.update(cx, |session, cx| {
+            session.list_reacting_users(
+                channel_id,
+                message_id,
+                cache_key.1.clone(),
+                catalogue.reactions().who_failed().to_owned(),
+                move |answer, cx| {
+                    let catalogue = strings(cx);
+                    let sentence: SharedString = match answer {
+                        Ok(users) => {
+                            let sentence: SharedString = reactor_sentence(
+                                &users, count, is_mine, reader_id, &emoji, catalogue,
+                            )
+                            .into();
+                            let _ = view.update(cx, |view, _| {
+                                if view.reactor_sentences.len() >= MAXIMUM_REACTOR_SENTENCES {
+                                    view.reactor_sentences.clear();
+                                }
+                                view.reactor_sentences
+                                    .insert(cache_key, (count, sentence.clone()));
+                            });
+                            sentence
+                        }
+                        Err(_) => catalogue.reactions().who_failed().into(),
+                    };
+                    let _ = shown.update(cx, |tooltip, cx| tooltip.set_label(sentence, cx));
+                },
+                cx,
+            );
+        });
+        tooltip.into()
+    }
+
     fn set_pinned_now(&mut self, message: Message, is_pinned: bool, cx: &mut Context<Self>) {
         self.action_error = None;
         let view = cx.entity().downgrade();
@@ -1000,6 +1096,45 @@ impl ConversationView {
         cx.notify();
     }
 
+    /// Who reacted with what (the menu's Reactions), in the dialog slot the confirmations use.
+    fn open_reactions_dialog(
+        &mut self,
+        message_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(channel_id) = self.open_channel_id() else {
+            return;
+        };
+        let catalogue = strings(cx);
+        let session = self.session.clone();
+        let custom_emojis = self.sources.custom_emojis.clone();
+        let body = cx.new(|cx| {
+            reactions_dialog::ReactionsDialogBody::new(
+                session,
+                channel_id,
+                message_id,
+                custom_emojis,
+                cx,
+            )
+        });
+        let dialog = cx.new(|cx| {
+            ModalDialog::new(
+                catalogue.reactions().reactions(),
+                catalogue.common().close(),
+                window,
+                cx,
+            )
+            .body(body.into())
+        });
+        let subscription = cx.subscribe(&dialog, |view, _, _: &ModalDialogEvent, cx| {
+            view.confirmation = None;
+            cx.notify();
+        });
+        self.confirmation = Some((dialog, subscription));
+        cx.notify();
+    }
+
     /// The message's menu (More, right-click, Shift+F10), with the same items as the web.
     fn open_menu(
         &mut self,
@@ -1058,6 +1193,11 @@ impl ConversationView {
                     MessageMenuAction::Unpin => (
                         catalogue.pins().unpin().to_owned(),
                         IconName::PushPinSlash,
+                        MenuItemTone::Normal,
+                    ),
+                    MessageMenuAction::ViewReactions => (
+                        catalogue.reactions().reactions().to_owned(),
+                        IconName::Users,
                         MenuItemTone::Normal,
                     ),
                     MessageMenuAction::CopyMessageId => (
@@ -1122,6 +1262,7 @@ impl ConversationView {
                     self.ask_to_confirm(Confirmation::Pin(message, is_pinned), window, cx);
                 }
             }
+            MessageMenuAction::ViewReactions => self.open_reactions_dialog(message_id, window, cx),
             MessageMenuAction::CopyMessageId => {
                 let copied = strings(cx).context_menu().message_id_copied();
                 self.copy_to_clipboard(message_id.to_string(), Some(copied), cx);
@@ -1161,6 +1302,17 @@ impl ConversationView {
             .iter()
             .position(|entry| entry.key() == *key)
             .and_then(|index| self.entries[index].message_id().map(|id| (index, id)))
+    }
+
+    /// The folded run keyboard focus is on: its messages and whether they show.
+    fn focused_blocked_run(&self) -> Option<(Vec<Snowflake>, bool)> {
+        let key = self.focused_row_key.as_ref()?;
+        self.entries.iter().find_map(|entry| match entry {
+            Entry::BlockedRun(run) if run.anchor_key == *key => {
+                Some((run.message_ids.clone(), run.is_revealed))
+            }
+            _ => None,
+        })
     }
 
     /// Up and Down move between messages, as on Discord; the list keeps one Tab stop.
@@ -1240,6 +1392,25 @@ impl ConversationView {
                 self.focus_composer(window, cx);
                 true
             }
+            "enter" | "space" if !modifiers.modified() && self.list_focus.is_focused(window) => {
+                match self.focused_blocked_run() {
+                    Some((message_ids, is_revealed)) => {
+                        self.toggle_blocked_run(&message_ids, is_revealed, cx);
+                        true
+                    }
+                    None => false,
+                }
+            }
+            // Copies text selected in the messages; the message's own Copy text stays in the menu.
+            "c" if is_secondary && !modifiers.shift && !modifiers.alt => {
+                if gpui_base::TextSelection::has_selection(window, cx) {
+                    let selected = gpui_base::TextSelection::selected_text(window, cx);
+                    cx.write_to_clipboard(ClipboardItem::new_string(selected));
+                    true
+                } else {
+                    false
+                }
+            }
             "f10" if modifiers.shift && !modifiers.control && !modifiers.alt => {
                 self.open_menu_of_focused_row(window, cx);
                 true
@@ -1298,9 +1469,9 @@ impl ConversationView {
         }
     }
 
-    /// Jump from the pins panel: the message scrolls into view and takes the list's focus.
-    /// shortcut: the panel offers Jump only for loaded messages; loading history up to an older
-    /// pin (`loadHistoryUntilMessage`) comes with search (M3 step 6).
+    /// Jump from the pins panel: older history loads until the message is there (the web's
+    /// `loadHistoryUntilMessage`), then it scrolls into view, takes the list's focus and is lit.
+    /// Jump to present, Esc or reaching the latest message again trims what was loaded.
     fn jump_to_message(
         &mut self,
         message_id: Snowflake,
@@ -1308,16 +1479,118 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) {
         self.is_pins_panel_open = false;
-        let key = message_id.raw().to_string();
-        if let Some(index) = self.entries.iter().position(|entry| entry.key() == key) {
-            self.visit.has_reader_scrolled = true;
-            self.list.scroll_to(ListOffset {
-                item_ix: index,
-                offset_in_item: px(0.0),
-            });
-            self.focused_row_key = Some(key);
-            window.focus(&self.list_focus, cx);
+        self.action_error = None;
+        let Some(channel_id) = self.open_channel_id() else {
+            return;
+        };
+        self.jump_generation += 1;
+        let jump_generation = self.jump_generation;
+        let view = cx.entity().downgrade();
+        let wanting_view = view.clone();
+        self.session.update(cx, |session, cx| {
+            session.reach_message(
+                channel_id,
+                message_id,
+                move |cx| {
+                    wanting_view
+                        .upgrade()
+                        .is_some_and(|view| view.read(cx).jump_generation == jump_generation)
+                },
+                move |reach, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        if view.jump_generation == jump_generation {
+                            view.finish_reaching(channel_id, message_id, reach, cx);
+                        }
+                    });
+                },
+                cx,
+            );
+        });
+        window.focus(&self.list_focus, cx);
+        cx.notify();
+    }
+
+    fn finish_reaching(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        reach: HistoryReach,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(open) = self
+            .open_conversation
+            .as_ref()
+            .filter(|open| open.channel_id == channel_id)
+        else {
+            return;
+        };
+        let search = strings(cx).search();
+        match reach {
+            // Revealed by the next render, once the rows hold the pages just loaded.
+            HistoryReach::Loaded => {
+                self.pending_reveal = Some(message_id);
+                self.are_rows_stale = true;
+            }
+            HistoryReach::Missing => self.action_error = Some(search.jump_missing().into()),
+            HistoryReach::TooFar => {
+                let messages = MAXIMUM_PAGES_LOADED_TO_REACH_A_MESSAGE * MAXIMUM_HISTORY_PAGE_SIZE;
+                self.action_error =
+                    Some(search.jump_too_far(&open.label, i64::from(messages)).into());
+            }
+            HistoryReach::Failed => self.action_error = Some(search.jump_failed().into()),
         }
+        cx.notify();
+    }
+
+    /// The message scrolls into view, takes the list's focus and is lit briefly (DESIGN.md 5.12);
+    /// a run of someone the reader blocked shows first, as Show would.
+    fn reveal_message(
+        &mut self,
+        message_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let folded_run = self.entries.iter().find_map(|entry| match entry {
+            Entry::BlockedRun(run) if !run.is_revealed && run.message_ids.contains(&message_id) => {
+                Some(run.message_ids.clone())
+            }
+            _ => None,
+        });
+        if let Some(message_ids) = folded_run {
+            self.toggle_blocked_run(&message_ids, false, cx);
+            self.rebuild_rows(cx);
+        }
+        let key = message_id.raw().to_string();
+        let Some(index) = self.entries.iter().position(|entry| entry.key() == key) else {
+            return;
+        };
+        self.visit.has_reader_scrolled = true;
+        self.list.scroll_to(ListOffset {
+            item_ix: index,
+            offset_in_item: px(0.0),
+        });
+        self.focused_row_key = Some(key);
+        window.focus(&self.list_focus, cx);
+        self.highlight_briefly(message_id, cx);
+    }
+
+    /// The row takes the match wash, which fades; under reduced motion it holds, then goes.
+    fn highlight_briefly(&mut self, message_id: Snowflake, cx: &mut Context<Self>) {
+        self.highlight_generation += 1;
+        let generation = self.highlight_generation;
+        self.highlight = Some((message_id, generation));
+        cx.spawn(async move |view, cx| {
+            cx.background_executor()
+                .timer(delay(MOTION_DELAY_JUMP_HIGHLIGHT))
+                .await;
+            let _ = view.update(cx, |view, cx| {
+                if view.highlight.is_some_and(|(_, shown)| shown == generation) {
+                    view.highlight = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
         cx.notify();
     }
 }
