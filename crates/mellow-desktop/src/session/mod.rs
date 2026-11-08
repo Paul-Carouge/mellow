@@ -21,6 +21,7 @@ use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
 mod messages;
+mod relationships;
 
 pub use messages::{HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};
 
