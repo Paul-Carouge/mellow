@@ -135,6 +135,19 @@ impl ModalDialog {
         cx.notify();
     }
 
+    /// Renames the action as the dialog's controls change ("Message", "Create group"); `None`
+    /// leaves Cancel alone.
+    pub fn set_submit_labels(
+        &mut self,
+        labels: Option<(SharedString, SharedString)>,
+        cx: &mut Context<Self>,
+    ) {
+        let (label, busy_label) = labels.unzip();
+        self.submit_label = label;
+        self.busy_submit_label = busy_label;
+        cx.notify();
+    }
+
     pub fn set_submit_enabled(&mut self, is_enabled: bool, cx: &mut Context<Self>) {
         self.is_submit_enabled = is_enabled;
         cx.notify();
@@ -162,7 +175,8 @@ impl ModalDialog {
         cx.emit(ModalDialogEvent::Closed);
     }
 
-    fn submit_now(&mut self, cx: &mut Context<Self>) {
+    /// The action, as its button runs it: Enter in a field of the dialog's form calls this.
+    pub fn submit_now(&mut self, cx: &mut Context<Self>) {
         if !self.is_busy && self.is_submit_enabled && self.submit_label.is_some() {
             cx.emit(ModalDialogEvent::Submitted);
         }

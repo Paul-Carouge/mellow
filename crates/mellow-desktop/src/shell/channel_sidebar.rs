@@ -10,21 +10,23 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::channel_order::channel_sections;
 use mellow_client_core::shared_logic::format::display_name;
+use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Channel, ChannelKind, DirectMessageChannel, Permissions, Snowflake};
 
+use super::member_sheet::shown_presence;
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, GroupAvatar, MentionBadge, icon, inset_focus_ring, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, icon,
+    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_CATEGORY_CHEVRON_SIZE, COMPONENT_CATEGORY_HEIGHT, COMPONENT_CATEGORY_MARGIN_TOP,
-    COMPONENT_CATEGORY_PADDING_INLINE, COMPONENT_CHANNEL_ROW_GAP, COMPONENT_CHANNEL_ROW_HEIGHT,
-    COMPONENT_CHANNEL_ROW_ICON_GAP, COMPONENT_CHANNEL_ROW_ICON_SIZE,
+    COMPONENT_CATEGORY_ADD_ICON_SIZE, COMPONENT_CATEGORY_CHEVRON_SIZE, COMPONENT_CATEGORY_HEIGHT,
+    COMPONENT_CATEGORY_MARGIN_TOP, COMPONENT_CATEGORY_PADDING_INLINE, COMPONENT_CHANNEL_ROW_GAP,
+    COMPONENT_CHANNEL_ROW_HEIGHT, COMPONENT_CHANNEL_ROW_ICON_GAP, COMPONENT_CHANNEL_ROW_ICON_SIZE,
     COMPONENT_CHANNEL_ROW_MARGIN_INLINE, COMPONENT_CHANNEL_ROW_PADDING_INLINE,
     COMPONENT_CHANNEL_ROW_RADIUS, COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT,
     COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET, COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH,
@@ -36,28 +38,13 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 
-/// A group's own name when it has one, else its people's names; a one-to-one is the other person
-/// (`conversationDisplayName` in `group-conversations.ts`).
+/// A group's own name when it has one, else its people's names; a one-to-one is the other person.
 pub(super) fn conversation_display_name(
     conversation: &DirectMessageChannel,
     current_user_id: Option<Snowflake>,
     strings: Strings,
 ) -> String {
-    let own_name = if conversation.owner_id.is_some() {
-        conversation.name.trim()
-    } else {
-        ""
-    };
-    if !own_name.is_empty() {
-        return own_name.to_owned();
-    }
-    let names: Vec<&str> = conversation
-        .recipients
-        .iter()
-        .filter(|recipient| Some(recipient.id) != current_user_id)
-        .map(display_name)
-        .collect();
-    strings.groups().participant_names(&names)
+    crate::home::conversation_display_name(conversation, current_user_id, strings)
 }
 
 /// Whether the reader may send in a channel; a read-only one shows a lock (DESIGN.md §5.3).
@@ -73,6 +60,8 @@ struct SidebarRow {
     /// The accessible name, with its unread and mention state.
     label: String,
     name: SharedString,
+    /// A group's "3 members" under its name.
+    second_line: Option<SharedString>,
     leading: AnyElement,
     height: f32,
     is_selected: bool,
@@ -151,10 +140,12 @@ impl DuskShell {
                 strings.sidebar().direct_messages().to_owned(),
             ),
         };
+        let is_home = guild.is_none();
         let rows = match guild {
             Some(guild) => self.guild_rows(&guild.channels, guild.id, window, cx),
             None => self.conversation_rows(window, cx),
         };
+        let entity = cx.entity();
 
         div()
             .debug_selector(|| "channel-column".to_owned())
@@ -175,8 +166,24 @@ impl DuskShell {
                     .px(length(SPACE_XS))
                     .flex()
                     .items_center()
+                    .gap(length(SPACE_2XS))
                     .text_color(color(tokens.component_sidebar_header_text))
-                    .child(div().min_w_0().truncate().child(heading)),
+                    .child(div().flex_1().min_w_0().truncate().child(heading))
+                    // Home: Discord's "+" beside "Direct messages" starts a conversation or a
+                    // group (ADR-0026).
+                    .when(is_home, |header| {
+                        header.child(
+                            IconButton::new(
+                                "new-message",
+                                IconName::Plus,
+                                strings.groups().new_message(),
+                            )
+                            .sizes(COMPONENT_CATEGORY_HEIGHT, COMPONENT_CATEGORY_ADD_ICON_SIZE)
+                            .on_click(move |window, cx| {
+                                entity.update(cx, |shell, cx| shell.open_new_message(window, cx));
+                            }),
+                        )
+                    }),
             )
             .child(
                 // The negative margin lets the unread pills sit in the strip's margin, unclipped.
@@ -273,6 +280,7 @@ impl DuskShell {
                             mention_count,
                         ),
                         name: channel.name.clone().into(),
+                        second_line: None,
                         leading: icon(
                             if can_send {
                                 IconName::Hash
@@ -502,6 +510,7 @@ impl DuskShell {
                     .sidebar()
                     .friends_with_requests(i64::try_from(incoming).unwrap_or(i64::MAX)),
                 name: strings.sidebar().friends().into(),
+                second_line: None,
                 leading: div()
                     .flex_none()
                     .size(length(COMPONENT_MEMBER_ROW_AVATAR_SIZE))
@@ -534,6 +543,7 @@ impl DuskShell {
                     .px(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
                     .flex()
                     .flex_col()
+                    .items_start()
                     .gap(length(SPACE_XS))
                     .child(
                         with_type(div(), TYPE_CHANNEL_NAME)
@@ -545,6 +555,14 @@ impl DuskShell {
                             .text_color(color(tokens.color_text_secondary))
                             .child(strings.sidebar().no_conversations()),
                     )
+                    .child({
+                        let entity = cx.entity();
+                        Button::new("empty-new-message", strings.groups().new_message())
+                            .variant(ButtonVariant::Secondary)
+                            .on_click(move |window, cx| {
+                                entity.update(cx, |shell, cx| shell.open_new_message(window, cx));
+                            })
+                    })
                     .into_any_element(),
             );
             return rows;
@@ -579,20 +597,31 @@ impl DuskShell {
                 )
                 .into_any_element()
             } else {
-                match others.into_iter().next() {
-                    Some(person) => {
-                        Avatar::new(person, COMPONENT_MEMBER_ROW_AVATAR_SIZE).into_any_element()
+                let recipient_id = conversation
+                    .recipients
+                    .iter()
+                    .find(|recipient| Some(recipient.id) != current_user_id)
+                    .map(|recipient| recipient.id);
+                let presence = recipient_id.map(|user_id| state.presence_of(user_id));
+                match others.into_iter().next().zip(presence) {
+                    Some((person, presence)) => {
+                        Avatar::new(person, COMPONENT_MEMBER_ROW_AVATAR_SIZE)
+                            .presence(
+                                shown_presence(presence),
+                                color(tokens.component_navigator_background),
+                            )
+                            .into_any_element()
                     }
                     None => div()
                         .size(length(COMPONENT_MEMBER_ROW_AVATAR_SIZE))
                         .into_any_element(),
                 }
             };
+            // Everyone in a group, you included (`participantCount`).
+            let member_count = i64::try_from(participant_count(&conversation, current_user_id))
+                .unwrap_or(i64::MAX);
             let label = if is_group {
-                strings.groups().row_label(
-                    &name,
-                    i64::try_from(conversation.recipients.len()).unwrap_or(i64::MAX),
-                )
+                strings.groups().row_label(&name, member_count)
             } else {
                 name.clone()
             };
@@ -601,6 +630,9 @@ impl DuskShell {
                     id: ElementId::from(("conversation-row", conversation.id.raw())),
                     label: name_with_unread_state(strings, &label, has_unread, mention_count),
                     name: name.into(),
+                    // No presence on a group: its second line counts its people, as on Discord.
+                    second_line: is_group
+                        .then(|| strings.groups().member_count(member_count).into()),
                     leading,
                     height: COMPONENT_MEMBER_ROW_HEIGHT,
                     is_selected,
@@ -680,11 +712,26 @@ impl DuskShell {
                     }))
                     .child(row.leading)
                     .child(
-                        with_type(div(), TYPE_CHANNEL_NAME)
+                        div()
                             .flex_1()
                             .min_w_0()
-                            .truncate()
-                            .child(row.name),
+                            .flex()
+                            .flex_col()
+                            .child(
+                                with_type(div(), TYPE_CHANNEL_NAME)
+                                    .truncate()
+                                    .child(row.name),
+                            )
+                            .when_some(row.second_line, |names, second_line| {
+                                names.child(
+                                    with_type(div(), TYPE_BODY_SM)
+                                        .truncate()
+                                        .text_color(color(
+                                            tokens.component_group_avatar_member_count_text,
+                                        ))
+                                        .child(second_line),
+                                )
+                            }),
                     )
                     .when(row.mention_count > 0, |button| {
                         button.child(MentionBadge::new(row.mention_count))

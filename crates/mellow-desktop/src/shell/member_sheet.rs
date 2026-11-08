@@ -16,6 +16,8 @@ use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
 use crate::components::{Avatar, AvatarPerson, Button, IconButton, ShownStatus, with_type};
+use crate::home::conversation_display_name;
+use crate::home::group_sheet::group_sheet_rows;
 use crate::i18n::strings;
 use crate::session::MembersLoad;
 use crate::theme::icons::IconName;
@@ -39,6 +41,29 @@ pub(super) fn shown_presence(status: PresenceStatus) -> ShownStatus {
 }
 
 impl DuskShell {
+    /// "Members of Rust", or of the open group.
+    pub(super) fn member_sheet_label(&self, cx: &gpui::App) -> String {
+        let strings = strings(cx);
+        let state = self.session.read(cx).state();
+        let Some(place_id) = self.member_sheet_place_id(cx) else {
+            return String::new();
+        };
+        if let Some(guild) = state.guild(place_id) {
+            return strings.shell().members_of(&guild.name);
+        }
+        state
+            .direct_message_channel(place_id)
+            .map(|group| {
+                let current_user_id = state.current_user().map(|user| user.id);
+                strings.shell().members_of(&conversation_display_name(
+                    group,
+                    current_user_id,
+                    strings,
+                ))
+            })
+            .unwrap_or_default()
+    }
+
     /// `width` is the docked width; `None` is the overlay, at the token width or (`is_full_window`)
     /// across the window.
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
@@ -52,16 +77,25 @@ impl DuskShell {
         let strings = strings(cx);
         let state = self.session.read(cx).state();
         let guild = self
-            .member_sheet_place_id()
+            .member_sheet_place_id(cx)
             .and_then(|guild_id| state.guild(guild_id))
             .cloned();
-        let sheet_label = guild
-            .as_ref()
-            .map(|guild| strings.shell().members_of(&guild.name))
-            .unwrap_or_default();
+        let sheet_label = self.member_sheet_label(cx);
+        let group = self
+            .member_sheet_place_id(cx)
+            .and_then(|group_id| state.direct_message_channel(group_id))
+            .filter(|_| guild.is_none())
+            .cloned();
+        let heading = if group.is_some() {
+            strings.groups().members()
+        } else {
+            strings.members().members()
+        };
         let entity = cx.entity();
         let body: Vec<AnyElement> = match &guild {
-            None => Vec::new(),
+            None => group
+                .map(|group| group_sheet_rows(&self.home, &self.session, &group, window, cx))
+                .unwrap_or_default(),
             Some(guild) => {
                 let members = state.members(guild.id);
                 let load = self.session.read(cx).members_load(guild.id);
@@ -250,7 +284,7 @@ impl DuskShell {
                             .flex_1()
                             .min_w_0()
                             .truncate()
-                            .child(strings.members().members()),
+                            .child(heading),
                     )
                     .child(
                         IconButton::new(
