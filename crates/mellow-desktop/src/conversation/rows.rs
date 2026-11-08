@@ -30,8 +30,9 @@ use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
     Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, Tooltip, easing,
-    icon, inset_focus_ring, shadow, with_type,
+    icon, inset_focus_ring, menu_origin_at_pointer, shadow, with_type,
 };
+use crate::home::{OpenPersonMenu, PersonMenuRequest};
 use crate::i18n::strings;
 use crate::messages::{
     DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, UnreadDivider,
@@ -777,6 +778,20 @@ impl ConversationView {
                 .on_toggle_reaction(move |key, _, cx| {
                     let _ = toggle_view
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));
+                })
+                .on_open_author_menu({
+                    // The shell hands it to Home, which this view cannot reach.
+                    let list_focus = self.list_focus.clone();
+                    let author = message.author.clone();
+                    move |position, window, cx| {
+                        let action = OpenPersonMenu {
+                            request: PersonMenuRequest::new(
+                                author.clone(),
+                                menu_origin_at_pointer(position),
+                            ),
+                        };
+                        list_focus.dispatch_action(&action, window, cx);
+                    }
                 });
                 (item, Some(message_id))
             }

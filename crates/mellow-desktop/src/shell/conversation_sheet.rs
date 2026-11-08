@@ -325,6 +325,12 @@ impl DuskShell {
                     .when(subject.topic.is_some(), |name| {
                         name.max_w(gpui::relative(0.5))
                     })
+                    .when_some(self.open_group_id(cx), |name, group_id| {
+                        name.on_mouse_down(
+                            gpui::MouseButton::Right,
+                            Self::group_header_menu_listener(group_id, cx),
+                        )
+                    })
                     .text_color(color(tokens.component_chat_header_name_text))
                     .when_some(subject.icon, |name, icon_name| {
                         name.child(icon(
