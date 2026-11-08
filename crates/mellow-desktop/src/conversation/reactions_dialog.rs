@@ -150,7 +150,7 @@ impl ReactionsDialogBody {
                 .role(Role::List)
                 .flex()
                 .flex_col()
-                .children(self.users.iter().map(|user| {
+                .children(self.users.iter().enumerate().map(|(index, user)| {
                     let picture = user.avatar.as_ref().map(|avatar| {
                         picture_for_box(
                             DownloadableFile::ProfileImage(avatar.id),
@@ -160,7 +160,13 @@ impl ReactionsDialogBody {
                             window,
                         )
                     });
+                    let name = display_name(user).to_owned();
                     div()
+                        .id(("reactions-person", index))
+                        .role(Role::ListItem)
+                        .aria_label(name.clone())
+                        .aria_position_in_set(index + 1)
+                        .aria_size_of_set(self.users.len())
                         .flex()
                         .items_center()
                         .gap(length(SPACE_SM))
@@ -175,7 +181,7 @@ impl ReactionsDialogBody {
                                 .min_w_0()
                                 .truncate()
                                 .text_color(color(tokens.color_text_normal))
-                                .child(display_name(user).to_owned()),
+                                .child(name),
                         )
                 }))
                 .into_any_element(),
@@ -200,13 +206,19 @@ impl Render for ReactionsDialogBody {
         };
         let (selected_key, selected_count) = (selected.emoji.clone(), selected.count);
         self.ask_who_reacted(&selected_key, selected_count, cx);
-        let labels: Vec<SharedString> = reactions
+        let (labels, accessible_labels): (Vec<SharedString>, Vec<SharedString>) = reactions
             .iter()
             .map(|reaction| {
                 let emoji = super::reaction_label(&reaction.emoji, &self.custom_emojis, catalogue);
-                SharedString::from(format!("{emoji} {}", reaction.count))
+                (
+                    SharedString::from(format!("{emoji} {}", reaction.count)),
+                    catalogue
+                        .reactions()
+                        .chip(&emoji, i64::from(reaction.count))
+                        .into(),
+                )
             })
-            .collect();
+            .unzip();
         let keys: Vec<String> = reactions
             .into_iter()
             .map(|reaction| reaction.emoji)
@@ -223,6 +235,7 @@ impl Render for ReactionsDialogBody {
                     labels,
                     selected_index,
                 )
+                .accessible_labels(accessible_labels)
                 .on_select(move |index, _, cx| {
                     let key = keys.get(index).cloned();
                     let _ = view.update(cx, |view, cx| {
