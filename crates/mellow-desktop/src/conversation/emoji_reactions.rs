@@ -43,6 +43,8 @@ pub(super) enum EmojiTarget {
 pub(super) struct OpenEmojiPicker {
     pub(super) picker: Entity<EmojiPicker>,
     pub(super) target: EmojiTarget,
+    /// The button (or row) it opened beside: a click there dismissed it on purpose.
+    anchor: Bounds<Pixels>,
     opener: Option<FocusHandle>,
     _subscription: Subscription,
 }
@@ -82,7 +84,7 @@ impl ConversationView {
     }
 
     /// Opens the picker beside `anchor`, or closes it when the same button opened it (a second
-    /// click on the button that the first click's dismissal saw).
+    /// click on the opener, whose mouse-down already dismissed it: `createPopoverToggle`).
     pub(super) fn toggle_emoji_picker(
         &mut self,
         target: EmojiTarget,
@@ -90,10 +92,12 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_same_click_as_dismissal = self
-            .emoji_picker_dismissed_at
-            .take()
-            .is_some_and(|position| position == window.mouse_position());
+        let is_same_click_as_dismissal =
+            self.emoji_picker_dismissed_at
+                .take()
+                .is_some_and(|(position, dismissed)| {
+                    dismissed == target && position == window.mouse_position()
+                });
         if is_same_click_as_dismissal {
             return;
         }
@@ -127,9 +131,14 @@ impl ConversationView {
                 EmojiPickerEvent::Dismissed {
                     should_return_focus,
                 } => {
-                    if !should_return_focus {
-                        view.emoji_picker_dismissed_at = Some(window.mouse_position());
-                    }
+                    let position = window.mouse_position();
+                    // Only a click on the opener is a toggle; a click anywhere else, then a
+                    // shortcut or another message's button, must still open a picker.
+                    view.emoji_picker_dismissed_at = view
+                        .emoji_picker
+                        .as_ref()
+                        .filter(|open| !should_return_focus && open.anchor.contains(&position))
+                        .map(|open| (position, open.target));
                     view.close_emoji_picker(*should_return_focus, window, cx);
                 }
             },
@@ -137,6 +146,7 @@ impl ConversationView {
         self.emoji_picker = Some(OpenEmojiPicker {
             picker,
             target,
+            anchor,
             opener,
             _subscription: subscription,
         });
@@ -232,15 +242,12 @@ impl ConversationView {
         let mut buttons: Vec<AnyElement> = self
             .quick_reactions(cx)
             .into_iter()
-            .enumerate()
-            .map(|(index, emoji)| {
+            .map(|emoji| {
                 let key = reaction_key(&emoji);
-                let is_given = message
-                    .reactions
-                    .iter()
-                    .any(|reaction| reaction.me && reaction.emoji == key);
+                let is_given = is_reaction_given(message, &emoji);
+                // Keyed by emoji, so focus follows it when a pick reorders the quick reactions.
                 let id = ElementId::Name(
-                    format!("hover-quick-reaction-{index}-{}", message_id.raw()).into(),
+                    format!("hover-quick-reaction-{key}-{}", message_id.raw()).into(),
                 );
                 let view = view.clone();
                 let label: SharedString = catalogue.reactions().react_with(&emoji).into();
@@ -305,6 +312,15 @@ impl ConversationView {
             is_shown: is_row_active || self.message_holding_the_picker() == Some(message_id),
         })
     }
+}
+
+/// Whether the reader already reacted to `message` with `emoji`.
+pub(super) fn is_reaction_given(message: &Message, emoji: &str) -> bool {
+    let key = reaction_key(emoji);
+    message
+        .reactions
+        .iter()
+        .any(|reaction| reaction.me && reaction.emoji == key)
 }
 
 /// A quick reaction in the hover bar: the emoji at the icons' size, pressed when the reader gave

@@ -47,6 +47,7 @@ use crate::theme::delay;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE, MOTION_DELAY_JUMP_HIGHLIGHT};
 
+use self::emoji_reactions::is_reaction_given;
 use self::rows::Entry;
 use self::rules::reactor_sentence;
 
@@ -136,8 +137,8 @@ pub struct ConversationView {
     focused_row_key: Option<String>,
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
     emoji_picker: Option<emoji_reactions::OpenEmojiPicker>,
-    /// Where a click outside closed the picker: the button under it must not reopen it.
-    emoji_picker_dismissed_at: Option<gpui::Point<gpui::Pixels>>,
+    /// Where a click on its opener closed the picker: that click must not reopen it.
+    emoji_picker_dismissed_at: Option<(gpui::Point<gpui::Pixels>, emoji_reactions::EmojiTarget)>,
     /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
@@ -1176,6 +1177,13 @@ impl ConversationView {
                     return MenuEntry::Separator;
                 };
                 let view = view.clone();
+                // A quick reaction says whether it is given, as its menuitemcheckbox does on the web.
+                let is_given = match &action {
+                    MessageMenuAction::ToggleReaction(emoji) => {
+                        Some(is_reaction_given(&message, emoji))
+                    }
+                    _ => None,
+                };
                 let (label, icon, tone) = match &action {
                     MessageMenuAction::ToggleReaction(emoji) => (
                         catalogue.reactions().react_with(emoji),
@@ -1234,7 +1242,8 @@ impl ConversationView {
                             view.run_menu_action(message_id, action.clone(), window, cx);
                         });
                     })
-                    .tone(tone),
+                    .tone(tone)
+                    .checked(is_given),
                 )
             })
             .collect();

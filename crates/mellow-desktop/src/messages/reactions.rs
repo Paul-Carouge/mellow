@@ -206,8 +206,10 @@ fn render_add_button(
     let tooltip = label.clone();
     div()
         .id(id)
-        .role(Role::Button)
-        .aria_label(label)
+        // Hidden, it keeps its room but leaves the accessibility tree (the web's `invisible`).
+        .when(is_shown, |button| {
+            button.role(Role::Button).aria_label(label)
+        })
         .track_focus(&focus_handle)
         .relative()
         .flex()

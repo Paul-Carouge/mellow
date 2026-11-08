@@ -934,3 +934,103 @@ fn a_quick_reaction_from_the_menu_becomes_the_first_quick_reaction(cx: &mut Test
     let quick = view.read_with(cx, ConversationView::quick_reactions);
     assert_eq!(quick, ["😂", "👍", "❤️"]);
 }
+
+/// A small anchor in the window's top-left corner: the picker opens below it.
+fn corner_anchor() -> gpui::Bounds<gpui::Pixels> {
+    gpui::Bounds::new(
+        gpui::point(gpui::px(0.), gpui::px(0.)),
+        gpui::size(gpui::px(10.), gpui::px(10.)),
+    )
+}
+
+fn toggle_picker(
+    view: &Entity<ConversationView>,
+    target: emoji_reactions::EmojiTarget,
+    cx: &mut VisualTestContext,
+) {
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.toggle_emoji_picker(target, corner_anchor(), window, cx);
+        });
+    });
+    cx.run_until_parked();
+}
+
+fn mouse_down_at(position: gpui::Point<gpui::Pixels>, cx: &mut VisualTestContext) {
+    cx.simulate_mouse_down(
+        position,
+        gpui::MouseButton::Left,
+        gpui::Modifiers::default(),
+    );
+    cx.run_until_parked();
+}
+
+/// A point far from the picker and its corner anchor.
+fn far_corner(cx: &mut VisualTestContext) -> gpui::Point<gpui::Pixels> {
+    let viewport = cx.update(|window, _| window.viewport_size());
+    gpui::point(
+        viewport.width - gpui::px(2.),
+        viewport.height - gpui::px(2.),
+    )
+}
+
+#[gpui::test]
+fn a_click_on_the_opener_closes_the_picker_without_reopening_it(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
+    allow_new_reactions(&session, cx);
+    let target = emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_001));
+    toggle_picker(&view, target, cx);
+    assert_eq!(picker_target(&view, cx), Some(target));
+
+    // The opener's mouse-down dismisses it first; its click must not open it again.
+    mouse_down_at(corner_anchor().center(), cx);
+    assert_eq!(picker_target(&view, cx), None);
+    toggle_picker(&view, target, cx);
+    assert_eq!(picker_target(&view, cx), None);
+}
+
+#[gpui::test]
+fn a_click_outside_then_another_messages_button_opens_its_picker(cx: &mut TestAppContext) {
+    let (view, session, cx) = open_general(
+        cx,
+        vec![message(10_001, &ana(), "hi"), message(10_002, &ana(), "yo")],
+        None,
+    );
+    allow_new_reactions(&session, cx);
+    toggle_picker(
+        &view,
+        emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_001)),
+        cx,
+    );
+    let elsewhere = far_corner(cx);
+    mouse_down_at(elsewhere, cx);
+    assert_eq!(picker_target(&view, cx), None);
+
+    let other = emoji_reactions::EmojiTarget::Message(Snowflake::from_raw(10_002));
+    toggle_picker(&view, other, cx);
+    assert_eq!(picker_target(&view, cx), Some(other));
+}
+
+#[gpui::test]
+fn ctrl_e_after_a_click_outside_the_picker_opens_it_again(cx: &mut TestAppContext) {
+    let (view, _session, cx) = open_general(cx, Vec::new(), None);
+    focus_composer(&view, cx);
+    toggle_picker(&view, emoji_reactions::EmojiTarget::Composer, cx);
+    let elsewhere = far_corner(cx);
+    mouse_down_at(elsewhere, cx);
+    assert_eq!(picker_target(&view, cx), None);
+
+    focus_composer(&view, cx);
+    press(
+        cx,
+        if cfg!(target_os = "macos") {
+            "cmd-e"
+        } else {
+            "ctrl-e"
+        },
+    );
+    assert_eq!(
+        picker_target(&view, cx),
+        Some(emoji_reactions::EmojiTarget::Composer)
+    );
+}
