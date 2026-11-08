@@ -40,6 +40,22 @@ impl<'a> SdpApi<'a> {
         }
     }
 
+    // Mellow patch: `Rtc::new_mid` only avoids the session's mids, so two lines added in one
+    // change could draw the same random mid (about one offer of 31 lines in 500).
+    fn new_mid(&self) -> Mid {
+        loop {
+            let mid = self.rtc.new_mid();
+            let is_pending = self.changes.iter().any(|change| match change {
+                Change::AddMedia(add) => add.mid == mid,
+                Change::AddApp(app_mid) => *app_mid == mid,
+                _ => false,
+            });
+            if !is_pending {
+                break mid;
+            }
+        }
+    }
+
     /// Accept an [`SdpOffer`] from the remote peer. If this call returns successfully, the
     /// changes will have been made to the session. The resulting [`SdpAnswer`] should be
     /// sent to the remote peer.
@@ -279,7 +295,7 @@ impl<'a> SdpApi<'a> {
         track_id: Option<String>,
         simulcast: Option<crate::media::Simulcast>,
     ) -> Mid {
-        let mid = self.rtc.new_mid();
+        let mid = self.new_mid();
 
         // https://www.rfc-editor.org/rfc/rfc8830
         // msid-id = 1*64token-char
@@ -443,7 +459,7 @@ impl<'a> SdpApi<'a> {
         let changes_contains_add_app = self.changes.contains_add_app();
 
         if !has_media && !changes_contains_add_app {
-            let mid = self.rtc.new_mid();
+            let mid = self.new_mid();
             self.changes.0.push(Change::AddApp(mid));
         }
 

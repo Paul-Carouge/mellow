@@ -6,7 +6,7 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use gpui::{AnyElement, App, IntoElement, SharedString, Window};
+use gpui::{AnyElement, App, IntoElement, SharedString, Window, prelude::FluentBuilder as _};
 use mellow_client_core::shared_logic::markdown::{MarkdownSources, RoleMentionContext};
 use mellow_client_core::shared_logic::mentions::{MentionablePeople, mentionable_people};
 use mellow_client_core::shared_logic::message_rows::{
@@ -15,14 +15,16 @@ use mellow_client_core::shared_logic::message_rows::{
 use mellow_client_core::shared_logic::role_colors::readable_role_colour;
 use mellow_client_core::state::{PendingMessageStatus, add_reaction, remove_reaction};
 use mellow_protocol::{
-    Attachment, CustomEmoji, MELLOW_EPOCH_UNIX_MILLISECONDS, Message, Permissions, PublicUser,
+    Attachment, CustomEmoji, ForwardOrigin, GitHubRepositoryEmbed, LinkEmbed, LinkPreview,
+    LinkPreviewImage, MELLOW_EPOCH_UNIX_MILLISECONDS, Message, Permissions, PublicUser,
     ReactionSummary, Role, Snowflake,
 };
 
+use super::forward::ForwardOrigin as ForwardOriginShown;
 use super::{
     DayDivider, MessageAuthor, MessageBodyCache, MessageBodyKey, MessageItem, MessageItemContent,
-    UnreadDivider, day_divider_label, local_date_time, reaction_pills, reply_reference,
-    time_of_day_label,
+    MessageLinkPreviews, UnreadDivider, day_divider_label, local_date_time, reaction_pills,
+    reply_reference, time_of_day_label,
 };
 use crate::i18n;
 use crate::theme::{color, theme};
@@ -240,6 +242,53 @@ impl MessageSamples {
         ];
         let code = message(&ana, today + 10 * MINUTE, CODE_SAMPLE);
         let jumbo = message(&ana, today + 11 * MINUTE, "🎉🎉 <:party:500>");
+        let mut links = message(
+            &ana,
+            today + 12 * MINUTE,
+            "The repo https://github.com/rust-lang/rust and the talk https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90",
+        );
+        links.link_previews = vec![
+            LinkPreview {
+                id: Snowflake::from_raw(61),
+                url: "https://github.com/rust-lang/rust".into(),
+                title: Some("rust-lang/rust".into()),
+                description: Some(
+                    "Empowering everyone to build reliable and efficient software.".into(),
+                ),
+                site_name: Some("GitHub".into()),
+                theme_color: Some(0x001e_2327),
+                image: None,
+                embed: Some(LinkEmbed::GitHubRepository(GitHubRepositoryEmbed {
+                    owner: "rust-lang".into(),
+                    name: "rust".into(),
+                    stars: 104_238,
+                    forks: 13_612,
+                    language: Some("Rust".into()),
+                    language_color: None,
+                    topics: vec!["compiler".into(), "language".into(), "rust".into()],
+                    licence_spdx: Some("Apache-2.0".into()),
+                    is_archived: false,
+                })),
+            },
+            LinkPreview {
+                id: Snowflake::from_raw(62),
+                url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ&t=90".into(),
+                title: Some("A talk about Rust in Lyon".into()),
+                description: None,
+                site_name: Some("YouTube".into()),
+                theme_color: None,
+                image: Some(LinkPreviewImage {
+                    width: 480,
+                    height: 360,
+                }),
+                embed: None,
+            },
+        ];
+        let mut passed_on = message(&leo, today + 13 * MINUTE, &announcement.content);
+        passed_on.forwarded_from = Some(ForwardOrigin {
+            channel_id: announcement.channel_id,
+            message_id: announcement.id,
+        });
         let mut plan = message(
             &reader,
             today + 20 * MINUTE,
@@ -256,7 +305,17 @@ impl MessageSamples {
             people,
             custom_emojis: HashMap::from([(party.id, party)]),
             roles: HashMap::from([(moderators.id, moderators)]),
-            messages: vec![announcement, changes, question, pictures, code, jumbo, plan],
+            messages: vec![
+                announcement,
+                changes,
+                question,
+                pictures,
+                code,
+                jumbo,
+                links,
+                passed_on,
+                plan,
+            ],
             pending: vec![
                 PendingSample {
                     nonce: "pending-sending".into(),
@@ -431,6 +490,24 @@ impl MessageSamples {
                             window,
                             cx,
                         );
+                    })
+                    .map(|item| match message.forwarded_from {
+                        Some(origin) => item.forward(
+                            ForwardOriginShown {
+                                place: Some("#general".into()),
+                                sent_at_unix_milliseconds: origin.message_id.unix_milliseconds(),
+                            },
+                            Some(|_: &mut Window, _: &mut App| {}),
+                        ),
+                        None if !message.link_previews.is_empty() => {
+                            item.link_previews(MessageLinkPreviews::new(
+                                SharedString::from(format!("previews-{}", message.id.raw())),
+                                message.channel_id,
+                                message.id,
+                                message.link_previews.clone(),
+                            ))
+                        }
+                        None => item,
                     })
                 }
                 MessageRowKind::Pending { pending_index } => {

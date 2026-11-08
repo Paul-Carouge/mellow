@@ -11,6 +11,7 @@ use std::sync::{Mutex, PoisonError};
 
 use gpui::{App, AppContext as _, BorrowAppContext as _, Global};
 use mellow_client_core::InstanceAddress;
+use mellow_client_core::shared_logic::emoji_picker::{recent_emoji_from, remember_emoji};
 use mellow_client_core::shared_logic::notification_settings::{
     NotificationSettings, notification_settings_to_json, parse_notification_settings,
 };
@@ -29,6 +30,7 @@ const MEMBERS_WIDTH_KEY: &str = "members-width";
 const NOTIFICATIONS_KEY: &str = "notifications";
 const MEDIA_VOLUME_KEY: &str = "media-volume";
 const MEDIA_MUTED_KEY: &str = "media-muted";
+const RECENT_EMOJI_KEY: &str = "recent-emoji";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -37,6 +39,8 @@ pub const MAXIMUM_REMEMBERED_PLACES: usize = 200;
 /// The accounts whose notification choices are kept, most recent last: each may hold thousands of
 /// places, so only a few accounts fit the file.
 const MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS: usize = 4;
+/// The accounts whose recently used emoji are kept, most recent last.
+const MAXIMUM_REMEMBERED_RECENT_EMOJI_ACCOUNTS: usize = 4;
 /// Any width a column may take is far below; larger numbers were not written by Mellow.
 const MAXIMUM_STORED_COLUMN_WIDTH: f32 = 10_000.0;
 
@@ -78,6 +82,9 @@ pub struct Preferences {
     /// file's own volume when unset.
     pub media_volume: Option<f32>,
     pub is_media_muted: bool,
+    /// Each account's recently used emoji, latest first (the web keeps them in `localStorage`),
+    /// accounts most recent last.
+    pub recent_emoji_by_user: Vec<(Snowflake, Vec<String>)>,
 }
 
 impl Preferences {
@@ -123,6 +130,32 @@ impl Preferences {
             .len()
             .saturating_sub(MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS);
         self.notification_settings_by_user.drain(..excess);
+    }
+
+    /// The emoji `user_id` picked lately, latest first.
+    #[must_use]
+    pub fn recent_emoji_of(&self, user_id: Snowflake) -> &[String] {
+        self.recent_emoji_by_user
+            .iter()
+            .find(|(user, _)| *user == user_id)
+            .map_or(&[], |(_, recent)| recent.as_slice())
+    }
+
+    /// `emoji` becomes the latest `user_id` picked.
+    pub fn remember_emoji(&mut self, user_id: Snowflake, emoji: &str) {
+        let recent = remember_emoji(self.recent_emoji_of(user_id), emoji);
+        self.set_recent_emoji(user_id, recent);
+    }
+
+    fn set_recent_emoji(&mut self, user_id: Snowflake, recent: Vec<String>) {
+        self.recent_emoji_by_user
+            .retain(|(user, _)| *user != user_id);
+        self.recent_emoji_by_user.push((user_id, recent));
+        let excess = self
+            .recent_emoji_by_user
+            .len()
+            .saturating_sub(MAXIMUM_REMEMBERED_RECENT_EMOJI_ACCOUNTS);
+        self.recent_emoji_by_user.drain(..excess);
     }
 
     /// Opens or closes the docked member sheet of a server or group, for next time.
@@ -261,6 +294,22 @@ impl Preferences {
                         );
                     }
                 }
+                // `<user id>:<a JSON list>`, kept only as emoji the picker knows.
+                RECENT_EMOJI_KEY => {
+                    if let Some((user, json)) = value.split_once(':')
+                        && let Some(user_id) = parse_snowflake(user)
+                        && let Ok(serde_json::Value::Array(stored)) = serde_json::from_str(json)
+                    {
+                        let stored = stored
+                            .into_iter()
+                            .filter_map(|value| match value {
+                                serde_json::Value::String(emoji) => Some(emoji),
+                                _ => None,
+                            })
+                            .collect();
+                        preferences.set_recent_emoji(user_id, recent_emoji_from(stored));
+                    }
+                }
                 _ => {}
             }
         }
@@ -302,6 +351,10 @@ impl Preferences {
         for (user_id, settings) in &self.notification_settings_by_user {
             let json = notification_settings_to_json(settings);
             let _ = writeln!(text, "{NOTIFICATIONS_KEY}={user_id}:{json}");
+        }
+        for (user_id, recent) in &self.recent_emoji_by_user {
+            let json = serde_json::Value::from(recent.clone());
+            let _ = writeln!(text, "{RECENT_EMOJI_KEY}={user_id}:{json}");
         }
         text
     }
@@ -410,6 +463,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     notification_settings_by_user: Vec::new(),
     media_volume: None,
     is_media_muted: false,
+    recent_emoji_by_user: Vec::new(),
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -629,6 +683,32 @@ mod tests {
         let tampered =
             Preferences::from_file_text("notifications=1:{not json\nnotifications=x:{}\n");
         assert_eq!(tampered.notification_settings_by_user, []);
+    }
+
+    #[test]
+    fn recent_emoji_survive_a_round_trip_per_account_and_only_as_known_emoji() {
+        let mut preferences = Preferences::default();
+        preferences.remember_emoji(id(1), "👍");
+        preferences.remember_emoji(id(1), "❤️");
+        preferences.remember_emoji(id(2), "🔥");
+        let read = Preferences::from_file_text(&preferences.to_file_text());
+        assert_eq!(read.recent_emoji_of(id(1)), ["❤️", "👍"]);
+        assert_eq!(read.recent_emoji_of(id(2)), ["🔥"]);
+        assert_eq!(read.recent_emoji_of(id(3)), [] as [String; 0]);
+        for raw in 3..=u64::try_from(MAXIMUM_REMEMBERED_RECENT_EMOJI_ACCOUNTS).unwrap() + 1 {
+            preferences.remember_emoji(id(raw), "👍");
+        }
+        assert!(
+            preferences.recent_emoji_of(id(1)).is_empty(),
+            "the oldest account is forgotten"
+        );
+        let tampered = Preferences::from_file_text(
+            "recent-emoji=1:[\"👍\",3,\"<b>\",\"lol\"]\nrecent-emoji=2:{\"a\":1}\nrecent-emoji=x:[]\n",
+        );
+        assert_eq!(
+            tampered.recent_emoji_by_user,
+            [(id(1), vec!["👍".to_owned()])]
+        );
     }
 
     #[gpui::test]

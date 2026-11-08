@@ -3,9 +3,10 @@
 //! time there on hover. A message naming the reader is tinted with a leading bar; one still in the
 //! outbox is dimmed, then says it was not sent with Retry and Delete.
 //!
-//! shortcut: no hover bar, menu, inline editor, roving focus or rich cards (polls, checklists,
-//! forwards, link previews, GIFs) yet; they come with the message list and its actions (M3 steps
-//! 3 and 5).
+//! A forward holds its copied words and files in the quote bar (`ForwardFrame`); link previews
+//! follow the files (`MessageLinkPreviews`).
+//!
+//! shortcut: no polls, checklists or GIFs yet; they come with their own tracks (M3 step 5).
 
 use std::rc::Rc;
 use std::sync::Arc;
@@ -21,9 +22,12 @@ use mellow_protocol::{Attachment, PublicUser};
 
 use super::attachments::MessageAttachments;
 use super::body::MessageBody;
+use super::forward::{ForwardFrame, ForwardOrigin};
+use super::link_previews::MessageLinkPreviews;
 use super::markdown_view::{EditedMarker, MessageMarkdown};
 use super::reactions::{
-    MessageReactions, ReactionPill, ReactionToggleHandler, ReactionTooltipBuilder,
+    AddReactionButton, MessageReactions, ReactionPill, ReactionToggleHandler,
+    ReactionTooltipBuilder,
 };
 use super::reply::{ReplyLine, ReplyReference};
 use super::time::{
@@ -89,10 +93,13 @@ pub struct MessageItem {
     can_join_reactions: bool,
     on_toggle_reaction: Option<ReactionToggleHandler>,
     reaction_tooltip: Option<ReactionTooltipBuilder>,
+    add_reaction: Option<AddReactionButton>,
     selection_order: u64,
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    link_previews: Option<MessageLinkPreviews>,
+    forward: Option<(ForwardOrigin, Option<ActivationHandler>)>,
 }
 
 /// Opens the author's menu at a window point.
@@ -108,11 +115,35 @@ impl MessageItem {
             can_join_reactions: true,
             on_toggle_reaction: None,
             reaction_tooltip: None,
+            add_reaction: None,
             selection_order: 0,
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            link_previews: None,
+            forward: None,
         }
+    }
+
+    /// The previews of the message's links, under its files.
+    #[must_use]
+    pub fn link_previews(mut self, previews: MessageLinkPreviews) -> Self {
+        self.link_previews = Some(previews);
+        self
+    }
+
+    /// A forward (ADR-0039): its words and files go in the quote bar; `on_open_origin` jumps to
+    /// the original when the reader knows its channel.
+    #[must_use]
+    pub fn forward(
+        mut self,
+        origin: ForwardOrigin,
+        on_open_origin: Option<impl Fn(&mut Window, &mut App) + 'static>,
+    ) -> Self {
+        let on_open_origin =
+            on_open_origin.map(|handler| -> ActivationHandler { Arc::new(handler) });
+        self.forward = Some((origin, on_open_origin));
+        self
     }
 
     #[must_use]
@@ -138,6 +169,13 @@ impl MessageItem {
         builder: impl Fn(&ReactionPill, &mut App) -> gpui::AnyView + 'static,
     ) -> Self {
         self.reaction_tooltip = Some(Arc::new(builder));
+        self
+    }
+
+    /// Add reaction after the reaction pills (`canAddNew`).
+    #[must_use]
+    pub fn add_reaction(mut self, add_reaction: Option<AddReactionButton>) -> Self {
+        self.add_reaction = add_reaction;
         self
     }
 
@@ -401,7 +439,8 @@ impl RenderOnce for MessageItem {
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)
                 .can_join(self.can_join_reactions)
-                .tooltip(self.reaction_tooltip);
+                .tooltip(self.reaction_tooltip)
+                .add_button(self.add_reaction);
             match self.on_toggle_reaction {
                 Some(on_toggle) => {
                     reactions.on_toggle(move |key, window, cx| on_toggle(key, window, cx))
@@ -502,8 +541,24 @@ impl RenderOnce for MessageItem {
             .children(header)
             .children(gutter_time)
             .children(gutter_pin)
-            .child(body)
-            .children(attachments)
+            .map(|row| match self.forward {
+                // A forward copies no preview (ADR-0039).
+                Some((origin, on_open_origin)) => {
+                    let mut copied = vec![body.into_any_element()];
+                    copied.extend(attachments.map(IntoElement::into_any_element));
+                    row.child(ForwardFrame::new(
+                        child_id(&id, "forward"),
+                        origin,
+                        content.now_unix_milliseconds,
+                        copied,
+                        on_open_origin,
+                    ))
+                }
+                None => row
+                    .child(body)
+                    .children(attachments)
+                    .children(self.link_previews),
+            })
             .children(reactions)
             .children(sending_label)
             .children(failure)

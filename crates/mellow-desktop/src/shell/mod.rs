@@ -41,7 +41,7 @@ use crate::column_widths::{
 };
 use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
-use crate::conversation::ConversationView;
+use crate::conversation::{ConversationView, OpenForwardOrigin};
 use crate::home::{Home, HomeEvent, OpenPersonMenu};
 use crate::local_widgets::error_line;
 use crate::navigation::{Direction, Navigation, Place};
@@ -1069,6 +1069,15 @@ impl Render for DuskShell {
             .on_action(
                 cx.listener(|shell, action: &OpenDirectConversation, window, cx| {
                     shell.open_direct_conversation_with(action.user_id, window, cx);
+                }),
+            )
+            .on_action(
+                cx.listener(|shell, action: &OpenForwardOrigin, window, cx| {
+                    shell.open_channel(action.channel_id, window, cx);
+                    let (channel_id, message_id) = (action.channel_id, action.message_id);
+                    shell.conversation.update(cx, |conversation, cx| {
+                        conversation.reach_after_opening(channel_id, message_id, cx);
+                    });
                 }),
             )
             .on_action(cx.listener(|shell, action: &OpenPersonMenu, window, cx| {
