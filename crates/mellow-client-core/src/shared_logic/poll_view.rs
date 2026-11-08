@@ -55,13 +55,14 @@ pub fn poll_results(poll: &Poll) -> PollResults<'_> {
     }
 }
 
-/// `Math.round(part / whole * 100)`: halves round up.
+/// `Math.round(part / whole * 100)` in floating point, as the web computes it, so both clients
+/// show the same percent (29 of 200 is 14, not the exact 15).
+#[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // 0..=100: part <= whole.
 fn rounded_percent(part: u32, whole: u32) -> u32 {
     if whole == 0 {
         return 0;
     }
-    let (part, whole) = (u64::from(part), u64::from(whole));
-    u32::try_from((part * 200 + whole) / (2 * whole)).unwrap_or(100)
+    (f64::from(part) / f64::from(whole) * 100.0 + 0.5).floor() as u32
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -131,6 +132,17 @@ pub fn pending_poll_preview(poll: &NewPoll, now_unix_milliseconds: u64) -> Poll 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn percents_round_like_the_web_s_floating_point() {
+        assert_eq!(rounded_percent(29, 200), 14);
+        assert_eq!(rounded_percent(1, 2), 50);
+        assert_eq!(rounded_percent(1, 3), 33);
+        assert_eq!(rounded_percent(2, 3), 67);
+        assert_eq!(rounded_percent(1, 8), 13);
+        assert_eq!(rounded_percent(0, 0), 0);
+        assert_eq!(rounded_percent(7, 7), 100);
+    }
 
     const MINUTE: u64 = 60_000;
     const HOUR: u64 = 60 * MINUTE;
