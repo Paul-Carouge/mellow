@@ -32,7 +32,7 @@ pub use reactions::{MessageReactions, ReactionPill, ReactionTooltipBuilder, reac
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,
-    message_timestamp_label, time_of_day_label,
+    message_timestamp_label, time_of_day_label, upcoming_time_label,
 };
 
 use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};

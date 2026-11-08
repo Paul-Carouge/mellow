@@ -14,6 +14,7 @@ use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Channel, ChannelKind, DirectMessageChannel, Permissions, Snowflake};
 
+use super::place_menus::{MenuRow, PlaceMenuTarget, is_target_muted, with_place_menu};
 use super::regions::{Region, RovingTabStop};
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
@@ -23,19 +24,21 @@ use crate::components::{
 };
 use crate::home::{conversation_display_name, shown_presence};
 use crate::i18n::strings;
+use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_CATEGORY_ADD_ICON_SIZE, COMPONENT_CATEGORY_CHEVRON_SIZE, COMPONENT_CATEGORY_HEIGHT,
     COMPONENT_CATEGORY_MARGIN_TOP, COMPONENT_CATEGORY_PADDING_INLINE, COMPONENT_CHANNEL_ROW_GAP,
     COMPONENT_CHANNEL_ROW_HEIGHT, COMPONENT_CHANNEL_ROW_ICON_GAP, COMPONENT_CHANNEL_ROW_ICON_SIZE,
-    COMPONENT_CHANNEL_ROW_MARGIN_INLINE, COMPONENT_CHANNEL_ROW_PADDING_INLINE,
-    COMPONENT_CHANNEL_ROW_RADIUS, COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT,
-    COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET, COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH,
-    COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MEMBER_ROW_HEIGHT, COMPONENT_NAVIGATOR_RADIUS,
-    COMPONENT_NAVIGATOR_STRIP_WIDTH, COMPONENT_SIDEBAR_HEADER_HEIGHT,
-    COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, COMPONENT_VOICE_PARTICIPANT_GAP,
-    COMPONENT_VOICE_PARTICIPANT_INDENT, COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, SPACE_2XS,
-    SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
+    COMPONENT_CHANNEL_ROW_MARGIN_INLINE, COMPONENT_CHANNEL_ROW_MUTED_ICON_SIZE,
+    COMPONENT_CHANNEL_ROW_PADDING_INLINE, COMPONENT_CHANNEL_ROW_RADIUS,
+    COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT, COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET,
+    COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH, COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+    COMPONENT_MEMBER_ROW_HEIGHT, COMPONENT_NAVIGATOR_RADIUS, COMPONENT_NAVIGATOR_STRIP_WIDTH,
+    COMPONENT_SIDEBAR_HEADER_HEIGHT, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE,
+    COMPONENT_VOICE_PARTICIPANT_GAP, COMPONENT_VOICE_PARTICIPANT_INDENT,
+    COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM,
+    TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -60,6 +63,10 @@ struct SidebarRow {
     has_unread: bool,
     mention_count: u32,
     channel_id: Option<Snowflake>,
+    /// Greyed with a bell-slash, never unread (DESIGN.md §5.3).
+    is_muted: bool,
+    /// The place whose menu a right-click, the Menu key or Shift+F10 opens.
+    menu: Option<PlaceMenuTarget>,
 }
 
 impl DuskShell {
@@ -205,6 +212,7 @@ impl DuskShell {
             )
     }
 
+    #[allow(clippy::too_many_lines)] // One list, in the order it is drawn.
     fn guild_rows(
         &mut self,
         channels: &[Channel],
@@ -232,6 +240,8 @@ impl DuskShell {
             return vec![empty_note(note, cx).into_any_element()];
         }
         let selected_channel_id = self.navigation.selected_channel_id();
+        let settings = self.notification_settings(cx);
+        let now = now_unix_milliseconds();
         let mut rows = Vec::new();
         for section in sections {
             let is_collapsed = section
@@ -266,7 +276,8 @@ impl DuskShell {
                     continue;
                 }
                 let is_selected = selected_channel_id == Some(channel.id);
-                let has_unread = !is_selected && state.has_unread(channel.id);
+                let is_muted = is_target_muted(&settings, channel.id, now);
+                let has_unread = !is_selected && !is_muted && state.has_unread(channel.id);
                 if is_collapsed && !is_selected && !has_unread {
                     continue;
                 }
@@ -276,10 +287,15 @@ impl DuskShell {
                     state.mention_count(channel.id)
                 };
                 let can_send = can_send_in(state, channel.id);
-                let name_for_label = if can_send {
-                    channel.name.clone()
+                let name_with_mute = if is_muted {
+                    strings.notifications().with_muted(&channel.name)
                 } else {
-                    format!("{}, {}", channel.name, strings.common().read_only())
+                    channel.name.clone()
+                };
+                let name_for_label = if can_send {
+                    name_with_mute
+                } else {
+                    format!("{name_with_mute}, {}", strings.common().read_only())
                 };
                 rows.push(Self::sidebar_row(
                     SidebarRow {
@@ -299,7 +315,15 @@ impl DuskShell {
                                 IconName::Lock
                             },
                             COMPONENT_CHANNEL_ROW_ICON_SIZE,
-                            row_ink(is_selected, has_unread, false, cx),
+                            row_ink(
+                                RowLook {
+                                    is_selected,
+                                    has_unread,
+                                    is_muted,
+                                },
+                                false,
+                                cx,
+                            ),
                         )
                         .into_any_element(),
                         height: COMPONENT_CHANNEL_ROW_HEIGHT,
@@ -307,6 +331,8 @@ impl DuskShell {
                         has_unread,
                         mention_count,
                         channel_id: Some(channel.id),
+                        is_muted,
+                        menu: Some(PlaceMenuTarget::Channel(channel.id)),
                     },
                     (tab_stop, rows.len()),
                     window,
@@ -340,12 +366,21 @@ impl DuskShell {
         };
         let category_id = category.id;
         let is_ring_shown = is_focus_visible(&focus_handle, window);
+        let header = with_place_menu(
+            with_type(div(), TYPE_CATEGORY).id(id),
+            MenuRow {
+                target: PlaceMenuTarget::Category(category_id),
+                region: Region::ChannelList,
+                child_index,
+            },
+            focus_handle.clone(),
+            cx,
+        );
         div()
             .mt(length(COMPONENT_CATEGORY_MARGIN_TOP))
             .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
             .child(
-                with_type(div(), TYPE_CATEGORY)
-                    .id(id)
+                header
                     .role(Role::Button)
                     .aria_label(SharedString::from(category.name.clone()))
                     .aria_expanded(!is_collapsed)
@@ -539,7 +574,15 @@ impl DuskShell {
                     .child(icon(
                         IconName::Users,
                         COMPONENT_CHANNEL_ROW_ICON_SIZE,
-                        row_ink(is_friends_open, false, false, cx),
+                        row_ink(
+                            RowLook {
+                                is_selected: is_friends_open,
+                                has_unread: false,
+                                is_muted: false,
+                            },
+                            false,
+                            cx,
+                        ),
                     ))
                     .into_any_element(),
                 height: COMPONENT_MEMBER_ROW_HEIGHT,
@@ -547,6 +590,8 @@ impl DuskShell {
                 has_unread: false,
                 mention_count: u32::try_from(incoming).unwrap_or(u32::MAX),
                 channel_id: None,
+                is_muted: false,
+                menu: None,
             },
             (tab_stop, 0),
             window,
@@ -555,6 +600,8 @@ impl DuskShell {
         let state = self.session.read(cx).state();
         let current_user_id = state.current_user().map(|user| user.id);
         let conversations: Vec<DirectMessageChannel> = state.direct_message_channels().to_vec();
+        let settings = self.notification_settings(cx);
+        let now = now_unix_milliseconds();
         if conversations.is_empty() {
             rows.push(
                 div()
@@ -590,8 +637,9 @@ impl DuskShell {
         for conversation in conversations {
             let state = self.session.read(cx).state();
             let is_selected = selected == Some(conversation.id);
-            let has_unread = !is_selected && state.has_unread(conversation.id);
-            let mention_count = if is_selected {
+            let is_muted = is_target_muted(&settings, conversation.id, now);
+            let has_unread = !is_selected && !is_muted && state.has_unread(conversation.id);
+            let mention_count = if is_selected || is_muted {
                 0
             } else {
                 state.mention_count(conversation.id)
@@ -640,10 +688,15 @@ impl DuskShell {
             // Everyone in a group, you included (`participantCount`).
             let member_count = i64::try_from(participant_count(&conversation, current_user_id))
                 .unwrap_or(i64::MAX);
-            let label = if is_group {
-                strings.groups().row_label(&name, member_count)
+            let name_with_mute = if is_muted {
+                strings.notifications().with_muted(&name)
             } else {
                 name.clone()
+            };
+            let label = if is_group {
+                strings.groups().row_label(&name_with_mute, member_count)
+            } else {
+                name_with_mute
             };
             let child_index = rows.len();
             let row = Self::sidebar_row(
@@ -660,6 +713,8 @@ impl DuskShell {
                     has_unread,
                     mention_count,
                     channel_id: Some(conversation.id),
+                    is_muted,
+                    menu: None,
                 },
                 (tab_stop, child_index),
                 window,
@@ -678,6 +733,7 @@ impl DuskShell {
     /// A channel or conversation row (`sidebarRowClasses`): the unread pill at the strip's edge,
     /// the selected wash, unread names brighter, the mention badge last. `channel_id` `None` is
     /// the Friends row, which opens Home.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn sidebar_row(
         row: SidebarRow,
         (tab_stop, child_index): (&mut RovingTabStop, usize),
@@ -693,7 +749,15 @@ impl DuskShell {
         );
         let hover = remembered_hover(&row.id, window, cx);
         let is_hovered = *hover.read(cx);
-        let ink = row_ink(row.is_selected, row.has_unread, is_hovered, cx);
+        let ink = row_ink(
+            RowLook {
+                is_selected: row.is_selected,
+                has_unread: row.has_unread,
+                is_muted: row.is_muted,
+            },
+            is_hovered,
+            cx,
+        );
         let fill = if row.is_selected {
             Some(tokens.component_channel_row_background_selected)
         } else if is_hovered {
@@ -703,6 +767,26 @@ impl DuskShell {
         };
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let channel_id = row.channel_id;
+        let menu_focus = focus_handle.clone();
+        let button = div()
+            .id(row.id)
+            .role(Role::Link)
+            .aria_label(row.label)
+            .when(row.is_selected, |button| button.aria_selected(true))
+            .track_focus(&focus_handle);
+        let button = match row.menu {
+            Some(target) => with_place_menu(
+                button,
+                MenuRow {
+                    target,
+                    region: Region::ChannelList,
+                    child_index,
+                },
+                menu_focus,
+                cx,
+            ),
+            None => button,
+        };
         div()
             .relative()
             .mt(length(COMPONENT_CHANNEL_ROW_GAP))
@@ -722,12 +806,7 @@ impl DuskShell {
                 )
             })
             .child(
-                div()
-                    .id(row.id)
-                    .role(Role::Link)
-                    .aria_label(row.label)
-                    .when(row.is_selected, |button| button.aria_selected(true))
-                    .track_focus(&focus_handle)
+                button
                     .relative()
                     .flex()
                     .items_center()
@@ -771,6 +850,13 @@ impl DuskShell {
                                 )
                             }),
                     )
+                    .when(row.is_muted, |button| {
+                        button.child(icon(
+                            IconName::BellSlash,
+                            COMPONENT_CHANNEL_ROW_MUTED_ICON_SIZE,
+                            color(tokens.component_channel_row_muted_icon),
+                        ))
+                    })
                     .when(row.mention_count > 0, |button| {
                         button.child(MentionBadge::new(row.mention_count))
                     })
@@ -782,15 +868,25 @@ impl DuskShell {
     }
 }
 
-/// The row's text and icon colour (`sidebarRowClasses`): never by colour alone, the pill and the
-/// accessible name say unread too.
-fn row_ink(is_selected: bool, has_unread: bool, is_hovered: bool, cx: &gpui::App) -> gpui::Hsla {
+/// What a row's colour says.
+#[derive(Debug, Clone, Copy)]
+struct RowLook {
+    is_selected: bool,
+    has_unread: bool,
+    is_muted: bool,
+}
+
+/// The row's text and icon colour (`sidebarRowClasses`): never by colour alone, the pill, the
+/// bell-slash and the accessible name say unread and muted too.
+fn row_ink(look: RowLook, is_hovered: bool, cx: &gpui::App) -> gpui::Hsla {
     let tokens = theme(cx);
-    color(if is_selected {
+    color(if look.is_selected {
         tokens.component_channel_row_text_selected
     } else if is_hovered {
         tokens.component_channel_row_text_hover
-    } else if has_unread {
+    } else if look.is_muted {
+        tokens.component_channel_row_text_muted_channel
+    } else if look.has_unread {
         tokens.component_channel_row_text_unread
     } else {
         tokens.component_channel_row_text_read

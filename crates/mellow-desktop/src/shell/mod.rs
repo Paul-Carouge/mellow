@@ -13,6 +13,8 @@ mod member_profile;
 mod member_sheet;
 mod notification_settings;
 mod overlays;
+mod place_menus;
+mod place_notifications;
 pub mod quick_switcher;
 mod regions;
 mod resize_handle;
@@ -210,6 +212,8 @@ pub struct DuskShell {
     /// The notification choices, opened from the status menu.
     notification_settings: Option<(Entity<ModalDialog>, Subscription)>,
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    /// The menus of servers, channels, categories and the chat header, and their dialogs.
+    place_menus: place_menus::PlaceMenus,
     /// The profile a member row opened in the side sheet.
     member_profile: member_profile::MemberProfileState,
     /// Where the user card is drawn, for the status menu to open across it.
@@ -271,6 +275,7 @@ impl DuskShell {
             status_menu: None,
             notification_settings: None,
             custom_status_dialog: None,
+            place_menus: place_menus::PlaceMenus::default(),
             member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
@@ -1104,7 +1109,8 @@ impl Render for DuskShell {
             })
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
-            });
+            })
+            .children(self.render_place_menus(window, cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);
