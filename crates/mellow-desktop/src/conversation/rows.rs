@@ -739,6 +739,15 @@ impl ConversationView {
                     && (state.does_message_mention_current_user(message) || body.names_reader);
                 let rights = self.permissions(channel_id, cx);
                 let message_id = message.id;
+                let is_row_active = self.hovered_message_id == Some(message_id)
+                    || (self.focused_row_key.as_deref() == Some(row.key.as_str())
+                        && self.list_focus.contains_focused(window, cx));
+                let add_reaction = self.reactions_add_button(
+                    message_id,
+                    rights.can_add_reactions,
+                    is_row_active,
+                    cx,
+                );
                 let toggle_view = view.clone();
                 let item = MessageItem::new(
                     row_id.clone(),
@@ -768,6 +777,7 @@ impl ConversationView {
                 )
                 .selection_order(selection_order(index))
                 .can_join_reactions(rights.can_join_reactions)
+                .add_reaction(add_reaction)
                 .reaction_tooltip({
                     let view = view.clone();
                     move |pill, cx| {
@@ -869,9 +879,12 @@ impl ConversationView {
         });
         let hover_bar = message_id
             .filter(|id| {
-                self.hovered_message_id == Some(*id) || is_menu_open || has_keyboard_focus_within
+                self.hovered_message_id == Some(*id)
+                    || is_menu_open
+                    || has_keyboard_focus_within
+                    || self.message_holding_the_picker() == Some(*id)
             })
-            .and_then(|id| self.render_hover_bar(index, id, cx));
+            .and_then(|id| self.render_hover_bar(index, id, window, cx));
         let highlight = self
             .highlight
             .filter(|(highlighted_id, _)| Some(*highlighted_id) == message_id)
@@ -1057,12 +1070,18 @@ impl ConversationView {
         &self,
         index: usize,
         message_id: Snowflake,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let message = self.cached_message(message_id, cx)?;
         let facts = self.message_facts(&message, cx);
+        let reaction_buttons = if facts.can_add_reactions {
+            self.hover_bar_reaction_buttons(&message, window, cx)
+        } else {
+            Vec::new()
+        };
         let actions = hover_bar_actions(facts, self.is_shift_held);
         let id = |name: &str| SharedString::from(format!("hover-{name}-{}", message_id.raw()));
         let view = cx.entity().downgrade();
@@ -1144,6 +1163,7 @@ impl ConversationView {
                 .border_color(color(tokens.component_action_bar_border))
                 .bg(color(tokens.component_action_bar_background))
                 .shadow(shadow(tokens.component_action_bar_shadow))
+                .children(reaction_buttons)
                 .children(buttons)
                 .into_any_element(),
         )

@@ -1,14 +1,14 @@
 //! `MessageReactions.svelte` (DESIGN.md §5.4): reaction pills under a message, emoji and count,
 //! pressed when the reader is among them; activating one asks the host to add or take back the
-//! reader's reaction.
+//! reader's reaction. After them, Add reaction opens the host's emoji picker.
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
 use std::sync::Arc;
 
 use gpui::{
-    AnyElement, AnyView, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
+    AnyElement, AnyView, App, Bounds, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement as _, Pixels, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, StyledImage as _, Toggled, Window, div, img, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
@@ -17,10 +17,11 @@ use mellow_protocol::{CustomEmoji, ReactionSummary, Snowflake};
 
 use super::{picture_animation, picture_for_box};
 use crate::components::{
-    Tooltip, child_id, colour_transition, focus_ring, is_focus_visible, remembered_focus_handle,
-    remembered_hover, with_type,
+    Tooltip, bounds_recorder, child_id, colour_transition, focus_ring, icon, is_focus_visible,
+    remembered_bounds, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{self, Strings};
+use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH, COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS,
     COMPONENT_REACTION_BORDER_WIDTH, COMPONENT_REACTION_EMOJI_SIZE, COMPONENT_REACTION_GAP,
@@ -33,6 +34,16 @@ use crate::theme::{color, length, theme};
 pub type ReactionToggleHandler = Arc<dyn Fn(&str, &mut Window, &mut App) + 'static>;
 /// The tooltip a pill shows: who reacted, which the host may have to ask the instance for.
 pub type ReactionTooltipBuilder = Arc<dyn Fn(&ReactionPill, &mut App) -> AnyView + 'static>;
+/// Add reaction: the host opens its emoji picker beside the button, drawn at these bounds.
+pub type AddReactionHandler = Arc<dyn Fn(Bounds<Pixels>, &mut Window, &mut App) + 'static>;
+
+/// The add button, and whether it shows (the row is hovered or holds focus, or its picker is
+/// open); hidden, it keeps its room so the pills do not move.
+#[derive(Clone)]
+pub struct AddReactionButton {
+    pub on_add: AddReactionHandler,
+    pub is_shown: bool,
+}
 
 /// One reaction as a pill shows it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -77,6 +88,7 @@ pub struct MessageReactions {
     can_join: bool,
     on_toggle: Option<ReactionToggleHandler>,
     tooltip: Option<ReactionTooltipBuilder>,
+    add_button: Option<AddReactionButton>,
 }
 
 impl MessageReactions {
@@ -88,7 +100,15 @@ impl MessageReactions {
             can_join: true,
             on_toggle: None,
             tooltip: None,
+            add_button: None,
         }
+    }
+
+    /// Add reaction after the pills, where the reader may start a new one.
+    #[must_use]
+    pub fn add_button(mut self, add_button: Option<AddReactionButton>) -> Self {
+        self.add_button = add_button;
+        self
     }
 
     #[must_use]
@@ -136,6 +156,9 @@ impl RenderOnce for MessageReactions {
                 )
             })
             .collect();
+        let add_button = self
+            .add_button
+            .map(|add_button| render_add_button(&self.id, add_button, strings, window, cx));
         div()
             .id(self.id)
             .role(Role::List)
@@ -148,7 +171,77 @@ impl RenderOnce for MessageReactions {
             .items_center()
             .gap(length(COMPONENT_REACTION_ROW_GAP))
             .children(pills)
+            .children(add_button)
     }
+}
+
+/// `data-add-reaction`: a pill-shaped smiley that opens the picker.
+fn render_add_button(
+    list_id: &ElementId,
+    add_button: AddReactionButton,
+    strings: Strings,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let tokens = theme(cx);
+    let id = child_id(list_id, "add");
+    let bounds = remembered_bounds(&id, window, cx);
+    let AddReactionButton { on_add, is_shown } = add_button;
+    // Hidden, it leaves the Tab order too, as the web's `invisible` does.
+    let focus_handle = remembered_focus_handle(&id, window, cx).tab_stop(is_shown);
+    let hover = remembered_hover(&id, window, cx);
+    let is_hovered = *hover.read(cx);
+    let is_ring_shown = is_focus_visible(&focus_handle, window);
+    let label: SharedString = strings.reactions().add_reaction().into();
+    let tint = color(if is_hovered {
+        tokens.component_reaction_add_icon_hover
+    } else {
+        tokens.component_reaction_add_icon
+    });
+    let border = color(if is_hovered {
+        tokens.component_reaction_border_hover
+    } else {
+        tokens.component_reaction_border
+    });
+    let tooltip = label.clone();
+    div()
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label)
+        .track_focus(&focus_handle)
+        .relative()
+        .flex()
+        .items_center()
+        .h(length(COMPONENT_REACTION_HEIGHT))
+        .px(length(COMPONENT_REACTION_PADDING_INLINE))
+        .rounded(length(COMPONENT_REACTION_RADIUS))
+        .border(length(COMPONENT_REACTION_BORDER_WIDTH))
+        .border_color(border)
+        .bg(color(tokens.component_reaction_background))
+        .when(!is_shown, |button| button.opacity(0.0))
+        .cursor_pointer()
+        .tooltip(move |_, cx| Tooltip::view(tooltip.clone(), cx))
+        .tooltip_show_delay(Tooltip::show_delay())
+        .on_hover(move |is_hovered, _, cx| {
+            hover.update(cx, |remembered, cx| {
+                *remembered = *is_hovered;
+                cx.notify();
+            });
+        })
+        .on_click({
+            let bounds = bounds.clone();
+            move |_, window, cx| {
+                if let Some(drawn) = bounds.read(cx).filter(|_| is_shown) {
+                    on_add(drawn, window, cx);
+                }
+            }
+        })
+        .child(icon(IconName::Smiley, COMPONENT_REACTION_EMOJI_SIZE, tint))
+        .child(bounds_recorder(bounds))
+        .when(is_ring_shown, |button| {
+            button.child(focus_ring(COMPONENT_REACTION_RADIUS, cx))
+        })
+        .into_any_element()
 }
 
 /// A reaction's emoji at the pill's size: the character, the server emoji's picture, or a dashed
@@ -282,6 +375,15 @@ fn render_pill(
             pill.child(focus_ring(COMPONENT_REACTION_RADIUS, cx))
         })
         .into_any_element()
+}
+
+impl std::fmt::Debug for AddReactionButton {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("AddReactionButton")
+            .field("is_shown", &self.is_shown)
+            .finish_non_exhaustive()
+    }
 }
 
 impl std::fmt::Debug for MessageReactions {
