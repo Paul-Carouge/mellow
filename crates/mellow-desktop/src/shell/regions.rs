@@ -87,7 +87,11 @@ pub(super) struct RovingRow {
 #[derive(Debug)]
 pub(super) struct RovingTabStop {
     focused_id: Option<ElementId>,
+    /// The caller has a selection, though maybe not among the rows drawn.
     has_selected_row: bool,
+    /// False while the last frame drew no selected row: the first row stands in for it.
+    may_use_selected_row: bool,
+    has_drawn_selected_row: bool,
     rows: Vec<RovingRow>,
 }
 
@@ -95,6 +99,7 @@ impl RovingTabStop {
     pub(super) fn new(
         previous_rows: &[RovingRow],
         has_selected_row: bool,
+        may_use_selected_row: bool,
         window: &Window,
     ) -> Self {
         Self {
@@ -103,6 +108,8 @@ impl RovingTabStop {
                 .find(|row| row.focus.is_focused(window))
                 .map(|row| row.id.clone()),
             has_selected_row,
+            may_use_selected_row,
+            has_drawn_selected_row: false,
             rows: Vec::new(),
         }
     }
@@ -115,9 +122,10 @@ impl RovingTabStop {
         is_selected: bool,
         child_index: usize,
     ) -> FocusHandle {
+        self.has_drawn_selected_row |= is_selected;
         let is_tab_stop = match &self.focused_id {
             Some(focused_id) => focused_id == id,
-            None if self.has_selected_row => is_selected,
+            None if self.has_selected_row && self.may_use_selected_row => is_selected,
             None => self.rows.is_empty(),
         };
         let focus = focus.tab_stop(is_tab_stop);
@@ -137,6 +145,9 @@ pub(super) struct ListFocus {
     pub(super) focus: FocusHandle,
     pub(super) scroll: ScrollHandle,
     rows: Vec<RovingRow>,
+    /// The last frame had a selection but drew no selected row (state ahead of navigation): the
+    /// first row is the fallback until the selection is drawn, so the list is not redrawn forever.
+    has_missed_selected_row: bool,
 }
 
 impl ListFocus {
@@ -145,6 +156,7 @@ impl ListFocus {
             focus: cx.focus_handle(),
             scroll: ScrollHandle::new(),
             rows: Vec::new(),
+            has_missed_selected_row: false,
         }
     }
 
@@ -153,15 +165,23 @@ impl ListFocus {
         has_selected_row: bool,
         window: &Window,
     ) -> RovingTabStop {
-        RovingTabStop::new(&self.rows, has_selected_row, window)
+        RovingTabStop::new(
+            &self.rows,
+            has_selected_row,
+            !self.has_missed_selected_row,
+            window,
+        )
     }
 
-    /// Keeps the rows just built. When none became the Tab stop (the focused row went away), the
-    /// list is drawn again with the fallback.
+    /// Keeps the rows just built. When none became the Tab stop (the focused or selected row was
+    /// not drawn) or the fallback changes, the list is drawn again, once, with the new fallback.
     pub(super) fn keep_rows(&mut self, chosen: RovingTabStop, cx: &mut Context<DuskShell>) {
         let has_tab_stop = chosen.rows.is_empty() || chosen.rows.iter().any(|row| row.is_tab_stop);
+        let has_missed_selected_row = chosen.has_selected_row && !chosen.has_drawn_selected_row;
+        let is_fallback_changed = has_missed_selected_row != self.has_missed_selected_row;
         self.rows = chosen.rows;
-        if !has_tab_stop {
+        self.has_missed_selected_row = has_missed_selected_row;
+        if !has_tab_stop || is_fallback_changed {
             cx.notify();
         }
     }
