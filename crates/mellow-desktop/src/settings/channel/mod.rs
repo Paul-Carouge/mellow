@@ -2,9 +2,11 @@
 //! under its name, each only with its permission in this channel and once the desktop has its
 //! page. See the parent module for how a section is added.
 //!
-//! shortcut: Permissions and "Delete channel" come with the M3 step 6 settings tracks.
+//! shortcut: "Delete channel" comes with the M3 step 6 settings tracks.
 
+mod add_overwrite_target;
 mod overview;
+mod permissions;
 
 use std::sync::Arc;
 
@@ -16,6 +18,7 @@ use mellow_client_core::state::ClientState;
 use mellow_protocol::Snowflake;
 
 use self::overview::ChannelOverviewPage;
+use self::permissions::ChannelPermissionsPage;
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
 use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
 use crate::i18n::{Strings, strings};
@@ -24,8 +27,7 @@ use crate::session::Session;
 /// Whether the desktop has a page for `section`: one arm per section, so a new one is decided.
 fn has_page(section: ChannelSettingsSection) -> bool {
     match section {
-        ChannelSettingsSection::Overview => true,
-        ChannelSettingsSection::Permissions => false,
+        ChannelSettingsSection::Overview | ChannelSettingsSection::Permissions => true,
     }
 }
 
@@ -108,15 +110,20 @@ impl ChannelSettings {
         section: ChannelSettingsSection,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<ShownPage<ChannelSettingsSection>> {
+    ) -> ShownPage<ChannelSettingsSection> {
         match section {
             ChannelSettingsSection::Overview => {
                 let page = cx.new(|cx| {
                     ChannelOverviewPage::new(self.session.clone(), self.channel_id, window, cx)
                 });
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
-            ChannelSettingsSection::Permissions => None,
+            ChannelSettingsSection::Permissions => {
+                let page = cx.new(|cx| {
+                    ChannelPermissionsPage::new(self.session.clone(), self.channel_id, window, cx)
+                });
+                shown_page(section, page, Self::navigation, cx)
+            }
         }
     }
 
@@ -149,7 +156,7 @@ impl Render for ChannelSettings {
         };
         let section = self.navigation.section(&offered);
         if !self.navigation.is_showing(section) {
-            let page = section.and_then(|section| self.make_page(section, window, cx));
+            let page = section.map(|section| self.make_page(section, window, cx));
             self.navigation.replace_page(page);
         }
         let is_wide = is_wide(window);

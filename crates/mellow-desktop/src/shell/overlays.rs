@@ -105,6 +105,18 @@ impl DuskShell {
         )
     }
 
+    /// A panel sliding in from the trailing edge (the search results below their breakpoint).
+    pub(super) fn overlay_with_trailing_edge(
+        &mut self,
+        id: &'static str,
+        label: String,
+        panel: AnyElement,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        self.overlay(id, label, Edge::Trailing, panel, window, cx)
+    }
+
     fn overlay(
         &mut self,
         id: &'static str,
@@ -137,6 +149,7 @@ impl DuskShell {
                     cx.stop_propagation();
                     shell.close_navigation_drawer(window, cx);
                     shell.close_member_overlay(window, cx);
+                    shell.close_search_overlay(window, cx);
                 }
             }))
             // Clicks on the panel stay on the panel; only the scrim closes.
@@ -171,6 +184,7 @@ impl DuskShell {
                 cx.listener(|shell, _, window, cx| {
                     shell.close_navigation_drawer(window, cx);
                     shell.close_member_overlay(window, cx);
+                    shell.close_search_overlay(window, cx);
                 }),
             )
             .child(sliding_panel);

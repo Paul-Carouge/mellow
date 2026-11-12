@@ -23,7 +23,8 @@ use mellow_protocol::{Checklist, Poll, ProgressBar};
 use super::time::{full_timestamp_label, local_date_time};
 use crate::components::{
     ActivationHandler, ProgressMeter, Tooltip, child_id, colour_transition, easing, focus_ring,
-    icon, inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    icon, inset_focus_ring, is_focus_visible, polite_live_region, remembered_focus_handle,
+    remembered_hover, with_type,
 };
 use crate::i18n::catalogue::MinutesOrHoursOrDays;
 use crate::i18n::{Strings, strings};
@@ -949,19 +950,7 @@ fn level(
             figure,
             spoken,
         ))
-        .child(
-            div()
-                .id(child_id(id, "announcement"))
-                .role(Role::Status)
-                .when(!announced.is_empty(), |region| region.aria_value(announced))
-                .a11y_synthetic_children(|subtree| {
-                    subtree
-                        .parent_node()
-                        .set_live(gpui::accesskit::Live::Polite);
-                })
-                .size_0()
-                .overflow_hidden(),
-        )
+        .child(polite_live_region(child_id(id, "announcement"), announced))
 }
 
 // ---- Progress bar --------------------------------------------------------------------------

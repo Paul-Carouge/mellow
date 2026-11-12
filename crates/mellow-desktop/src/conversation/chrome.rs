@@ -17,8 +17,8 @@ use mellow_client_core::shared_logic::message_rows::{
 use super::ConversationView;
 use super::rules::typing_segments;
 use crate::components::{
-    child_id, colour_transition, focus_ring, icon, is_focus_visible, remembered_focus_handle,
-    remembered_hover, with_type,
+    child_id, colour_transition, focus_ring, icon, is_focus_visible, polite_live_region,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::local_widgets::error_line;
@@ -38,24 +38,6 @@ use crate::theme::tokens::{
 use crate::theme::{color, length, theme};
 
 const LIST_KEY_CONTEXT: &str = "MessageList";
-
-/// Read out politely by screen readers each time `text` changes, as the web's `aria-live="polite"`.
-/// GPUI has no live-region setter, so the node is marked live through its AccessKit node; AccessKit
-/// announces a live node whose value changes (`NSAccessibilityAnnouncementRequestedNotification`
-/// on macOS, a text change event on AT-SPI). The same text twice in a row is read once.
-fn polite_live_region(id: &'static str, text: SharedString) -> impl IntoElement {
-    div()
-        .id(id)
-        .role(Role::Status)
-        .when(!text.is_empty(), |region| region.aria_value(text))
-        .a11y_synthetic_children(|subtree| {
-            subtree
-                .parent_node()
-                .set_live(gpui::accesskit::Live::Polite);
-        })
-        .size_0()
-        .overflow_hidden()
-}
 
 impl ConversationView {
     /// "3 new messages since today at 14:32", while the visit's unread messages are not seen.
