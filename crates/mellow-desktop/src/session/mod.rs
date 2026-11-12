@@ -32,6 +32,7 @@ mod relationships;
 mod search;
 mod servers;
 mod settings;
+mod soundboard;
 
 pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};

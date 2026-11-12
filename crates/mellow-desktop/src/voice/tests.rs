@@ -418,3 +418,67 @@ fn another_channel_chosen_while_connecting_retargets_the_start(cx: &mut TestAppC
     cx.run_until_parked();
     runtime.block_on(instance.stop());
 }
+
+#[gpui::test]
+fn a_played_sound_cools_the_soundboard_down_shows_by_the_player_and_plays_here(
+    cx: &mut TestAppContext,
+) {
+    use mellow_client_core::shared_logic::soundboard::{SoundboardBlock, encode_wav};
+
+    use crate::session::now_unix_milliseconds;
+
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, channel_id, _) = owner_with_two_voice_channels(&runtime, &instance, cx);
+    let (guild_id, owner_id) = session.read_with(cx, |session, _| {
+        let state = session.state();
+        (
+            state.guild_of_channel(channel_id).unwrap().id,
+            state.current_user().unwrap().id,
+        )
+    });
+    let rest = session.read_with(cx, |session, _| session.rest_client().cloned().unwrap());
+    let sound = runtime
+        .block_on(rest.create_sound(
+            guild_id,
+            &mellow_protocol::CreateSoundQuery {
+                name: "horn".into(),
+                emoji: None,
+            },
+            encode_wav(&vec![0.25; 4_800]).unwrap(),
+        ))
+        .unwrap();
+    let block = |voice: &Entity<Voice>, cx: &mut TestAppContext| {
+        voice.read_with(cx, |voice, cx| {
+            voice.soundboard_block(now_unix_milliseconds(), cx)
+        })
+    };
+    assert_eq!(block(&voice, cx), Some(SoundboardBlock::NotConnected));
+
+    voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    wait_until(cx, "the call and the server's sound", |cx| {
+        voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+            && session.read_with(cx, |session, _| {
+                !session.state().sounds_of(guild_id).is_empty()
+            })
+    });
+    assert!(voice.update(cx, |voice, cx| voice.play_soundboard_sound(sound.id, cx)));
+    assert_eq!(block(&voice, cx), Some(SoundboardBlock::CoolingDown));
+    assert!(
+        !voice.update(cx, |voice, cx| voice.play_soundboard_sound(sound.id, cx)),
+        "refused while cooling down"
+    );
+    wait_until(cx, "the instance's echo, shown and played", |cx| {
+        session.read_with(cx, |session, _| {
+            session
+                .state()
+                .sound_indicator(owner_id, now_unix_milliseconds())
+                .is_some_and(|indicator| indicator.sound_id == sound.id)
+        }) && voice.read_with(cx, |voice, _| voice.sound_cache.get(sound.id).is_some())
+    });
+
+    voice.update(cx, Voice::leave);
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}
