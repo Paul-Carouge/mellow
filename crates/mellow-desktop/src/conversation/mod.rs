@@ -1123,21 +1123,18 @@ impl ConversationView {
     fn remove_all_reactions_now(&mut self, message: &Message, cx: &mut Context<Self>) {
         self.action_error = None;
         let view = cx.entity().downgrade();
-        let (channel_id, message_id) = (message.channel_id, message.id);
+        let channel_id = message.channel_id;
         let summary = strings(cx).reactions().remove_all_failed().to_owned();
         self.session.update(cx, |session, cx| {
-            session.send_settings_change(
-                "remove all reactions",
+            session.remove_all_reactions(
+                message,
                 summary,
-                move |rest| async move { rest.remove_all_reactions(channel_id, message_id).await },
-                cx,
-                move |outcome, cx| {
-                    if let Err(sentence) = outcome {
-                        let _ = view.update(cx, |view, cx| {
-                            view.show_action_error(channel_id, sentence, cx);
-                        });
-                    }
+                move |sentence, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.show_action_error(channel_id, sentence, cx);
+                    });
                 },
+                cx,
             );
         });
     }
