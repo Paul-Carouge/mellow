@@ -205,7 +205,7 @@ fn stored_toggles(toggles: VoiceToggles) -> StoredVoiceToggles {
     }
 }
 
-fn current_settings(cx: &App) -> VoiceSettings {
+pub(crate) fn current_settings(cx: &App) -> VoiceSettings {
     preferences(cx).map_or(VoiceSettings::DEFAULT, |preferences| {
         preferences.voice_settings.clone()
     })
@@ -1020,13 +1020,12 @@ impl Voice {
     }
 
     /// A key went down in the window; true when it must not type (a character key held for
-    /// push-to-talk). `is_in_key_recorder`: the settings' recorder has focus and takes it.
+    /// push-to-talk). Nothing happens while the settings' recorder takes the key.
     pub fn push_to_talk_key_down(
         &mut self,
         key: &str,
         key_char: Option<&str>,
         modifiers: Modifiers,
-        is_in_key_recorder: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(code) = code_of_toolkit_key(key) else {
@@ -1043,7 +1042,7 @@ impl Voice {
             self.engine().is_some(),
             &code,
             is_character_key,
-            is_in_key_recorder,
+            self.is_recording_push_to_talk_key,
         ) {
             PushToTalkKeyEffect::Press { should_swallow } => {
                 self.press_push_to_talk(cx);

@@ -1158,7 +1158,6 @@ impl Render for DuskShell {
                             &keystroke.key,
                             keystroke.key_char.as_deref(),
                             keystroke.modifiers,
-                            voice.is_recording_push_to_talk_key(),
                             cx,
                         )
                     });

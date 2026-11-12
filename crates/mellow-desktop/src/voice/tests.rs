@@ -373,7 +373,7 @@ fn a_mute_and_push_to_talk_chosen_while_connecting_reach_the_engine(cx: &mut Tes
     });
     // Space held for push-to-talk does not also type a space.
     let should_swallow = voice.update(cx, |voice, cx| {
-        voice.push_to_talk_key_down("space", Some(" "), Modifiers::default(), false, cx)
+        voice.push_to_talk_key_down("space", Some(" "), Modifiers::default(), cx)
     });
     assert!(should_swallow);
     voice.update(cx, |voice, cx| voice.push_to_talk_key_up("space", cx));
