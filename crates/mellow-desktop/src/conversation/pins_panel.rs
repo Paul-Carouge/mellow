@@ -261,7 +261,7 @@ impl ConversationView {
                     .on_mouse_down_out(cx.listener(
                         |view, event: &gpui::MouseDownEvent, window, cx| {
                             // The header's pin button would open it again on this same click.
-                            view.pins_dismissed_by_pointer_at = Some(event.position);
+                            view.pins_dismissal.remember(event.position, ());
                             view.close_pins_panel(window, cx);
                         },
                     ))

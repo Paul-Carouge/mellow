@@ -155,16 +155,16 @@ pub struct ConversationView {
     menu: Option<(Entity<ContextMenu>, Subscription, Snowflake)>,
     emoji_picker: Option<emoji_reactions::OpenEmojiPicker>,
     /// Where a click on its opener closed the picker: that click must not reopen it.
-    emoji_picker_dismissed_at: Option<(gpui::Point<gpui::Pixels>, emoji_reactions::EmojiTarget)>,
+    emoji_picker_dismissal: crate::components::OutsideClickDismissal<emoji_reactions::EmojiTarget>,
     /// The open dialog: a confirmation, or who reacted.
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     is_pins_panel_open: bool,
     /// Where a click outside closed the pins panel: the toggle under it must not reopen it.
-    pins_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
+    pins_dismissal: crate::components::OutsideClickDismissal,
     /// The GIF picker while it is open (`gif_picker_host`).
     gif_picker: Option<(Entity<crate::gif_picker::GifPicker>, Subscription)>,
     /// Where a click outside closed the GIF picker: the GIF button under it must not reopen it.
-    gif_picker_dismissed_by_pointer_at: Option<gpui::Point<gpui::Pixels>>,
+    gif_picker_dismissal: crate::components::OutsideClickDismissal,
     /// What failed, above the composer until the next action or channel.
     action_error: Option<SharedString>,
     /// What went well, said above the composer until the next channel or message sent ("Forwarded
@@ -260,12 +260,12 @@ impl ConversationView {
             focused_row_key: None,
             menu: None,
             emoji_picker: None,
-            emoji_picker_dismissed_at: None,
+            emoji_picker_dismissal: crate::components::OutsideClickDismissal::default(),
             confirmation: None,
             is_pins_panel_open: false,
-            pins_dismissed_by_pointer_at: None,
+            pins_dismissal: crate::components::OutsideClickDismissal::default(),
             gif_picker: None,
-            gif_picker_dismissed_by_pointer_at: None,
+            gif_picker_dismissal: crate::components::OutsideClickDismissal::default(),
             action_error: None,
             notice: None,
             pending_origin_jump: None,
@@ -1535,11 +1535,10 @@ impl ConversationView {
         let Some(channel_id) = self.open_channel_id() else {
             return;
         };
-        let is_same_click_as_dismissal = self
-            .pins_dismissed_by_pointer_at
-            .take()
-            .is_some_and(|position| position == window.mouse_position());
-        if is_same_click_as_dismissal {
+        if self
+            .pins_dismissal
+            .is_closing_click(window.mouse_position(), &())
+        {
             return;
         }
         self.is_pins_panel_open = !self.is_pins_panel_open;
