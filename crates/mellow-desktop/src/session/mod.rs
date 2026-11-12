@@ -412,7 +412,18 @@ impl Session {
                 }
                 match answer {
                     Ok(answer) => on_done(session, answer, cx),
-                    Err(error) => tracing::error!(%error, "a network task failed"),
+                    // A task that panicked or was cancelled still answers: callers waiting on it
+                    // (one search in flight, a pending send) would otherwise wait for ever.
+                    Err(error) => {
+                        tracing::error!(%error, "a network task failed");
+                        on_done(
+                            session,
+                            Err(ClientError::UnexpectedResponse(
+                                "the network task failed".to_owned(),
+                            )),
+                            cx,
+                        );
+                    }
                 }
             });
         })
@@ -888,6 +899,31 @@ mod tests {
     use gpui::{AppContext as _, TestAppContext};
 
     use super::*;
+
+    /// Unwinds without the panic hook, so the test log stays quiet.
+    fn panicking_request() -> Result<(), ClientError> {
+        std::panic::resume_unwind(Box::new(()))
+    }
+
+    #[gpui::test]
+    async fn a_network_task_that_panics_still_answers_with_an_error(cx: &mut TestAppContext) {
+        let runtime = crate::tokio_bridge::build_network_runtime().unwrap();
+        cx.update(|cx| {
+            crate::tokio_bridge::install_network_runtime(runtime.handle().clone(), cx);
+        });
+        cx.executor().allow_parking();
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        let (sender, receiver) = tokio::sync::oneshot::channel();
+
+        session.update(cx, |session, cx| {
+            session.run_request(cx, async { panicking_request() }, move |_, answer, _| {
+                let _ = sender.send(answer.is_err());
+            });
+        });
+
+        assert!(receiver.await.unwrap());
+        runtime.shutdown_background();
+    }
 
     #[gpui::test]
     fn updates_of_an_ended_session_are_dropped(cx: &mut TestAppContext) {
