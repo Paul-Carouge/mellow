@@ -165,13 +165,33 @@ fn start_link_previews(
     })))
 }
 
-/// Opens the database, applies migrations, then serves HTTP until `shutdown` completes.
+/// Binds `listen_address`, opens the database, applies migrations, then serves HTTP until
+/// `shutdown` completes.
 ///
 /// # Errors
-/// Fails on a missing database or master key, a wrong key, a failed migration, or a port
-/// already in use.
+/// Fails on a port already in use, a missing database or master key, a wrong key, or a failed
+/// migration.
 pub async fn serve_instance(
     config: &ServerConfig,
+    shutdown: impl Future<Output = ()> + Send + 'static,
+) -> Result<()> {
+    // Bound before migrating: a second `serve` started by mistake fails here instead of
+    // migrating the database under the running instance.
+    let listener = TcpListener::bind(config.listen_address)
+        .await
+        .with_context(|| format!("cannot listen on {}", config.listen_address))?;
+    serve_instance_on_listener(config, listener, shutdown).await
+}
+
+/// [`serve_instance`] on a listener the caller already bound, so a test keeps the ephemeral
+/// port it was given instead of probing one that another process may take before the server
+/// binds it. `config.listen_address` is not used.
+///
+/// # Errors
+/// Fails on a missing database or master key, a wrong key, or a failed migration.
+pub async fn serve_instance_on_listener(
+    config: &ServerConfig,
+    listener: TcpListener,
     shutdown: impl Future<Output = ()> + Send + 'static,
 ) -> Result<()> {
     config.ensure_master_key_outside_data_directory_on_disk()?;
@@ -204,11 +224,6 @@ pub async fn serve_instance(
         config.attachment_directory(),
         &attachment_key,
     )?;
-    // Bound before migrating: a second `serve` started by mistake fails here instead of
-    // migrating the database under the running instance.
-    let listener = TcpListener::bind(config.listen_address)
-        .await
-        .with_context(|| format!("cannot listen on {}", config.listen_address))?;
     let database = open_encrypted_database(&database_path, &database_key).await?;
 
     let result = async {
