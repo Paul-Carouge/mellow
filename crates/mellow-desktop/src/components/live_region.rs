@@ -1,21 +1,23 @@
 //! Regions screen readers read out, as the web's `aria-live="polite"` (`role="status"`) and
 //! `aria-live="assertive"` (`role="alert"`).
 //!
-//! AccessKit takes `live` from the node or its ancestors, never from the role, and its macOS
-//! adapter announces a live node only when its value (`aria_value`) changes, not its label. So a
-//! bare `.role(Role::Status)` or `.role(Role::Alert)` is silent: go through this module instead.
+//! AccessKit takes `live` from the node or its ancestors, never from the role. Its macOS adapter
+//! announces a live node's value (`aria_value`); its AT-SPI (Linux) and UIA (Windows) adapters
+//! announce its name, which for a status or alert is its label (`aria_label`). So a bare
+//! `.role(Role::Status)` or `.role(Role::Alert)` is silent: go through this module instead.
 
 use gpui::{
     ElementId, InteractiveElement as _, IntoElement, Role, SharedString,
-    StatefulInteractiveElement, Styled as _,
-    accesskit::{Live, Node},
-    div,
+    StatefulInteractiveElement, Styled as _, accesskit::Live, div,
 };
 
 /// Makes an element with an id a region screen readers read out each time its text changes.
 /// GPUI has no live-region setter, so the node is marked live through its AccessKit node; AccessKit
 /// announces a live node whose value changes (`NSAccessibilityAnnouncementRequestedNotification`
-/// on macOS, a text change event on AT-SPI). The same text twice in a row is read once.
+/// on macOS, a name change on AT-SPI and UIA). The same text twice in a row is read once.
+///
+/// Both methods use the element's `a11y_synthetic_children` slot, which holds one closure: do not
+/// set it again on the same element, or the node loses its live setting.
 pub trait LiveRegion: StatefulInteractiveElement {
     /// Read out when the reader is idle, as the web's `role="status"`: progress, counts, results.
     #[must_use]
@@ -41,15 +43,14 @@ fn mark_live<E: StatefulInteractiveElement>(
     let element = element.role(role);
     let element = if text.is_empty() {
         element
-    } else {
+    } else if cfg!(target_os = "macos") {
+        // VoiceOver reads the label too when browsing, so macOS gets the value alone.
         element.aria_value(text)
+    } else {
+        element.aria_label(text.clone()).aria_value(text)
     };
-    element.a11y_synthetic_children(move |subtree| set_node_live(subtree.parent_node(), live))
-}
-
-/// The one AccessKit property GPUI has no setter for.
-fn set_node_live(node: &mut Node, live: Live) {
-    node.set_live(live);
+    // GPUI has no setter for `live`, the one AccessKit property this needs.
+    element.a11y_synthetic_children(move |subtree| subtree.parent_node().set_live(live))
 }
 
 /// An unseen region read out politely each time `text` changes (see [`LiveRegion::live_polite`]).
@@ -65,24 +66,12 @@ pub fn assertive_live_region(id: impl Into<ElementId>, text: SharedString) -> im
 
 #[cfg(test)]
 mod tests {
-    use super::*;
     use std::path::Path;
 
     // GPUI's test windows never activate accessibility (`TestWindow` keeps the default no-op
-    // `a11y_init`, so no AccessKit tree is ever built), so the node is checked at the lowest level
-    // reachable: the AccessKit node GPUI hands to the `a11y_synthetic_children` closure, with the
-    // role and value GPUI sets from `.role(...)` and `.aria_value(...)`.
-    #[test]
-    fn status_and_alert_nodes_are_live_and_carry_their_text_as_value() {
-        for (role, live) in [(Role::Status, Live::Polite), (Role::Alert, Live::Assertive)] {
-            let mut node = Node::new(role);
-            node.set_value("Saved");
-            set_node_live(&mut node, live);
-            assert_eq!(node.role(), role);
-            assert_eq!(node.live(), Some(live));
-            assert_eq!(node.value(), Some("Saved"));
-        }
-    }
+    // `a11y_init`, so no AccessKit tree is ever built) and its AccessKit setters are crate-private,
+    // so no test can read the live node; this guard keeps every status and alert going through
+    // `LiveRegion`.
 
     fn rust_files_under(directory: &Path, files: &mut Vec<std::path::PathBuf>) {
         let entries = std::fs::read_dir(directory).expect("the source directory is readable");
