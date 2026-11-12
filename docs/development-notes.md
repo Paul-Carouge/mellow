@@ -95,6 +95,7 @@ cargo test --workspace
 cargo deny check
 cargo xtask tokens --check
 ```
+CI also builds `mellow-desktop` and `mellow-media` on macOS and on Windows (`desktop-windows`, build only, no tests yet). Windows code cannot be built from the Mac (libvpx, opus, rav1d and aws-lc need MSVC): push and read that job. On MSVC, `mellow-media/build.rs` builds libvpx with MSBuild from its Visual Studio target, which needs `yasm` (its projects pass yasm-only flags), MSYS2's `sh` and `make` first in `PATH` (a native make starts libvpx's `#!/bin/bash` scripts with WSL's bash) and `WholeProgramOptimization=false` (link-time code generation objects lose their symbols once bundled into the rlib).
 A local hook refuses `git commit` when fmt or clippy fail on the touched crate: run them first. The hook checks before the command runs, so a combined "fix && commit" command is refused as a whole.
 
 ## Traps already hit
