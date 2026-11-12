@@ -41,7 +41,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 use crate::voice::global_push_to_talk::GlobalPushToTalkStatus;
-use crate::voice::{CallPhase, Voice};
+use crate::voice::{CallPhase, Voice, current_settings};
 
 /// A participant's popover: their volume and "Mute for me", for the reader only.
 pub(super) struct VoicePersonPopover {
@@ -390,16 +390,13 @@ impl DuskShell {
             let link_hover = remembered_hover(&link_id, window, cx);
             let is_link_hovered = *link_hover.read(cx);
             let is_link_ring_shown = is_focus_visible(&link_focus, window);
-            let settings = preferences(cx).map(|preferences| preferences.voice_settings.clone());
-            let push_to_talk = settings
-                .as_ref()
-                .filter(|settings| settings.input_mode == VoiceInputMode::PushToTalk)
-                .map(|settings| {
-                    (
-                        settings.push_to_talk_key.is_none(),
-                        push_to_talk_sentence(strings, settings),
-                    )
-                });
+            let settings = current_settings(cx);
+            let push_to_talk = (settings.input_mode == VoiceInputMode::PushToTalk).then(|| {
+                (
+                    settings.push_to_talk_key.is_none(),
+                    push_to_talk_sentence(strings, &settings),
+                )
+            });
             // Only beside a key that works in the window: no key, nothing to say about others.
             let global_push_to_talk = push_to_talk
                 .as_ref()

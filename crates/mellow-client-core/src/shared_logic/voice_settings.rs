@@ -454,6 +454,33 @@ pub fn meter_fraction_of_decibels(decibels: f32) -> f32 {
         / (MAXIMUM_LEVEL_DECIBELS - MINIMUM_LEVEL_DECIBELS)
 }
 
+/// The meter's two fills, as fractions of its width: the level up to the threshold, and the part
+/// past it, which is what others hear (`VoiceLevelMeter.svelte`). Without a threshold (automatic
+/// sensitivity) the whole level is "heard".
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct MeterFills {
+    pub quiet_width: f32,
+    /// Starts at the threshold's mark.
+    pub heard_start: f32,
+    pub heard_width: f32,
+}
+
+/// `decibels` is `None` while nothing listens (an empty meter).
+#[must_use]
+pub fn meter_fills(decibels: Option<f32>, threshold_decibels: Option<i32>) -> MeterFills {
+    let level = decibels.map_or(0.0, meter_fraction_of_decibels);
+    // Whole decibels within −100 to 0: exact in `f32`.
+    #[allow(clippy::cast_precision_loss)]
+    let threshold = threshold_decibels.map_or(0.0, |threshold| {
+        meter_fraction_of_decibels(threshold as f32)
+    });
+    MeterFills {
+        quiet_width: level.min(threshold),
+        heard_start: threshold,
+        heard_width: (level - threshold).max(0.0),
+    }
+}
+
 // ---- Push-to-talk keys ----
 
 /// Esc cancels recording, and Tab must keep moving focus: neither can be the key.
@@ -508,6 +535,71 @@ pub fn is_remembered_device_present(
         (None, _) | (_, None) => true,
         (Some(device_id), Some(listed)) => listed.iter().any(|listed| listed == device_id),
     }
+}
+
+/// A device as the system lists it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ListedAudioDevice {
+    pub id: String,
+    pub name: String,
+    pub is_default: bool,
+}
+
+/// One device a person can pick.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeviceChoice {
+    pub device_id: String,
+    pub label: String,
+}
+
+/// The choices of one kind (`deviceChoices`), after the "Default" entry.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct DeviceChoices {
+    /// The system's default device's name, when the system tells it.
+    pub default_device_name: Option<String>,
+    pub devices: Vec<DeviceChoice>,
+}
+
+/// The choices among `listed`; unnamed devices get `fallback_name(n)`, counted from 1.
+#[must_use]
+pub fn device_choices(
+    listed: &[ListedAudioDevice],
+    fallback_name: impl Fn(usize) -> String,
+) -> DeviceChoices {
+    let name_of = |position: usize, device: &ListedAudioDevice| {
+        let name = device.name.trim();
+        if name.is_empty() {
+            fallback_name(position + 1)
+        } else {
+            name.to_owned()
+        }
+    };
+    DeviceChoices {
+        default_device_name: listed
+            .iter()
+            .enumerate()
+            .find(|(_, device)| device.is_default)
+            .map(|(position, device)| name_of(position, device)),
+        devices: listed
+            .iter()
+            .enumerate()
+            .map(|(position, device)| DeviceChoice {
+                device_id: device.id.clone(),
+                label: name_of(position, device),
+            })
+            .collect(),
+    }
+}
+
+/// A chosen device that is not listed now: unplugged.
+#[must_use]
+pub fn is_chosen_device_unplugged(choices: &DeviceChoices, chosen_id: Option<&str>) -> bool {
+    chosen_id.is_some_and(|chosen| {
+        !choices
+            .devices
+            .iter()
+            .any(|device| device.device_id == chosen)
+    })
 }
 
 // ---- Per-person volume ----
@@ -596,6 +688,63 @@ mod tests {
             "Space" => Some("Espace"),
             _ => None,
         }
+    }
+
+    fn listed(id: &str, name: &str, is_default: bool) -> ListedAudioDevice {
+        ListedAudioDevice {
+            id: id.into(),
+            name: name.into(),
+            is_default,
+        }
+    }
+
+    #[test]
+    fn lists_the_devices_names_the_default_and_the_unnamed() {
+        let choices = device_choices(
+            &[
+                listed("a1", "MacBook Pro Microphone", true),
+                listed("a2", "  ", false),
+            ],
+            |position| format!("Micro {position}"),
+        );
+        assert_eq!(
+            choices,
+            DeviceChoices {
+                default_device_name: Some("MacBook Pro Microphone".into()),
+                devices: vec![
+                    DeviceChoice {
+                        device_id: "a1".into(),
+                        label: "MacBook Pro Microphone".into(),
+                    },
+                    DeviceChoice {
+                        device_id: "a2".into(),
+                        label: "Micro 2".into(),
+                    },
+                ],
+            }
+        );
+        assert!(!is_chosen_device_unplugged(&choices, None));
+        assert!(!is_chosen_device_unplugged(&choices, Some("a2")));
+        assert!(is_chosen_device_unplugged(&choices, Some("gone")));
+        // PipeWire's default is a node of its own: no name to show.
+        let unnamed_default = device_choices(&[listed("a1", "Yeti", false)], |_| String::new());
+        assert_eq!(unnamed_default.default_device_name, None);
+    }
+
+    #[test]
+    fn the_meter_lights_only_the_part_past_the_threshold_as_heard() {
+        let fills = meter_fills(Some(-30.0), Some(-50));
+        assert!((fills.quiet_width - 0.5).abs() < 1e-6);
+        assert!((fills.heard_start - 0.5).abs() < 1e-6);
+        assert!((fills.heard_width - 0.2).abs() < 1e-6);
+        let below = meter_fills(Some(-70.0), Some(-50));
+        assert!((below.quiet_width - 0.3).abs() < 1e-6);
+        assert!(below.heard_width.abs() < f32::EPSILON);
+        let automatic = meter_fills(Some(-30.0), None);
+        assert!(automatic.quiet_width.abs() < f32::EPSILON);
+        assert!((automatic.heard_width - 0.7).abs() < 1e-6);
+        let silent = meter_fills(None, Some(-50));
+        assert!(silent.quiet_width.abs() < f32::EPSILON && silent.heard_width.abs() < f32::EPSILON);
     }
 
     #[test]

@@ -2402,6 +2402,15 @@ export const en = {
     globalPushToTalkKeyNotOnLayout: "Works only while Mellow is focused: this key isn't on your current keyboard layout.",
     /** The shortcut's name in the system's shortcut settings and its confirmation dialog. */
     globalPushToTalkShortcutName: "Push to talk in Mellow",
+    /** User settings, Voice: where the web's sentences name the browser. */
+    voiceStandardNoiseSuppression: "Standard",
+    voiceStandardNoiseSuppressionDescription: "WebRTC's filter, built into Mellow: lighter, it lets more noise through.",
+    voiceAutomaticSensitivityDescription: "Mellow tells your voice from silence.",
+    voiceEnhancementDescription:
+      "Evens out your voice and gives it presence for a clean, steady sound, like on a stream. It replaces the automatic gain.",
+    voicePushToTalkOtherAppsNote: "During a call, it also works in other apps when your system allows it; the voice panel tells you.",
+    /** The microphone test found no microphone to open. */
+    voiceTestNoMicrophone: "No microphone found. Plug one in, then test again.",
   },
 };
 

@@ -24,6 +24,7 @@ use crate::audio_engine::{AudioCommand, AudioEngine, AudioEngineChannels, AudioS
 use crate::connection::{ConnectionInput, ConnectionMachine, ConnectionProblem, VoicePhase};
 use crate::devices::AudioDevices;
 use crate::input_gate::InputMode;
+use crate::level::MicrophoneLevel;
 use crate::offer::OfferError;
 use crate::person_settings::{PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore};
 use crate::processing::ProcessingSettings;
@@ -249,6 +250,7 @@ pub struct VoiceSession {
     toggles: VoiceToggles,
     settings_store: Arc<dyn PersonVoiceSettingsStore>,
     audio_commands: Sender<AudioCommand>,
+    microphone_level: Arc<MicrophoneLevel>,
     network_commands: Sender<NetworkCommand>,
     is_path_dropped: Arc<AtomicBool>,
     video_encoder: Arc<VideoEncoderControl>,
@@ -325,13 +327,17 @@ impl VoiceSession {
             soundboard_volume: options.soundboard_volume,
             input_device_id: options.input_device_id,
             output_device_id: options.output_device_id,
+            is_monitoring: false,
+            is_microphone_test: false,
         };
+        let microphone_level = Arc::new(MicrophoneLevel::default());
         let (started, has_started) = mpsc::channel();
         let audio_channels = AudioEngineChannels {
             commands: audio_command_receiver,
             incoming: incoming_receiver,
             outgoing,
             events: events.clone(),
+            microphone_level: Arc::clone(&microphone_level),
         };
         // The engine is built on its own thread: its codecs and device streams never move. Its
         // slots come with the first offer's `NewMediaSession`.
@@ -394,6 +400,7 @@ impl VoiceSession {
             toggles: options.toggles,
             settings_store,
             audio_commands,
+            microphone_level,
             network_commands,
             is_path_dropped,
             video_encoder,
@@ -582,6 +589,18 @@ impl VoiceSession {
         self.command(AudioCommand::SetInputDevice(device_id));
     }
 
+    /// The processed microphone's level in dBFS (after the input volume, before the gate), what
+    /// the voice activity threshold compares; `None` while no microphone is open.
+    #[must_use]
+    pub fn microphone_decibels(&self) -> Option<f32> {
+        self.microphone_level.decibels()
+    }
+
+    /// "Hear yourself": what is sent (gated, muted, pushed to talk) plays on the output.
+    pub fn set_monitoring(&self, is_monitoring: bool) {
+        self.command(AudioCommand::SetMonitoring(is_monitoring));
+    }
+
     /// Switches the output; `None` follows the system's default.
     pub fn set_output_device(&self, device_id: Option<String>) {
         self.command(AudioCommand::SetOutputDevice(device_id));
@@ -694,6 +713,7 @@ mod tests {
             toggles: VoiceToggles::default(),
             settings_store: store.clone(),
             audio_commands,
+            microphone_level: Arc::default(),
             network_commands,
             is_path_dropped: Arc::new(AtomicBool::new(false)),
             video_encoder: Arc::new(VideoEncoderControl::default()),

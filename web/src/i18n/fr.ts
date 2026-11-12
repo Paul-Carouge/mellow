@@ -2352,5 +2352,12 @@ export const fr: Catalogue = {
     globalPushToTalkBoundWithoutKey: `Pour t’en servir dans les autres applis, choisis une touche pour «${NO_BREAK_SPACE}Appuyer pour parler dans Mellow${NO_BREAK_SPACE}» dans les réglages de raccourcis de ton bureau.`,
     globalPushToTalkKeyNotOnLayout: `Ne marche que quand Mellow est actif${NO_BREAK_SPACE}: cette touche n’est pas sur ta disposition de clavier actuelle.`,
     globalPushToTalkShortcutName: "Appuyer pour parler dans Mellow",
+    voiceStandardNoiseSuppression: "Standard",
+    voiceStandardNoiseSuppressionDescription: `Le filtre de WebRTC, intégré à Mellow${NO_BREAK_SPACE}: plus léger, il laisse passer davantage de bruit.`,
+    voiceAutomaticSensitivityDescription: "Mellow distingue ta voix du silence.",
+    voiceEnhancementDescription:
+      "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique.",
+    voicePushToTalkOtherAppsNote: `Pendant un appel, elle marche aussi dans les autres applis si ton système le permet${NO_BREAK_SPACE}; le panneau vocal te le dit.`,
+    voiceTestNoMicrophone: "Aucun micro trouvé. Branches-en un, puis relance le test.",
   },
 };
