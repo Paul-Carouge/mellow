@@ -54,9 +54,11 @@ fn open_page(
 fn the_page_lists_the_devices_as_it_opens(cx: &mut TestAppContext) {
     let (page, _voice, cx) = open_page(cx);
     page.read_with(cx, |page, _| {
-        assert_eq!(page.inputs.len(), 1);
-        assert_eq!(page.inputs[0].name, "Synthetic microphone");
-        assert_eq!(page.outputs[0].name, "Synthetic output");
+        let inputs = page.inputs.as_deref().unwrap_or_default();
+        let outputs = page.outputs.as_deref().unwrap_or_default();
+        assert_eq!(inputs.len(), 1);
+        assert_eq!(inputs[0].name, "Synthetic microphone");
+        assert_eq!(outputs[0].name, "Synthetic output");
     });
 }
 
@@ -71,7 +73,7 @@ fn the_recorder_takes_the_next_key_and_esc_cancels(cx: &mut TestAppContext) {
     });
     cx.run_until_parked();
     let key = |cx: &mut VisualTestContext| {
-        cx.update(|_, cx| voice_settings(cx).push_to_talk_key.map(|key| key.code))
+        cx.update(|_, cx| current_settings(cx).push_to_talk_key.map(|key| key.code))
     };
     cx.update(|window, cx| {
         page.update(cx, |page, cx| {
@@ -94,6 +96,13 @@ fn the_recorder_takes_the_next_key_and_esc_cancels(cx: &mut TestAppContext) {
     // Not recording: a key press is no longer taken.
     cx.simulate_keystrokes("f14");
     assert_eq!(key(cx).as_deref(), Some("F13"));
+
+    // A modifier pressed alone is a key too.
+    page.update(cx, VoicePage::start_recording_key);
+    cx.simulate_modifiers_change(Modifiers::control());
+    assert_eq!(key(cx).as_deref(), Some("ControlLeft"));
+    assert!(!voice.read_with(cx, |voice, _| voice.is_recording_push_to_talk_key()));
+    cx.simulate_modifiers_change(Modifiers::default());
 }
 
 #[gpui::test]

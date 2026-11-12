@@ -42,7 +42,7 @@ use crate::components::{
     polite_live_region, with_type,
 };
 use crate::i18n::{Strings, strings};
-use crate::preferences::{PreferencesStore, preferences};
+use crate::preferences::PreferencesStore;
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -55,7 +55,7 @@ use crate::theme::tokens::{
     SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BUTTON, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
-use crate::voice::{Voice, change_voice_settings, voice};
+use crate::voice::{Voice, change_voice_settings, current_settings, voice};
 
 /// How often the device lists are read again while the page is shown.
 const DEVICE_REFRESH_PERIOD: Duration = Duration::from_secs(2);
@@ -84,8 +84,9 @@ struct MeterReading {
 }
 
 pub struct VoicePage {
-    inputs: Vec<ListedAudioDevice>,
-    outputs: Vec<ListedAudioDevice>,
+    /// `None` until first read: a chosen device is not called unplugged before the list is known.
+    inputs: Option<Vec<ListedAudioDevice>>,
+    outputs: Option<Vec<ListedAudioDevice>>,
     meter: MeterReading,
     key_recorder_focus: FocusHandle,
     is_recording_key: bool,
@@ -100,8 +101,8 @@ impl std::fmt::Debug for VoicePage {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter
             .debug_struct("VoicePage")
-            .field("inputs", &self.inputs.len())
-            .field("outputs", &self.outputs.len())
+            .field("inputs", &self.inputs.as_ref().map(Vec::len))
+            .field("outputs", &self.outputs.as_ref().map(Vec::len))
             .field("is_recording_key", &self.is_recording_key)
             .finish_non_exhaustive()
     }
@@ -134,12 +135,6 @@ fn listed_devices(
     }
 }
 
-fn voice_settings(cx: &App) -> VoiceSettings {
-    preferences(cx).map_or(VoiceSettings::DEFAULT, |preferences| {
-        preferences.voice_settings.clone()
-    })
-}
-
 /// A slider's value as a whole number within its bounds.
 fn whole(value: f32) -> i64 {
     // Slider values are snapped to whole steps within small bounds.
@@ -148,7 +143,7 @@ fn whole(value: f32) -> i64 {
     whole
 }
 
-fn whole_percent(value: f32) -> u32 {
+fn whole_non_negative(value: f32) -> u32 {
     u32::try_from(whole(value)).unwrap_or(0)
 }
 
@@ -177,8 +172,8 @@ impl VoicePage {
             tasks.push(Self::follow_meter(cx));
         }
         Self {
-            inputs: Vec::new(),
-            outputs: Vec::new(),
+            inputs: None,
+            outputs: None,
             meter: MeterReading::default(),
             key_recorder_focus,
             is_recording_key: false,
@@ -201,10 +196,8 @@ impl VoicePage {
                 };
                 let (inputs, outputs) = cx
                     .background_spawn(async move {
-                        (
-                            listed_devices(devices.input_devices()),
-                            listed_devices(devices.output_devices()),
-                        )
+                        let (inputs, outputs) = devices.input_and_output_devices();
+                        (listed_devices(inputs), listed_devices(outputs))
                     })
                     .await;
                 let is_gone = page
@@ -214,8 +207,10 @@ impl VoicePage {
                         for (shown, listed) in
                             [(&mut page.inputs, inputs), (&mut page.outputs, outputs)]
                         {
-                            if let Some(listed) = listed.filter(|listed| listed != shown) {
-                                *shown = listed;
+                            if let Some(listed) =
+                                listed.filter(|listed| shown.as_ref() != Some(listed))
+                            {
+                                *shown = Some(listed);
                                 has_changed = true;
                             }
                         }
@@ -332,6 +327,9 @@ impl VoicePage {
         .into_iter()
         .find_map(|(modifier, was_held, is_held)| (is_held && !was_held).then_some(modifier));
         if let Some(modifier) = pressed {
+            // The shell's push-to-talk sees modifiers after the recorder: the key just recorded
+            // must not also press push-to-talk in a call.
+            cx.stop_propagation();
             self.stop_recording_key(cx);
             self.save_key(code_of_modifier(modifier), "", cx);
         }
@@ -507,18 +505,21 @@ fn warning_line(icon_name: IconName, text: &'static str, text_color: u32) -> gpu
 }
 
 /// The radio rows of a device: "Default (name)", the devices, and "Unplugged device" while the
-/// chosen one is gone. `choose` stores the choice (`None` is the default).
+/// chosen one is gone from a list read (`is_list_read`). `choose` stores the choice (`None` is
+/// the default).
+#[allow(clippy::too_many_arguments)] // one group's words, state and setter, as at its call sites
 fn device_group(
     id: &'static str,
     label: &'static str,
     choices: &DeviceChoices,
+    is_list_read: bool,
     chosen_id: Option<&str>,
     missing_sentence: &'static str,
     choose: fn(&mut VoiceSettings, Option<String>),
     cx: &App,
 ) -> impl IntoElement {
     let words = strings(cx).voice_settings();
-    let is_unplugged = is_chosen_device_unplugged(choices, chosen_id);
+    let is_unplugged = is_list_read && is_chosen_device_unplugged(choices, chosen_id);
     let mut options = vec![ChoiceOption::new(
         words.default_device(choices.default_device_name.as_deref()),
     )];
@@ -549,17 +550,20 @@ fn device_group(
         .flex_col()
         .gap(length(SPACE_XS))
         .child(
-            ChoiceGroup::new(id, label, options, checked_index).on_select(move |index, _, cx| {
-                let choice = match index {
-                    0 => None,
-                    // The unplugged row is the choice already made.
-                    _ => match device_ids.get(index - 1) {
-                        Some(device_id) => Some(device_id.clone()),
-                        None => return,
-                    },
-                };
-                change_voice_settings(cx, move |settings| choose(settings, choice));
-            }),
+            ChoiceGroup::new(id, label, options, checked_index)
+                // Read with the checked "Unplugged device", as the web's `aria-describedby`.
+                .when(is_unplugged, |group| group.description(missing_sentence))
+                .on_select(move |index, _, cx| {
+                    let choice = match index {
+                        0 => None,
+                        // The unplugged row is the choice already made.
+                        _ => match device_ids.get(index - 1) {
+                            Some(device_id) => Some(device_id.clone()),
+                            None => return,
+                        },
+                    };
+                    change_voice_settings(cx, move |settings| choose(settings, choice));
+                }),
         )
         .when(is_unplugged, |group| {
             group.child(warning_line(
@@ -594,7 +598,7 @@ fn percent_slider(
         move |value| catalogue.voice_settings().percent(whole(value)).into(),
     )
     .on_change(move |value, _, cx| {
-        let percent = whole_percent(value);
+        let percent = whole_non_negative(value);
         change_voice_settings(cx, move |settings| store(settings, percent));
     })
 }
@@ -671,7 +675,7 @@ impl Render for VoicePage {
         let catalogue = strings(cx);
         let words = catalogue.voice_settings();
         let desktop_words = catalogue.desktop();
-        let settings = voice_settings(cx);
+        let settings = current_settings(cx);
         let voice_entity: Option<Entity<Voice>> = voice(cx);
         let (is_live, is_test_running, is_monitoring) =
             voice_entity
@@ -684,10 +688,10 @@ impl Render for VoicePage {
                         voice.is_monitoring(),
                     )
                 });
-        let inputs = device_choices(&self.inputs, |position| {
+        let inputs = device_choices(self.inputs.as_deref().unwrap_or_default(), |position| {
             words.unnamed_microphone(i64::try_from(position).unwrap_or(i64::MAX))
         });
-        let outputs = device_choices(&self.outputs, |position| {
+        let outputs = device_choices(self.outputs.as_deref().unwrap_or_default(), |position| {
             words.unnamed_output(i64::try_from(position).unwrap_or(i64::MAX))
         });
         let is_manual_sensitivity = settings.input_mode == VoiceInputMode::VoiceActivity
@@ -713,6 +717,7 @@ impl Render for VoicePage {
                         "voice-input-device",
                         words.input_device(),
                         &inputs,
+                        self.inputs.is_some(),
                         settings.input_device_id.as_deref(),
                         words.input_device_missing(),
                         |settings, device_id| settings.input_device_id = device_id,
@@ -733,6 +738,7 @@ impl Render for VoicePage {
                         "voice-output-device",
                         words.output_device(),
                         &outputs,
+                        self.outputs.is_some(),
                         settings.output_device_id.as_deref(),
                         words.output_device_missing(),
                         |settings, device_id| settings.output_device_id = device_id,
@@ -811,7 +817,7 @@ impl Render for VoicePage {
                                 move |value| words.milliseconds(whole(value)).into(),
                             )
                             .on_change(|value, _, cx| {
-                                let delay = whole_percent(value);
+                                let delay = whole_non_negative(value);
                                 change_voice_settings(cx, move |settings| {
                                     settings.push_to_talk_release_delay_milliseconds = delay;
                                 });
