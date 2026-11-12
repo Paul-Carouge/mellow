@@ -9,10 +9,10 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role as AccessRole, SharedString,
-    StatefulInteractiveElement as _, Styled, Subscription, Toggled, Window, div,
-    prelude::FluentBuilder as _, rgb,
+    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render,
+    Role as AccessRole, SharedString, StatefulInteractiveElement as _, Styled, Subscription,
+    Toggled, Window, div, prelude::FluentBuilder as _, rgb,
 };
 use gpui_component::input::{InputEvent, InputState};
 use mellow_client_core::shared_logic::role_colors::readable_role_colour;
@@ -58,7 +58,6 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 
-/// Swatches per row, as the web's ten-wide grid.
 /// The colour grid is ten hit targets wide, as the web's ten-wide grid.
 const SWATCH_GRID_COLUMNS: f32 = 10.0;
 
@@ -160,6 +159,11 @@ pub struct RolesPage {
     edit: Option<RoleEdit>,
     /// Saved and waiting for the gateway: not an unsaved change any more.
     is_awaiting_echo: bool,
+    /// Bumped by every change, so a save's answer only covers the edit it sent.
+    edit_generation: u32,
+    /// A role just created: its name field is focused once the gateway brings it, never before
+    /// (the fallback role would get the typing).
+    role_id_to_focus_when_shown: Option<Snowflake>,
     tab: RoleTab,
     name_input: Entity<InputState>,
     is_setting_name: bool,
@@ -229,6 +233,8 @@ impl RolesPage {
             shown_role_id: None,
             edit: None,
             is_awaiting_echo: false,
+            edit_generation: 0,
+            role_id_to_focus_when_shown: None,
             tab: RoleTab::Display,
             name_input,
             is_setting_name: false,
@@ -246,6 +252,9 @@ impl RolesPage {
             _subscriptions: subscriptions,
         };
         page.follow_stored_roles(window, cx);
+        // Pinned, so a gateway update that makes another role the highest editable one does not
+        // move the selection (and drop its draft).
+        page.selected_role_id = page.shown_role_id;
         page
     }
 
@@ -329,10 +338,24 @@ impl RolesPage {
         let force = selected_id != self.shown_role_id;
         self.shown_role_id = selected_id;
         self.show_name(force, window, cx);
-        // The role it would delete is gone (deleted elsewhere): another one now shows. A dialog
-        // waiting for its own answer stays (`request_close` is a no-op while busy).
+        if let Some(role_id) = selected_id
+            && self.role_id_to_focus_when_shown == Some(role_id)
+        {
+            self.role_id_to_focus_when_shown = None;
+            self.name_input.update(cx, |input, cx| {
+                input.focus(window, cx);
+                let end = input.value().len();
+                input.set_selected_range(0..end, cx);
+            });
+        }
+        // The role it would delete is gone (deleted elsewhere, another one now shows) or no
+        // longer the reader's to delete. A dialog waiting for its own answer stays
+        // (`request_close` is a no-op while busy).
+        let is_selected_editable = self
+            .selected_role(cx)
+            .is_some_and(|(_, is_editable)| is_editable);
         if let Some((dialog, _)) = &self.delete_dialog
-            && force
+            && (force || !is_selected_editable)
         {
             dialog.update(cx, |dialog, cx| dialog.request_close(window, cx));
         }
@@ -366,6 +389,7 @@ impl RolesPage {
             base: draft_of(&role),
             draft: next,
         });
+        self.edit_generation = self.edit_generation.wrapping_add(1);
         self.is_awaiting_echo = false;
         self.save_error = None;
         self.notice = None;
@@ -453,14 +477,10 @@ impl RolesPage {
                                 // already there.
                                 Ok(role) => {
                                     page.selected_role_id = Some(role.id);
+                                    page.role_id_to_focus_when_shown = Some(role.id);
                                     page.edit = None;
                                     page.tab = RoleTab::Display;
                                     page.follow_stored_roles(window, cx);
-                                    page.name_input.update(cx, |input, cx| {
-                                        input.focus(window, cx);
-                                        let end = input.value().len();
-                                        input.set_selected_range(0..end, cx);
-                                    });
                                 }
                                 Err(error) => {
                                     page.error_message = Some(
@@ -501,6 +521,7 @@ impl RolesPage {
         self.save_error = None;
         cx.notify();
         let (guild_id, role_id) = (self.guild_id, role.id);
+        let saved_generation = self.edit_generation;
         let page = cx.entity().downgrade();
         self.session.update(cx, |session, cx| {
             session.send_settings_change(
@@ -510,22 +531,32 @@ impl RolesPage {
                 cx,
                 move |outcome, cx| {
                     let _ = page.update(cx, |page, cx| {
-                        page.busy = None;
-                        match outcome {
-                            // The edit stays until the gateway brings the saved role, which
-                            // ends it (unless the echo came first: `refresh` drops it then).
-                            Ok(()) => {
-                                page.is_awaiting_echo = page.edit.is_some();
-                                page.notice =
-                                    Some(strings(cx).server_settings().unsaved().saved().into());
-                            }
-                            Err(message) => page.save_error = Some(message.into()),
-                        }
-                        page.refresh(cx);
+                        page.finish_save(saved_generation, outcome, cx);
                     });
                 },
             );
         });
+    }
+
+    fn finish_save(
+        &mut self,
+        saved_generation: u32,
+        outcome: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = None;
+        match outcome {
+            // The edit stays until the gateway brings the saved role, which ends it (unless the
+            // echo came first: `refresh` drops it then). A change made since the save was sent
+            // is not saved, so it stays an unsaved change.
+            Ok(()) => {
+                self.is_awaiting_echo =
+                    self.edit.is_some() && self.edit_generation == saved_generation;
+                self.notice = Some(strings(cx).server_settings().unsaved().saved().into());
+            }
+            Err(message) => self.save_error = Some(message.into()),
+        }
+        self.refresh(cx);
     }
 
     fn move_role(&mut self, role_id: Snowflake, direction: MoveDirection, cx: &mut Context<Self>) {
@@ -679,13 +710,21 @@ impl RolesPage {
 
 // --- Drawing -------------------------------------------------------------------------------------
 
-fn role_dot(colour: u32, size: f32, cx: &App) -> impl IntoElement {
-    let fill = if colour == NO_ROLE_COLOR {
+/// A role's colour, or the neutral one for a role without.
+fn role_fill(colour: u32, cx: &App) -> Hsla {
+    if colour == NO_ROLE_COLOR {
         color(theme(cx).component_roles_neutral_color)
     } else {
         rgb(colour).into()
-    };
-    div().flex_none().size(length(size)).rounded_full().bg(fill)
+    }
+}
+
+pub(super) fn role_dot(colour: u32, size: f32, cx: &App) -> impl IntoElement {
+    div()
+        .flex_none()
+        .size(length(size))
+        .rounded_full()
+        .bg(role_fill(colour, cx))
 }
 
 impl RolesPage {
@@ -803,14 +842,15 @@ impl RolesPage {
         let tokens = theme(cx);
         let words = strings(cx).server_settings().roles();
         let choices: Vec<u32> = colour_choices().collect();
-        let checked_index = choices
-            .iter()
-            .position(|choice| *choice == shown.color)
-            .unwrap_or(0);
+        // A colour outside the presets (older presets, the API) checks no swatch, as the web does.
+        let checked_index = choices.iter().position(|choice| *choice == shown.color);
+        let tab_stop_index = checked_index.unwrap_or(0);
         let page = cx.entity().downgrade();
         let swatch = |index: usize, colour: u32, window: &mut Window, cx: &mut Context<Self>| {
-            let is_checked = index == checked_index;
-            let focus = self.swatch_focus[index].clone().tab_stop(is_checked);
+            let is_checked = Some(index) == checked_index;
+            let focus = self.swatch_focus[index]
+                .clone()
+                .tab_stop(index == tab_stop_index);
             let label: SharedString = if colour == NO_ROLE_COLOR {
                 words.no_color().into()
             } else {
@@ -819,11 +859,7 @@ impl RolesPage {
             let is_ring_shown = is_focus_visible(&focus, window);
             let page = page.clone();
             let shown = shown.clone();
-            let fill = if colour == NO_ROLE_COLOR {
-                color(tokens.component_roles_neutral_color)
-            } else {
-                rgb(colour).into()
-            };
+            let fill = role_fill(colour, cx);
             div()
                 .id(("role-colour", index))
                 .role(AccessRole::RadioButton)
@@ -918,7 +954,7 @@ impl RolesPage {
             .gap(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 let Some(next) =
-                    next_choice_index(&event.keystroke.key, checked_index, choices.len())
+                    next_choice_index(&event.keystroke.key, tab_stop_index, choices.len())
                 else {
                     return;
                 };
@@ -1455,7 +1491,9 @@ impl Render for RolesPage {
             )
             .child(
                 div()
-                    .mt(length(COMPONENT_SETTINGS_ACTION_GAP))
+                    .when(self.error_message.is_some(), |alert| {
+                        alert.mt(length(COMPONENT_SETTINGS_ACTION_GAP))
+                    })
                     .child(error_alert("roles-error", self.error_message.clone(), cx)),
             )
             .child(
@@ -1667,6 +1705,57 @@ mod tests {
             );
             assert_eq!(selected_id(&page, cx), Some(GUILD_RUST));
             assert!(page.read_with(cx, |page, cx| !page.has_changes(cx) && page.edit.is_none()));
+        }
+
+        #[gpui::test]
+        fn a_delete_dialog_closes_when_its_role_is_deleted_elsewhere(cx: &mut TestAppContext) {
+            let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Roles);
+            let page = shown_page::<RolesPage>(&settings, cx);
+            page.update_in(cx, RolesPage::open_delete_dialog);
+            cx.run_until_parked();
+            assert!(page.read_with(cx, |page, _| page.delete_dialog.is_some()));
+            let roles = session.read_with(cx, |session, _| {
+                session
+                    .state()
+                    .guild(GUILD_RUST)
+                    .expect("Rust Lyon")
+                    .roles
+                    .iter()
+                    .filter(|role| role.id != MODERATORS)
+                    .cloned()
+                    .collect()
+            });
+            receive(
+                &session,
+                GatewayEvent::GuildRolesUpdate {
+                    guild_id: GUILD_RUST,
+                    roles,
+                },
+                cx,
+            );
+            assert!(page.read_with(cx, |page, _| page.delete_dialog.is_none()));
+        }
+
+        #[gpui::test]
+        fn a_change_made_while_saving_stays_unsaved(cx: &mut TestAppContext) {
+            let (_, settings, cx) = open_server_settings(cx, ServerSettingsSection::Roles);
+            let page = shown_page::<RolesPage>(&settings, cx);
+            toggle_send_messages(&page, cx);
+            let sent_generation = page.read_with(cx, |page, _| page.edit_generation);
+            // Another change while the save is in flight, then the save's answer.
+            page.update(cx, |page, cx| {
+                let shown = page.shown_draft(cx).expect("a role is shown");
+                page.change(toggle_permission(&shown, Permissions::ADD_REACTIONS), cx);
+                page.finish_save(sent_generation, Ok(()), cx);
+            });
+            assert!(page.read_with(cx, RolesPage::has_changes));
+
+            // An answer covering the latest edit waits for the gateway instead.
+            page.update(cx, |page, cx| {
+                let latest = page.edit_generation;
+                page.finish_save(latest, Ok(()), cx);
+            });
+            assert!(page.read_with(cx, |page, cx| !page.has_changes(cx)));
         }
     }
 }

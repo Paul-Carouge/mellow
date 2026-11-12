@@ -6,11 +6,11 @@
 use gpui::{
     App, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, Role as AccessRole, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _, rgb,
+    div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::server_settings::{
-    NO_ROLE_COLOR, can_manage_role, member_actions, role_manager_of, roles_highest_first,
+    can_manage_role, member_actions, role_manager_of, roles_highest_first,
 };
 use mellow_protocol::{Member, Role, Snowflake};
 
@@ -193,11 +193,6 @@ impl Render for ManageMemberBody {
                 let is_on = self.holds_role(&member, role);
                 let role_id = role.id;
                 let body = body.clone();
-                let dot = if role.color == NO_ROLE_COLOR {
-                    color(tokens.component_roles_neutral_color)
-                } else {
-                    rgb(role.color).into()
-                };
                 div()
                     .flex()
                     .items_center()
@@ -205,13 +200,11 @@ impl Render for ManageMemberBody {
                     .gap(length(COMPONENT_ROLES_ROW_ICON_GAP))
                     .border_b_1()
                     .border_color(color(tokens.component_server_settings_row_divider))
-                    .child(
-                        div()
-                            .flex_none()
-                            .size(length(COMPONENT_ROLES_ROW_DOT_SIZE))
-                            .rounded_full()
-                            .bg(dot),
-                    )
+                    .child(super::roles::role_dot(
+                        role.color,
+                        COMPONENT_ROLES_ROW_DOT_SIZE,
+                        cx,
+                    ))
                     .child(
                         with_type(div(), TYPE_CHANNEL_NAME)
                             .min_w_0()
@@ -274,7 +267,9 @@ impl Render for ManageMemberBody {
                         })
                         .child(
                             div()
-                                .mt(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
+                                .when(self.role_error.is_some(), |alert| {
+                                    alert.mt(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
+                                })
                                 .child(error_alert(
                                     "manage-member-role-error",
                                     self.role_error.clone(),
