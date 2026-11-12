@@ -30,6 +30,7 @@ pub mod gallery;
 mod keyboard_tests;
 mod menu;
 mod menu_opening;
+mod outside_click_dismissal;
 mod progress;
 mod range_field;
 mod settings_list_status;
@@ -62,6 +63,7 @@ pub use menu_opening::{
     bounds_recorder, is_context_menu_keystroke, menu_origin_at_pointer, menu_origin_beside,
     menu_origin_beside_remembered, remembered_bounds,
 };
+pub use outside_click_dismissal::OutsideClickDismissal;
 pub use progress::ProgressMeter;
 pub use range_field::{RangeBounds, RangeField};
 pub use settings_list_status::{SettingsListStatus, SettingsListStatusKind};
