@@ -2337,5 +2337,8 @@ export const fr: Catalogue = {
     desktopApp: "Mellow pour ordinateur",
     codesSaved: "Codes de récupération enregistrés.",
     codesSaveFailed: "Impossible d’enregistrer le fichier. Copie plutôt les codes.",
+    voiceCouldNotStartTitle: "La voix n’a pas pu démarrer",
+    voiceCouldNotStart: "Mellow n’a pas pu démarrer son audio ni trouver l’adresse de l’instance. Vérifie ta connexion, puis réessaie.",
+    voiceOutputUnavailable: `Aucune sortie audio trouvée${NO_BREAK_SPACE}: tu n’entends pas les autres tant que tu n’en branches pas une.`,
   },
 };

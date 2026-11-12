@@ -14765,6 +14765,27 @@ impl DesktopStrings {
             Language::French => "Impossible d’enregistrer le fichier. Copie plutôt les codes.",
         }
     }
+
+    pub fn voice_could_not_start_title(self) -> &'static str {
+        match self.language {
+            Language::English => "Voice couldn't start",
+            Language::French => "La voix n’a pas pu démarrer",
+        }
+    }
+
+    pub fn voice_could_not_start(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
+            Language::French => "Mellow n’a pas pu démarrer son audio ni trouver l’adresse de l’instance. Vérifie ta connexion, puis réessaie.",
+        }
+    }
+
+    pub fn voice_output_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "No sound output found: you can't hear the others until one is plugged in.",
+            Language::French => "Aucune sortie audio trouvée\u{a0}: tu n’entends pas les autres tant que tu n’en branches pas une.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

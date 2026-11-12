@@ -37,6 +37,7 @@ pub mod sign_in_screen;
 pub mod strings_pending_i18n;
 pub mod theme;
 pub mod tokio_bridge;
+pub mod voice;
 pub mod window_chrome;
 
 use anyhow::{Context as _, Result};
@@ -83,6 +84,7 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     cx.set_app_identity(APP_IDENTIFIER, WINDOW_TITLE);
     let session = cx.new(Session::new_restoring_stored_session);
     Session::end_connection_when_the_app_quits(&session, cx);
+    voice::install_voice(&session, voice::system_audio_devices(), cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);

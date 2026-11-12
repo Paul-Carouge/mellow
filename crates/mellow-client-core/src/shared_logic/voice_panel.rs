@@ -72,7 +72,8 @@ pub enum VoiceProblem {
         channel_id: Snowflake,
         reason: VoiceDisconnectReason,
     },
-    /// The voice engine could not start (no socket, no audio thread): the desktop's "unsupported".
+    /// The voice engine could not start (no socket, no audio thread, no address for the
+    /// instance): a passing failure as often as not, so it may be retried.
     CouldNotStart {
         channel_id: Snowflake,
     },
@@ -101,9 +102,11 @@ impl VoiceProblem {
                     | VoiceJoinRefusal::InstanceFull
                     | VoiceJoinRefusal::RateLimited
             ),
-            Self::NoAnswer { .. } | Self::Unreachable { .. } | Self::ConnectionLost { .. } => true,
+            Self::NoAnswer { .. }
+            | Self::Unreachable { .. }
+            | Self::ConnectionLost { .. }
+            | Self::CouldNotStart { .. } => true,
             Self::Disconnected { reason, .. } => reason == VoiceDisconnectReason::MediaTimeout,
-            Self::CouldNotStart { .. } => false,
         }
     }
 
@@ -149,7 +152,7 @@ mod tests {
         };
         assert!(disconnected(VoiceDisconnectReason::MediaTimeout).can_retry());
         assert!(!disconnected(VoiceDisconnectReason::ChannelDeleted).can_retry());
-        assert!(!VoiceProblem::CouldNotStart { channel_id: LOUNGE }.can_retry());
+        assert!(VoiceProblem::CouldNotStart { channel_id: LOUNGE }.can_retry());
     }
 
     #[test]

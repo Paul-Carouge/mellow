@@ -21,6 +21,7 @@ mod resize_handle;
 mod server_rail;
 mod settings_screens;
 mod user_card;
+mod voice_panel;
 
 use std::cell::Cell;
 use std::collections::HashSet;
@@ -28,9 +29,10 @@ use std::rc::Rc;
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, ImageSource,
-    InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseMoveEvent,
-    ParentElement as _, Pixels, Render, Role, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Task, WeakEntity, Window, actions, div, prelude::FluentBuilder as _,
+    InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent,
+    ModifiersChangedEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, Role,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, actions,
+    div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::state::{ClientState, StateChange};
@@ -85,7 +87,11 @@ actions!(
         /// Ctrl+, (Cmd+, on macOS, the platform's settings shortcut): the user settings.
         OpenUserSettings,
         /// Ctrl+F: the message search field, or the results with their own field.
-        FocusMessageSearch
+        FocusMessageSearch,
+        /// Ctrl+Shift+M (Cmd on macOS), as on Discord: the microphone.
+        ToggleMicrophone,
+        /// Ctrl+Shift+D: the headset.
+        ToggleDeafened
     ]
 );
 
@@ -128,6 +134,8 @@ pub fn bind_shell_keys(cx: &mut App) {
         KeyBinding::new(secondary!("u"), ToggleMemberSheet, context),
         KeyBinding::new(secondary!(","), OpenUserSettings, context),
         KeyBinding::new(secondary!("f"), FocusMessageSearch, context),
+        KeyBinding::new(secondary!("shift-m"), ToggleMicrophone, context),
+        KeyBinding::new(secondary!("shift-d"), ToggleDeafened, context),
     ]);
     regions::bind_region_keys(cx, context);
 }
@@ -244,6 +252,9 @@ pub struct DuskShell {
     root_focus: FocusHandle,
     /// F6 between regions, and one Tab stop per navigator list.
     regions: RegionFocus,
+    /// The app's voice; `None` in tests of other views.
+    voice: Option<Entity<crate::voice::Voice>>,
+    voice_person_popover: Option<voice_panel::VoicePersonPopover>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -264,7 +275,8 @@ impl DuskShell {
         let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
         let home = cx.new(|cx| Home::new(session.clone(), window, cx));
         let message_search = cx.new(|cx| MessageSearchView::new(session.clone(), window, cx));
-        let subscriptions = vec![
+        let voice = crate::voice::voice(cx);
+        let mut subscriptions = vec![
             cx.subscribe_in(&home, window, Self::follow_home),
             cx.subscribe_in(&message_search, window, Self::follow_message_search),
             cx.observe(&message_search, |_, _, cx| cx.notify()),
@@ -276,6 +288,17 @@ impl DuskShell {
             // The preferences may still be read when the first `Ready` comes.
             cx.observe_global::<PreferencesStore>(|shell, cx| shell.follow_state(&[], cx)),
         ];
+        if let Some(voice) = voice.as_ref() {
+            subscriptions.push(cx.observe(voice, |_, _, cx| cx.notify()));
+            // A push-to-talk key held while the window goes to the back never comes up here.
+            subscriptions.push(cx.observe_window_activation(window, |shell, window, cx| {
+                if !window.is_window_active()
+                    && let Some(voice) = shell.voice.clone()
+                {
+                    voice.update(cx, crate::voice::Voice::window_deactivated);
+                }
+            }));
+        }
         let root_focus = cx.focus_handle();
         window.focus(&root_focus, cx);
         let mut shell = Self {
@@ -305,6 +328,8 @@ impl DuskShell {
             status_button_focus: cx.focus_handle().tab_stop(true),
             root_focus,
             regions: RegionFocus::new(cx),
+            voice,
+            voice_person_popover: None,
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
@@ -1114,6 +1139,42 @@ impl Render for DuskShell {
             .on_action(cx.listener(|shell, _: &FocusMessageSearch, window, cx| {
                 shell.focus_message_search(window, cx);
             }))
+            .on_action(cx.listener(|shell, _: &ToggleMicrophone, _, cx| {
+                if let Some(voice) = shell.voice.clone() {
+                    voice.update(cx, crate::voice::Voice::toggle_microphone);
+                }
+            }))
+            .on_action(cx.listener(|shell, _: &ToggleDeafened, _, cx| {
+                if let Some(voice) = shell.voice.clone() {
+                    voice.update(cx, crate::voice::Voice::toggle_deafened);
+                }
+            }))
+            // Push-to-talk from anywhere in the window, the composer included, as on the web.
+            .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, _, cx| {
+                if let Some(voice) = shell.voice.clone() {
+                    let keystroke = &event.keystroke;
+                    let should_swallow = voice.update(cx, |voice, cx| {
+                        voice.push_to_talk_key_down(&keystroke.key, keystroke.modifiers, false, cx)
+                    });
+                    if should_swallow {
+                        cx.stop_propagation();
+                    }
+                }
+            }))
+            .capture_key_up(cx.listener(|shell, event: &KeyUpEvent, _, cx| {
+                if let Some(voice) = shell.voice.clone() {
+                    voice.update(cx, |voice, cx| {
+                        voice.push_to_talk_key_up(&event.keystroke.key, cx);
+                    });
+                }
+            }))
+            .on_modifiers_changed(cx.listener(|shell, event: &ModifiersChangedEvent, _, cx| {
+                if let Some(voice) = shell.voice.clone() {
+                    voice.update(cx, |voice, cx| {
+                        voice.push_to_talk_modifiers_changed(event.modifiers, cx);
+                    });
+                }
+            }))
             .on_action(
                 cx.listener(|shell, action: &OpenDirectConversation, window, cx| {
                     shell.open_direct_conversation_with(action.user_id, window, cx);
@@ -1168,7 +1229,8 @@ impl Render for DuskShell {
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             })
-            .children(self.render_place_menus(window, cx));
+            .children(self.render_place_menus(window, cx))
+            .children(self.render_voice_person_popover(cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

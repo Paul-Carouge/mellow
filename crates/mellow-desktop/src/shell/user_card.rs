@@ -210,7 +210,7 @@ impl DuskShell {
                     button.child(focus_ring(RADIUS_SM, cx))
                 }),
         )
-        // shortcut: the microphone and headset toggles come with voice (M3 step 7).
+        .children(self.render_voice_toggles(window, cx))
         .child(
             IconButton::new(
                 "user-settings-button",
