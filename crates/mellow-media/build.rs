@@ -85,7 +85,10 @@ fn downloaded_source(output_directory: &Path) -> BuildResult<PathBuf> {
     if unpacked.join("configure").exists() {
         return Ok(unpacked);
     }
-    let archive = output_directory.join(format!("libvpx-{LIBVPX_VERSION}.tar.gz"));
+    // Relative to the output directory: GNU tar (MSYS2's, on Windows) reads the colon of `D:\…`
+    // as a remote host.
+    let archive_name = format!("libvpx-{LIBVPX_VERSION}.tar.gz");
+    let archive = output_directory.join(&archive_name);
     run(Command::new("curl")
         .args([
             "--fail",
@@ -94,8 +97,9 @@ fn downloaded_source(output_directory: &Path) -> BuildResult<PathBuf> {
             "--location",
             "--output",
         ])
-        .arg(&archive)
-        .arg(LIBVPX_ARCHIVE_URL))?;
+        .arg(&archive_name)
+        .arg(LIBVPX_ARCHIVE_URL)
+        .current_dir(output_directory))?;
     let bytes = fs::read(&archive).map_err(|error| error.to_string())?;
     let digest = Sha256::digest(&bytes)
         .iter()
@@ -111,9 +115,8 @@ fn downloaded_source(output_directory: &Path) -> BuildResult<PathBuf> {
     }
     run(Command::new("tar")
         .arg("xzf")
-        .arg(&archive)
-        .arg("-C")
-        .arg(output_directory))?;
+        .arg(&archive_name)
+        .current_dir(output_directory))?;
     Ok(unpacked)
 }
 
