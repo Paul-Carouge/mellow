@@ -47,6 +47,9 @@ const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
 /// hostile or corrupted file cannot grow the lists without bound.
 pub const MAXIMUM_REMEMBERED_PLACES: usize = 200;
+/// The people whose voice volume or local mute is kept, most recent last: bounded for the same
+/// reason as the places.
+pub const MAXIMUM_REMEMBERED_VOICE_PEOPLE: usize = 200;
 /// The accounts whose notification choices are kept, most recent last: each may hold thousands of
 /// places, so only a few accounts fit the file.
 const MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS: usize = 4;
@@ -182,7 +185,7 @@ impl Preferences {
         self.last_channel_by_guild
             .retain(|(guild, _)| *guild != guild_id);
         self.last_channel_by_guild.push((guild_id, channel_id));
-        keep_latest(&mut self.last_channel_by_guild);
+        keep_latest(&mut self.last_channel_by_guild, MAXIMUM_REMEMBERED_PLACES);
     }
 
     /// The notification choices of `user_id`; the defaults when it has none yet.
@@ -252,7 +255,7 @@ impl Preferences {
         self.voice_people.retain(|(user, _)| *user != user_id);
         if !setting.is_default() {
             self.voice_people.push((user_id, setting));
-            keep_latest(&mut self.voice_people);
+            keep_latest(&mut self.voice_people, MAXIMUM_REMEMBERED_VOICE_PEOPLE);
         }
     }
 
@@ -261,13 +264,13 @@ impl Preferences {
         self.member_sheet_place_ids.retain(|id| *id != place_id);
         if is_open {
             self.member_sheet_place_ids.push(place_id);
-            keep_latest(&mut self.member_sheet_place_ids);
+            keep_latest(&mut self.member_sheet_place_ids, MAXIMUM_REMEMBERED_PLACES);
         }
     }
 }
 
-fn keep_latest<T>(list: &mut Vec<T>) {
-    let excess = list.len().saturating_sub(MAXIMUM_REMEMBERED_PLACES);
+fn keep_latest<T>(list: &mut Vec<T>, maximum_length: usize) {
+    let excess = list.len().saturating_sub(maximum_length);
     list.drain(..excess);
 }
 
