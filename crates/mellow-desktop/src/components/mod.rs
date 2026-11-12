@@ -28,6 +28,7 @@ mod dialog;
 pub mod gallery;
 #[cfg(test)]
 mod keyboard_tests;
+mod live_region;
 mod menu;
 mod menu_opening;
 mod progress;
@@ -53,6 +54,7 @@ pub use badge::{MentionBadge, RoleChip, RoleChips};
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonTone};
 pub use choice::{ChoiceGroup, ChoiceOption, next_choice_index};
 pub use dialog::{ModalDialog, ModalDialogEvent};
+pub use live_region::polite_live_region;
 pub use menu::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
     MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,

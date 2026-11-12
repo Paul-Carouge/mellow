@@ -37,8 +37,8 @@ use mellow_protocol::{ApiErrorCode, GifSettings, MAXIMUM_GIF_FAVOURITES};
 use self::layout::{justified_rows, sheet_height};
 use crate::components::{
     Button, FocusNextControl, FocusPreviousControl, MenuAnchor, Tabs, focus_next_inside,
-    focus_previous_inside, focus_ring, icon, is_focus_visible, popover_position_beside_anchor,
-    shadow, with_type,
+    focus_previous_inside, focus_ring, icon, is_focus_visible, polite_live_region,
+    popover_position_beside_anchor, shadow, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::{TOKEN_PIXELS_PER_REM, picture_animation, picture_for_box};
@@ -1376,22 +1376,11 @@ impl Render for GifPicker {
                             .child(catalogue.gifs().powered_by()),
                     ),
             )
-            .child(
-                div()
-                    .id("gif-announcement")
-                    .role(Role::Status)
-                    .when(!self.announcement.is_empty(), |region| {
-                        region.aria_value(self.announcement.clone())
-                    })
-                    // Read politely, as the conversation's announcements are.
-                    .a11y_synthetic_children(|subtree| {
-                        subtree
-                            .parent_node()
-                            .set_live(gpui::accesskit::Live::Polite);
-                    })
-                    .size_0()
-                    .overflow_hidden(),
-            );
+            // Read politely, as the conversation's announcements are.
+            .child(polite_live_region(
+                "gif-announcement",
+                self.announcement.clone(),
+            ));
         let margin = px(COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN);
         deferred(
             anchored()
