@@ -25,8 +25,9 @@ env:
   # The desktop voice engine's audio devices go through ALSA's headers (ADR-0051).
   SERVER_BUILD_PACKAGES: nasm cmake libasound2-dev
   # The desktop client's GPUI links xkbcommon, fontconfig and FreeType and builds its Wayland and
-  # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list.
-  DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev
+  # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list, plus
+  # PipeWire's headers and libclang for the voice engine's audio devices (cpal's PipeWire host).
+  DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libpipewire-0.3-dev libclang-dev
   # Vesper's Linux capture and encoder (ADR-0051): PipeWire, VA-API and FFmpeg's headers and
   # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
   # only libavcodec, libavfilter and libavutil, but rusty_ffmpeg's build script probes all seven.
