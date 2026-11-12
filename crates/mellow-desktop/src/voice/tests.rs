@@ -299,3 +299,122 @@ fn a_channel_the_state_does_not_know_joins_nothing(cx: &mut TestAppContext) {
     cx.run_until_parked();
     runtime.block_on(instance.stop());
 }
+
+async fn create_voice_channel(owner: &RestClient, guild_id: Snowflake, name: &str) -> Snowflake {
+    owner
+        .create_channel(
+            guild_id,
+            &CreateChannelRequest {
+                kind: ChannelKind::Voice,
+                name: name.into(),
+                topic: String::new(),
+                parent_id: None,
+                user_limit: None,
+            },
+        )
+        .await
+        .unwrap()
+        .id
+}
+
+/// One signed-in owner and two voice channels of their server.
+fn owner_with_two_voice_channels(
+    runtime: &Runtime,
+    instance: &RunningInstance,
+    cx: &mut TestAppContext,
+) -> (Entity<Session>, Entity<Voice>, Snowflake, Snowflake) {
+    cx.executor().allow_parking();
+    let handle = runtime.handle().clone();
+    cx.update(|cx| {
+        install_network_runtime(handle, cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+    });
+    let (owner, first, second) = runtime.block_on(async {
+        let owner = instance.registered("owner").await;
+        let guild = owner.create_guild("Club").await.unwrap();
+        let first = create_voice_channel(&owner, guild.id, "Lounge").await;
+        let second = create_voice_channel(&owner, guild.id, "Studio").await;
+        (owner, first, second)
+    });
+    let (session, voice) = signed_in(owner, SyntheticSound::Silence, cx);
+    wait_until(cx, "both voice channels in the state", |cx| {
+        session.read_with(cx, |session, _| {
+            let state = session.state();
+            state.guild_channel(first).is_some() && state.guild_channel(second).is_some()
+        })
+    });
+    (session, voice, first, second)
+}
+
+#[gpui::test]
+fn a_mute_and_push_to_talk_chosen_while_connecting_reach_the_engine(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, channel_id, _) = owner_with_two_voice_channels(&runtime, &instance, cx);
+
+    voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    assert!(voice.read_with(cx, |voice, _| voice.engine().is_none()));
+    voice.update(cx, Voice::toggle_microphone);
+    cx.update(|cx| {
+        change_voice_settings(cx, |settings| {
+            settings.input_mode = VoiceInputMode::PushToTalk;
+            settings.push_to_talk_key = Some(
+                mellow_client_core::shared_logic::voice_settings::PushToTalkKey {
+                    code: "Space".into(),
+                    label: "Space".into(),
+                },
+            );
+        });
+    });
+    wait_until(cx, "the call, muted as the interface says", |cx| {
+        voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+            && own_voice_state(&session, cx)
+                .is_some_and(|state| state.channel_id == channel_id && state.self_mute)
+    });
+    // Space held for push-to-talk does not also type a space.
+    let should_swallow = voice.update(cx, |voice, cx| {
+        voice.push_to_talk_key_down("space", Some(" "), Modifiers::default(), false, cx)
+    });
+    assert!(should_swallow);
+    voice.update(cx, |voice, cx| voice.push_to_talk_key_up("space", cx));
+
+    voice.update(cx, Voice::leave);
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}
+
+#[gpui::test]
+fn another_channel_chosen_while_connecting_retargets_the_start(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, first, second) = owner_with_two_voice_channels(&runtime, &instance, cx);
+
+    voice.update(cx, |voice, cx| voice.join(first, cx));
+    voice.update(cx, |voice, cx| voice.join(second, cx));
+    wait_until(cx, "the call in the second channel", |cx| {
+        voice.read_with(cx, |voice, _| {
+            voice.phase() == Some(CallPhase::Connected) && voice.channel_id() == Some(second)
+        }) && own_voice_state(&session, cx).is_some_and(|state| state.channel_id == second)
+    });
+
+    // Left and joined again while starting: the same start serves, no stale leave follows.
+    voice.update(cx, Voice::leave);
+    wait_until(cx, "the leave, seen by the instance", |cx| {
+        own_voice_state(&session, cx).is_none()
+    });
+    voice.update(cx, |voice, cx| voice.join(first, cx));
+    voice.update(cx, Voice::leave);
+    assert_eq!(voice.read_with(cx, |voice, _| voice.phase()), None);
+    voice.update(cx, |voice, cx| voice.join(first, cx));
+    wait_until(cx, "the call in the first channel", |cx| {
+        voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+            && own_voice_state(&session, cx).is_some_and(|state| state.channel_id == first)
+    });
+    assert!(voice.read_with(cx, |voice, _| voice.abandoned_start.is_none()));
+
+    voice.update(cx, Voice::leave);
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}

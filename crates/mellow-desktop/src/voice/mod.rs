@@ -6,9 +6,14 @@
 //!
 //! Threads: the engine runs on its own threads; starting it (resolving the instance's address,
 //! opening the devices) runs on the network runtime's blocking pool, and stopping it (joining its
-//! threads) on a short-lived thread, never on the UI thread. Its events reach the UI through a
-//! bounded channel, a burst at a time with one `notify` (a few per second at most: phases, the
-//! round trip every 2 s and speaking edges, never audio frames).
+//! threads) on a short-lived thread, never on the UI thread. Its events reach the UI a burst at a
+//! time with one `notify` (a few per second at most: phases, the round trip every 2 s and
+//! speaking edges, never audio frames). The engine's own event channel is unbounded: a stalled UI
+//! only stops the forwarding thread, so later event sources must stay this rare.
+//!
+//! Only one start runs at a time: joining another channel while it runs retargets it, and leaving
+//! keeps it aside so a join soon after reuses it. A second start could otherwise send a stale
+//! `voice_leave` (it names no channel) that ends the newer call.
 //!
 //! How later work plugs in:
 //! - **Voice settings section**: read `preferences(cx).voice_settings`, change it only through
@@ -43,8 +48,8 @@ use mellow_client_core::shared_logic::voice_panel::{
     ParticipantChange, VoiceProblem, participant_change,
 };
 use mellow_client_core::shared_logic::voice_settings::{
-    PersonVoiceSetting, StoredVoiceToggles, VoiceInputMode, VoiceSettings,
-    is_remembered_device_present,
+    MAXIMUM_VOLUME_PERCENT, PersonVoiceSetting, StoredVoiceToggles, VoiceInputMode, VoiceSettings,
+    is_character_key, is_remembered_device_present,
 };
 use mellow_client_core::state::StateChange;
 use mellow_media::{
@@ -61,7 +66,8 @@ use crate::tokio_bridge::spawn_on_network_runtime;
 
 use self::media_settings::{gain_of_percent, input_mode_of, person_setting_of, processing_of};
 
-/// Bounds what a stalled UI lets the engine queue; its event thread waits when it is full.
+/// Bounds the forwarding queue to the UI; when it is full the forwarding thread waits (the
+/// engine's own channel behind it is unbounded).
 const VOICE_EVENT_QUEUE_CAPACITY: usize = 64;
 
 /// Opens the audio devices; tests hand synthetic ones.
@@ -85,6 +91,13 @@ struct Call {
     round_trip: Option<Duration>,
     is_self_speaking: bool,
     devices: DeviceNotices,
+    /// The attempt whose start brings this call's engine.
+    start_attempt: u64,
+    /// The settings the engine was started with: what changed during the start is applied once
+    /// it is claimed.
+    start_settings: VoiceSettings,
+    /// Shared with the engine: a person's volume set during the start reaches it.
+    person_settings: Arc<InMemoryPersonVoiceSettings>,
     /// `None` while it starts.
     engine: Option<VoiceSession>,
     /// Brings the engine's events here; dropped with the call.
@@ -98,6 +111,9 @@ pub struct Voice {
     /// The stored toggles are read once, when the preferences are.
     has_read_stored_toggles: bool,
     call: Option<Call>,
+    /// A call left while its engine was still starting: a join reuses the start, else the engine
+    /// is stopped when it arrives.
+    abandoned_start: Option<Call>,
     problem: Option<VoiceProblem>,
     /// Who joined or left the call last, read out politely.
     announcement: SharedString,
@@ -164,14 +180,9 @@ pub fn change_voice_settings(cx: &mut App, change: impl FnOnce(&mut VoiceSetting
 /// The message chime: through the call when there is one (the echo canceller hears it), else
 /// on the chosen output.
 pub fn play_notification_chime(cx: &mut App) {
-    match voice(cx) {
-        Some(voice) => voice.update(cx, |voice, _| voice.play_notification_chime()),
-        None => {
-            // Views tested without the app's voice still ring through the system's output.
-            if let Ok(player) = SoundPlayer::new(Box::new(SystemAudioDevices)) {
-                player.play_notification_chime();
-            }
-        }
+    // No app voice: a test of another view, which plays nothing.
+    if let Some(voice) = voice(cx) {
+        voice.update(cx, |voice, _| voice.play_notification_chime());
     }
 }
 
@@ -336,6 +347,7 @@ impl Voice {
             toggles: VoiceToggles::default(),
             has_read_stored_toggles: false,
             call: None,
+            abandoned_start: None,
             problem: None,
             announcement: SharedString::default(),
             is_push_to_talk_pressed: false,
@@ -449,10 +461,15 @@ impl Voice {
         }
         self.problem = None;
         self.announcement = SharedString::default();
-        if let Some(call) = self.call.as_mut()
-            && let Some(engine) = call.engine.as_mut()
-        {
-            engine.move_to(channel_id);
+        if self.call.is_none() {
+            self.call = self.abandoned_start.take();
+        }
+        if let Some(call) = self.call.as_mut() {
+            // Connected: move there. Still starting: the start is retargeted, and the engine
+            // moves when it is claimed.
+            if let Some(engine) = call.engine.as_mut() {
+                engine.move_to(channel_id);
+            }
             call.channel_id = channel_id;
             call.guild_id = guild_id;
             call.phase = CallPhase::Connecting;
@@ -470,7 +487,6 @@ impl Voice {
         ) else {
             return;
         };
-        self.stop_call(true);
         self.attempt += 1;
         let attempt = self.attempt;
         let settings = current_settings(cx);
@@ -491,11 +507,11 @@ impl Voice {
                 host,
                 channel_id,
                 own_user_id,
-                settings,
+                settings: settings.clone(),
                 toggles: self.toggles,
                 devices: (self.devices)(),
                 gateway,
-                store,
+                store: store.clone(),
             }),
         );
         // Detached, not kept: a start finishing after a leave still has to be stopped, with a
@@ -519,6 +535,9 @@ impl Voice {
             round_trip: None,
             is_self_speaking: false,
             devices: DeviceNotices::default(),
+            start_attempt: attempt,
+            start_settings: settings,
+            person_settings: store,
             engine: None,
             event_pump: None,
         });
@@ -533,9 +552,18 @@ impl Voice {
         started: Option<StartedEngine>,
         cx: &mut Context<Self>,
     ) -> Option<StartedEngine> {
-        let is_wanted =
-            attempt == self.attempt && self.call.as_ref().is_some_and(|call| call.engine.is_none());
+        let is_wanted = self
+            .call
+            .as_ref()
+            .is_some_and(|call| call.engine.is_none() && call.start_attempt == attempt);
         if !is_wanted {
+            if self
+                .abandoned_start
+                .as_ref()
+                .is_some_and(|call| call.start_attempt == attempt)
+            {
+                self.abandoned_start = None;
+            }
             return started;
         }
         let Some(started) = started else {
@@ -546,20 +574,23 @@ impl Voice {
             cx.notify();
             return None;
         };
-        let event_pump = Self::pump_engine_events(attempt, started.events, cx);
-        let channel_id = self.channel_id();
+        let event_pump = Self::pump_engine_events(self.attempt, started.events, cx);
+        let toggles = self.toggles;
         if let Some(call) = self.call.as_mut() {
             let mut engine = started.engine;
             // A move asked for while it started: the engine joined the first channel.
-            if Some(engine.channel_id()) != channel_id
-                && let Some(channel_id) = channel_id
-            {
-                engine.move_to(channel_id);
+            if engine.channel_id() != call.channel_id {
+                engine.move_to(call.channel_id);
             }
+            // Toggles changed during the start never reached it: a mute must hold.
+            engine.set_self_deafened(toggles.is_deafened());
+            engine.set_self_muted(toggles.is_muted());
             call.engine = Some(engine);
             call.event_pump = event_pump;
             call.devices.is_input_device_missing = started.is_input_device_missing;
             call.devices.is_output_device_missing = started.is_output_device_missing;
+            // Settings changed during the start were never applied to it.
+            self.applied_settings = call.start_settings.clone();
         }
         self.apply_settings(cx);
         cx.notify();
@@ -685,8 +716,14 @@ impl Voice {
         self.attempt += 1;
         self.is_push_to_talk_pressed = false;
         self.announcement = SharedString::default();
-        if let Some(engine) = self.call.take().and_then(|call| call.engine) {
-            stop_engine(engine, should_tell_the_server);
+        match self.call.take() {
+            Some(Call {
+                engine: Some(engine),
+                ..
+            }) => stop_engine(engine, should_tell_the_server),
+            // Still starting: kept aside, its engine is stopped (or reused) when it arrives.
+            Some(call) if should_tell_the_server => self.abandoned_start = Some(call),
+            Some(_) | None => {}
         }
     }
 
@@ -708,6 +745,7 @@ impl Voice {
         if let VoiceSignal::SessionEnded = signal {
             // Signed out: the gateway is gone, so nothing is sent.
             self.stop_call(false);
+            self.abandoned_start = None;
             self.problem = None;
             cx.notify();
             return;
@@ -871,6 +909,7 @@ impl Voice {
     pub fn push_to_talk_key_down(
         &mut self,
         key: &str,
+        key_char: Option<&str>,
         modifiers: Modifiers,
         is_in_key_recorder: bool,
         cx: &mut Context<Self>,
@@ -879,8 +918,11 @@ impl Voice {
             return false;
         };
         let settings = current_settings(cx);
-        let is_character_key =
-            key.chars().count() == 1 && !modifiers.control && !modifiers.platform && !modifiers.alt;
+        // The toolkit names Space "space": the typed character tells a character key.
+        let is_character_key = is_character_key(
+            key_char.unwrap_or_default(),
+            modifiers.control || modifiers.platform || modifiers.alt,
+        );
         match push_to_talk_key_down(
             &settings,
             self.engine().is_some(),
@@ -952,7 +994,7 @@ impl Voice {
         cx: &mut Context<Self>,
     ) {
         let setting = PersonVoiceSetting {
-            volume_percent,
+            volume_percent: volume_percent.min(MAXIMUM_VOLUME_PERCENT),
             ..Self::person_setting(user_id, cx)
         };
         self.set_person_setting(user_id, setting, cx);
@@ -974,12 +1016,20 @@ impl Voice {
         setting: PersonVoiceSetting,
         cx: &mut Context<Self>,
     ) {
-        if let Some(engine) = self.engine() {
-            engine.set_person_setting(
-                PersonSoundSource::Voice,
-                user_id,
-                person_setting_of(setting),
-            );
+        if let Some(call) = self.call.as_ref() {
+            match call.engine.as_ref() {
+                Some(engine) => engine.set_person_setting(
+                    PersonSoundSource::Voice,
+                    user_id,
+                    person_setting_of(setting),
+                ),
+                // The engine reads its store when it starts.
+                None => call.person_settings.write_person_setting(
+                    PersonSoundSource::Voice,
+                    user_id,
+                    person_setting_of(setting).clamped(),
+                ),
+            }
         }
         change_preferences(cx, move |preferences| {
             preferences.set_voice_person(user_id, setting);

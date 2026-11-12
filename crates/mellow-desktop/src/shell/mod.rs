@@ -1154,7 +1154,13 @@ impl Render for DuskShell {
                 if let Some(voice) = shell.voice.clone() {
                     let keystroke = &event.keystroke;
                     let should_swallow = voice.update(cx, |voice, cx| {
-                        voice.push_to_talk_key_down(&keystroke.key, keystroke.modifiers, false, cx)
+                        voice.push_to_talk_key_down(
+                            &keystroke.key,
+                            keystroke.key_char.as_deref(),
+                            keystroke.modifiers,
+                            false,
+                            cx,
+                        )
                     });
                     if should_swallow {
                         cx.stop_propagation();
