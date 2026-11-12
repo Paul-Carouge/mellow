@@ -9,6 +9,9 @@ use mellow_protocol::{Guild, Member, Permissions, Role, Snowflake, UpdateRoleReq
 
 use super::search_text::fold_for_search;
 
+/// The longest server name the instance takes, in characters (`MAXIMUM_SERVER_NAME_LENGTH`).
+pub const MAXIMUM_SERVER_NAME_LENGTH: usize = 100;
+
 /// A page of the server settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ServerSettingsSection {

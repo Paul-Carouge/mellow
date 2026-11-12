@@ -8,10 +8,11 @@
 //! Mutes and "Notify me about" are stored per account in the preferences, the web's shape, so the
 //! notifier, the Dock badge and the rows follow them.
 //!
-//! shortcut: the actions whose screens the desktop has not yet (invite people, server, channel
-//! and category settings, create, move, rename and delete channels and categories: M3 step 6;
-//! joining voice: step 7) are left out of the menus, through facts that say the reader cannot;
-//! voice rows have no menu until voice comes. Add each with its screen.
+//! shortcut: the actions whose screens the desktop has not yet (invite people, category settings,
+//! create, move, rename and delete channels and categories: M3 step 6; joining voice: step 7) are
+//! left out of the menus, through facts that say the reader cannot; voice rows have no menu until
+//! voice comes. Add each with its screen. Server and channel settings show once the desktop has a
+//! page the reader may open (`settings::server`, `settings::channel`).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -276,7 +277,7 @@ impl DuskShell {
         let facts = ServerMenuFacts {
             // Their screens come with server management (see the module's shortcut).
             can_invite_people: false,
-            can_open_settings: false,
+            can_open_settings: crate::settings::server::can_open_server_settings(guild),
             can_create_channels: false,
             ..server_menu_facts_of(
                 guild,
@@ -315,8 +316,13 @@ impl DuskShell {
                     name.clone(),
                     words,
                 )),
+                ServerMenuAction::ServerSettings => Some(entry(
+                    &shell,
+                    words.sidebar().server_settings(),
+                    IconName::GearSix,
+                    move |shell, window, cx| shell.open_server_settings(guild_id, None, window, cx),
+                )),
                 ServerMenuAction::InvitePeople
-                | ServerMenuAction::ServerSettings
                 | ServerMenuAction::CreateChannel
                 | ServerMenuAction::CreateCategory => None,
             },
@@ -348,8 +354,7 @@ impl DuskShell {
         let guild_id = guild.id;
         let shown_name = format!("#{}", channel.name);
         let facts = ChannelMenuFacts {
-            // Their screens come with server management (see the module's shortcut).
-            can_edit_channel: false,
+            can_edit_channel: crate::settings::channel::can_edit_channel(state, channel_id),
             is_muted: is_target_muted(&settings, channel_id, now),
             can_move_up: false,
             can_move_down: false,
@@ -378,9 +383,14 @@ impl DuskShell {
                 shown_name.clone(),
                 words,
             )),
+            ChannelMenuAction::EditChannel => Some(entry(
+                &shell,
+                words.context_menu().edit_channel(),
+                IconName::GearSix,
+                move |shell, window, cx| shell.open_channel_settings(channel_id, window, cx),
+            )),
             ChannelMenuAction::JoinVoice
             | ChannelMenuAction::LeaveVoice
-            | ChannelMenuAction::EditChannel
             | ChannelMenuAction::MoveUp
             | ChannelMenuAction::MoveDown
             | ChannelMenuAction::MoveToCategory
@@ -439,8 +449,7 @@ impl DuskShell {
             .map(|conversation| conversation.id);
         let facts = ChatHeaderMenuFacts {
             is_group: group_id.is_some(),
-            // The channel's settings come with server management.
-            can_edit_channel: false,
+            can_edit_channel: crate::settings::channel::can_edit_channel(state, channel_id),
         };
         let items = entries(chat_header_menu_actions(facts), |action| match action {
             ChatHeaderMenuAction::GoTo => Some(
@@ -476,7 +485,12 @@ impl DuskShell {
                     },
                 )
             }),
-            ChatHeaderMenuAction::ChannelSettings => None,
+            ChatHeaderMenuAction::ChannelSettings => Some(entry(
+                &shell,
+                words.chat().channel_settings(),
+                IconName::GearSix,
+                move |shell, window, cx| shell.open_channel_settings(channel_id, window, cx),
+            )),
         });
         Some((words.chat().more_options().to_owned(), items))
     }

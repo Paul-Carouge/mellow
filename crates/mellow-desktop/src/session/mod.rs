@@ -29,6 +29,7 @@ mod gifs;
 mod messages;
 mod relationships;
 mod servers;
+mod settings;
 
 pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};
 pub use messages::{HistoryReach, HistoryStatus, READ_STATE_SEND_DELAY, SendRefused};

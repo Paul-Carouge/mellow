@@ -19,6 +19,7 @@ pub mod quick_switcher;
 mod regions;
 mod resize_handle;
 mod server_rail;
+mod settings_screens;
 mod user_card;
 
 use std::cell::Cell;
@@ -214,6 +215,8 @@ pub struct DuskShell {
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// The menus of servers, channels, categories and the chat header, and their dialogs.
     place_menus: place_menus::PlaceMenus,
+    /// The server or channel settings over the shell.
+    open_settings: Option<settings_screens::OpenSettings>,
     /// The profile a member row opened in the side sheet.
     member_profile: member_profile::MemberProfileState,
     /// Where the user card is drawn, for the status menu to open across it.
@@ -276,6 +279,7 @@ impl DuskShell {
             notification_settings: None,
             custom_status_dialog: None,
             place_menus: place_menus::PlaceMenus::default(),
+            open_settings: None,
             member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
@@ -1106,6 +1110,7 @@ impl Render for DuskShell {
             .when(self.is_member_overlay_open, |root| {
                 root.child(self.render_member_overlay(is_full_bleed, window, cx))
             })
+            .children(self.render_settings_screen())
             .when_some(self.quick_switcher.as_ref(), |root, (switcher, _)| {
                 root.child(switcher.clone())
             })

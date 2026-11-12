@@ -14,6 +14,11 @@ use super::server_settings::{
     matches_member_search,
 };
 
+/// The longest channel name the instance takes, in characters (`MAXIMUM_CHANNEL_NAME_LENGTH`).
+pub const MAXIMUM_CHANNEL_NAME_LENGTH: usize = 100;
+/// The longest channel topic, in characters (`MAXIMUM_CHANNEL_TOPIC_LENGTH`).
+pub const MAXIMUM_CHANNEL_TOPIC_LENGTH: usize = 1024;
+
 /// A page of the channel settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum ChannelSettingsSection {
