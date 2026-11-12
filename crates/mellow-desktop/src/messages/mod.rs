@@ -27,6 +27,7 @@ mod time;
 use gpui::{App, ImageSource, Window};
 
 pub use attachments::MessageAttachments;
+pub(crate) use attachments::file_size_label;
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
 pub use code_block::MessageCodeBlock;
