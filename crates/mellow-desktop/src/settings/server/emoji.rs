@@ -229,9 +229,9 @@ impl ServerEmojiPage {
                 .background_spawn(async move {
                     paths
                         .into_iter()
-                        .filter_map(|path| {
-                            let size_bytes = std::fs::metadata(&path).ok()?.len();
-                            Some((path, size_bytes))
+                        .map(|path| {
+                            let size_bytes = std::fs::metadata(&path).map(|meta| meta.len());
+                            (path, size_bytes.ok())
                         })
                         .collect::<Vec<_>>()
                 })
@@ -241,8 +241,9 @@ impl ServerEmojiPage {
         .detach();
     }
 
-    /// Each chosen file waits its turn, or fails at once when its problem is known before sending.
-    fn add_files(&mut self, files: Vec<(PathBuf, u64)>, cx: &mut Context<Self>) {
+    /// Each chosen file waits its turn, or fails at once when its problem is known before sending;
+    /// a file whose size could not be read (`None`) is listed as unreadable.
+    fn add_files(&mut self, files: Vec<(PathBuf, Option<u64>)>, cx: &mut Context<Self>) {
         let emojis = self.emojis(cx);
         let counts = emoji_counts(&emojis);
         let mut taken_names: Vec<String> = emojis
@@ -251,7 +252,7 @@ impl ServerEmojiPage {
             .chain(self.uploads.iter().map(|upload| upload.name.clone()))
             .collect();
         let catalogue = strings(cx);
-        for (path, size_bytes) in files {
+        for (path, read_size) in files {
             let file_name = path
                 .file_name()
                 .map(|name| name.to_string_lossy().into_owned())
@@ -259,7 +260,9 @@ impl ServerEmojiPage {
             let name =
                 emoji_name_from_file_name(&file_name, taken_names.iter().map(String::as_str));
             taken_names.push(name.clone());
-            let problem = emoji_file_problem(&file_name, size_bytes, counts);
+            let size_bytes = read_size.unwrap_or_default();
+            let problem = read_size.and_then(|size| emoji_file_problem(&file_name, size, counts));
+            let unreadable = read_size.is_none().then(|| unreadable_text(&file_name, cx));
             let error = problem
                 .map(|problem| {
                     let reasons = catalogue.server_settings().emoji();
@@ -272,6 +275,7 @@ impl ServerEmojiPage {
                     };
                     failure_text(&file_name, &reason, catalogue)
                 })
+                .or(unreadable)
                 .unwrap_or_default();
             self.uploads.push(Upload {
                 key: self.next_upload_key,
@@ -279,13 +283,14 @@ impl ServerEmojiPage {
                 file_name,
                 size_bytes,
                 name,
-                status: if problem.is_some() {
+                status: if problem.is_some() || read_size.is_none() {
                     UploadStatus::Failed
                 } else {
                     UploadStatus::Waiting
                 },
                 error,
-                can_retry: matches!(problem, None | Some(EmojiFileProblem::NoRoom)),
+                can_retry: read_size.is_some()
+                    && matches!(problem, None | Some(EmojiFileProblem::NoRoom)),
                 dismiss_focus: cx.focus_handle(),
             });
             self.next_upload_key += 1;
@@ -325,10 +330,7 @@ impl ServerEmojiPage {
                 }
                 Err(error) => {
                     tracing::warn!(%error, "cannot read a picture picked for an emoji");
-                    let _ = page.update(cx, |page, cx| {
-                        let unreadable = ClientError::UnexpectedResponse("unreadable file".into());
-                        page.finish_upload(key, Err(unreadable), cx);
-                    });
+                    let _ = page.update(cx, |page, cx| page.fail_unreadable(key, cx));
                     return;
                 }
             };
@@ -392,6 +394,19 @@ impl ServerEmojiPage {
                     }
                 }
             }
+        }
+        self.upload_next(cx);
+        cx.notify();
+    }
+
+    /// A picked file that could not be read here: nothing was sent, and trying again won't help.
+    fn fail_unreadable(&mut self, key: u64, cx: &mut Context<Self>) {
+        self.is_uploading = false;
+        if let Some(upload) = self.uploads.iter_mut().find(|upload| upload.key == key) {
+            upload.status = UploadStatus::Failed;
+            upload.error = unreadable_text(&upload.file_name, cx);
+            upload.can_retry = false;
+            self.notice = upload.error.clone().into();
         }
         self.upload_next(cx);
         cx.notify();
@@ -865,6 +880,13 @@ fn failure_text(file_name: &str, reason: &str, catalogue: Strings) -> String {
         &catalogue.server_settings().emoji().add_failed(file_name),
         reason,
     )
+}
+
+fn unreadable_text(file_name: &str, cx: &gpui::App) -> String {
+    let reason = crate::strings_pending_i18n::strings(cx)
+        .error_reasons
+        .file_unreadable;
+    failure_text(file_name, reason, strings(cx))
 }
 
 /// Still emoji, then animated ones, each in the server's order.
