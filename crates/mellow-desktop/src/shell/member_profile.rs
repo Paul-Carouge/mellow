@@ -5,6 +5,7 @@
 //! Accept, or "Request sent") and Block; someone blocked shows Unblock alone (ADR-0025). Back
 //! returns to the list, on the row it came from.
 
+use crate::components::LiveRegion as _;
 use std::rc::Rc;
 
 use gpui::{
@@ -556,8 +557,7 @@ impl DuskShell {
             .map(|error| {
                 with_type(div(), TYPE_BODY)
                     .id("profile-error")
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
+                    .live_assertive(error.clone())
                     .text_color(color(tokens.component_profile_popover_error_text))
                     .child(error)
             });
@@ -617,8 +617,7 @@ impl DuskShell {
                     .child(
                         div()
                             .id("profile-relationship-announcement")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(
+                            .live_polite(SharedString::from(
                                 self.member_profile.relationship_announcement.clone(),
                             ))
                             .h_0()

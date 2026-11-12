@@ -58,7 +58,7 @@ pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonTone};
 pub use choice::{ChoiceGroup, ChoiceOption, next_choice_index};
 pub use dialog::{ModalDialog, ModalDialogEvent};
 pub use friend_code::{FriendCode, FriendCodeCopyState};
-pub use live_region::polite_live_region;
+pub use live_region::{LiveRegion, assertive_live_region, polite_live_region};
 pub use menu::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
     MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,

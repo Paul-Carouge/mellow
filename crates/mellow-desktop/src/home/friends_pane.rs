@@ -4,6 +4,7 @@
 //! has its actions as round buttons. The shell draws the tab list ([`FriendsPane::tab_list`]) in
 //! its header, or under it in the drawer layout; this view draws the panel.
 
+use crate::components::LiveRegion as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -1096,10 +1097,12 @@ impl FriendsPane {
                     .id(ElementId::from(SharedString::from(format!(
                         "{id_prefix}-result"
                     ))))
-                    .role(Role::Status)
-                    .when_some(result.as_ref(), |line, (_, text)| {
-                        line.aria_label(SharedString::from(text.clone()))
-                    })
+                    .live_polite(
+                        result
+                            .as_ref()
+                            .map(|(_, text)| SharedString::from(text.clone()))
+                            .unwrap_or_default(),
+                    )
                     .min_h(length(TYPE_BODY.font_size * TYPE_BODY.line_height))
                     .when_some(result, |line, (is_success, text)| {
                         let ink = color(if is_success {
@@ -1493,8 +1496,7 @@ impl Render for FriendsPane {
                 pane.child(
                     with_type(div(), TYPE_BODY)
                         .id("friends-action-error")
-                        .role(Role::Alert)
-                        .aria_label(SharedString::from(error.clone()))
+                        .live_assertive(SharedString::from(error.clone()))
                         .flex()
                         .gap(length(SPACE_2XS))
                         .px(length(COMPONENT_FRIENDS_LIST_PADDING_INLINE))

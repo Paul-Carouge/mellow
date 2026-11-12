@@ -2,10 +2,11 @@
 //! account and under "Add friend". The button says "Copied" for the dialog's copied-label duration
 //! and the copy is announced, wherever the row is shown.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     App, ClipboardItem, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, Window, div,
+    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Task, Window, div,
 };
 
 use super::{Button, with_type};
@@ -131,8 +132,7 @@ impl RenderOnce for FriendCode {
             .child(
                 div()
                     .id("friend-code-announcement")
-                    .role(Role::Status)
-                    .aria_label(announcement)
+                    .live_polite(announcement)
                     .h_0()
                     .overflow_hidden(),
             )

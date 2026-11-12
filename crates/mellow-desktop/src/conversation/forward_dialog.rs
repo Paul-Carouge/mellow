@@ -4,6 +4,7 @@
 //! selection, those that failed stay picked with their reason, so trying again only sends what is
 //! missing. Places, search, order and nonces are client-core's (`forward_messages`).
 
+use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 
 use gpui::{
@@ -812,8 +813,7 @@ impl Render for ForwardDialog {
                     .child(
                         with_type(div(), TYPE_BODY)
                             .id("forward-room")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(room_sentence.clone()))
+                            .live_polite(SharedString::from(room_sentence.clone()))
                             .text_color(color(tokens.component_people_picker_counter_text))
                             .child(room_sentence),
                     ),
@@ -837,8 +837,7 @@ impl Render for ForwardDialog {
                 let secondary = color(tokens.color_text_secondary);
                 with_type(div(), TYPE_BODY)
                     .id("forward-partial-success")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(sentence.clone()))
+                    .live_polite(SharedString::from(sentence.clone()))
                     .flex()
                     .gap(length(COMPONENT_DIALOG_ERROR_GAP))
                     .text_color(secondary)

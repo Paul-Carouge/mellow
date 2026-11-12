@@ -21,9 +21,10 @@ mod permission_words;
 pub mod server;
 pub mod user;
 
+use crate::components::LiveRegion as _;
 use gpui::{
-    App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
+    Window, div, prelude::FluentBuilder as _,
 };
 
 pub use navigation::{SettingsNavigation, SettingsPage, SettingsPageEvent, ShownPage, shown_page};
@@ -67,9 +68,9 @@ pub fn error_alert(id: &'static str, message: Option<SharedString>, cx: &App) ->
     let text_color = color(tokens.component_roles_error_text);
     div()
         .id(id)
-        .role(Role::Alert)
+        .live_assertive(message.clone().unwrap_or_default())
         .when_some(message, |alert, message| {
-            alert.aria_label(message.clone()).child(
+            alert.child(
                 with_type(div(), TYPE_BODY)
                     .flex()
                     .gap(length(COMPONENT_SETTINGS_ERROR_ICON_GAP))
@@ -93,8 +94,7 @@ pub fn saved_notice(id: &'static str, notice: Option<SharedString>, cx: &App) ->
         .child(
             div()
                 .id(id)
-                .role(Role::Status)
-                .aria_label(notice.clone().unwrap_or_default())
+                .live_polite(notice.clone().unwrap_or_default())
                 .h_0()
                 .overflow_hidden(),
         )

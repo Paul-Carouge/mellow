@@ -3,6 +3,7 @@
 //! Unpin for those who may; loading, failure with "Try again", and an empty state that says how
 //! to pin. It drops under the header's trailing end, as the web's popover does.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div,
@@ -53,7 +54,7 @@ impl ConversationView {
         let body: AnyElement = match state.pins_status(channel_id) {
             None | Some(PinsStatus::Loading) => with_type(div(), TYPE_BODY)
                 .id("pins-loading")
-                .role(Role::Status)
+                .live_polite(pins.loading())
                 .p(length(SPACE_SM))
                 .text_color(color(tokens.component_pins_empty_text))
                 .child(pins.loading())
@@ -62,7 +63,7 @@ impl ConversationView {
                 let session = self.session.clone();
                 div()
                     .id("pins-failed")
-                    .role(Role::Alert)
+                    .live_assertive(pins.load_failed())
                     .flex()
                     .flex_col()
                     .items_start()

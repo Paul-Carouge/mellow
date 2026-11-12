@@ -10,10 +10,11 @@ mod people_picker;
 #[cfg(test)]
 mod tests;
 
+use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{InputEvent, InputState};
 use mellow_client_core::ClientError;
@@ -516,16 +517,14 @@ impl Render for Home {
             .child(
                 div()
                     .id("home-announcement")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(self.announcement.clone()))
+                    .live_polite(SharedString::from(self.announcement.clone()))
                     .h_0()
                     .overflow_hidden(),
             )
             .child(
                 div()
                     .id("friends-announcement")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(friends_announcement))
+                    .live_polite(SharedString::from(friends_announcement))
                     .h_0()
                     .overflow_hidden(),
             )

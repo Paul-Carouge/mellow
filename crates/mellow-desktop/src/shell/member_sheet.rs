@@ -3,6 +3,7 @@
 //! full contrast. Docked beside the conversation where it fits, over it otherwise. Choosing a
 //! member shows their profile in the sheet (`member_profile`).
 
+use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseButton, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
@@ -121,7 +122,7 @@ impl DuskShell {
                     vec![
                         div()
                             .id("members-failed")
-                            .role(Role::Alert)
+                            .live_assertive(strings.members().load_failed())
                             .px(length(SPACE_MD))
                             .pt(length(SPACE_XS))
                             .flex()
@@ -147,7 +148,7 @@ impl DuskShell {
                     vec![
                         with_type(div(), TYPE_BODY)
                             .id("members-loading")
-                            .role(Role::Status)
+                            .live_polite(strings.members().loading())
                             .px(length(SPACE_MD))
                             .pt(length(SPACE_XS))
                             .text_color(color(tokens.color_text_muted))

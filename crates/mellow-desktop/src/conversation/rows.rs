@@ -7,6 +7,7 @@
 //! ADR-0025), and new messages are not read out to screen readers; both come with the
 //! conversations step (M3 step 4).
 
+use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher as _};
 
@@ -523,7 +524,7 @@ impl ConversationView {
             };
             return container
                 .id(HISTORY_START_KEY)
-                .role(Role::Alert)
+                .live_assertive(sentence.clone())
                 .flex()
                 .flex_col()
                 .items_start()
@@ -589,8 +590,7 @@ impl ConversationView {
         };
         container
             .id(HISTORY_START_KEY)
-            .role(Role::Status)
-            .aria_label(catalogue.messages().loading())
+            .live_polite(catalogue.messages().loading())
             .children(SKELETON_SHAPES.iter().take(count).map(|(name, lines)| {
                 div()
                     .relative()

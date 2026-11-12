@@ -2,12 +2,13 @@
 //! differs from what is stored. Leaving then is refused: the bar shakes (not under reduced motion),
 //! turns red-edged and asks to save or reset first.
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt as _, App, ElementId, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Window, div, prelude::FluentBuilder as _,
+    ParentElement as _, RenderOnce, SharedString, Styled as _, Window, div,
+    prelude::FluentBuilder as _,
 };
 
 use super::{ActivationHandler, Button, ButtonVariant, child_id, easing, icon, shadow, with_type};
@@ -126,9 +127,17 @@ impl UnsavedChangesBar {
 }
 
 impl RenderOnce for UnsavedChangesBar {
+    #[allow(clippy::too_many_lines)] // The message, its announcement, the buttons and the shake.
     fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = theme(cx);
         let is_asking = self.attention > 0;
+        let announced = self.error_message.clone().unwrap_or_else(|| {
+            if is_asking {
+                self.labels.save_or_reset.clone()
+            } else {
+                self.labels.careful.clone()
+            }
+        });
         let message = match self.error_message {
             Some(error) => with_type(div(), TYPE_BODY)
                 .flex()
@@ -152,7 +161,7 @@ impl RenderOnce for UnsavedChangesBar {
         let on_save = self.on_save;
         let bar = div()
             .id(child_id(&self.id, "bar"))
-            .role(Role::Alert)
+            .live_assertive(announced)
             .relative()
             .flex()
             .flex_wrap()

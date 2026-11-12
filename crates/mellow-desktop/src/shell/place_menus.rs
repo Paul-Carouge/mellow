@@ -14,13 +14,14 @@
 //! voice comes. Add each with its screen. Server and channel settings show once the desktop has a
 //! page the reader may open (`settings::server`, `settings::channel`).
 
+use crate::components::LiveRegion as _;
 use std::cell::Cell;
 use std::rc::Rc;
 
 use gpui::{
     AppContext as _, Bounds, Context, DismissEvent, Div, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Subscription, WeakEntity, Window, div,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
+    SharedString, Stateful, Subscription, WeakEntity, Window, div,
 };
 use mellow_client_core::shared_logic::context_menus_places::{
     CategoryMenuAction, CategoryMenuFacts, ChannelMenuAction, ChannelMenuFacts,
@@ -722,8 +723,7 @@ impl DuskShell {
             .chain(std::iter::once(
                 div()
                     .id("place-menu-announcement")
-                    .role(Role::Status)
-                    .aria_label(menus.announcement.clone())
+                    .live_polite(menus.announcement.clone())
                     .into_any_element(),
             ))
             .collect()

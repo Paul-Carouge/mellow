@@ -16,6 +16,7 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -1035,8 +1036,7 @@ impl GifPicker {
                     .collect();
                 div()
                     .id("gif-loading")
-                    .role(Role::Status)
-                    .aria_label(catalogue.gifs().loading())
+                    .live_polite(catalogue.gifs().loading())
                     .flex()
                     .flex_col()
                     .gap(length(COMPONENT_GIF_TILE_GAP))
@@ -1045,7 +1045,7 @@ impl GifPicker {
             }
             SheetStatus::Failed(failure) => div()
                 .id("gif-failure")
-                .role(Role::Alert)
+                .live_assertive(failure_sentence(failure, catalogue))
                 .flex()
                 .flex_col()
                 .items_start()
@@ -1078,7 +1078,7 @@ impl GifPicker {
                 };
                 with_type(div(), TYPE_BODY)
                     .id("gif-empty")
-                    .role(Role::Status)
+                    .live_polite(sentence.clone())
                     .p(length(SPACE_XS))
                     .text_color(status_text)
                     .child(sentence)
@@ -1139,7 +1139,7 @@ impl GifPicker {
             Some(
                 div()
                     .id("gif-more-failure")
-                    .role(Role::Alert)
+                    .live_assertive(failure_sentence(failure, catalogue))
                     .flex()
                     .flex_wrap()
                     .items_center()
@@ -1363,7 +1363,7 @@ impl Render for GifPicker {
                     .child(
                         with_type(div(), TYPE_BODY_SM)
                             .id("gif-favourite-status")
-                            .role(Role::Status)
+                            .live_polite(self.favourite_message.clone())
                             .flex_1()
                             .min_w_0()
                             .text_color(color(tokens.component_gif_status_text))

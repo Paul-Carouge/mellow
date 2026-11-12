@@ -2,6 +2,7 @@
 //! read out as it appears, the edit form's buttons (`AccountEditForm.svelte`) and the words of a
 //! failure that may be a wrong current password.
 
+use crate::components::LiveRegion as _;
 use std::sync::Arc;
 
 use gpui::{
@@ -69,8 +70,7 @@ pub(super) fn error_line(id: impl Into<ElementId>, message: Option<SharedString>
         .child(
             div()
                 .id(id)
-                .role(Role::Alert)
-                .aria_label(message.clone().unwrap_or_default())
+                .live_assertive(message.clone().unwrap_or_default())
                 .h_0()
                 .overflow_hidden(),
         )

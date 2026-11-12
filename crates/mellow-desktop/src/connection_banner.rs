@@ -2,12 +2,12 @@
 //! "Back online" for a moment (DESIGN.md §5.2 connection dock, §6.37; the web's
 //! `ConnectionBanner.svelte` and `connection-notice.ts`).
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
-    prelude::FluentBuilder as _, svg,
+    Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Styled as _,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _, svg,
 };
 use gpui_base::Button;
 
@@ -180,7 +180,7 @@ impl Render for ConnectionBanner {
                 .child(text)
         };
         // A status region, always present, so screen readers announce its changes.
-        let region = div().id("connection-banner").role(Role::Status);
+        let region = div().id("connection-banner");
         let session = self.session.clone();
         match self.trouble() {
             Some(trouble) => {
@@ -190,7 +190,7 @@ impl Render for ConnectionBanner {
                     ConnectionTrouble::StillReconnecting => strings.connection_still_reconnecting,
                 };
                 let ink = tokens.component_notice_bar_warning_text;
-                region.child(
+                region.live_polite(text).child(
                     bar.bg(color(tokens.component_notice_bar_warning_background))
                         .child(icon_and_text(IconName::WifiSlash, text, ink))
                         .when(trouble == ConnectionTrouble::StillReconnecting, |bar| {
@@ -216,15 +216,17 @@ impl Render for ConnectionBanner {
                         }),
                 )
             }
-            None if self.is_back_online_shown => region.child(
-                bar.bg(color(tokens.color_positive_wash))
-                    .child(icon_and_text(
-                        IconName::Check,
-                        strings.connection_back_online,
-                        tokens.color_text_positive,
-                    )),
-            ),
-            None => region,
+            None if self.is_back_online_shown => {
+                region.live_polite(strings.connection_back_online).child(
+                    bar.bg(color(tokens.color_positive_wash))
+                        .child(icon_and_text(
+                            IconName::Check,
+                            strings.connection_back_online,
+                            tokens.color_text_positive,
+                        )),
+                )
+            }
+            None => region.live_polite(""),
         }
     }
 }

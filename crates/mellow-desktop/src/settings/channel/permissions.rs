@@ -5,6 +5,7 @@
 //! bar, rebased on any change made meanwhile (`rebase_overwrite_edit`). Locked rows and states say
 //! why.
 
+use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -1169,8 +1170,7 @@ impl Render for ChannelPermissionsPage {
             .child(
                 div()
                     .id("channel-permissions-alert")
-                    .role(Role::Alert)
-                    .aria_label(SharedString::from(
+                    .live_assertive(SharedString::from(
                         self.error_message.clone().unwrap_or_default(),
                     ))
                     .when_some(self.error_message.clone(), |alert, message| {
@@ -1203,8 +1203,7 @@ impl Render for ChannelPermissionsPage {
                 // Said, not shown: the bar going away already shows it.
                 div()
                     .id("channel-permissions-notice")
-                    .role(Role::Status)
-                    .aria_label(self.notice.clone().unwrap_or_default())
+                    .live_polite(self.notice.clone().unwrap_or_default())
                     .h_0()
                     .overflow_hidden(),
             )

@@ -14,6 +14,7 @@ mod slash_menu;
 mod suggestions;
 mod tray;
 
+use crate::components::LiveRegion as _;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -1406,16 +1407,20 @@ impl Render for Composer {
             }))
             .map(SharedString::from)
             .collect();
-        let error_lines =
-            div()
-                .id("composer-errors")
-                .role(Role::Alert)
-                .children(errors.into_iter().map(|error| {
-                    with_type(div(), TYPE_BODY)
-                        .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
-                        .text_color(color(tokens.component_composer_error_text))
-                        .child(error)
-                }));
+        let announced_errors = errors
+            .iter()
+            .map(AsRef::<str>::as_ref)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let error_lines = div()
+            .id("composer-errors")
+            .live_assertive(announced_errors)
+            .children(errors.into_iter().map(|error| {
+                with_type(div(), TYPE_BODY)
+                    .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
+                    .text_color(color(tokens.component_composer_error_text))
+                    .child(error)
+            }));
 
         let suggestion_rows = self.suggestions.visible().to_vec();
         let suggestion_list = (self.can_send_messages && !suggestion_rows.is_empty()).then(|| {
@@ -1726,8 +1731,7 @@ impl Render for Composer {
                 // Upload results, for screen readers only.
                 div()
                     .id("composer-announcement")
-                    .role(Role::Status)
-                    .aria_label(self.announcement.clone())
+                    .live_polite(self.announcement.clone())
                     .size_0()
                     .overflow_hidden(),
             )

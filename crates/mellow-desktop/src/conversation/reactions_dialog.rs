@@ -4,6 +4,7 @@
 //! Moderators remove someone's reaction from here; focus then goes to the next person's Remove,
 //! or to the dialog when nobody is left.
 
+use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 
 use gpui::{
@@ -220,7 +221,7 @@ impl ReactionsDialogBody {
         match self.load_state {
             LoadState::Loading => note(reactions.loading_who())
                 .id("reactions-loading")
-                .role(Role::Status)
+                .live_polite(reactions.loading_who())
                 .into_any_element(),
             LoadState::Failed => {
                 // No Remove button is drawn: a pending focus falls back to the dialog.
@@ -303,9 +304,10 @@ impl ReactionsDialogBody {
     /// A removal the instance refused, said at once.
     fn render_error(&self, cx: &Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        div().id("reactions-error").role(Role::Alert).when_some(
-            self.error_message.clone(),
-            |slot, error| {
+        div()
+            .id("reactions-error")
+            .live_assertive(self.error_message.clone().unwrap_or_default())
+            .when_some(self.error_message.clone(), |slot, error| {
                 slot.child(
                     with_type(div(), TYPE_BODY)
                         .flex()
@@ -318,8 +320,7 @@ impl ReactionsDialogBody {
                         ))
                         .child(error),
                 )
-            },
-        )
+            })
     }
 }
 

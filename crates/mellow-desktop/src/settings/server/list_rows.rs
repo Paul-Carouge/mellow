@@ -2,9 +2,10 @@
 //! `ModerationLogSettings.svelte`, `EmojiSettings.svelte`): the row, a person's avatar, the line
 //! of secondary text and the status line read out after an action.
 
+use crate::components::LiveRegion as _;
 use gpui::{
-    App, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div,
+    App, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
+    Window, div,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_protocol::PublicUser;
@@ -75,12 +76,7 @@ pub(super) fn person_avatar(user: &PublicUser, window: &Window, cx: &App) -> imp
 
 /// "Paul can join again": read out after an action, never shown.
 pub(super) fn status_notice(id: &'static str, notice: SharedString) -> impl IntoElement {
-    div()
-        .id(id)
-        .role(Role::Status)
-        .aria_label(notice)
-        .h_0()
-        .overflow_hidden()
+    div().id(id).live_polite(notice).h_0().overflow_hidden()
 }
 
 /// The skeleton while a list loads, or what failed with "Try again" (`SettingsListStatus`).

@@ -3,6 +3,7 @@
 //! behind inert. Tab and Shift+Tab stay inside; Esc, Cancel and the scrim close it except while
 //! busy; focus goes back where it came from.
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -291,8 +292,7 @@ impl Render for ModalDialog {
                 content.child(
                     with_type(div(), TYPE_BODY)
                         .id("dialog-error")
-                        .role(Role::Alert)
-                        .aria_label(error.clone())
+                        .live_assertive(error.clone())
                         .flex()
                         .gap(length(COMPONENT_DIALOG_ERROR_GAP))
                         .text_color(color(tokens.component_dialog_error_text))

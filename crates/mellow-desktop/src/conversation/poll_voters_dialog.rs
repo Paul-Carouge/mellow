@@ -1,6 +1,7 @@
 //! Who voted for one answer of a poll (`PollVotersDialog.svelte`, DESIGN.md §6.83), listed as who
 //! reacted is: avatar and name, a page at a time, "Show more" while pages come full.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
@@ -120,7 +121,7 @@ impl Render for PollVotersBody {
             LoadState::Loading => {
                 return note(polls.loading_voters())
                     .id("poll-voters-loading")
-                    .role(Role::Status)
+                    .live_polite(polls.loading_voters())
                     .into_any_element();
             }
             LoadState::Failed => return note(polls.voters_failed()).into_any_element(),
@@ -181,7 +182,7 @@ impl Render for PollVotersBody {
                 body.child(
                     with_type(div(), TYPE_BODY)
                         .id("poll-voters-more-failed")
-                        .role(Role::Alert)
+                        .live_assertive(polls.more_voters_failed())
                         .text_color(color(tokens.component_dialog_error_text))
                         .child(polls.more_voters_failed()),
                 )

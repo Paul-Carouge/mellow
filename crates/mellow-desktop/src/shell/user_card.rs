@@ -4,6 +4,7 @@
 //! the custom status and copies the user ID; the gear opens the user settings, which hold
 //! "Sign out" and the notification choices, as on the web.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
@@ -198,8 +199,7 @@ impl DuskShell {
                             lines.child(
                                 with_type(div(), TYPE_BODY_SM)
                                     .id("status-error")
-                                    .role(Role::Alert)
-                                    .aria_label(error.clone())
+                                    .live_assertive(error.clone())
                                     .truncate()
                                     .text_color(color(tokens.color_text_danger))
                                     .child(error),

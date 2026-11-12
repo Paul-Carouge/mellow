@@ -2,6 +2,7 @@
 //! search over the roles the reader may target and the members without an overwrite here.
 //! Choosing one adds it at once, all Inherit.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
@@ -354,8 +355,7 @@ impl Render for AddOverwriteTarget {
         let status = |text: String| {
             with_type(div(), TYPE_BODY)
                 .id("overwrite-candidates-status")
-                .role(Role::Status)
-                .aria_label(SharedString::from(text.clone()))
+                .live_polite(SharedString::from(text.clone()))
                 .text_color(color(tokens.component_settings_body_text))
                 .child(text)
         };
@@ -382,7 +382,7 @@ impl Render for AddOverwriteTarget {
                 Some(
                     div()
                         .id("overwrite-members-failed")
-                        .role(Role::Alert)
+                        .live_assertive(catalogue.members().load_failed())
                         .flex()
                         .flex_col()
                         .items_start()

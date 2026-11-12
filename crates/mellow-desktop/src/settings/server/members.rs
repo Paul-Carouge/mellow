@@ -3,6 +3,7 @@
 //! ban: `manage_member`); kicks and bans are confirmed in their own dialog, a ban with an optional
 //! reason. The list is the one the member sheet uses, kept current by the gateway.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Role as AccessRole, SharedString, StatefulInteractiveElement as _,
@@ -530,8 +531,7 @@ impl Render for MembersPage {
             .child(
                 div()
                     .id("members-notice")
-                    .role(AccessRole::Status)
-                    .aria_label(self.notice.clone().unwrap_or_default())
+                    .live_polite(self.notice.clone().unwrap_or_default())
                     .h_0()
                     .overflow_hidden(),
             )

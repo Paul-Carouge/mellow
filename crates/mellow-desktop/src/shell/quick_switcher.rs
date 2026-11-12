@@ -2,6 +2,7 @@
 //! kind, arrows and Enter. The field keeps focus; the active result is announced as the field's
 //! active descendant. Ctrl+K again, Esc or the scrim closes it, and focus goes back.
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -453,8 +454,7 @@ impl Render for QuickSwitcher {
                 // Outside the list, and announced: the count, or why there is nothing to choose.
                 with_type(div(), TYPE_BODY)
                     .id("quick-switcher-status")
-                    .role(Role::Status)
-                    .aria_label(status_text.clone())
+                    .live_polite(status_text.clone())
                     .when(count > 0, |status| status.h_0().overflow_hidden())
                     .when(count == 0, |status| {
                         status
@@ -469,8 +469,7 @@ impl Render for QuickSwitcher {
                 card.child(
                     with_type(div(), TYPE_BODY)
                         .id("quick-switcher-error")
-                        .role(Role::Alert)
-                        .aria_label(SharedString::from(error.clone()))
+                        .live_assertive(SharedString::from(error.clone()))
                         .mt(length(SPACE_SM))
                         .text_color(color(tokens.component_dialog_error_text))
                         .child(error),

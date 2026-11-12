@@ -2,9 +2,10 @@
 //! while it loads (no shimmer, so nothing moves under reduced motion either), or what failed with
 //! a retry button.
 
+use crate::components::LiveRegion as _;
 use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
+    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, Styled as _, Window, div, relative,
 };
 
 use super::{ActivationHandler, Button, child_id, icon, with_type};
@@ -55,8 +56,7 @@ impl RenderOnce for SettingsListStatus {
                 let fill = color(tokens.component_server_settings_skeleton_fill);
                 div()
                     .id(self.id)
-                    .role(Role::Status)
-                    .aria_label(label)
+                    .live_polite(label)
                     .flex()
                     .flex_col()
                     .children(SKELETON_TEXT_SHARES.iter().map(|share| {
@@ -93,7 +93,7 @@ impl RenderOnce for SettingsListStatus {
                 let retry_id = child_id(&self.id, "retry");
                 div()
                     .id(self.id)
-                    .role(Role::Alert)
+                    .live_assertive(failure_text.clone())
                     .flex()
                     .flex_col()
                     .items_start()

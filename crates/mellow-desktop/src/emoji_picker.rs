@@ -12,6 +12,7 @@
 //! phone sheet form is left out (the desktop has no coarse pointer layout); revisit if the
 //! picker gets a GIF tab beside it.
 
+use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -767,7 +768,7 @@ impl Render for EmojiPicker {
         } else {
             with_type(div(), TYPE_BODY)
                 .id("emoji-no-results")
-                .role(Role::Status)
+                .live_polite(words.no_results(&query))
                 .p(length(SPACE_XS))
                 .text_color(color(tokens.component_emoji_picker_empty_text))
                 .child(words.no_results(&query))

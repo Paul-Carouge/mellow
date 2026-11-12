@@ -3,6 +3,7 @@
 //! show, the typing line, the failure of the last action, the composer, and the layers (pins
 //! panel, message menu, emoji picker, confirmation).
 
+use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, ExternalPaths, FontWeight, HighlightStyle, InteractiveElement as _,
     IntoElement, ModifiersChangedEvent, ParentElement as _, Render, Role, SharedString,
@@ -134,7 +135,7 @@ impl ConversationView {
         Some(
             with_type(div(), TYPE_BODY)
                 .id("unread-bar")
-                .role(Role::Status)
+                .live_polite(sentence.clone())
                 .absolute()
                 .top(length(SPACE_2XS))
                 .left(length(SPACE_MD))
@@ -295,8 +296,7 @@ impl ConversationView {
         let sentence = SharedString::from(sentence);
         with_type(div(), TYPE_TYPING)
             .id("typing-line")
-            .role(Role::Status)
-            .aria_label(sentence.clone())
+            .live_polite(sentence.clone())
             .flex_none()
             .h(length(COMPONENT_COMPOSER_TYPING_HEIGHT))
             .px(length(SPACE_MD))
@@ -449,7 +449,7 @@ impl Render for ConversationView {
         let action_error = self.action_error.clone().map(|error| {
             div()
                 .id("chat-action-error")
-                .role(Role::Alert)
+                .live_assertive(error.clone())
                 .flex_none()
                 .px(length(COMPONENT_COMPOSER_MARGIN_INLINE))
                 .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))

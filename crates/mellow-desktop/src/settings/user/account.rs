@@ -4,12 +4,13 @@
 //! so an error always sits under the form that raised it. Typed passwords live in the form's
 //! fields only: the fields are dropped when it closes and the request's copy is wiped once sent.
 
+use crate::components::LiveRegion as _;
 use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
 };
 use gpui_component::input::{InputEvent, InputState};
@@ -432,8 +433,7 @@ impl AccountPage {
                 // Polite: "free" is read once the check answers; "taken" is the field's error.
                 with_type(div(), TYPE_BODY_SM)
                     .id("account-name-status")
-                    .role(Role::Status)
-                    .aria_label(status)
+                    .live_polite(status)
                     .text_color(color(theme(cx).color_text_secondary))
                     .child(status)
                     .into_any_element(),

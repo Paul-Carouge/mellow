@@ -4,6 +4,7 @@
 //! with an optional name. In a group, the friends already in it are left out and the picked ones
 //! are added, one request at a time.
 
+use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
@@ -722,8 +723,7 @@ impl PeoplePicker {
                     .child(
                         with_type(div(), TYPE_BODY)
                             .id("picker-room")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(room_sentence.clone()))
+                            .live_polite(SharedString::from(room_sentence.clone()))
                             .text_color(color(tokens.component_people_picker_counter_text))
                             .child(room_sentence.clone()),
                     ),
