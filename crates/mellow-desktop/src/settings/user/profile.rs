@@ -13,11 +13,10 @@ use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render, Role,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
+    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
     SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };
-use gpui::{Focusable as _, StatefulInteractiveElement as _};
 use gpui_component::input::{InputEvent, InputState, Textarea, TextareaState};
 use mellow_client_core::ClientError;
 use mellow_client_core::shared_logic::user_settings::{
@@ -717,8 +716,6 @@ impl ProfilePage {
                     .child(
                         div()
                             .id("profile-about-count")
-                            .role(Role::Status)
-                            .aria_label(remaining.clone())
                             .flex_none()
                             .when(is_too_long, |count| {
                                 count.text_color(color(tokens.color_text_danger))

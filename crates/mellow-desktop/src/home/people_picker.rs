@@ -22,8 +22,8 @@ use mellow_protocol::{
 
 use super::conversation_display_name;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, ModalDialog, ModalDialogEvent, TextField,
-    focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, ModalDialog, ModalDialogEvent,
+    TextField, focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
     remembered_hover, with_type,
 };
 use crate::i18n::strings;
@@ -722,8 +722,7 @@ impl PeoplePicker {
                     .child(
                         with_type(div(), TYPE_BODY)
                             .id("picker-room")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(room_sentence.clone()))
+                            .live_polite(SharedString::from(room_sentence.clone()))
                             .text_color(color(tokens.component_people_picker_counter_text))
                             .child(room_sentence.clone()),
                     ),

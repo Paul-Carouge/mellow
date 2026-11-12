@@ -9,7 +9,7 @@ use std::time::Duration;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
-    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
 };
 use gpui_component::input::{InputEvent, InputState};
@@ -24,7 +24,9 @@ use zeroize::{Zeroize as _, Zeroizing};
 use super::parts::{
     FormButtons, card, describe_failure, edit_form, error_line, password_field, section_label,
 };
-use crate::components::{Button, FriendCode, FriendCodeCopyState, TextField, with_type};
+use crate::components::{
+    Button, FriendCode, FriendCodeCopyState, LiveRegion as _, TextField, with_type,
+};
 use crate::i18n::strings;
 use crate::session::Session;
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};
@@ -432,8 +434,7 @@ impl AccountPage {
                 // Polite: "free" is read once the check answers; "taken" is the field's error.
                 with_type(div(), TYPE_BODY_SM)
                     .id("account-name-status")
-                    .role(Role::Status)
-                    .aria_label(status)
+                    .live_polite(status)
                     .text_color(color(theme(cx).color_text_secondary))
                     .child(status)
                     .into_any_element(),

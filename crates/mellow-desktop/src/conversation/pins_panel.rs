@@ -13,7 +13,8 @@ use mellow_client_core::state::PinsStatus;
 
 use super::ConversationView;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, icon, shadow, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, LiveRegion as _, icon, shadow,
+    with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{
@@ -53,7 +54,7 @@ impl ConversationView {
         let body: AnyElement = match state.pins_status(channel_id) {
             None | Some(PinsStatus::Loading) => with_type(div(), TYPE_BODY)
                 .id("pins-loading")
-                .role(Role::Status)
+                .live_polite(pins.loading())
                 .p(length(SPACE_SM))
                 .text_color(color(tokens.component_pins_empty_text))
                 .child(pins.loading())
@@ -62,7 +63,7 @@ impl ConversationView {
                 let session = self.session.clone();
                 div()
                     .id("pins-failed")
-                    .role(Role::Alert)
+                    .live_assertive(pins.load_failed())
                     .flex()
                     .flex_col()
                     .items_start()

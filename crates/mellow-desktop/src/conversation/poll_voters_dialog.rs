@@ -9,7 +9,7 @@ use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{PublicUser, Snowflake};
 
-use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, with_type};
+use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, with_type};
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
 use crate::session::{POLL_VOTERS_PAGE_SIZE, Session};
@@ -120,7 +120,7 @@ impl Render for PollVotersBody {
             LoadState::Loading => {
                 return note(polls.loading_voters())
                     .id("poll-voters-loading")
-                    .role(Role::Status)
+                    .live_polite(polls.loading_voters())
                     .into_any_element();
             }
             LoadState::Failed => return note(polls.voters_failed()).into_any_element(),
@@ -181,7 +181,7 @@ impl Render for PollVotersBody {
                 body.child(
                     with_type(div(), TYPE_BODY)
                         .id("poll-voters-more-failed")
-                        .role(Role::Alert)
+                        .live_assertive(polls.more_voters_failed())
                         .text_color(color(tokens.component_dialog_error_text))
                         .child(polls.more_voters_failed()),
                 )

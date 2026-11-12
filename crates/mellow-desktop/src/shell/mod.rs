@@ -30,9 +30,8 @@ use std::rc::Rc;
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, ImageSource,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, KeyUpEvent,
-    ModifiersChangedEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, WeakEntity, Window, actions,
-    div, prelude::FluentBuilder as _,
+    ModifiersChangedEvent, MouseMoveEvent, ParentElement as _, Pixels, Render, Styled as _,
+    Subscription, Task, WeakEntity, Window, actions, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::state::{ClientState, StateChange};
@@ -43,7 +42,7 @@ use crate::column_widths::{
     WIDTH_BESIDE_COLUMNS, clamp_column_width, fit_column_widths, largest_column_width,
     stored_column_width,
 };
-use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
+use crate::components::{ContextMenu, LiveRegion as _, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::{ConversationView, OpenForwardOrigin};
 use crate::home::{Home, HomeEvent, OpenPersonMenu};
@@ -934,8 +933,7 @@ impl DuskShell {
             div()
                 .id("shell-notice-bar")
                 .debug_selector(|| "shell-notice-bar".to_owned())
-                .role(Role::Alert)
-                .aria_label(errors.join(" "))
+                .live_assertive(errors.join(" "))
                 .flex()
                 .flex_col()
                 .items_center()
