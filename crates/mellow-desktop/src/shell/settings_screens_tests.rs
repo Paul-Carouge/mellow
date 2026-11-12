@@ -149,6 +149,22 @@ fn esc_closes_the_open_account_form_before_the_user_settings(cx: &mut TestAppCon
 }
 
 #[gpui::test]
+fn the_close_button_closes_the_user_settings_even_with_a_form_open(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, USER_SETTINGS_KEY);
+    for _ in 0..7 {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    let close_button = cx
+        .debug_bounds("settings-close-button")
+        .expect("the wide sheet shows its close button");
+    cx.simulate_click(close_button.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(!is_open(&shell, cx), "the web's close button calls onclose");
+}
+
+#[gpui::test]
 fn sign_out_closes_the_user_settings_first(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     press(cx, USER_SETTINGS_KEY);

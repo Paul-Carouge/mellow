@@ -140,7 +140,7 @@ impl UserSettings {
         })
     }
 
-    /// Esc and the close button: the open form closes first, then the settings.
+    /// Esc: the open form closes first, then the settings; the close button closes outright.
     fn request_close(&mut self, cx: &mut Context<Self>) {
         let has_closed_a_form = match &self.form_page {
             Some(FormPage::Account(page)) => page
@@ -221,6 +221,7 @@ impl Render for UserSettings {
         let settings = cx.entity();
         let choose_settings = settings.clone();
         let back_settings = settings.clone();
+        let close_settings = settings.clone();
         let item_sections = Arc::new(offered);
         let mut sheet = SettingsSheet::new(
             "user-settings",
@@ -250,6 +251,9 @@ impl Render for UserSettings {
         })
         .on_request_close(move |_, cx| {
             settings.update(cx, Self::request_close);
+        })
+        .on_close_button(move |_, cx| {
+            close_settings.update(cx, Self::close);
         })
         .on_back(move |window, cx| {
             back_settings.update(cx, |settings, cx| {
