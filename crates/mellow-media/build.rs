@@ -243,6 +243,9 @@ fn build_with_msbuild(
             "-t:Build",
             "-p:Configuration=Release",
             "-p:Platform=x64",
+            // Link-time code generation objects are not COFF: once Cargo bundles the library
+            // into the rlib, their symbols are not indexed and the final link misses them all.
+            "-p:WholeProgramOptimization=false",
         ])
         .current_dir(build_directory))?;
     Ok((library_directory, library_name))
