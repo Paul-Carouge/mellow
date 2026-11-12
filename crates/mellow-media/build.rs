@@ -18,6 +18,9 @@ use std::process::Command;
 use sha2::{Digest as _, Sha256};
 
 const LIBVPX_VERSION: &str = "1.17.0";
+/// Bump whenever the configure or build options change: the build directory is reused while its
+/// library exists, so a stale one would otherwise keep being linked.
+const LIBVPX_BUILD_RECIPE_REVISION: u32 = 2;
 /// The `WebM` project's own release tarball: fixed bytes, unlike GitHub's tag archives, which are
 /// generated on demand and have changed before (2023), breaking every pinned digest.
 const LIBVPX_ARCHIVE_URL: &str =
@@ -51,7 +54,9 @@ fn build() -> BuildResult<()> {
         Some(directory) => PathBuf::from(directory),
         None => downloaded_source(&output_directory)?,
     };
-    let build_directory = output_directory.join(format!("libvpx-{LIBVPX_VERSION}-build"));
+    let build_directory = output_directory.join(format!(
+        "libvpx-{LIBVPX_VERSION}-build-r{LIBVPX_BUILD_RECIPE_REVISION}"
+    ));
     let target = variable("TARGET")?;
     let (library_directory, library_name) = if target.ends_with("-pc-windows-msvc") {
         build_with_msbuild(&source, &build_directory, &target)?
@@ -151,7 +156,12 @@ const CONFIGURE_OPTIONS: [&str; 15] = [
 ];
 
 /// `sh configure` run in `build_directory`, with the shared options and `extra_options`.
-fn configure(source: &Path, build_directory: &Path, extra_options: &[String]) -> BuildResult<()> {
+fn configure(
+    source: &Path,
+    build_directory: &Path,
+    extra_options: &[String],
+    missing_tools_hint: &str,
+) -> BuildResult<()> {
     fs::create_dir_all(build_directory).map_err(|error| error.to_string())?;
     // The script finds its own directory from `$0`, which a Windows path's backslashes break.
     let configure_script = source
@@ -165,7 +175,7 @@ fn configure(source: &Path, build_directory: &Path, extra_options: &[String]) ->
         .args(extra_options)
         .arg(format!("--size-limit={LARGEST_DECODED_PICTURE}"))
         .current_dir(build_directory))
-    .map_err(|reason| format!("{reason} (on x86-64, install nasm or yasm)"))
+    .map_err(|reason| format!("{reason} ({missing_tools_hint})"))
 }
 
 /// libvpx's make, without Cargo's jobserver flags, which would make it wait for tokens it never
@@ -187,6 +197,7 @@ fn configure_and_make(source: &Path, build_directory: &Path, target: &str) -> Bu
             format!("--target={}", libvpx_target(target)),
             "--enable-pic".into(),
         ],
+        "on x86-64, install nasm or yasm",
     )?;
     let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".into());
     run(make(build_directory)
@@ -231,6 +242,8 @@ fn build_with_msbuild(
             format!("--target=x86_64-win64-{visual_studio}"),
             "--as=yasm".into(),
         ],
+        // The generated projects pass yasm-only flags, so nasm does not work here.
+        "install yasm, and put MSYS2's make and sh first in PATH",
     )?;
     // Writes the projects and the solution; MSBuild below builds only the Release library.
     run(make(build_directory).env("NO_LAUNCH_DEVENV", "1"))?;
