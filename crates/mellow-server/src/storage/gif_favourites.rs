@@ -46,14 +46,20 @@ pub(crate) async fn add_favourite(
     if others >= i64::from(maximum) {
         return Ok(false);
     }
+    // After every other favourite even within the same millisecond, so "newest first" never
+    // falls back to the slug order.
     sqlx::query(
-        "INSERT INTO gif_favourites (user_id, slug, added_at_unix_milliseconds) VALUES (?, ?, ?) \
+        "INSERT INTO gif_favourites (user_id, slug, added_at_unix_milliseconds) VALUES (?, ?, \
+         MAX(?, COALESCE((SELECT MAX(added_at_unix_milliseconds) + 1 FROM gif_favourites \
+         WHERE user_id = ? AND slug != ?), 0))) \
          ON CONFLICT (user_id, slug) DO UPDATE SET \
          added_at_unix_milliseconds = excluded.added_at_unix_milliseconds",
     )
     .bind(user_id)
     .bind(slug)
     .bind(to_sqlite_integer(now_unix_milliseconds)?)
+    .bind(user_id)
+    .bind(slug)
     .execute(&mut *transaction)
     .await?;
     transaction.commit().await?;
