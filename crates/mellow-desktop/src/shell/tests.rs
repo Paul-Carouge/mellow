@@ -2,19 +2,16 @@
 
 use gpui::{
     Bounds, Entity, InputEvent as _, KeyUpEvent, Keystroke, Pixels, TestAppContext,
-    VisualTestContext, WindowAppearance, px, size,
+    VisualTestContext, px, size,
 };
 
 use super::*;
-use crate::components::bind_tab_navigation;
 use crate::navigation::Place;
 use crate::preferences::change_preferences;
 use crate::shell_fixtures::{
     BOOKS_READING, CONVERSATION_ANA, GUILD_BOOKS, GUILD_RUST, RUST_ANNOUNCEMENTS, RUST_GENERAL,
-    RUST_HELP, sample_state, sample_state_with_unreads,
+    RUST_HELP, open_shell, sample_state, sample_state_with_unreads,
 };
-use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
-use crate::theme::ActiveTheme;
 use crate::theme::tokens::{
     BREAKPOINT_NAVIGATOR, BREAKPOINT_SIDE_SHEET, COMPONENT_NAVIGATOR_STRIP_WIDTH, SIZE_DOCK_HEIGHT,
     SIZE_MEMBER_LIST_WIDTH, SIZE_SIDEBAR_WIDTH,
@@ -23,28 +20,6 @@ use crate::theme::tokens::{
 fn bounds_of(cx: &mut VisualTestContext, selector: &'static str) -> Bounds<Pixels> {
     cx.debug_bounds(selector)
         .unwrap_or_else(|| panic!("`{selector}` was not drawn"))
-}
-
-/// A shell over the sample world, in a window of `width` × 800.
-fn open_shell(
-    cx: &mut TestAppContext,
-    state: mellow_client_core::state::ClientState,
-    width: f32,
-) -> (Entity<DuskShell>, &mut VisualTestContext) {
-    cx.update(|cx| {
-        gpui_component::init(cx);
-        cx.set_global(ActiveStrings(&ENGLISH));
-        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
-        bind_tab_navigation(cx);
-        bind_shell_keys(cx);
-    });
-    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
-    session.update(cx, |session, _| *session.state_mut() = state);
-    let (shell, cx) = cx.add_window_view(|window, cx| DuskShell::new(session, window, cx));
-    cx.simulate_resize(size(px(width), px(800.0)));
-    cx.update(|window, _| window.activate_window());
-    cx.run_until_parked();
-    (shell, cx)
 }
 
 /// `secondary` in a binding: Cmd on macOS, Ctrl elsewhere (CI tests on Linux).

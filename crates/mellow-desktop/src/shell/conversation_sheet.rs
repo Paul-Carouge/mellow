@@ -278,6 +278,13 @@ impl DuskShell {
         let search_control = self.render_search_control(window, cx);
         let is_conversation_open = self.navigation.selected_channel_id().is_some();
         let folds_keys = has_navigation_drawer && is_conversation_open;
+        // A server channel whose settings have a page for the reader.
+        let editable_channel_id = self.navigation.selected_channel_id().filter(|channel_id| {
+            crate::settings::channel::has_channel_settings_page_for_reader(
+                self.state(cx),
+                *channel_id,
+            )
+        });
         // The Friends tabs sit in the header after a divider where the navigator is docked.
         let friends_tabs = (self.navigation.place()
             == Some(Place::Home {
@@ -391,6 +398,24 @@ impl DuskShell {
                     }),
                 )
             })
+            .when_some(
+                editable_channel_id.filter(|_| !folds_keys),
+                |header, channel_id| {
+                    let entity = entity.clone();
+                    header.child(
+                        header_button(
+                            "channel-settings",
+                            IconName::GearSix,
+                            strings.chat().channel_settings(),
+                        )
+                        .on_click(move |window, cx| {
+                            entity.update(cx, |shell, cx| {
+                                shell.open_channel_settings(channel_id, window, cx);
+                            });
+                        }),
+                    )
+                },
+            )
             .child(search_control)
             .when(is_conversation_open && !folds_keys, |header| {
                 let conversation = self.conversation.clone();

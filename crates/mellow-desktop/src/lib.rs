@@ -28,6 +28,7 @@ pub mod pictures;
 pub mod preferences;
 pub mod session;
 pub mod session_store;
+pub mod settings;
 pub mod shell;
 #[cfg(test)]
 mod shell_fixtures;

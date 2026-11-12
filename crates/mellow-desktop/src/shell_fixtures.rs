@@ -1,6 +1,9 @@
 //! A small signed-in world for the shell's tests: two servers, a category with text and voice
 //! channels, two conversations and a few members, as `Ready` brings them.
 
+use gpui::{
+    AppContext as _, Entity, TestAppContext, VisualTestContext, WindowAppearance, px, size,
+};
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{
     Channel, ChannelKind, ChannelUnread, ChosenStatus, CurrentUser, DirectMessageChannel, Guild,
@@ -212,4 +215,46 @@ fn member(user: PublicUser, role_ids: Vec<Snowflake>) -> Member {
         role_ids,
         joined_at_unix_milliseconds: 0,
     }
+}
+
+/// A shell over `state`, in an active window of `width` × 800, with the app's keys bound.
+pub fn open_shell(
+    cx: &mut TestAppContext,
+    state: ClientState,
+    width: f32,
+) -> (Entity<crate::shell::DuskShell>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(crate::strings_pending_i18n::ActiveStrings(
+            &crate::strings_pending_i18n::ENGLISH,
+        ));
+        cx.set_global(crate::theme::ActiveTheme::for_appearance(
+            WindowAppearance::Dark,
+        ));
+        crate::components::bind_tab_navigation(cx);
+        crate::shell::bind_shell_keys(cx);
+    });
+    let session = cx.new(|_| crate::session::Session::signed_out_kept_in_memory_only());
+    session.update(cx, |session, _| *session.state_mut() = state);
+    let (shell, cx) =
+        cx.add_window_view(|window, cx| crate::shell::DuskShell::new(session, window, cx));
+    cx.simulate_resize(size(px(width), px(800.0)));
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    (shell, cx)
+}
+
+/// The sample world where the reader also administers Rust Lyon.
+pub fn sample_state_administering_rust() -> ClientState {
+    let mut state = sample_state();
+    let mut guild = state
+        .guild(GUILD_RUST)
+        .cloned()
+        .expect("the sample world has Rust Lyon");
+    guild.my_permissions |= Permissions::ADMINISTRATOR;
+    state.apply_event(
+        mellow_protocol::GatewayEvent::GuildCreate(Box::new(guild)),
+        0,
+    );
+    state
 }

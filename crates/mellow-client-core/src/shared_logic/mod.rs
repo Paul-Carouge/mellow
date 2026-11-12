@@ -6,6 +6,7 @@
 //! the client's own catalogue puts into words, except dates and numbers, which take a [`format::Locale`].
 
 pub mod channel_order;
+pub mod channel_settings;
 pub mod code_blocks;
 pub mod context_menus_people;
 pub mod context_menus_places;
@@ -39,6 +40,7 @@ pub mod search_query;
 pub mod search_results;
 pub mod search_suggestions;
 pub mod search_text;
+pub mod server_settings;
 pub mod slash_commands;
 pub mod soundboard;
 pub mod tracker_form;
