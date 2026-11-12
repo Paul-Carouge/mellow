@@ -1233,7 +1233,10 @@ impl Composer {
 
 /// The file's bytes, or `None` when it holds more than `maximum_bytes`: reads at most one byte
 /// past the limit, even from a file that grew since its size was read.
-fn read_file_within(path: &Path, maximum_bytes: u64) -> std::io::Result<Option<Vec<u8>>> {
+pub(crate) fn read_file_within(
+    path: &Path,
+    maximum_bytes: u64,
+) -> std::io::Result<Option<Vec<u8>>> {
     let mut bytes = Vec::new();
     std::fs::File::open(path)?
         .take(maximum_bytes.saturating_add(1))

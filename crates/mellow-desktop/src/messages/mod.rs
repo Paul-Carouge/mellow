@@ -27,6 +27,7 @@ mod time;
 use gpui::{App, ImageSource, Window};
 
 pub use attachments::MessageAttachments;
+pub(crate) use attachments::file_size_label;
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
 pub use code_block::MessageCodeBlock;
@@ -40,6 +41,7 @@ pub use reactions::{
     AddReactionButton, MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills,
 };
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
+pub(crate) use time::locale;
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,
     message_timestamp_label, time_of_day_label, upcoming_time_label,

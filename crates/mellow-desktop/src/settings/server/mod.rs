@@ -2,9 +2,14 @@
 //! "Moderation", each only with its permission and once the desktop has its page. See the parent
 //! module for how a section is added.
 //!
-//! shortcut: "Delete server" (the owner's danger item) and every section but Overview come with
-//! the M3 step 6 settings tracks.
+//! shortcut: "Delete server" (the owner's danger item), Roles, Soundboard and Members come with
+//! the other M3 step 6 settings tracks.
 
+mod bans;
+mod emoji;
+mod invites;
+mod list_rows;
+mod moderation_log;
 mod overview;
 
 use std::sync::Arc;
@@ -15,7 +20,16 @@ use gpui::{
 use mellow_client_core::shared_logic::server_settings::{ServerSettingsSection, visible_sections};
 use mellow_protocol::{Guild, Snowflake};
 
+use self::bans::ServerBansPage;
+use self::emoji::ServerEmojiPage;
+use self::invites::ServerInvitesPage;
+use self::moderation_log::ServerModerationLogPage;
 use self::overview::ServerOverviewPage;
+#[cfg(test)]
+pub(crate) use self::{
+    bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
+    moderation_log::ServerModerationLogPage as ModerationLogPage,
+};
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
 use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
 use crate::i18n::{Strings, strings};
@@ -24,14 +38,14 @@ use crate::session::Session;
 /// Whether the desktop has a page for `section`: one arm per section, so a new one is decided.
 fn has_page(section: ServerSettingsSection) -> bool {
     match section {
-        ServerSettingsSection::Overview => true,
-        ServerSettingsSection::Roles
+        ServerSettingsSection::Overview
         | ServerSettingsSection::Emoji
-        | ServerSettingsSection::Soundboard
         | ServerSettingsSection::Invites
-        | ServerSettingsSection::Members
         | ServerSettingsSection::Bans
-        | ServerSettingsSection::ModerationLog => false,
+        | ServerSettingsSection::ModerationLog => true,
+        ServerSettingsSection::Roles
+        | ServerSettingsSection::Soundboard
+        | ServerSettingsSection::Members => false,
     }
 }
 
@@ -134,13 +148,31 @@ impl ServerSettings {
                 });
                 Some(shown_page(section, page, Self::navigation, cx))
             }
+            ServerSettingsSection::Emoji => {
+                let page = cx.new(|cx| {
+                    ServerEmojiPage::new(self.session.clone(), self.guild_id, window, cx)
+                });
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
+            ServerSettingsSection::Invites => {
+                let page =
+                    cx.new(|cx| ServerInvitesPage::new(self.session.clone(), self.guild_id, cx));
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
+            ServerSettingsSection::Bans => {
+                let page =
+                    cx.new(|cx| ServerBansPage::new(self.session.clone(), self.guild_id, cx));
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
+            ServerSettingsSection::ModerationLog => {
+                let page = cx.new(|cx| {
+                    ServerModerationLogPage::new(self.session.clone(), self.guild_id, cx)
+                });
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
             ServerSettingsSection::Roles
-            | ServerSettingsSection::Emoji
             | ServerSettingsSection::Soundboard
-            | ServerSettingsSection::Invites
-            | ServerSettingsSection::Members
-            | ServerSettingsSection::Bans
-            | ServerSettingsSection::ModerationLog => None,
+            | ServerSettingsSection::Members => None,
         }
     }
 
