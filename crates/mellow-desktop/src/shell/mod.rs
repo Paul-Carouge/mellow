@@ -11,6 +11,7 @@ mod conversation_sheet;
 mod custom_status_dialog;
 mod member_profile;
 mod member_sheet;
+mod message_search_host;
 mod overlays;
 mod place_menus;
 mod place_notifications;
@@ -36,14 +37,16 @@ use mellow_client_core::state::{ClientState, StateChange};
 use mellow_protocol::{ProfileImage, Snowflake};
 
 use crate::column_widths::{
-    CHANNELS_COLUMN_BOUNDS, ColumnBounds, MEMBERS_COLUMN_BOUNDS, WIDTH_BESIDE_COLUMNS,
-    clamp_column_width, fit_column_widths, largest_column_width, stored_column_width,
+    CHANNELS_COLUMN_BOUNDS, ColumnBounds, MEMBERS_COLUMN_BOUNDS, SEARCH_COLUMN_BOUNDS,
+    WIDTH_BESIDE_COLUMNS, clamp_column_width, fit_column_widths, largest_column_width,
+    stored_column_width,
 };
 use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::{ConversationView, OpenForwardOrigin};
 use crate::home::{Home, HomeEvent, OpenPersonMenu};
 use crate::local_widgets::error_line;
+use crate::message_search::MessageSearchView;
 use crate::navigation::{Direction, Navigation, Place};
 use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
@@ -80,7 +83,9 @@ actions!(
         /// Ctrl+U: the member sheet.
         ToggleMemberSheet,
         /// Ctrl+, (Cmd+, on macOS, the platform's settings shortcut): the user settings.
-        OpenUserSettings
+        OpenUserSettings,
+        /// Ctrl+F: the message search field, or the results with their own field.
+        FocusMessageSearch
     ]
 );
 
@@ -122,6 +127,7 @@ pub fn bind_shell_keys(cx: &mut App) {
         KeyBinding::new(secondary!("k"), ToggleQuickSwitcher, context),
         KeyBinding::new(secondary!("u"), ToggleMemberSheet, context),
         KeyBinding::new(secondary!(","), OpenUserSettings, context),
+        KeyBinding::new(secondary!("f"), FocusMessageSearch, context),
     ]);
     regions::bind_region_keys(cx, context);
 }
@@ -158,6 +164,8 @@ impl ShellLayout {
 enum ResizableColumn {
     Channels,
     Members,
+    /// The docked search results, which take the members' place.
+    Search,
 }
 
 impl ResizableColumn {
@@ -165,6 +173,7 @@ impl ResizableColumn {
         match self {
             Self::Channels => CHANNELS_COLUMN_BOUNDS,
             Self::Members => MEMBERS_COLUMN_BOUNDS,
+            Self::Search => SEARCH_COLUMN_BOUNDS,
         }
     }
 
@@ -189,9 +198,10 @@ struct ColumnDrag {
 #[derive(Debug, Clone, Copy, PartialEq)]
 struct ColumnLayout {
     channels: f32,
-    members: Option<f32>,
+    /// The docked side column's width: the members or the search results.
+    side: Option<f32>,
     channels_bounds: ColumnBounds,
-    members_bounds: ColumnBounds,
+    side_bounds: ColumnBounds,
 }
 
 pub struct DuskShell {
@@ -201,6 +211,8 @@ pub struct DuskShell {
     conversation: Entity<ConversationView>,
     /// The Friends space, the people picker and the group dialogs.
     home: Entity<Home>,
+    /// Message search: the header's field and the results.
+    message_search: Entity<MessageSearchView>,
     /// Why the last `OpenDirectConversation` or menu action failed, until the next place opens.
     conversation_error: Option<String>,
     navigation: Navigation,
@@ -251,8 +263,11 @@ impl DuskShell {
         let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
         let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
         let home = cx.new(|cx| Home::new(session.clone(), window, cx));
+        let message_search = cx.new(|cx| MessageSearchView::new(session.clone(), window, cx));
         let subscriptions = vec![
             cx.subscribe_in(&home, window, Self::follow_home),
+            cx.subscribe_in(&message_search, window, Self::follow_message_search),
+            cx.observe(&message_search, |_, _, cx| cx.notify()),
             cx.subscribe(&session, |shell, _, changes: &StateChanged, cx| {
                 shell.follow_state(&changes.0, cx);
             }),
@@ -268,6 +283,7 @@ impl DuskShell {
             banner,
             conversation,
             home,
+            message_search,
             conversation_error: None,
             navigation: Navigation::default(),
             collapsed_category_ids: HashSet::new(),
@@ -476,7 +492,9 @@ impl DuskShell {
 
     /// Whether the header's toggle shows the sheet as open, docked or over the conversation.
     fn is_member_sheet_shown(&self, window: &Window, cx: &App) -> bool {
-        if window_width_at_default_zoom(window) >= BREAKPOINT_SIDE_SHEET {
+        if self.message_search.read(cx).is_panel_open() {
+            false
+        } else if window_width_at_default_zoom(window) >= BREAKPOINT_SIDE_SHEET {
             self.is_member_sheet_docked_open(cx)
         } else {
             self.is_member_overlay_open
@@ -490,6 +508,14 @@ impl DuskShell {
         };
         if self.quick_switcher.is_some() || self.is_settings_screen_open() {
             return;
+        }
+        if self.message_search.read(cx).is_panel_open() {
+            // The members take the side sheet back from the results, which stay for the next search.
+            self.hide_search_panel(window, cx);
+            if self.is_member_sheet_shown(window, cx) {
+                cx.notify();
+                return;
+            }
         }
         if window_width_at_default_zoom(window) >= BREAKPOINT_SIDE_SHEET {
             let is_open = !self.is_member_sheet_docked_open(cx);
@@ -744,7 +770,12 @@ impl DuskShell {
 
     /// The widths to lay out at this window width: the reader's (or the drag's), fitted so the
     /// conversation keeps its minimum.
-    fn column_layout(&self, window_width: f32, is_members_docked: bool, cx: &App) -> ColumnLayout {
+    fn column_layout(
+        &self,
+        window_width: f32,
+        side_column: Option<ResizableColumn>,
+        cx: &App,
+    ) -> ColumnLayout {
         let stored = preferences(cx);
         let width_of =
             |column: ResizableColumn| match self.column_drag.filter(|drag| drag.column == column) {
@@ -753,31 +784,33 @@ impl DuskShell {
                     stored.and_then(|preferences| match column {
                         ResizableColumn::Channels => preferences.channels_column_width,
                         ResizableColumn::Members => preferences.members_column_width,
+                        ResizableColumn::Search => preferences.search_column_width,
                     }),
                     column.bounds(),
                 ),
             };
         let room = window_width - WIDTH_BESIDE_COLUMNS;
-        let (channels, members) = fit_column_widths(
+        let side_bounds = side_column.map_or(MEMBERS_COLUMN_BOUNDS, ResizableColumn::bounds);
+        let (channels, side) = fit_column_widths(
             room,
             (width_of(ResizableColumn::Channels), CHANNELS_COLUMN_BOUNDS),
-            is_members_docked.then(|| (width_of(ResizableColumn::Members), MEMBERS_COLUMN_BOUNDS)),
+            side_column.map(|column| (width_of(column), side_bounds)),
         );
-        let members_minimum = if is_members_docked {
-            MEMBERS_COLUMN_BOUNDS.minimum
+        let side_minimum = if side_column.is_some() {
+            side_bounds.minimum
         } else {
             0.0
         };
         ColumnLayout {
             channels,
-            members,
+            side,
             channels_bounds: ColumnBounds {
-                maximum: largest_column_width(CHANNELS_COLUMN_BOUNDS, room - members_minimum),
+                maximum: largest_column_width(CHANNELS_COLUMN_BOUNDS, room - side_minimum),
                 ..CHANNELS_COLUMN_BOUNDS
             },
-            members_bounds: ColumnBounds {
-                maximum: largest_column_width(MEMBERS_COLUMN_BOUNDS, room - channels),
-                ..MEMBERS_COLUMN_BOUNDS
+            side_bounds: ColumnBounds {
+                maximum: largest_column_width(side_bounds, room - channels),
+                ..side_bounds
             },
         }
     }
@@ -786,6 +819,7 @@ impl DuskShell {
         change_preferences(cx, move |preferences| match column {
             ResizableColumn::Channels => preferences.channels_column_width = Some(width),
             ResizableColumn::Members => preferences.members_column_width = Some(width),
+            ResizableColumn::Search => preferences.search_column_width = Some(width),
         });
     }
 
@@ -803,13 +837,10 @@ impl DuskShell {
             return;
         }
         let window_width = window_width_at_default_zoom(window);
-        let is_members_docked =
-            ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx))
-                == ShellLayout::NavigatorSheetAndSideSheet;
-        let layout = self.column_layout(window_width, is_members_docked, cx);
+        let layout = self.column_layout(window_width, self.docked_side_column(window, cx), cx);
         let bounds = match drag.column {
             ResizableColumn::Channels => layout.channels_bounds,
-            ResizableColumn::Members => layout.members_bounds,
+            ResizableColumn::Members | ResizableColumn::Search => layout.side_bounds,
         };
         let towards_wider = if drag.column.grows_rightwards() {
             1.0
@@ -955,8 +986,13 @@ impl Render for DuskShell {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
         let window_width = window_width_at_default_zoom(window);
-        let layout =
-            ShellLayout::for_window_width(window_width, self.is_member_sheet_docked_open(cx));
+        // Another server, or Home, starts an empty search (the field needs the window).
+        let scope_guild_id = self.navigation.selected_guild_id();
+        self.message_search.update(cx, |search, cx| {
+            search.set_scope(scope_guild_id, window, cx);
+        });
+        let side_column = self.docked_side_column(window, cx);
+        let layout = ShellLayout::for_window_width(window_width, side_column.is_some());
         // A drawer or overlay left open while the window widens would come back on the next
         // shrink; Home, or a server without channels, has no members to show.
         let is_drawer_obsolete =
@@ -969,12 +1005,14 @@ impl Render for DuskShell {
             });
         }
         let is_full_bleed = layout == ShellLayout::SheetAlone;
-        let is_members_docked = layout == ShellLayout::NavigatorSheetAndSideSheet;
-        let columns = self.column_layout(window_width, is_members_docked, cx);
+        let is_side_docked = layout == ShellLayout::NavigatorSheetAndSideSheet;
+        let side_column = side_column.filter(|_| is_side_docked);
+        let columns = self.column_layout(window_width, side_column, cx);
+        let is_search_overlay_open = self.is_search_overlay_open(window, cx);
         let inset = length(SIZE_SHEET_INSET);
         // The web shows twice the inset at the top and at the trailing end when nothing is docked
         // there (`Shell.svelte`); the owner validated that rhythm.
-        let trailing_padding = if is_members_docked {
+        let trailing_padding = if is_side_docked {
             SIZE_SHEET_INSET
         } else {
             2.0 * SIZE_SHEET_INSET
@@ -1022,25 +1060,19 @@ impl Render for DuskShell {
                 )
             })
             .child(self.render_conversation_sheet(layout, window, cx))
-            .when_some(
-                columns.members.filter(|_| is_members_docked),
-                |ground, width| {
-                    ground.child(
-                        div()
-                            .relative()
-                            .flex()
-                            .flex_none()
-                            .child(self.render_member_sheet(Some(width), window, cx))
-                            .child(self.render_resize_handle(
-                                ResizableColumn::Members,
-                                width,
-                                columns.members_bounds,
-                                window,
-                                cx,
-                            )),
-                    )
-                },
-            );
+            .when_some(side_column.zip(columns.side), |ground, (column, width)| {
+                let sheet = if column == ResizableColumn::Search {
+                    self.message_search.update(cx, |search, cx| {
+                        search.render_panel(true, Some(width), window, cx)
+                    })
+                } else {
+                    self.render_member_sheet(Some(width), window, cx)
+                        .into_any_element()
+                };
+                ground.child(div().relative().flex().flex_none().child(sheet).child(
+                    self.render_resize_handle(column, width, columns.side_bounds, window, cx),
+                ))
+            });
 
         let root = div()
             .size_full()
@@ -1078,6 +1110,9 @@ impl Render for DuskShell {
             }))
             .on_action(cx.listener(|shell, _: &OpenUserSettings, window, cx| {
                 shell.open_user_settings(window, cx);
+            }))
+            .on_action(cx.listener(|shell, _: &FocusMessageSearch, window, cx| {
+                shell.focus_message_search(window, cx);
             }))
             .on_action(
                 cx.listener(|shell, action: &OpenDirectConversation, window, cx| {
@@ -1118,6 +1153,9 @@ impl Render for DuskShell {
             })
             .when(self.is_member_overlay_open, |root| {
                 root.child(self.render_member_overlay(is_full_bleed, window, cx))
+            })
+            .when(is_search_overlay_open, |root| {
+                root.child(self.render_search_overlay(is_full_bleed, window, cx))
             })
             .children(self.render_settings_screen())
             .when_some(self.quick_switcher.as_ref(), |root, (switcher, _)| {
