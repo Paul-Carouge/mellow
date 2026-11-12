@@ -4,56 +4,13 @@
 //! you hear yourself.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::mpsc::{self, Sender};
 
 use crate::audio_engine::{AudioCommand, AudioEngine, AudioEngineChannels, AudioSettings};
 use crate::devices::AudioDevices;
 use crate::input_gate::InputMode;
+use crate::level::MicrophoneLevel;
 use crate::processing::ProcessingSettings;
-
-/// The processed microphone's level, written by the audio thread once per 10 ms frame and read
-/// by the interface whenever it redraws its meter.
-#[derive(Debug)]
-pub(crate) struct MicrophoneLevel {
-    /// An `f32` in dBFS; NaN while no microphone is open.
-    decibels_bits: AtomicU32,
-    is_unavailable: AtomicBool,
-}
-
-impl Default for MicrophoneLevel {
-    fn default() -> Self {
-        Self {
-            decibels_bits: AtomicU32::new(f32::NAN.to_bits()),
-            is_unavailable: AtomicBool::new(false),
-        }
-    }
-}
-
-impl MicrophoneLevel {
-    pub(crate) fn set_decibels(&self, decibels: f32) {
-        self.decibels_bits
-            .store(decibels.to_bits(), Ordering::Relaxed);
-    }
-
-    pub(crate) fn clear(&self) {
-        self.set_decibels(f32::NAN);
-    }
-
-    pub(crate) fn set_unavailable(&self, is_unavailable: bool) {
-        self.is_unavailable.store(is_unavailable, Ordering::Relaxed);
-    }
-
-    /// `None` while no microphone is open.
-    pub(crate) fn decibels(&self) -> Option<f32> {
-        let decibels = f32::from_bits(self.decibels_bits.load(Ordering::Relaxed));
-        (!decibels.is_nan()).then_some(decibels)
-    }
-
-    pub(crate) fn is_unavailable(&self) -> bool {
-        self.is_unavailable.load(Ordering::Relaxed)
-    }
-}
 
 /// How the test starts; later changes go through its setters.
 #[derive(Debug, Clone, Default)]

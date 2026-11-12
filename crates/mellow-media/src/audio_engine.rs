@@ -16,10 +16,10 @@ use crate::devices::{AudioDevices, CaptureStream, has_failed};
 use crate::enhancement::PeakLimiter;
 use crate::input_gate::{InputGate, InputMode, SelfSpeakingDetector};
 use crate::jitter_buffer::{DriftSteering, JitterBuffer, MAXIMUM_STEERING_RATIO};
+use crate::level::MicrophoneLevel;
 use crate::level::{
     SILENT_AUDIO_LEVEL, audio_level_attenuation, decibels_full_scale, root_mean_square,
 };
-use crate::microphone_test::MicrophoneLevel;
 use crate::mixer::{mix_into, playback_gain};
 use crate::offer::ReceiveSlotKind;
 use crate::person_settings::{PersonSoundSource, PersonVoiceSetting};
