@@ -31,7 +31,7 @@ pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
-pub use forward::ForwardOrigin;
+pub use forward::{ForwardFrame, ForwardOrigin};
 pub use gif::{MessageGif, message_gif_url};
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};
 pub use link_previews::MessageLinkPreviews;
@@ -40,6 +40,7 @@ pub use reactions::{
     AddReactionButton, MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills,
 };
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
+pub(crate) use time::locale;
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,
     message_timestamp_label, time_of_day_label, upcoming_time_label,

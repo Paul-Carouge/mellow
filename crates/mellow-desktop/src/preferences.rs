@@ -27,6 +27,7 @@ const CHANNEL_KEY: &str = "channel";
 const MEMBER_SHEET_KEY: &str = "member-sheet";
 const CHANNELS_WIDTH_KEY: &str = "channels-width";
 const MEMBERS_WIDTH_KEY: &str = "members-width";
+const SEARCH_WIDTH_KEY: &str = "search-width";
 const NOTIFICATIONS_KEY: &str = "notifications";
 const MEDIA_VOLUME_KEY: &str = "media-volume";
 const MEDIA_MUTED_KEY: &str = "media-muted";
@@ -75,6 +76,8 @@ pub struct Preferences {
     /// pixels; the shell keeps them within each column's bounds.
     pub channels_column_width: Option<f32>,
     pub members_column_width: Option<f32>,
+    /// The docked search results' width, in logical pixels.
+    pub search_column_width: Option<f32>,
     /// Each account's notification choices (the web keeps them per user in `localStorage`),
     /// most recent last.
     pub notification_settings_by_user: Vec<(Snowflake, NotificationSettings)>,
@@ -280,6 +283,7 @@ impl Preferences {
                 }
                 CHANNELS_WIDTH_KEY => preferences.channels_column_width = parse_column_width(value),
                 MEMBERS_WIDTH_KEY => preferences.members_column_width = parse_column_width(value),
+                SEARCH_WIDTH_KEY => preferences.search_column_width = parse_column_width(value),
                 MEDIA_VOLUME_KEY => preferences.media_volume = parse_media_volume(value),
                 MEDIA_MUTED_KEY => preferences.is_media_muted = value == "true",
                 // `<user id>:<the web's JSON>`, validated field by field as the web reads it.
@@ -336,6 +340,7 @@ impl Preferences {
         for (key, width) in [
             (CHANNELS_WIDTH_KEY, self.channels_column_width),
             (MEMBERS_WIDTH_KEY, self.members_column_width),
+            (SEARCH_WIDTH_KEY, self.search_column_width),
         ] {
             if let Some(width) = width {
                 let _ = writeln!(text, "{key}={width}");
@@ -460,6 +465,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     member_sheet_place_ids: Vec::new(),
     channels_column_width: None,
     members_column_width: None,
+    search_column_width: None,
     notification_settings_by_user: Vec::new(),
     media_volume: None,
     is_media_muted: false,
@@ -542,6 +548,7 @@ mod tests {
         preferences.remember_member_sheet(id(1), true);
         preferences.channels_column_width = Some(300.0);
         preferences.members_column_width = Some(264.0);
+        preferences.search_column_width = Some(480.0);
         preferences.media_volume = Some(0.25);
         preferences.is_media_muted = true;
 
@@ -606,7 +613,7 @@ mod tests {
     #[test]
     fn the_shell_remembers_the_place_channels_member_sheets_and_widths() {
         let text = "place=server:1\nchannel=1:11\nchannel=2:21\nchannel=1:12\n\
-            member-sheet=1\nmember-sheet=2\nchannels-width=300\nmembers-width=264.5\n";
+            member-sheet=1\nmember-sheet=2\nchannels-width=300\nmembers-width=264.5\nsearch-width=480\n";
         let preferences = Preferences::from_file_text(text);
         assert_eq!(
             preferences.last_place,
@@ -618,6 +625,7 @@ mod tests {
         assert_eq!(preferences.member_sheet_place_ids, [id(1), id(2)]);
         assert_eq!(preferences.channels_column_width, Some(300.0));
         assert_eq!(preferences.members_column_width, Some(264.5));
+        assert_eq!(preferences.search_column_width, Some(480.0));
         assert_eq!(
             Preferences::from_file_text(&preferences.to_file_text()),
             preferences

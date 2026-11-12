@@ -881,3 +881,120 @@ fn the_people_picker_adds_several_friends_to_a_group_one_after_another(cx: &mut 
     });
     harness.stop();
 }
+#[gpui::test]
+#[allow(clippy::too_many_lines)] // One story against the instance, step by step.
+fn a_search_finds_a_servers_message_with_its_words_lit_and_opens_it(cx: &mut TestAppContext) {
+    use mellow_client_core::shared_logic::message_search::MessageSearchStatus;
+    use mellow_protocol::{ChannelKind, SendMessageRequest};
+
+    let (harness, cx) = start(cx);
+    cx.update(|_, cx| {
+        crate::components::bind_tab_navigation(cx);
+        crate::composer::bind_composer_keys(cx);
+    });
+    let rest = register(&harness, "hedy");
+    let (guild_id, channel_id, pizza_id) = harness.runtime.block_on(async {
+        let guild = rest.create_guild("Kitchen").await.unwrap();
+        let channel_id = guild
+            .channels
+            .iter()
+            .find(|channel| channel.kind == ChannelKind::Text)
+            .unwrap()
+            .id;
+        let mut sent = Vec::new();
+        for content in ["pizza party tonight", "nothing to see", "bring drinks"] {
+            let message = rest
+                .send_message(
+                    channel_id,
+                    &SendMessageRequest {
+                        content: content.into(),
+                        reply_to_id: None,
+                        nonce: None,
+                        attachment_ids: Vec::new(),
+                        forwarded_from: None,
+                        poll: None,
+                        checklist: None,
+                        progress_bar: None,
+                    },
+                )
+                .await
+                .unwrap();
+            sent.push(message.id);
+        }
+        (guild.id, channel_id, sent[0])
+    });
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(rest, cx));
+    let shell = |cx: &mut VisualTestContext| {
+        harness
+            .main_window
+            .read_with(cx, |main_window, _| main_window.shell().cloned())
+    };
+    wait_until(cx, |cx| {
+        shell(cx).is_some_and(|shell| {
+            shell.read_with(cx, |shell, _| {
+                shell.navigation().selected_guild_id() == Some(guild_id)
+            })
+        })
+    });
+    let shell = shell(cx).unwrap();
+    let search = shell.read_with(cx, |shell, _| shell.message_search().clone());
+    // The shell scopes the search to the open server on its next frame.
+    wait_until(cx, |cx| {
+        search.read_with(cx, |search, _| {
+            search.search().scope_guild_id() == Some(guild_id)
+        })
+    });
+
+    search.update(cx, |search, cx| search.search_now("pizza".into(), cx));
+    wait_until(cx, |cx| {
+        search.read_with(cx, |search, _| {
+            search.search().status() == MessageSearchStatus::Loaded
+        })
+    });
+    let (hit_ids, highlights) = search.read_with(cx, |search, _| {
+        let hits = search.search().hits();
+        (
+            hits.iter().map(|hit| hit.message.id).collect::<Vec<_>>(),
+            hits.first().map(|hit| hit.highlights.clone()),
+        )
+    });
+    assert_eq!(hit_ids, vec![pizza_id]);
+    assert_eq!(
+        highlights,
+        Some(vec![mellow_protocol::HighlightRange { start: 0, end: 5 }])
+    );
+
+    // Opening the result reaches the message in its channel.
+    search.update(cx, |search, cx| {
+        search.open_result(channel_id, pizza_id, cx);
+    });
+    let conversation = shell.read_with(cx, |shell, _| shell.conversation().clone());
+    wait_until(cx, |cx| {
+        conversation.read_with(cx, |view, _| view.open_channel_id() == Some(channel_id))
+            && harness.session.read_with(cx, |session, _| {
+                session
+                    .state()
+                    .messages(channel_id)
+                    .iter()
+                    .any(|message| message.id == pizza_id)
+            })
+    });
+
+    // At Home, the search is across the conversations, of which there are none.
+    shell.update_in(cx, |shell, window, cx| {
+        shell.open_place(None, None, window, cx);
+    });
+    wait_until(cx, |cx| {
+        search.read_with(cx, |search, _| search.search().scope_guild_id().is_none())
+    });
+    search.update(cx, |search, cx| search.search_now("pizza".into(), cx));
+    wait_until(cx, |cx| {
+        search.read_with(cx, |search, _| {
+            search.search().status() == MessageSearchStatus::Loaded
+        })
+    });
+    assert!(search.read_with(cx, |search, _| search.search().hits().is_empty()));
+    harness.stop();
+}
