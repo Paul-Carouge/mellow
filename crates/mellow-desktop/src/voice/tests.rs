@@ -377,6 +377,20 @@ fn a_mute_and_push_to_talk_chosen_while_connecting_reach_the_engine(cx: &mut Tes
     });
     assert!(should_swallow);
     voice.update(cx, |voice, cx| voice.push_to_talk_key_up("space", cx));
+    assert!(!voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
+
+    // Heard by the global listener and the window at once, then the window goes to the back:
+    // the key stays held until the listener hears it come up.
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(true, cx);
+        voice.push_to_talk_key_down("space", Some(" "), Modifiers::default(), false, cx);
+        voice.window_deactivated(cx);
+    });
+    assert!(voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(false, cx);
+    });
+    assert!(!voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
 
     voice.update(cx, Voice::leave);
     drop((voice, session));

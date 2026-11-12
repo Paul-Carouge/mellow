@@ -51,7 +51,7 @@ use crate::window_chrome::WINDOW_TITLE;
 actions!(mellow, [Quit]);
 
 /// The app's identity for the system's notifications, as the secret store names it.
-const APP_IDENTIFIER: &str = "org.mellow.desktop";
+pub(crate) const APP_IDENTIFIER: &str = "org.mellow.desktop";
 
 #[cfg(target_os = "macos")]
 const QUIT_KEYSTROKE: &str = "cmd-q";
@@ -84,7 +84,8 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     cx.set_app_identity(APP_IDENTIFIER, WINDOW_TITLE);
     let session = cx.new(Session::new_restoring_stored_session);
     Session::end_connection_when_the_app_quits(&session, cx);
-    voice::install_voice(&session, voice::system_audio_devices(), cx);
+    let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
+    voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);

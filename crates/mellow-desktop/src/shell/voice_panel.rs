@@ -40,6 +40,7 @@ use crate::theme::tokens::{
     TYPE_BODY_SM, TYPE_USER_PANEL_NAME,
 };
 use crate::theme::{color, length, theme};
+use crate::voice::global_push_to_talk::GlobalPushToTalkStatus;
 use crate::voice::{CallPhase, Voice};
 
 /// A participant's popover: their volume and "Mute for me", for the reader only.
@@ -79,6 +80,53 @@ fn push_to_talk_sentence(
         || strings.voice().push_to_talk_no_key().to_owned(),
         |key| format!("{}.", strings.voice().push_to_talk_hint(&key.label)),
     )
+}
+
+/// Whether push-to-talk works in other apps, and whether that is a limit worth a warning icon;
+/// `None` while there is nothing to say.
+fn global_push_to_talk_sentence(
+    strings: Strings,
+    status: &GlobalPushToTalkStatus,
+) -> Option<(bool, String)> {
+    let desktop = strings.desktop();
+    let (is_limited, sentence) = match status {
+        GlobalPushToTalkStatus::Off => return None,
+        GlobalPushToTalkStatus::Listening {
+            trigger: Some(trigger),
+            ..
+        } => (false, desktop.global_push_to_talk_listening_as(trigger)),
+        GlobalPushToTalkStatus::Listening {
+            trigger: None,
+            does_key_stop_typing: true,
+        } => (
+            false,
+            desktop.global_push_to_talk_listening_typing().to_owned(),
+        ),
+        GlobalPushToTalkStatus::Listening {
+            trigger: None,
+            does_key_stop_typing: false,
+        } => (false, desktop.global_push_to_talk_listening().to_owned()),
+        GlobalPushToTalkStatus::ListeningWhileX11WindowFocused => {
+            (true, desktop.global_push_to_talk_x11_only().to_owned())
+        }
+        GlobalPushToTalkStatus::ModifierKeyWindowOnly => (
+            true,
+            desktop
+                .global_push_to_talk_modifier_window_only()
+                .to_owned(),
+        ),
+        GlobalPushToTalkStatus::KeyUnavailable => (
+            true,
+            desktop.global_push_to_talk_key_unavailable().to_owned(),
+        ),
+        GlobalPushToTalkStatus::PortalRefused => {
+            (true, desktop.global_push_to_talk_refused().to_owned())
+        }
+        GlobalPushToTalkStatus::NoPortal => {
+            (true, desktop.global_push_to_talk_no_portal().to_owned())
+        }
+    };
+    Some((is_limited, sentence))
 }
 
 /// The latency in words, and its icon; `None` before the first measure.
@@ -252,6 +300,7 @@ impl DuskShell {
     ) -> Option<AnyElement> {
         let voice_entity = self.voice.clone()?;
         let voice = voice_entity.read(cx);
+        let global_push_to_talk_status = voice.global_push_to_talk_status().clone();
         let strings = strings(cx);
         let (phase, place, round_trip, devices, problem) = (
             voice.phase(),
@@ -331,6 +380,11 @@ impl DuskShell {
                         push_to_talk_sentence(strings, settings),
                     )
                 });
+            // Only beside a key that works in the window: no key, nothing to say about others.
+            let global_push_to_talk = push_to_talk
+                .as_ref()
+                .filter(|(is_missing_key, _)| !is_missing_key)
+                .and_then(|_| global_push_to_talk_sentence(strings, &global_push_to_talk_status));
             let tooltip_text: SharedString = signal_description.clone().into();
             let shell = cx.entity().downgrade();
             let leave_voice = voice_entity.downgrade();
@@ -430,6 +484,13 @@ impl DuskShell {
                     .when_some(push_to_talk, |card, (is_missing_key, sentence)| {
                         card.child(hint_line(
                             is_missing_key.then_some(IconName::WarningCircle),
+                            sentence.into(),
+                            hint_ink,
+                        ))
+                    })
+                    .when_some(global_push_to_talk, |card, (is_limited, sentence)| {
+                        card.child(hint_line(
+                            is_limited.then_some(IconName::WarningCircle),
                             sentence.into(),
                             hint_ink,
                         ))

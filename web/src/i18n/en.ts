@@ -2385,6 +2385,18 @@ export const en = {
     voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
     /** The voice panel, when no sound output could be opened at all. */
     voiceOutputUnavailable: "No sound output found: you can't hear the others until one is plugged in.",
+    /** The voice panel, under the push-to-talk hint: whether the key also works while another app is focused (ADR-0053). */
+    globalPushToTalkListening: "Works in other apps too.",
+    globalPushToTalkListeningTyping: "Works in other apps too, where this key stops typing during the call.",
+    /** The shortcut the system chose, as it describes it ("Ctrl+V"). */
+    globalPushToTalkListeningAs: (trigger: string) => `Works in other apps too, with ${trigger}.`,
+    globalPushToTalkX11Only: "In other apps, works only while an X11 window is focused: your desktop has no global shortcuts portal.",
+    globalPushToTalkModifierWindowOnly: "A modifier key alone works only while Mellow is focused.",
+    globalPushToTalkKeyUnavailable: "Works only while Mellow is focused: another app may already use this key.",
+    globalPushToTalkRefused: "Works only while Mellow is focused: the system shortcut wasn't allowed.",
+    globalPushToTalkNoPortal: "Works only while Mellow is focused: your desktop has no global shortcuts portal.",
+    /** The shortcut's name in the system's shortcut settings and its confirmation dialog. */
+    globalPushToTalkShortcutName: "Push to talk in Mellow",
   },
 };
 

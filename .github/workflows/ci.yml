@@ -27,6 +27,8 @@ env:
   # The desktop client's GPUI links xkbcommon, fontconfig and FreeType and builds its Wayland and
   # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list, plus
   # PipeWire's headers and libclang for the voice engine's audio devices (cpal's PipeWire host).
+  # Global push-to-talk adds none (ADR-0053): global-hotkey's X11 grab speaks the protocol in pure
+  # Rust (x11rb) and the Wayland portal goes through zbus.
   DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libpipewire-0.3-dev libclang-dev
   # Vesper's Linux capture and encoder (ADR-0051): PipeWire, VA-API and FFmpeg's headers and
   # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
