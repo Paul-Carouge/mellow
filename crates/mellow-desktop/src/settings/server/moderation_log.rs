@@ -3,6 +3,8 @@
 //! Older pages load on request. Names come from the member list and the bans; anyone else reads
 //! as "a former member".
 
+use std::collections::HashMap;
+
 use gpui::{
     Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
     Render, Role, StatefulInteractiveElement as _, Styled as _, Window, div,
@@ -331,11 +333,13 @@ impl Render for ServerModerationLogPage {
         let Some(guild) = state.guild(self.guild_id) else {
             return div().into_any_element();
         };
-        let people: Vec<PublicUser> = state
+        // Borrowed, not cloned: the page redraws on every session change.
+        let people: HashMap<Snowflake, &PublicUser> = state
             .members(self.guild_id)
             .iter()
-            .map(|member| member.user.clone())
-            .chain(self.banned_users.iter().cloned())
+            .map(|member| &member.user)
+            .chain(self.banned_users.iter())
+            .map(|person| (person.id, person))
             .collect();
         let context = AuditContext {
             guild,

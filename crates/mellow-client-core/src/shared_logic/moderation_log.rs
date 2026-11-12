@@ -3,6 +3,8 @@
 //! resolved from the server, its members and its bans, and what is gone said as such. The client's
 //! catalogue puts each [`AuditSentence`] and [`AuditChangeLine`] into words.
 
+use std::collections::HashMap;
+
 use mellow_protocol::{
     AuditAction, AuditChange, AuditChangeKey, AuditLogEntry, Guild, Permissions, PublicUser,
     Snowflake,
@@ -29,14 +31,15 @@ pub struct AuditPlaceholders<'words> {
 #[derive(Debug, Clone, Copy)]
 pub struct AuditContext<'context> {
     pub guild: &'context Guild,
-    /// The members, and the banned users when the reader may list them.
-    pub people: &'context [PublicUser],
+    /// The members, and the banned users when the reader may list them, by id: each entry looks
+    /// up several people, on logs of hundreds of entries.
+    pub people: &'context HashMap<Snowflake, &'context PublicUser>,
     pub placeholders: AuditPlaceholders<'context>,
 }
 
 impl AuditContext<'_> {
     fn person(&self, user_id: Option<Snowflake>) -> Option<&PublicUser> {
-        user_id.and_then(|user_id| self.people.iter().find(|person| person.id == user_id))
+        user_id.and_then(|user_id| self.people.get(&user_id).copied())
     }
 
     fn person_name(&self, user_id: Option<Snowflake>) -> String {
@@ -610,7 +613,8 @@ mod tests {
 
     fn with_context<Answer>(run: impl FnOnce(&AuditContext<'_>) -> Answer) -> Answer {
         let guild = sample_guild();
-        let people = [user(OWNER, "Ana"), user(OTHER, "Paul")];
+        let users = [user(OWNER, "Ana"), user(OTHER, "Paul")];
+        let people = users.iter().map(|person| (person.id, person)).collect();
         run(&AuditContext {
             guild: &guild,
             people: &people,
