@@ -35,6 +35,7 @@ pub mod profiles;
 pub mod qr_code;
 pub mod quick_switcher;
 pub mod role_colors;
+pub mod role_icons;
 pub mod role_mentions;
 pub mod search_highlights;
 pub mod search_query;
