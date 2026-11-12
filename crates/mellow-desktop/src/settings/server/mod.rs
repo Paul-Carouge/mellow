@@ -2,15 +2,20 @@
 //! "Moderation", each only with its permission and once the desktop has its page. See the parent
 //! module for how a section is added.
 //!
-//! shortcut: "Delete server" (the owner's danger item), Roles, Soundboard and Members come with
-//! the other M3 step 6 settings tracks.
+//! shortcut: "Delete server" (the owner's danger item) and Soundboard come with later M3 steps.
 
 mod bans;
 mod emoji;
 mod invites;
 mod list_rows;
+mod manage_member;
+mod members;
 mod moderation_log;
 mod overview;
+mod role_icon_editor;
+mod roles;
+#[cfg(test)]
+mod test_support;
 
 use std::sync::Arc;
 
@@ -23,8 +28,10 @@ use mellow_protocol::{Guild, Snowflake};
 use self::bans::ServerBansPage;
 use self::emoji::ServerEmojiPage;
 use self::invites::ServerInvitesPage;
+use self::members::MembersPage;
 use self::moderation_log::ServerModerationLogPage;
 use self::overview::ServerOverviewPage;
+use self::roles::RolesPage;
 #[cfg(test)]
 pub(crate) use self::{
     bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
@@ -39,13 +46,13 @@ use crate::session::Session;
 fn has_page(section: ServerSettingsSection) -> bool {
     match section {
         ServerSettingsSection::Overview
+        | ServerSettingsSection::Roles
+        | ServerSettingsSection::Members
         | ServerSettingsSection::Emoji
         | ServerSettingsSection::Invites
         | ServerSettingsSection::Bans
         | ServerSettingsSection::ModerationLog => true,
-        ServerSettingsSection::Roles
-        | ServerSettingsSection::Soundboard
-        | ServerSettingsSection::Members => false,
+        ServerSettingsSection::Soundboard => false,
     }
 }
 
@@ -170,9 +177,17 @@ impl ServerSettings {
                 });
                 Some(shown_page(section, page, Self::navigation, cx))
             }
-            ServerSettingsSection::Roles
-            | ServerSettingsSection::Soundboard
-            | ServerSettingsSection::Members => None,
+            ServerSettingsSection::Roles => {
+                let page =
+                    cx.new(|cx| RolesPage::new(self.session.clone(), self.guild_id, window, cx));
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
+            ServerSettingsSection::Members => {
+                let page =
+                    cx.new(|cx| MembersPage::new(self.session.clone(), self.guild_id, window, cx));
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
+            ServerSettingsSection::Soundboard => None,
         }
     }
 

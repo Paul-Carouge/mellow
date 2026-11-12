@@ -1,7 +1,7 @@
 //! What the settings pages ask of the instance (the web's `client.renameServer`,
 //! `client.updateChannel`, …). As on the web, an edit is applied from the gateway's echo, never
 //! from the answer (a late answer would put older state back): the page only learns whether the
-//! instance took it.
+//! instance took it. Only a created role and removals are read from the answer.
 
 use std::future::Future;
 
@@ -35,9 +35,9 @@ impl Session {
         });
     }
 
-    /// Sends one request built by `request` and hands its answer to `on_done` as it came, for a
-    /// page that lists what it reads or says why an upload failed; deferred so it may read the
-    /// session. A session being torn down answers `NotSignedIn`.
+    /// As [`Self::send_settings_change`], for a page that needs the answer (a created role, a
+    /// list it reads) or words its own failures (a role icon or an emoji too large); a lost session
+    /// answers `NotSignedIn`.
     pub fn send_settings_request<Answer, Request>(
         &mut self,
         action: &'static str,
@@ -49,7 +49,7 @@ impl Session {
         Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
     {
         let Some(rest) = self.rest_client().cloned() else {
-            // Answered anyway, or the page would stay busy.
+            // A session being torn down: answer anyway, or the page would stay busy.
             cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
