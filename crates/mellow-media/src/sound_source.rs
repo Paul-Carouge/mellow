@@ -13,7 +13,16 @@ use crate::resampling::{Interpolation, StreamResampler};
 /// The longest file the trimmer opens: ten minutes of mono 48 kHz samples is about 115 MB, and
 /// only 5.2 s are kept anyway.
 pub const MAXIMUM_SOUND_SOURCE_SECONDS: u32 = 10 * 60;
+/// Ten minutes at the file's rate, but never more frames than ten minutes at 48 kHz: a 192 kHz
+/// file (2.5 minutes then) must not hold four times as many samples.
+fn maximum_source_frames(source_rate: u32) -> usize {
+    let frames =
+        u64::from(source_rate.min(VOICE_SAMPLE_RATE)) * u64::from(MAXIMUM_SOUND_SOURCE_SECONDS);
+    usize::try_from(frames).unwrap_or(usize::MAX)
+}
 /// Types tried in this order: ADTS AAC before MP3, whose frame sync it also matches.
+// shortcut: WebM and AIFF are not sniffed (a browser decodes them on the web); add them when
+// someone asks.
 const SNIFFED_TYPES: [&str; 6] = [
     "audio/ogg",
     "audio/wav",
@@ -62,9 +71,7 @@ fn decode(bytes: Arc<[u8]>) -> Result<Vec<f32>, SoundSourceError> {
     let mut decoder = open_clip(bytes, content_type)?;
     let channels = decoder.channels().max(1);
     let source_rate = decoder.sample_rate();
-    let maximum_frames =
-        usize::try_from(u64::from(source_rate) * u64::from(MAXIMUM_SOUND_SOURCE_SECONDS))
-            .unwrap_or(usize::MAX);
+    let maximum_frames = maximum_source_frames(source_rate);
     if decoder
         .duration_frames()
         .is_some_and(|frames| frames > maximum_frames as u64)
@@ -145,6 +152,22 @@ mod tests {
     }
 
     #[test]
+    fn an_ogg_vorbis_file_is_read_like_the_others() {
+        // Half a second of 440 Hz at 1/8 of full scale, stereo at 44.1 kHz (ffmpeg's encoder).
+        let bytes = include_bytes!("../tests/fixtures/tone-vorbis.ogg");
+        let samples = decode_sound_source(bytes.as_slice().into()).unwrap();
+        assert!(
+            (23_000..=25_000).contains(&samples.len()),
+            "{}",
+            samples.len()
+        );
+        assert!(
+            samples.iter().any(|sample| sample.abs() > 0.08),
+            "the tone is there"
+        );
+    }
+
+    #[test]
     fn a_48_khz_mono_file_is_kept_as_it_is() {
         let samples = decode_sound_source(tone_wav(48_000, 1, 480).into()).unwrap();
         assert_eq!(samples.len(), 480);
@@ -158,6 +181,13 @@ mod tests {
                 Err(SoundSourceError::Unreadable)
             );
         }
+    }
+
+    #[test]
+    fn a_high_rate_file_holds_no_more_frames_than_ten_minutes_at_48_khz() {
+        assert_eq!(maximum_source_frames(8_000), 8_000 * 600);
+        assert_eq!(maximum_source_frames(48_000), 48_000 * 600);
+        assert_eq!(maximum_source_frames(192_000), 48_000 * 600);
     }
 
     #[test]
