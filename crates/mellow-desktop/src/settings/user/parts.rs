@@ -13,7 +13,9 @@ use gpui_component::input::InputState;
 use mellow_client_core::ClientError;
 use mellow_protocol::ApiErrorCode;
 
-use crate::components::{Button, ButtonVariant, PasswordToggle, TextField, icon, with_type};
+use crate::components::{
+    Button, ButtonVariant, LiveRegion as _, PasswordToggle, TextField, icon, with_type,
+};
 use crate::i18n::strings;
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings as pending_strings;
@@ -69,8 +71,7 @@ pub(super) fn error_line(id: impl Into<ElementId>, message: Option<SharedString>
         .child(
             div()
                 .id(id)
-                .role(Role::Alert)
-                .aria_label(message.clone().unwrap_or_default())
+                .live_assertive(message.clone().unwrap_or_default())
                 .h_0()
                 .overflow_hidden(),
         )

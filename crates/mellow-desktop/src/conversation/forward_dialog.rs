@@ -23,8 +23,8 @@ use mellow_client_core::{ClientError, generate_message_nonce};
 use mellow_protocol::{ApiErrorCode, ForwardOrigin, Message, Role as ServerRole, Snowflake};
 
 use crate::components::{
-    Avatar, AvatarPerson, GroupAvatar, ModalDialog, ModalDialogEvent, TextField, icon,
-    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, GroupAvatar, LiveRegion as _, ModalDialog, ModalDialogEvent, TextField,
+    icon, inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
@@ -812,8 +812,7 @@ impl Render for ForwardDialog {
                     .child(
                         with_type(div(), TYPE_BODY)
                             .id("forward-room")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(room_sentence.clone()))
+                            .live_polite(SharedString::from(room_sentence.clone()))
                             .text_color(color(tokens.component_people_picker_counter_text))
                             .child(room_sentence),
                     ),
@@ -837,8 +836,7 @@ impl Render for ForwardDialog {
                 let secondary = color(tokens.color_text_secondary);
                 with_type(div(), TYPE_BODY)
                     .id("forward-partial-success")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(sentence.clone()))
+                    .live_polite(SharedString::from(sentence.clone()))
                     .flex()
                     .gap(length(COMPONENT_DIALOG_ERROR_GAP))
                     .text_color(secondary)

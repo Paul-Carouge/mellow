@@ -13,8 +13,8 @@ use gpui::{
 };
 
 use super::{
-    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, easing, focus_next_inside,
-    focus_previous_inside, icon, shadow, with_type,
+    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, LiveRegion as _, easing,
+    focus_next_inside, focus_previous_inside, icon, shadow, with_type,
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -291,8 +291,7 @@ impl Render for ModalDialog {
                 content.child(
                     with_type(div(), TYPE_BODY)
                         .id("dialog-error")
-                        .role(Role::Alert)
-                        .aria_label(error.clone())
+                        .live_assertive(error.clone())
                         .flex()
                         .gap(length(COMPONENT_DIALOG_ERROR_GAP))
                         .text_color(color(tokens.component_dialog_error_text))

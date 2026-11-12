@@ -29,8 +29,8 @@ use mellow_protocol::{
 use super::{PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, FriendCode, FriendCodeCopyState,
-    MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
+    LiveRegion as _, MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
     is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, next_tab_index, remembered_bounds, remembered_focus_handle,
     remembered_hover, with_type,
@@ -1096,10 +1096,12 @@ impl FriendsPane {
                     .id(ElementId::from(SharedString::from(format!(
                         "{id_prefix}-result"
                     ))))
-                    .role(Role::Status)
-                    .when_some(result.as_ref(), |line, (_, text)| {
-                        line.aria_label(SharedString::from(text.clone()))
-                    })
+                    .live_polite(
+                        result
+                            .as_ref()
+                            .map(|(_, text)| SharedString::from(text.clone()))
+                            .unwrap_or_default(),
+                    )
                     .min_h(length(TYPE_BODY.font_size * TYPE_BODY.line_height))
                     .when_some(result, |line, (is_success, text)| {
                         let ink = color(if is_success {
@@ -1493,8 +1495,7 @@ impl Render for FriendsPane {
                 pane.child(
                     with_type(div(), TYPE_BODY)
                         .id("friends-action-error")
-                        .role(Role::Alert)
-                        .aria_label(SharedString::from(error.clone()))
+                        .live_assertive(SharedString::from(error.clone()))
                         .flex()
                         .gap(length(SPACE_2XS))
                         .px(length(COMPONENT_FRIENDS_LIST_PADDING_INLINE))

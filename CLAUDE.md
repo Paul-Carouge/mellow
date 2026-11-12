@@ -35,7 +35,7 @@ cargo run -p mellow-desktop # the desktop client (Linux needs GPUI's and the voi
 cd web && npm ci && npm run check && npm test && npm run build
 ```
 Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (GPUI desktop client), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
-CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only and a macOS build of `mellow-desktop` and `mellow-media` (ADR-0051).
+CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only and macOS and Windows builds of `mellow-desktop` and `mellow-media` (ADR-0051).
 
 ## Rules specific to this project
 - **Protocol changes** start in `mellow-protocol` and are made in the same commit on server and clients. API is versioned (`/api/v1`, `/gateway?v=1`); never break a released version.

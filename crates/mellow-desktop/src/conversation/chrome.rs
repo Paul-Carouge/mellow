@@ -17,8 +17,8 @@ use mellow_client_core::shared_logic::message_rows::{
 use super::ConversationView;
 use super::rules::typing_segments;
 use crate::components::{
-    child_id, colour_transition, focus_ring, icon, is_focus_visible, polite_live_region,
-    remembered_focus_handle, remembered_hover, with_type,
+    LiveRegion as _, child_id, colour_transition, focus_ring, icon, is_focus_visible,
+    polite_live_region, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::local_widgets::error_line;
@@ -134,7 +134,6 @@ impl ConversationView {
         Some(
             with_type(div(), TYPE_BODY)
                 .id("unread-bar")
-                .role(Role::Status)
                 .absolute()
                 .top(length(SPACE_2XS))
                 .left(length(SPACE_MD))
@@ -295,8 +294,6 @@ impl ConversationView {
         let sentence = SharedString::from(sentence);
         with_type(div(), TYPE_TYPING)
             .id("typing-line")
-            .role(Role::Status)
-            .aria_label(sentence.clone())
             .flex_none()
             .h(length(COMPONENT_COMPOSER_TYPING_HEIGHT))
             .px(length(SPACE_MD))
@@ -449,7 +446,7 @@ impl Render for ConversationView {
         let action_error = self.action_error.clone().map(|error| {
             div()
                 .id("chat-action-error")
-                .role(Role::Alert)
+                .live_assertive(error.clone())
                 .flex_none()
                 .px(length(COMPONENT_COMPOSER_MARGIN_INLINE))
                 .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
