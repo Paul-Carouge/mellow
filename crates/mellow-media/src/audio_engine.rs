@@ -3,6 +3,7 @@
 //! other end of those buffers.
 
 use std::collections::VecDeque;
+use std::sync::Arc;
 use std::sync::mpsc::{Receiver, RecvTimeoutError, Sender};
 use std::time::{Duration, Instant};
 
@@ -15,6 +16,7 @@ use crate::devices::{AudioDevices, CaptureStream, has_failed};
 use crate::enhancement::PeakLimiter;
 use crate::input_gate::{InputGate, InputMode, SelfSpeakingDetector};
 use crate::jitter_buffer::{DriftSteering, JitterBuffer, MAXIMUM_STEERING_RATIO};
+use crate::level::MicrophoneLevel;
 use crate::level::{
     SILENT_AUDIO_LEVEL, audio_level_attenuation, decibels_full_scale, root_mean_square,
 };
@@ -34,6 +36,9 @@ const WORK_PERIOD: Duration = Duration::from_millis(5);
 /// The echo canceller's first guess of the speaker-to-microphone path beyond the queued output;
 /// it refines the delay itself.
 const ASSUMED_DEVICE_LATENCY_MILLISECONDS: u32 = 20;
+/// "Hear yourself" keeps at most this much microphone waiting for the output: the two devices'
+/// clocks drift apart, and an old syllable is worse than a dropped one.
+const MAXIMUM_MONITORED_SAMPLES: usize = 6 * SAMPLES_PER_FRAME;
 
 /// What the session asks of the audio thread.
 #[derive(Debug)]
@@ -64,11 +69,15 @@ pub(crate) enum AudioCommand {
     SetProcessing(ProcessingSettings),
     SetInputDevice(Option<String>),
     SetOutputDevice(Option<String>),
+    /// "Hear yourself": the microphone plays on the output, as others hear it.
+    SetMonitoring(bool),
     Stop,
 }
 
 /// The settings the audio thread starts with.
 #[derive(Debug, Clone)]
+// Independent switches the commands flip one by one: no state machine hides here.
+#[allow(clippy::struct_excessive_bools)]
 pub(crate) struct AudioSettings {
     pub(crate) is_muted: bool,
     pub(crate) is_deafened: bool,
@@ -78,6 +87,10 @@ pub(crate) struct AudioSettings {
     pub(crate) soundboard_volume: f32,
     pub(crate) input_device_id: Option<String>,
     pub(crate) output_device_id: Option<String>,
+    pub(crate) is_monitoring: bool,
+    /// The settings' microphone test: nothing is sent, the gate stays open for the meter and the
+    /// output opens only to hear yourself.
+    pub(crate) is_microphone_test: bool,
 }
 
 /// One audio receive m-line: its jitter buffer, decoder and steering.
@@ -171,6 +184,8 @@ struct Capture {
     encoder: VoiceEncoder,
     packet: Vec<f32>,
     rtp_timestamp: u64,
+    /// Processed microphone waiting to be heard ("hear yourself").
+    monitored: VecDeque<f32>,
 }
 
 /// The audio thread's state.
@@ -180,6 +195,7 @@ pub(crate) struct AudioEngine {
     incoming: Receiver<IncomingAudioPacket>,
     outgoing: Sender<OutgoingVoicePacket>,
     events: Sender<VoiceSessionEvent>,
+    microphone_level: Arc<MicrophoneLevel>,
     settings: AudioSettings,
     slots: Vec<ReceiveSlot>,
     capture: Capture,
@@ -206,6 +222,8 @@ pub(crate) struct AudioEngineChannels {
     pub(crate) incoming: Receiver<IncomingAudioPacket>,
     pub(crate) outgoing: Sender<OutgoingVoicePacket>,
     pub(crate) events: Sender<VoiceSessionEvent>,
+    /// Where the processed microphone's level is published for the settings' meter.
+    pub(crate) microphone_level: Arc<MicrophoneLevel>,
 }
 
 impl AudioEngine {
@@ -224,6 +242,7 @@ impl AudioEngine {
             incoming: channels.incoming,
             outgoing: channels.outgoing,
             events: channels.events,
+            microphone_level: channels.microphone_level,
             capture: Capture {
                 stream: None,
                 resampler: None,
@@ -236,6 +255,7 @@ impl AudioEngine {
                 encoder: VoiceEncoder::new()?,
                 packet: Vec::with_capacity(SAMPLES_PER_PACKET),
                 rtp_timestamp: 0,
+                monitored: VecDeque::with_capacity(MAXIMUM_MONITORED_SAMPLES + SAMPLES_PER_FRAME),
             },
             playback: Playback::default(),
             sounds: PlayingSounds::default(),
@@ -251,7 +271,9 @@ impl AudioEngine {
     /// Runs until `Stop` or until the session is gone.
     pub(crate) fn run(mut self) {
         self.open_capture();
-        self.open_playback();
+        if self.is_output_wanted() {
+            self.open_playback();
+        }
         loop {
             match self.commands.recv_timeout(WORK_PERIOD) {
                 Ok(AudioCommand::Stop) | Err(RecvTimeoutError::Disconnected) => return,
@@ -348,16 +370,33 @@ impl AudioEngine {
             }
             AudioCommand::SetOutputDevice(device_id) => {
                 self.settings.output_device_id = device_id;
-                self.open_playback();
+                if self.is_output_wanted() {
+                    self.open_playback();
+                }
+            }
+            AudioCommand::SetMonitoring(is_monitoring) => {
+                self.settings.is_monitoring = is_monitoring;
+                self.capture.monitored.clear();
+                if !self.is_output_wanted() {
+                    self.playback.close();
+                } else if !self.playback.is_open() {
+                    self.open_playback();
+                }
             }
             AudioCommand::Stop => {}
         }
+    }
+
+    /// A call always plays; the microphone test only while you hear yourself.
+    fn is_output_wanted(&self) -> bool {
+        !self.settings.is_microphone_test || self.settings.is_monitoring
     }
 
     fn open_capture(&mut self) {
         self.capture.stream = None;
         self.capture.resampler = None;
         self.capture.at_voice_rate.clear();
+        self.microphone_level.clear();
         let opened = self
             .devices
             .open_capture(self.settings.input_device_id.as_deref())
@@ -379,9 +418,11 @@ impl AudioEngine {
             Ok((stream, resampler)) => {
                 self.capture.stream = Some(stream);
                 self.capture.resampler = Some(resampler);
+                self.microphone_level.set_unavailable(false);
             }
             Err(error) => {
                 tracing::warn!(%error, "no microphone");
+                self.microphone_level.set_unavailable(true);
                 let _ = self
                     .events
                     .send(VoiceSessionEvent::DeviceUnavailable(AudioDirection::Input));
@@ -487,11 +528,23 @@ impl AudioEngine {
             i32::try_from(playback_delay_milliseconds).unwrap_or(i32::MAX),
         );
         let rms = root_mean_square(frame);
+        let decibels = decibels_full_scale(rms);
+        self.microphone_level.set_decibels(decibels);
+        if self.settings.is_microphone_test {
+            if self.settings.is_monitoring {
+                keep_for_monitoring(&mut capture.monitored, frame);
+            }
+            return Ok(());
+        }
         let is_transmitting = !self.settings.is_muted
             && !self.settings.is_deafened
-            && capture.gate.is_open_for_frame(decibels_full_scale(rms));
+            && capture.gate.is_open_for_frame(decibels);
         if !is_transmitting {
             frame.fill(0.0);
+        }
+        // What the others hear: gated, muted and pushed to talk as the packet is.
+        if self.settings.is_monitoring {
+            keep_for_monitoring(&mut capture.monitored, frame);
         }
         let is_speaking = capture.speaking.update(rms, is_transmitting);
         if is_speaking != capture.is_speaking {
@@ -526,6 +579,8 @@ impl AudioEngine {
         while self.playback.wants_frame() {
             self.mix_one_frame();
             self.capture.processor.analyze_playback(&self.mix);
+            // After the echo canceller's far end: it would otherwise cancel your own voice.
+            self.add_monitored_microphone();
             if !self.playback.write(&self.mix)? {
                 break;
             }
@@ -563,6 +618,24 @@ impl AudioEngine {
         self.sounds.mix_into(&mut self.mix);
         self.limiter.process(&mut self.mix);
     }
+
+    fn add_monitored_microphone(&mut self) {
+        let count = self.capture.monitored.len().min(SAMPLES_PER_FRAME);
+        for (output, heard) in self
+            .mix
+            .iter_mut()
+            .zip(self.capture.monitored.drain(..count))
+        {
+            *output = (*output + heard).clamp(-1.0, 1.0);
+        }
+    }
+}
+
+/// Queues a processed frame for "hear yourself", dropping the oldest beyond the bound.
+fn keep_for_monitoring(monitored: &mut VecDeque<f32>, frame: &Frame) {
+    monitored.extend(frame.iter().copied());
+    let excess = monitored.len().saturating_sub(MAXIMUM_MONITORED_SAMPLES);
+    monitored.drain(..excess);
 }
 
 #[cfg(test)]
@@ -614,6 +687,8 @@ mod tests {
             soundboard_volume: 0.5,
             input_device_id: None,
             output_device_id: None,
+            is_monitoring: false,
+            is_microphone_test: false,
         };
         let engine = AudioEngine::new(
             Box::new(devices),
@@ -622,6 +697,7 @@ mod tests {
                 incoming: incoming_receiver,
                 outgoing,
                 events,
+                microphone_level: Arc::default(),
             },
             settings,
             [(voice_mid, ReceiveSlotKind::Voice)].into_iter(),
@@ -827,5 +903,72 @@ mod tests {
         assert_eq!(driven.engine.slots.len(), 1);
         assert_eq!(driven.engine.slots[0].mid, new_mid);
         assert_eq!(driven.engine.slots[0].user_id, None);
+    }
+
+    #[test]
+    fn the_meter_reads_the_processed_microphone() {
+        let mut driven = driven_engine();
+        assert_eq!(driven.engine.microphone_level.decibels(), None);
+        let mut phase = 0.0;
+        let mut frame = tone_frame(&mut phase);
+        driven
+            .engine
+            .process_microphone_frame(&mut frame, 0)
+            .unwrap();
+        let decibels = driven.engine.microphone_level.decibels().unwrap();
+        // A sine's RMS is its amplitude over √2; the processing's filters take a little.
+        let expected = 20.0 * (TONE_AMPLITUDE / std::f32::consts::SQRT_2).log10();
+        assert!((decibels - expected).abs() < 1.5, "{decibels}");
+    }
+
+    #[test]
+    fn hearing_yourself_plays_what_is_sent_and_nothing_once_muted() {
+        let mut driven = driven_engine();
+        driven
+            .engine
+            .handle_command(AudioCommand::SetMonitoring(true));
+        let heard = |driven: &mut DrivenEngine| {
+            let mut phase = 0.0;
+            let mut frame = tone_frame(&mut phase);
+            driven
+                .engine
+                .process_microphone_frame(&mut frame, 0)
+                .unwrap();
+            driven.engine.mix_one_frame();
+            driven.engine.add_monitored_microphone();
+            root_mean_square(&driven.engine.mix)
+        };
+        assert!(heard(&mut driven) > TONE_AMPLITUDE / 2.0);
+        driven.engine.handle_command(AudioCommand::SetMuted(true));
+        assert!(heard(&mut driven) < f32::EPSILON);
+        driven
+            .engine
+            .handle_command(AudioCommand::SetMonitoring(false));
+        driven.engine.handle_command(AudioCommand::SetMuted(false));
+        assert!(heard(&mut driven) < f32::EPSILON);
+    }
+
+    #[test]
+    fn the_microphone_test_sends_nothing_and_ignores_the_gate() {
+        let mut driven = driven_engine();
+        driven.engine.settings.is_microphone_test = true;
+        driven.engine.handle_command(AudioCommand::SetMuted(true));
+        driven
+            .engine
+            .handle_command(AudioCommand::SetMonitoring(true));
+        assert_eq!(voice_packets_sent(&mut driven), 0);
+        assert!(driven.engine.microphone_level.decibels().is_some());
+        driven.engine.mix_one_frame();
+        driven.engine.add_monitored_microphone();
+        assert!(root_mean_square(&driven.engine.mix) > TONE_AMPLITUDE / 2.0);
+    }
+
+    #[test]
+    fn hearing_yourself_waits_at_most_a_few_frames() {
+        let mut monitored = VecDeque::new();
+        for _ in 0..20 {
+            keep_for_monitoring(&mut monitored, &[0.1; SAMPLES_PER_FRAME]);
+        }
+        assert_eq!(monitored.len(), MAXIMUM_MONITORED_SAMPLES);
     }
 }

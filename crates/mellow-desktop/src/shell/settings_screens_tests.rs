@@ -145,8 +145,8 @@ fn user_settings_open_with_the_shortcut_and_esc_closes_them(cx: &mut TestAppCont
 fn esc_closes_the_open_account_form_before_the_user_settings(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     press(cx, USER_SETTINGS_KEY);
-    // Past the six sections and "Sign out", Tab reaches the name's Edit button.
-    for _ in 0..7 {
+    // Past the seven sections and "Sign out", Tab reaches the name's Edit button.
+    for _ in 0..8 {
         press(cx, "tab");
     }
     press(cx, "enter");
@@ -162,7 +162,7 @@ fn esc_closes_the_open_account_form_before_the_user_settings(cx: &mut TestAppCon
 fn the_close_button_closes_the_user_settings_even_with_a_form_open(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     press(cx, USER_SETTINGS_KEY);
-    for _ in 0..7 {
+    for _ in 0..8 {
         press(cx, "tab");
     }
     press(cx, "enter");

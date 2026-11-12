@@ -16,11 +16,13 @@
 //! `voice_leave` (it names no channel) that ends the newer call.
 //!
 //! How later work plugs in:
-//! - **Voice settings section**: read `preferences(cx).voice_settings`, change it only through
-//!   [`change_voice_settings`]; the entity notices and applies the difference to a live call
-//!   (devices, input mode and key, processing, volumes) and to the sounds outside it. List the
-//!   devices with [`Voice::audio_devices`] off the UI thread (tests inject synthetic ones). The
-//!   push-to-talk key is a W3C code (`shared_logic::push_to_talk_keys`).
+//! - **Voice settings section** (`settings/user/voice.rs`): reads `preferences(cx).voice_settings`
+//!   and changes it only through [`change_voice_settings`]; the entity notices and applies the
+//!   difference to a live call (devices, input mode and key, processing, volumes), to the
+//!   microphone test and to the sounds outside it. The devices are listed with
+//!   [`Voice::audio_devices`] off the UI thread (tests inject synthetic ones). The meter reads
+//!   [`Voice::microphone_decibels`]: the call's microphone, else the test's, which only a click
+//!   starts. The push-to-talk key is a W3C code (`shared_logic::push_to_talk_keys`).
 //! - **Global push-to-talk**: call [`Voice::press_push_to_talk`] and
 //!   [`Voice::release_push_to_talk`] from the listener, as the in-window handler
 //!   ([`Voice::push_to_talk_key_down`] and friends) does; both are idempotent, so a key heard by
@@ -54,9 +56,9 @@ use mellow_client_core::shared_logic::voice_settings::{
 use mellow_client_core::state::StateChange;
 use mellow_media::{
     AudioDeviceDescription, AudioDeviceError, AudioDevices, AudioDirection, ConnectionProblem,
-    InMemoryPersonVoiceSettings, PersonSoundSource, PersonVoiceSettingsStore as _, SoundPlayer,
-    SystemAudioDevices, VoiceCue, VoicePhase, VoiceSession, VoiceSessionEvent, VoiceSessionOptions,
-    VoiceToggles,
+    InMemoryPersonVoiceSettings, MicrophoneTest, MicrophoneTestOptions, PersonSoundSource,
+    PersonVoiceSettingsStore as _, SoundPlayer, SystemAudioDevices, VoiceCue, VoicePhase,
+    VoiceSession, VoiceSessionEvent, VoiceSessionOptions, VoiceToggles,
 };
 use mellow_protocol::Snowflake;
 
@@ -104,6 +106,9 @@ struct Call {
     event_pump: Option<Task<()>>,
 }
 
+// Independent flags of separate features (stored toggles read, push-to-talk held, hearing
+// yourself, the key recorder): no state machine hides here.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Voice {
     session: Entity<Session>,
     devices: AudioDevicesFactory,
@@ -124,6 +129,12 @@ pub struct Voice {
     applied_settings: VoiceSettings,
     /// Sounds outside a call: the leave cue, toggles, the chime. Started at the first one.
     sound_player: Option<SoundPlayer>,
+    /// The settings' microphone test, outside a call only.
+    microphone_test: Option<MicrophoneTest>,
+    /// "Hear yourself", in the test or in the call.
+    is_monitoring: bool,
+    /// The settings' key recorder has focus: the keys it hears are not push-to-talk.
+    is_recording_push_to_talk_key: bool,
     /// Bumped by each join: a start that finishes after a leave or another join is stopped.
     attempt: u64,
     _subscriptions: Vec<Subscription>,
@@ -194,7 +205,7 @@ fn stored_toggles(toggles: VoiceToggles) -> StoredVoiceToggles {
     }
 }
 
-fn current_settings(cx: &App) -> VoiceSettings {
+pub(crate) fn current_settings(cx: &App) -> VoiceSettings {
     preferences(cx).map_or(VoiceSettings::DEFAULT, |preferences| {
         preferences.voice_settings.clone()
     })
@@ -354,6 +365,9 @@ impl Voice {
             held_modifiers: Modifiers::default(),
             applied_settings: VoiceSettings::DEFAULT,
             sound_player: None,
+            microphone_test: None,
+            is_monitoring: false,
+            is_recording_push_to_talk_key: false,
             attempt: 0,
             _subscriptions: subscriptions,
         };
@@ -430,6 +444,43 @@ impl Voice {
         (self.devices)()
     }
 
+    /// Connected with a working microphone: the settings' meter reads it rather than a test.
+    #[must_use]
+    pub fn is_microphone_live(&self) -> bool {
+        self.call
+            .as_ref()
+            .is_some_and(|call| call.engine.is_some() && !call.devices.is_microphone_unavailable)
+    }
+
+    /// The level the settings' meter shows, in dBFS after the input volume; `None` while nothing
+    /// listens. An atomic read: cheap enough for every redraw of the meter.
+    #[must_use]
+    pub fn microphone_decibels(&self) -> Option<f32> {
+        match (self.microphone_test.as_ref(), self.engine()) {
+            (Some(test), _) => test.decibels(),
+            (None, Some(engine)) if self.is_microphone_live() => engine.microphone_decibels(),
+            _ => None,
+        }
+    }
+
+    #[must_use]
+    pub fn is_microphone_test_running(&self) -> bool {
+        self.microphone_test.is_some()
+    }
+
+    /// The test found no microphone to open.
+    #[must_use]
+    pub fn has_microphone_test_failed(&self) -> bool {
+        self.microphone_test
+            .as_ref()
+            .is_some_and(MicrophoneTest::is_microphone_unavailable)
+    }
+
+    #[must_use]
+    pub fn is_monitoring(&self) -> bool {
+        self.is_monitoring
+    }
+
     /// The volume and local mute the reader gave `user_id`.
     #[must_use]
     pub fn person_setting(user_id: Snowflake, cx: &App) -> PersonVoiceSetting {
@@ -439,6 +490,62 @@ impl Voice {
     }
 
     // ---- Joining and leaving ----
+
+    // ---- The settings' microphone test ----
+
+    /// Opens the microphone for the settings' meter, from a click; outside a call only.
+    pub fn start_microphone_test(&mut self, cx: &mut Context<Self>) {
+        if self.microphone_test.is_some() || self.is_microphone_live() {
+            return;
+        }
+        let settings = current_settings(cx);
+        let options = MicrophoneTestOptions {
+            processing: processing_of(&settings),
+            input_device_id: settings.input_device_id,
+            output_device_id: settings.output_device_id,
+            is_monitoring: self.is_monitoring,
+        };
+        match MicrophoneTest::start((self.devices)(), options) {
+            Ok(test) => self.microphone_test = Some(test),
+            Err(error) => {
+                tracing::warn!(error = %error.kind(), "cannot start the microphone test");
+            }
+        }
+        cx.notify();
+    }
+
+    /// Leaving the settings' page stops the test, frees the microphone and stops hearing
+    /// yourself.
+    pub fn stop_microphone_test(&mut self, cx: &mut Context<Self>) {
+        self.microphone_test = None;
+        self.set_monitoring(false, cx);
+    }
+
+    /// "Hear yourself": what others would hear plays on your output. Outside a call it starts the
+    /// microphone test, since this is a click.
+    pub fn set_monitoring(&mut self, is_on: bool, cx: &mut Context<Self>) {
+        self.is_monitoring = is_on;
+        if is_on && self.microphone_test.is_none() && !self.is_microphone_live() {
+            self.start_microphone_test(cx);
+        }
+        if let Some(test) = self.microphone_test.as_ref() {
+            test.set_monitoring(is_on);
+        }
+        if let Some(engine) = self.engine() {
+            engine.set_monitoring(is_on);
+        }
+        cx.notify();
+    }
+
+    /// The settings' key recorder took or lost focus.
+    pub fn set_recording_push_to_talk_key(&mut self, is_recording: bool) {
+        self.is_recording_push_to_talk_key = is_recording;
+    }
+
+    #[must_use]
+    pub fn is_recording_push_to_talk_key(&self) -> bool {
+        self.is_recording_push_to_talk_key
+    }
 
     /// Joins `channel_id` (a click on its row). Joining another channel while in one moves
     /// there with the same microphone, as the web does.
@@ -576,8 +683,10 @@ impl Voice {
         };
         let event_pump = Self::pump_engine_events(self.attempt, started.events, cx);
         let toggles = self.toggles;
+        let is_monitoring = self.is_monitoring;
         if let Some(call) = self.call.as_mut() {
             let mut engine = started.engine;
+            engine.set_monitoring(is_monitoring);
             // A move asked for while it started: the engine joined the first channel.
             if engine.channel_id() != call.channel_id {
                 engine.move_to(call.channel_id);
@@ -592,6 +701,8 @@ impl Voice {
             // Settings changed during the start were never applied to it.
             self.applied_settings = call.start_settings.clone();
         }
+        // The meter now reads the call's microphone: the test's is let go.
+        self.microphone_test = None;
         self.apply_settings(cx);
         cx.notify();
         None
@@ -715,6 +826,10 @@ impl Voice {
     fn stop_call(&mut self, should_tell_the_server: bool) {
         self.attempt += 1;
         self.is_push_to_talk_pressed = false;
+        // Hearing the call's microphone ends with it; the settings' test keeps its own.
+        if self.microphone_test.is_none() {
+            self.is_monitoring = false;
+        }
         self.announcement = SharedString::default();
         match self.call.take() {
             Some(Call {
@@ -905,13 +1020,12 @@ impl Voice {
     }
 
     /// A key went down in the window; true when it must not type (a character key held for
-    /// push-to-talk). `is_in_key_recorder`: the settings' recorder has focus and takes it.
+    /// push-to-talk). Nothing happens while the settings' recorder takes the key.
     pub fn push_to_talk_key_down(
         &mut self,
         key: &str,
         key_char: Option<&str>,
         modifiers: Modifiers,
-        is_in_key_recorder: bool,
         cx: &mut Context<Self>,
     ) -> bool {
         let Some(code) = code_of_toolkit_key(key) else {
@@ -928,7 +1042,7 @@ impl Voice {
             self.engine().is_some(),
             &code,
             is_character_key,
-            is_in_key_recorder,
+            self.is_recording_push_to_talk_key,
         ) {
             PushToTalkKeyEffect::Press { should_swallow } => {
                 self.press_push_to_talk(cx);
@@ -964,9 +1078,13 @@ impl Voice {
         ] {
             let code = code_of_modifier(modifier);
             if is_held && !was_held {
-                if let PushToTalkKeyEffect::Press { .. } =
-                    push_to_talk_key_down(&settings, is_in_call, code, false, false)
-                {
+                if let PushToTalkKeyEffect::Press { .. } = push_to_talk_key_down(
+                    &settings,
+                    is_in_call,
+                    code,
+                    false,
+                    self.is_recording_push_to_talk_key,
+                ) {
                     self.press_push_to_talk(cx);
                 }
             } else if was_held
@@ -1073,6 +1191,17 @@ impl Voice {
             || next.push_to_talk_key != previous.push_to_talk_key;
         if mode_changed {
             self.release_push_to_talk(cx);
+        }
+        if let Some(test) = self.microphone_test.as_ref() {
+            if next.input_device_id != previous.input_device_id {
+                test.set_input_device(next.input_device_id.clone());
+            }
+            if next.output_device_id != previous.output_device_id {
+                test.set_output_device(next.output_device_id.clone());
+            }
+            if processing_of(&next) != processing_of(&previous) {
+                test.set_processing(processing_of(&next));
+            }
         }
         let Some(call) = self.call.as_mut() else {
             return;

@@ -1156,7 +1156,6 @@ impl Render for DuskShell {
                             &keystroke.key,
                             keystroke.key_char.as_deref(),
                             keystroke.modifiers,
-                            false,
                             cx,
                         )
                     });
