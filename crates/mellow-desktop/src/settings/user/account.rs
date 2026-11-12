@@ -8,7 +8,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, ClipboardItem, Context, Entity, EventEmitter, FocusHandle,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
 };
@@ -24,7 +24,7 @@ use zeroize::{Zeroize as _, Zeroizing};
 use super::parts::{
     FormButtons, card, describe_failure, edit_form, error_line, password_field, section_label,
 };
-use crate::components::{Button, TextField, with_type};
+use crate::components::{Button, FriendCode, FriendCodeCopyState, TextField, with_type};
 use crate::i18n::strings;
 use crate::session::Session;
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};
@@ -33,7 +33,7 @@ use crate::theme::tokens::{
     COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP, COMPONENT_SETTINGS_ACCOUNT_ROW_GAP,
     COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP, COMPONENT_SETTINGS_PAGE_TITLE_GAP,
     COMPONENT_SETTINGS_SECTION_GAP, COMPONENT_SETTINGS_SECTION_LABEL_GAP, TYPE_BODY_LG,
-    TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CODE,
+    TYPE_BODY_SM, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
 
@@ -64,7 +64,7 @@ pub struct AccountPage {
     name_check_wait: Option<Task<()>>,
     edit_name_focus: FocusHandle,
     change_password_focus: FocusHandle,
-    is_friend_code_copied: bool,
+    friend_code_copy: Entity<FriendCodeCopyState>,
     /// Focus to move once drawn: answers arrive without a window.
     focus_on_render: Option<FocusHandle>,
     _session_observation: Subscription,
@@ -107,7 +107,7 @@ impl AccountPage {
             name_check_wait: None,
             edit_name_focus: cx.focus_handle(),
             change_password_focus: cx.focus_handle(),
-            is_friend_code_copied: false,
+            friend_code_copy: cx.new(|_| FriendCodeCopyState::default()),
             focus_on_render: None,
             _session_observation: observation,
         }
@@ -398,12 +398,6 @@ impl AccountPage {
         cx.notify();
     }
 
-    fn copy_friend_code(&mut self, code: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(code));
-        self.is_friend_code_copied = true;
-        cx.notify();
-    }
-
     fn form_actions(cx: &mut Context<Self>) -> (super::parts::Action, super::parts::Action) {
         let save_page = cx.entity();
         let cancel_page = cx.entity();
@@ -516,64 +510,6 @@ impl AccountPage {
                 ))
                 .into_any_element(),
         )
-    }
-
-    fn render_friend_code(&self, code: String, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let tokens = theme(cx);
-        let catalogue = strings(cx);
-        let words = catalogue.friend_code();
-        let page = cx.entity();
-        let copied = code.clone();
-        div()
-            .flex()
-            .flex_col()
-            .gap(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(length(COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP))
-                    .child(
-                        div()
-                            .id("account-friend-code")
-                            .aria_label(SharedString::from(format!("{}, {code}", words.label())))
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(length(COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP))
-                            .child(
-                                with_type(div(), TYPE_CATEGORY)
-                                    .text_color(color(tokens.component_settings_section_label_text))
-                                    .child(words.label()),
-                            )
-                            .child(
-                                with_type(div(), TYPE_CODE)
-                                    .text_color(color(tokens.component_settings_account_value_text))
-                                    .child(code),
-                            ),
-                    )
-                    .child(
-                        Button::new(
-                            "account-friend-code-copy",
-                            if self.is_friend_code_copied {
-                                words.copied_short()
-                            } else {
-                                words.copy()
-                            },
-                        )
-                        .on_click(move |_, cx| {
-                            page.update(cx, |page, cx| {
-                                page.copy_friend_code(copied.clone(), cx);
-                            });
-                        }),
-                    ),
-            )
-            .child(
-                with_type(div(), TYPE_BODY_SM)
-                    .text_color(color(tokens.color_text_secondary))
-                    .child(words.hint()),
-            )
     }
 
     fn render_password_section(&self, cx: &mut Context<Self>) -> AnyElement {
@@ -697,7 +633,9 @@ impl Render for AccountPage {
                 .into_any_element()
         };
 
-        let friend_code_row = friend_code.map(|code| self.render_friend_code(code, cx));
+        let friend_code_row = friend_code.map(|code| {
+            FriendCode::new("account-friend-code", code, self.friend_code_copy.clone())
+        });
 
         let password_section = self.render_password_section(cx);
 

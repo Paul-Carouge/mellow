@@ -25,6 +25,7 @@ mod badge;
 mod button;
 mod choice;
 mod dialog;
+mod friend_code;
 pub mod gallery;
 #[cfg(test)]
 mod keyboard_tests;
@@ -54,6 +55,7 @@ pub use badge::{MentionBadge, RoleChip, RoleChips};
 pub use button::{Button, ButtonSize, ButtonVariant, IconButton, IconButtonTone};
 pub use choice::{ChoiceGroup, ChoiceOption, next_choice_index};
 pub use dialog::{ModalDialog, ModalDialogEvent};
+pub use friend_code::{FriendCode, FriendCodeCopyState};
 pub use menu::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
     MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,

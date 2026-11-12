@@ -9,11 +9,11 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
-    AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, ClipboardItem, Context, ElementId,
-    Entity, EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, canvas,
-    div, prelude::FluentBuilder as _,
+    AnyElement, AnyWindowHandle, App, AppContext as _, Bounds, Context, ElementId, Entity,
+    EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseDownEvent, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, canvas, div,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use mellow_client_core::ClientError;
@@ -28,11 +28,12 @@ use mellow_protocol::{
 
 use super::{PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, MentionBadge, MenuAlignment,
-    MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin, ModalDialog, ModalDialogEvent,
-    Tooltip, bounds_recorder, focus_ring, icon, is_context_menu_keystroke, is_focus_visible,
-    menu_origin_at_pointer, menu_origin_beside_remembered, next_tab_index, remembered_bounds,
-    remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, FriendCode, FriendCodeCopyState,
+    MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
+    ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
+    is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
+    menu_origin_beside_remembered, next_tab_index, remembered_bounds, remembered_focus_handle,
+    remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
@@ -40,22 +41,20 @@ use crate::shell::profile_picture;
 use crate::sign_in_form::describe_error;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_DIALOG_COPIED_LABEL_DURATION,
-    COMPONENT_FRIENDS_ACTION_GAP, COMPONENT_FRIENDS_ACTION_ICON_SIZE,
-    COMPONENT_FRIENDS_ACTION_SIZE, COMPONENT_FRIENDS_AVATAR_SIZE,
-    COMPONENT_FRIENDS_CONTENT_MAX_WIDTH, COMPONENT_FRIENDS_EMPTY_GAP,
-    COMPONENT_FRIENDS_GROUP_HEIGHT, COMPONENT_FRIENDS_LIST_PADDING_INLINE,
-    COMPONENT_FRIENDS_RESULT_ICON_SIZE, COMPONENT_FRIENDS_ROW_GAP, COMPONENT_FRIENDS_ROW_HEIGHT,
-    COMPONENT_FRIENDS_ROW_PADDING_INLINE, COMPONENT_FRIENDS_ROW_RADIUS, COMPONENT_FRIENDS_TAB_GAP,
-    COMPONENT_FRIENDS_TAB_HEIGHT, COMPONENT_FRIENDS_TAB_PADDING_INLINE,
-    COMPONENT_FRIENDS_TAB_RADIUS, COMPONENT_FRIENDS_USERNAME_MIN_WIDTH,
-    COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP, COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP,
-    COMPONENT_SETTINGS_SECTION_LABEL_GAP, COMPONENT_TEXT_FIELD_BORDER_WIDTH,
+    COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_FRIENDS_ACTION_GAP,
+    COMPONENT_FRIENDS_ACTION_ICON_SIZE, COMPONENT_FRIENDS_ACTION_SIZE,
+    COMPONENT_FRIENDS_AVATAR_SIZE, COMPONENT_FRIENDS_CONTENT_MAX_WIDTH,
+    COMPONENT_FRIENDS_EMPTY_GAP, COMPONENT_FRIENDS_GROUP_HEIGHT,
+    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_FRIENDS_RESULT_ICON_SIZE,
+    COMPONENT_FRIENDS_ROW_GAP, COMPONENT_FRIENDS_ROW_HEIGHT, COMPONENT_FRIENDS_ROW_PADDING_INLINE,
+    COMPONENT_FRIENDS_ROW_RADIUS, COMPONENT_FRIENDS_TAB_GAP, COMPONENT_FRIENDS_TAB_HEIGHT,
+    COMPONENT_FRIENDS_TAB_PADDING_INLINE, COMPONENT_FRIENDS_TAB_RADIUS,
+    COMPONENT_FRIENDS_USERNAME_MIN_WIDTH, COMPONENT_TEXT_FIELD_BORDER_WIDTH,
     COMPONENT_TEXT_FIELD_PADDING_INLINE, COMPONENT_TEXT_FIELD_RADIUS, SPACE_2XS, SPACE_LG,
     SPACE_MD, SPACE_SM, SPACE_XL, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, TYPE_BUTTON,
-    TYPE_CATEGORY, TYPE_CODE, TYPE_HEADING_LG, TYPE_MEMBER_NAME,
+    TYPE_CATEGORY, TYPE_HEADING_LG, TYPE_MEMBER_NAME,
 };
-use crate::theme::{color, delay, length, theme};
+use crate::theme::{color, length, theme};
 
 /// What the pane asks of its host.
 #[derive(Debug, Clone, PartialEq)]
@@ -107,8 +106,7 @@ pub struct FriendsPane {
     announcement: String,
     name_form: AddFriendForm,
     code_form: AddFriendForm,
-    is_friend_code_copied: bool,
-    copied_label_timer: Option<Task<()>>,
+    friend_code_copy: Entity<FriendCodeCopyState>,
     menu: Option<(Entity<ContextMenu>, Subscription)>,
     confirmation: Option<(Entity<ModalDialog>, Subscription)>,
     /// Where each row's More button is, for its menu to open under it.
@@ -160,8 +158,7 @@ impl FriendsPane {
                 is_sending: false,
                 result: None,
             },
-            is_friend_code_copied: false,
-            copied_label_timer: None,
+            friend_code_copy: cx.new(|_| FriendCodeCopyState::default()),
             menu: None,
             confirmation: None,
             more_button_bounds: Rc::new(RefCell::new(HashMap::new())),
@@ -581,27 +578,6 @@ impl FriendsPane {
                 });
             });
         });
-        cx.notify();
-    }
-
-    fn copy_friend_code(&mut self, code: String, cx: &mut Context<Self>) {
-        cx.write_to_clipboard(ClipboardItem::new_string(code));
-        self.is_friend_code_copied = true;
-        strings(cx)
-            .friend_code()
-            .copied()
-            .clone_into(&mut self.announcement);
-        let timer = cx
-            .background_executor()
-            .timer(delay(COMPONENT_DIALOG_COPIED_LABEL_DURATION));
-        // Replacing the timer cancels the previous one.
-        self.copied_label_timer = Some(cx.spawn(async move |pane, cx| {
-            timer.await;
-            let _ = pane.update(cx, |pane, cx| {
-                pane.is_friend_code_copied = false;
-                cx.notify();
-            });
-        }));
         cx.notify();
     }
 
@@ -1153,65 +1129,6 @@ impl FriendsPane {
             .into_any_element()
     }
 
-    fn render_friend_code(&self, code: String, cx: &mut Context<Self>) -> AnyElement {
-        let tokens = theme(cx);
-        let words = strings(cx).friend_code();
-        let copied = code.clone();
-        let pane = cx.entity();
-        div()
-            .max_w(length(COMPONENT_FRIENDS_CONTENT_MAX_WIDTH))
-            .flex()
-            .flex_col()
-            .gap(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
-            .child(
-                div()
-                    .flex()
-                    .items_center()
-                    .gap(length(COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP))
-                    .child(
-                        // A term and its value, so screen readers read the code with its label.
-                        div()
-                            .id("friend-code")
-                            .aria_label(SharedString::from(format!("{}, {code}", words.label())))
-                            .flex_1()
-                            .min_w_0()
-                            .flex()
-                            .flex_col()
-                            .gap(length(COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP))
-                            .child(
-                                with_type(div(), TYPE_CATEGORY)
-                                    .text_color(color(tokens.component_settings_section_label_text))
-                                    .child(words.label()),
-                            )
-                            .child(
-                                with_type(div(), TYPE_CODE)
-                                    .text_color(color(tokens.component_settings_account_value_text))
-                                    .child(code),
-                            ),
-                    )
-                    .child(
-                        Button::new(
-                            "friend-code-copy",
-                            if self.is_friend_code_copied {
-                                words.copied_short()
-                            } else {
-                                words.copy()
-                            },
-                        )
-                        .variant(ButtonVariant::Secondary)
-                        .on_click(move |_, cx| {
-                            pane.update(cx, |pane, cx| pane.copy_friend_code(copied.clone(), cx));
-                        }),
-                    ),
-            )
-            .child(
-                with_type(div(), TYPE_BODY_SM)
-                    .text_color(color(tokens.color_text_secondary))
-                    .child(words.hint()),
-            )
-            .into_any_element()
-    }
-
     fn render_empty_state(
         sentence: &'static str,
         with_add_friend: bool,
@@ -1502,7 +1419,15 @@ impl Render for FriendsPane {
                     .child(self.render_add_friend_form(Lookup::Name, window, cx))
                     .child(self.render_add_friend_form(Lookup::FriendCode, window, cx))
                     .when_some(friend_code, |forms, code| {
-                        forms.child(self.render_friend_code(code, cx))
+                        forms.child(
+                            div()
+                                .max_w(length(COMPONENT_FRIENDS_CONTENT_MAX_WIDTH))
+                                .child(FriendCode::new(
+                                    "friend-code",
+                                    code,
+                                    self.friend_code_copy.clone(),
+                                )),
+                        )
                     })
                     .into_any_element(),
             );
