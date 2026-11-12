@@ -17,11 +17,10 @@ use gpui::{
 use gpui_component::input::{InputEvent, InputState};
 use mellow_client_core::shared_logic::role_colors::readable_role_colour;
 use mellow_client_core::shared_logic::server_settings::{
-    MAXIMUM_ROLE_NAME_LENGTH, MoveDirection, NO_ROLE_COLOR, PERMISSION_GROUPS, PermissionGroupKey,
-    PermissionKey, ROLE_COLOR_PRESETS, RoleDraft, RoleEdit, RoleManager, can_manage_role,
-    can_move_any_role, can_toggle_permission, draft_of, is_role_edit_pending, rebase_role_edit,
-    role_color_hex, role_ids_after_move, role_manager_of, role_member_count, role_update_body,
-    roles_highest_first, toggle_permission,
+    MAXIMUM_ROLE_NAME_LENGTH, MoveDirection, NO_ROLE_COLOR, PERMISSION_GROUPS, ROLE_COLOR_PRESETS,
+    RoleDraft, RoleEdit, RoleManager, can_manage_role, can_move_any_role, can_toggle_permission,
+    draft_of, is_role_edit_pending, rebase_role_edit, role_color_hex, role_ids_after_move,
+    role_manager_of, role_member_count, role_update_body, roles_highest_first, toggle_permission,
 };
 use mellow_protocol::{
     CreateRoleRequest, Guild, Permissions, ReorderRolesRequest, Role, Snowflake,
@@ -33,8 +32,9 @@ use crate::components::{
     UnsavedChangesBar, child_id, colour_transition, focus_ring, icon, inset_focus_ring,
     is_focus_visible, next_choice_index, remembered_hover, with_type,
 };
-use crate::i18n::{Strings, strings};
+use crate::i18n::strings;
 use crate::session::Session;
+use crate::settings::permission_words::{permission_group_label, permission_words};
 use crate::settings::{
     SettingsPage, SettingsPageEvent, error_alert, is_wide, saved_notice, unsaved_changes_labels,
 };
@@ -78,56 +78,6 @@ enum RolesBusy {
 /// "No colour" first, then the presets: the colour choices in the order Tab and arrows meet them.
 fn colour_choices() -> impl Iterator<Item = u32> {
     std::iter::once(NO_ROLE_COLOR).chain(ROLE_COLOR_PRESETS)
-}
-
-/// The catalogue's name and description of a permission (`serverSettings.permissions`).
-pub(crate) fn permission_words(
-    key: PermissionKey,
-    catalogue: Strings,
-) -> (&'static str, &'static str) {
-    let words = catalogue.server_settings().permissions();
-    macro_rules! pair {
-        ($entry:ident) => {{
-            let entry = words.$entry();
-            (entry.label(), entry.description())
-        }};
-    }
-    match key {
-        PermissionKey::ViewChannels => pair!(view_channels),
-        PermissionKey::ManageChannels => pair!(manage_channels),
-        PermissionKey::ManageRoles => pair!(manage_roles),
-        PermissionKey::ManageServer => pair!(manage_server),
-        PermissionKey::ManageExpressions => pair!(manage_expressions),
-        PermissionKey::ViewModerationLog => pair!(view_moderation_log),
-        PermissionKey::CreateInvite => pair!(create_invite),
-        PermissionKey::SendMessages => pair!(send_messages),
-        PermissionKey::ReadMessageHistory => pair!(read_message_history),
-        PermissionKey::AttachFiles => pair!(attach_files),
-        PermissionKey::AddReactions => pair!(add_reactions),
-        PermissionKey::SendPolls => pair!(send_polls),
-        PermissionKey::SendChecklists => pair!(send_checklists),
-        PermissionKey::MentionEveryone => pair!(mention_everyone),
-        PermissionKey::ManageMessages => pair!(manage_messages),
-        PermissionKey::Connect => pair!(connect),
-        PermissionKey::Speak => pair!(speak),
-        PermissionKey::UseSoundboard => pair!(use_soundboard),
-        PermissionKey::Stream => pair!(stream),
-        PermissionKey::KickMembers => pair!(kick_members),
-        PermissionKey::BanMembers => pair!(ban_members),
-        PermissionKey::Administrator => pair!(administrator),
-    }
-}
-
-fn group_title(group: PermissionGroupKey, catalogue: Strings) -> &'static str {
-    let groups = catalogue.server_settings().roles().groups();
-    match group {
-        PermissionGroupKey::General => groups.general(),
-        PermissionGroupKey::Membership => groups.membership(),
-        PermissionGroupKey::TextChannels => groups.text_channels(),
-        PermissionGroupKey::VoiceChannels => groups.voice_channels(),
-        PermissionGroupKey::Moderation => groups.moderation(),
-        PermissionGroupKey::Advanced => groups.advanced(),
-    }
 }
 
 /// Ctrl+Shift+Up/Down (Cmd on macOS) on a role row moves it, as the web's list does.
@@ -1259,7 +1209,7 @@ impl RolesPage {
                             .id(("permission-group", group_index))
                             .role(AccessRole::Heading)
                             .text_color(color(tokens.component_settings_section_label_text))
-                            .child(group_title(group.group, catalogue)),
+                            .child(permission_group_label(group.group, catalogue)),
                     )
                     .children(rows.collect::<Vec<_>>())
                     .into_any_element(),
