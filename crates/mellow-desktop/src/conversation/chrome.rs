@@ -135,7 +135,6 @@ impl ConversationView {
         Some(
             with_type(div(), TYPE_BODY)
                 .id("unread-bar")
-                .live_polite(sentence.clone())
                 .absolute()
                 .top(length(SPACE_2XS))
                 .left(length(SPACE_MD))
@@ -296,7 +295,6 @@ impl ConversationView {
         let sentence = SharedString::from(sentence);
         with_type(div(), TYPE_TYPING)
             .id("typing-line")
-            .live_polite(sentence.clone())
             .flex_none()
             .h(length(COMPONENT_COMPOSER_TYPING_HEIGHT))
             .px(length(SPACE_MD))

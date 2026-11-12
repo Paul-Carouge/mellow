@@ -9,7 +9,6 @@
 //! preview beside the editors are left out until the desktop has the crop dialog, which the
 //! server icon needs too.
 
-use crate::components::LiveRegion as _;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
@@ -718,7 +717,6 @@ impl ProfilePage {
                     .child(
                         div()
                             .id("profile-about-count")
-                            .live_polite(remaining.clone())
                             .flex_none()
                             .when(is_too_long, |count| {
                                 count.text_color(color(tokens.color_text_danger))
