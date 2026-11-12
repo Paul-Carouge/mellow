@@ -268,6 +268,7 @@ mod tests {
         has_reactions: false,
         can_join_reactions: true,
         can_add_reactions: true,
+        can_remove_reactions: false,
         can_manage_pins: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {

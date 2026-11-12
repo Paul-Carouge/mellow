@@ -114,6 +114,7 @@ struct Visit {
 enum Confirmation {
     Delete(Message),
     Pin(Message, bool),
+    RemoveAllReactions(Message),
 }
 
 /// The words, people and roles messages are read against, rebuilt when they change.
@@ -566,6 +567,8 @@ impl ConversationView {
             can_add_reactions: can_read_history
                 && permissions.is_some_and(|bits| bits.contains(Permissions::ADD_REACTIONS)),
             can_manage_messages,
+            // `can_manage_messages` is only ever true in a server channel.
+            can_remove_reactions: can_manage_messages && can_read_history,
             can_manage_pins: is_conversation || can_manage_messages,
         }
     }
@@ -595,6 +598,7 @@ impl ConversationView {
             has_reactions: !message.reactions.is_empty(),
             can_join_reactions: rights.can_join_reactions,
             can_add_reactions: rights.can_add_reactions,
+            can_remove_reactions: rights.can_remove_reactions,
             can_manage_pins: rights.can_manage_pins,
         }
     }
@@ -1115,6 +1119,29 @@ impl ConversationView {
         });
     }
 
+    /// A moderator's "Remove all reactions", once confirmed; the gateway's event clears them.
+    fn remove_all_reactions_now(&mut self, message: &Message, cx: &mut Context<Self>) {
+        self.action_error = None;
+        let view = cx.entity().downgrade();
+        let (channel_id, message_id) = (message.channel_id, message.id);
+        let summary = strings(cx).reactions().remove_all_failed().to_owned();
+        self.session.update(cx, |session, cx| {
+            session.send_settings_change(
+                "remove all reactions",
+                summary,
+                move |rest| async move { rest.remove_all_reactions(channel_id, message_id).await },
+                cx,
+                move |outcome, cx| {
+                    if let Err(sentence) = outcome {
+                        let _ = view.update(cx, |view, cx| {
+                            view.show_action_error(channel_id, sentence, cx);
+                        });
+                    }
+                },
+            );
+        });
+    }
+
     fn retry_message(&mut self, nonce: &str, cx: &mut Context<Self>) {
         self.session
             .update(cx, |session, cx| session.retry_message(nonce, cx));
@@ -1159,6 +1186,12 @@ impl ConversationView {
                         .subtitle(words.unpin_subtitle())
                         .submit(words.unpin_submit(), words.unpin_submit(), true)
                 }
+                Confirmation::RemoveAllReactions(_) => {
+                    let words = catalogue.reactions();
+                    ModalDialog::new(words.remove_all_title(), cancel, window, cx)
+                        .subtitle(words.remove_all_subtitle())
+                        .submit(words.remove_all_submit(), words.remove_all_submit(), true)
+                }
             }
         });
         let subscription = cx.subscribe_in(
@@ -1172,6 +1205,9 @@ impl ConversationView {
                         Confirmation::Delete(message) => view.delete_now(&message, cx),
                         Confirmation::Pin(message, is_pinned) => {
                             view.set_pinned_now(message, is_pinned, cx);
+                        }
+                        Confirmation::RemoveAllReactions(message) => {
+                            view.remove_all_reactions_now(&message, cx);
                         }
                     }
                 }
@@ -1196,12 +1232,14 @@ impl ConversationView {
         let catalogue = strings(cx);
         let session = self.session.clone();
         let custom_emojis = self.sources.custom_emojis.clone();
+        let can_remove_others = self.permissions(channel_id, cx).can_remove_reactions;
         let body = cx.new(|cx| {
             reactions_dialog::ReactionsDialogBody::new(
                 session,
                 channel_id,
                 message_id,
                 custom_emojis,
+                can_remove_others,
                 cx,
             )
         });
@@ -1316,6 +1354,11 @@ impl ConversationView {
                 self.copy_to_clipboard(message_id.to_string(), Some(copied), cx);
             }
             MessageMenuAction::EndPoll => self.ask_to_end_poll(message_id, window, cx),
+            MessageMenuAction::RemoveAllReactions => {
+                if let Some(message) = self.cached_message(message_id, cx) {
+                    self.ask_to_confirm(Confirmation::RemoveAllReactions(message), window, cx);
+                }
+            }
             MessageMenuAction::Delete => {
                 let skip = window.modifiers().shift;
                 self.delete(message_id, skip, window, cx);
@@ -1682,6 +1725,7 @@ struct ChannelRights {
     can_join_reactions: bool,
     can_add_reactions: bool,
     can_manage_messages: bool,
+    can_remove_reactions: bool,
     can_manage_pins: bool,
 }
 
@@ -1758,6 +1802,11 @@ fn message_menu_item_look(
         MessageMenuAction::EndPoll => (
             catalogue.polls().end().to_owned(),
             IconName::ChartBarHorizontal,
+            MenuItemTone::Danger,
+        ),
+        MessageMenuAction::RemoveAllReactions => (
+            catalogue.reactions().remove_all().to_owned(),
+            IconName::XCircle,
             MenuItemTone::Danger,
         ),
         MessageMenuAction::Delete => (

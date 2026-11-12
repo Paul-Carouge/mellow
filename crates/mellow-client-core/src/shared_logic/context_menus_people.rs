@@ -53,6 +53,8 @@ pub struct MessageMenuFacts {
     pub can_join_reactions: bool,
     /// Starting a new one also needs `ADD_REACTIONS`.
     pub can_add_reactions: bool,
+    /// Other people's reactions: `MANAGE_MESSAGES` in a server channel whose history is readable.
+    pub can_remove_reactions: bool,
     /// `MANAGE_MESSAGES` in a server channel; any participant in a conversation.
     pub can_manage_pins: bool,
 }
@@ -69,9 +71,7 @@ impl MessageMenuFacts {
     }
 }
 
-/// A message menu item.
-/// shortcut: no Remove all reactions yet; it comes with reaction moderation (M3 step 6). Copy
-/// message ID joins the everyday section.
+/// A message menu item. Copy message ID joins the everyday section.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum MessageMenuAction {
     /// A quick reaction: adds or takes back the reader's reaction with this emoji. The web shows
@@ -91,6 +91,8 @@ pub enum MessageMenuAction {
     CopyMessageId,
     /// Its author stops the votes now, after a confirmation.
     EndPoll,
+    /// A moderator takes every reaction off the message, after a confirmation.
+    RemoveAllReactions,
     Delete,
 }
 
@@ -129,6 +131,8 @@ pub fn message_menu_actions(
         ],
         vec![
             (facts.is_own && facts.is_poll_open).then_some(Action::EndPoll),
+            (facts.has_reactions && facts.can_remove_reactions)
+                .then_some(Action::RemoveAllReactions),
             facts.can_delete().then_some(Action::Delete),
         ],
     ])
@@ -271,6 +275,7 @@ mod tests {
         has_reactions: false,
         can_join_reactions: true,
         can_add_reactions: true,
+        can_remove_reactions: false,
         can_manage_pins: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
@@ -399,6 +404,35 @@ mod tests {
         assert!(
             message_menu_actions(pinned, &[]).contains(&MenuLine::Action(MessageMenuAction::Unpin))
         );
+    }
+
+    #[test]
+    fn a_moderator_removes_all_reactions_only_from_a_message_that_has_some() {
+        use MessageMenuAction::{Delete, RemoveAllReactions};
+        let moderator = MessageMenuFacts {
+            can_manage_messages: true,
+            can_remove_reactions: true,
+            has_reactions: true,
+            ..OTHERS_TEXT
+        };
+        let lines = actions(&message_menu_actions(moderator, &[]));
+        assert_eq!(
+            lines[lines.len() - 2..],
+            [Some(RemoveAllReactions), Some(Delete)]
+        );
+        let without_reactions = MessageMenuFacts {
+            has_reactions: false,
+            ..moderator
+        };
+        assert!(
+            !message_menu_actions(without_reactions, &[])
+                .contains(&MenuLine::Action(RemoveAllReactions))
+        );
+        let member = MessageMenuFacts {
+            has_reactions: true,
+            ..OTHERS_TEXT
+        };
+        assert!(!message_menu_actions(member, &[]).contains(&MenuLine::Action(RemoveAllReactions)));
     }
 
     #[test]
