@@ -92,8 +92,9 @@ pub fn use_system_language(cx: &mut App) {
     use_language(system, cx);
 }
 
-/// Switches to the language the preferences ask for, if it is not the one spoken.
-pub fn apply_chosen_language(cx: &mut App) {
+/// Switches to the language the preferences ask for, if it is not the one spoken; true when it
+/// switched, so what lives outside the windows (menus) can be retitled.
+pub fn apply_chosen_language(cx: &mut App) -> bool {
     let system = cx
         .try_global::<SystemLanguage>()
         .map_or_else(Language::default, |language| language.0);
@@ -101,9 +102,11 @@ pub fn apply_chosen_language(cx: &mut App) {
         .map(|preferences| preferences.language)
         .unwrap_or_default();
     let wanted = chosen_language(choice, system);
-    if strings(cx).language() != wanted {
+    let is_spoken = strings(cx).language() == wanted;
+    if !is_spoken {
         use_language(wanted, cx);
     }
+    !is_spoken
 }
 
 #[cfg(test)]

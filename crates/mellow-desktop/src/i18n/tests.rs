@@ -39,7 +39,8 @@ fn a_chosen_language_wins_over_the_systems(cx: &mut TestAppContext) {
         crate::preferences::change_preferences(cx, |preferences| {
             preferences.language = LanguageChoice::French;
         });
-        apply_chosen_language(cx);
+        assert!(apply_chosen_language(cx));
+        assert!(!apply_chosen_language(cx), "French is already spoken");
         assert_eq!(strings(cx).language(), Language::French);
         assert!(std::ptr::eq(
             crate::strings_pending_i18n::strings(cx),
