@@ -418,3 +418,51 @@ fn another_channel_chosen_while_connecting_retargets_the_start(cx: &mut TestAppC
     cx.run_until_parked();
     runtime.block_on(instance.stop());
 }
+#[gpui::test]
+fn the_microphone_test_gives_way_to_the_call_and_hearing_yourself_ends_with_it(
+    cx: &mut TestAppContext,
+) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, channel_id, _) = owner_with_two_voice_channels(&runtime, &instance, cx);
+
+    // "Hear yourself" outside a call starts the test, from that click only.
+    assert!(!voice.read_with(cx, |voice, _| voice.is_microphone_test_running()));
+    voice.update(cx, |voice, cx| voice.set_monitoring(true, cx));
+    assert!(voice.read_with(cx, |voice, _| voice.is_microphone_test_running()));
+    wait_until(cx, "the test's meter", |cx| {
+        voice.read_with(cx, |voice, _| voice.microphone_decibels().is_some())
+    });
+
+    voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    wait_until(cx, "the call, its microphone read by the meter", |cx| {
+        voice.read_with(cx, |voice, _| {
+            voice.phase() == Some(CallPhase::Connected)
+                && voice.is_microphone_live()
+                && voice.microphone_decibels().is_some()
+        })
+    });
+    voice.read_with(cx, |voice, _| {
+        assert!(
+            !voice.is_microphone_test_running(),
+            "the call's microphone serves"
+        );
+        assert!(
+            voice.is_monitoring(),
+            "hearing yourself goes on in the call"
+        );
+    });
+
+    voice.update(cx, Voice::leave);
+    voice.read_with(cx, |voice, _| {
+        assert!(
+            !voice.is_monitoring(),
+            "hearing the call's microphone ends with it"
+        );
+        assert_eq!(voice.microphone_decibels(), None);
+    });
+
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}
