@@ -1,10 +1,11 @@
 //! The widths the reader gives the columns of the wide layout (`web/src/components/column-widths.ts`,
-//! DESIGN.md §4.5): the channel list in the navigator and the docked member sheet. Remembered in
+//! DESIGN.md §4.5): the channel list in the navigator, the docked member sheet and the docked search results. Remembered in
 //! the preferences, checked on the way in, and fitted to the window so the conversation keeps its
 //! minimum width. Pure: widths in logical pixels at 100 % zoom.
 
 use crate::theme::tokens::{
-    COMPONENT_NAVIGATOR_STRIP_WIDTH, SIZE_CHAT_MIN_WIDTH, SIZE_MEMBER_LIST_WIDTH,
+    COMPONENT_NAVIGATOR_STRIP_WIDTH, COMPONENT_SEARCH_PANEL_WIDTH,
+    COMPONENT_SEARCH_PANEL_WIDTH_MAX, SIZE_CHAT_MIN_WIDTH, SIZE_MEMBER_LIST_WIDTH,
     SIZE_MEMBER_LIST_WIDTH_MAX, SIZE_MEMBER_LIST_WIDTH_MIN, SIZE_SHEET_INSET, SIZE_SIDEBAR_WIDTH,
     SIZE_SIDEBAR_WIDTH_MAX, SIZE_SIDEBAR_WIDTH_MIN,
 };
@@ -27,6 +28,12 @@ pub const MEMBERS_COLUMN_BOUNDS: ColumnBounds = ColumnBounds {
     minimum: SIZE_MEMBER_LIST_WIDTH_MIN,
     maximum: SIZE_MEMBER_LIST_WIDTH_MAX,
     default: SIZE_MEMBER_LIST_WIDTH,
+};
+
+pub const SEARCH_COLUMN_BOUNDS: ColumnBounds = ColumnBounds {
+    minimum: COMPONENT_SEARCH_PANEL_WIDTH,
+    maximum: COMPONENT_SEARCH_PANEL_WIDTH_MAX,
+    default: COMPONENT_SEARCH_PANEL_WIDTH,
 };
 
 /// The strip, a conversation at its minimum and the row's four insets (two ends, two gaps).

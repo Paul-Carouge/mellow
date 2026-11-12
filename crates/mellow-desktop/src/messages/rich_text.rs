@@ -470,8 +470,14 @@ impl RichTextElement {
             let actions: Arc<[InlineAction]> = actions.into();
             interactive =
                 interactive.on_click(ranges, move |index, _, cx| match actions.get(index) {
-                    Some(InlineAction::OpenLink(url)) => open_message_link(url, cx),
+                    // A link or a spoiler takes the click: a clickable ancestor (a search
+                    // result) must not act on it too.
+                    Some(InlineAction::OpenLink(url)) => {
+                        cx.stop_propagation();
+                        open_message_link(url, cx);
+                    }
                     Some(InlineAction::RevealSpoiler(id)) => {
+                        cx.stop_propagation();
                         if let Some(revealed) = &revealed_spoilers {
                             revealed.update(cx, |revealed, cx| {
                                 revealed.insert(*id);

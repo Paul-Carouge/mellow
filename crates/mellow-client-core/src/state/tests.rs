@@ -378,6 +378,7 @@ fn a_rename_updates_me_members_in_username_order_and_cached_authors() {
         ("zoe", "Zoé")
     );
     assert_eq!(me.email, "me@example.org");
+    assert_eq!(state.current_user_as_public_user(), Some(renamed.clone()));
     let member_ids: Vec<_> = state.members(GUILD).iter().map(|m| m.user.id).collect();
     assert_eq!(member_ids, [OTHER, ME]);
     assert_eq!(state.members(GUILD)[1].user, renamed);
