@@ -21,7 +21,7 @@ pub mod server;
 
 use gpui::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div,
+    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 
 pub use navigation::{SettingsNavigation, SettingsPage, SettingsPageEvent, ShownPage, shown_page};
@@ -58,21 +58,33 @@ pub fn unsaved_changes_labels(catalogue: Strings) -> UnsavedChangesLabels {
     }
 }
 
-/// "Changes saved" under a form once the bar is gone, announced as a status.
-pub fn saved_notice(id: &'static str, notice: SharedString, cx: &App) -> impl IntoElement {
+/// "Changes saved" under a form once the bar is gone. The status node is always drawn, empty
+/// when nothing is said, because screen readers often miss a live region inserted with its text.
+pub fn saved_notice(id: &'static str, notice: Option<SharedString>, cx: &App) -> impl IntoElement {
     let tokens = theme(cx);
-    with_type(div(), TYPE_BODY)
-        .id(id)
-        .role(Role::Status)
-        .aria_label(notice.clone())
-        .mt(length(COMPONENT_SETTINGS_ACTION_GAP))
-        .flex()
-        .gap(length(COMPONENT_SETTINGS_ERROR_ICON_GAP))
-        .text_color(color(tokens.component_settings_notice_text))
-        .child(icon(
-            IconName::Check,
-            COMPONENT_SETTINGS_ERROR_ICON_SIZE,
-            color(tokens.component_settings_notice_text),
-        ))
-        .child(notice)
+    let notice_color = color(tokens.component_settings_notice_text);
+    div()
+        .child(
+            div()
+                .id(id)
+                .role(Role::Status)
+                .aria_label(notice.clone().unwrap_or_default())
+                .h_0()
+                .overflow_hidden(),
+        )
+        .when_some(notice, |wrapper, notice| {
+            wrapper.child(
+                with_type(div(), TYPE_BODY)
+                    .mt(length(COMPONENT_SETTINGS_ACTION_GAP))
+                    .flex()
+                    .gap(length(COMPONENT_SETTINGS_ERROR_ICON_GAP))
+                    .text_color(notice_color)
+                    .child(icon(
+                        IconName::Check,
+                        COMPONENT_SETTINGS_ERROR_ICON_SIZE,
+                        notice_color,
+                    ))
+                    .child(notice),
+            )
+        })
 }

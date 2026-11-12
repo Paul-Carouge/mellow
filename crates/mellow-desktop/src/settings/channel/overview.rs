@@ -119,14 +119,7 @@ fn stored_channel(
     channel_id: Snowflake,
     cx: &gpui::App,
 ) -> Option<Channel> {
-    session
-        .read(cx)
-        .state()
-        .guilds()
-        .iter()
-        .flat_map(|guild| &guild.channels)
-        .find(|channel| channel.id == channel_id)
-        .cloned()
+    session.read(cx).state().guild_channel(channel_id).cloned()
 }
 
 impl ChannelOverviewPage {
@@ -270,9 +263,18 @@ impl ChannelOverviewPage {
                     let _ = page.update(cx, |page, cx| {
                         page.is_saving = false;
                         match outcome {
-                            // The fields keep the saved text until the gateway brings it.
+                            // The fields keep the saved text until the gateway brings it, unless
+                            // the echo came first (it travels on another connection).
                             Ok(()) => {
-                                page.saved = Some(drafts);
+                                let mut waiting = drafts.clone();
+                                if let Some(channel) =
+                                    stored_channel(&page.session, page.channel_id, cx)
+                                {
+                                    waiting.forget_stored(&channel);
+                                }
+                                if !waiting.is_empty() {
+                                    page.saved = Some(drafts);
+                                }
                                 page.notice =
                                     Some(strings(cx).server_settings().unsaved().saved().into());
                             }
@@ -321,10 +323,11 @@ impl Render for ChannelOverviewPage {
                         )
                     }),
             )
-            .when_some(
+            .child(saved_notice(
+                "channel-overview-notice",
                 self.notice.clone().filter(|_| !is_changed),
-                |column, notice| column.child(saved_notice("channel-overview-notice", notice, cx)),
-            )
+                cx,
+            ))
             .child(div().flex_1())
             .when(is_changed, |column| {
                 let mut bar = UnsavedChangesBar::new(

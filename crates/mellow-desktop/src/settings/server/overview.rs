@@ -112,7 +112,7 @@ impl ServerOverviewPage {
         let stored = stored_name(&self.session, self.guild_id, cx);
         value != self.shown_stored_name
             && value.trim() != stored
-            && self.saved_name.as_deref() != Some(value.as_str())
+            && self.saved_name.as_deref() != Some(value.trim())
     }
 
     /// Tells the screen when the field starts or stops differing from the stored name.
@@ -137,7 +137,9 @@ impl ServerOverviewPage {
             self.name_input
                 .update(cx, |input, cx| input.set_value(stored.clone(), window, cx));
         }
-        if self.field_value(cx) == stored {
+        if self.field_value(cx).trim() == stored
+            || self.saved_name.as_deref() == Some(stored.as_str())
+        {
             self.saved_name = None;
         }
         self.shown_stored_name = stored;
@@ -191,9 +193,12 @@ impl ServerOverviewPage {
                     let _ = page.update(cx, |page, cx| {
                         page.is_saving = false;
                         match outcome {
-                            // The field keeps the saved name until the gateway brings it.
+                            // The field keeps the saved name until the gateway brings it, unless
+                            // the echo came first (it travels on another connection).
                             Ok(()) => {
-                                page.saved_name = Some(sent_name);
+                                if stored_name(&page.session, page.guild_id, cx) != sent_name {
+                                    page.saved_name = Some(sent_name);
+                                }
                                 page.notice =
                                     Some(strings(cx).server_settings().unsaved().saved().into());
                             }
@@ -233,10 +238,11 @@ impl Render for ServerOverviewPage {
                         .helper(words.server_name_helper()),
                 ),
             )
-            .when_some(
+            .child(saved_notice(
+                "server-overview-notice",
                 self.notice.clone().filter(|_| !is_changed),
-                |column, notice| column.child(saved_notice("server-overview-notice", notice, cx)),
-            )
+                cx,
+            ))
             .child(div().flex_1())
             .when(is_changed, |column| {
                 let mut bar = UnsavedChangesBar::new(
