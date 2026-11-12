@@ -2,8 +2,9 @@
 //! as Ogg Opus, read here with the `ogg` crate and libopus; the types it leaves as uploaded (low
 //! bitrate MP3 and M4A, ADTS AAC, and files from before ADR-0045) go through symphonia, with the
 //! instance's own guards (`domain::audio_transcoding`): only the codec the sniffed container
-//! usually holds, bounded packets, one or two channels. Ogg Vorbis and anything else answers
-//! [`ClipError::Unsupported`], which readers see as "download it instead".
+//! usually holds, bounded packets, one or two channels; Ogg Vorbis, which the instance keeps as
+//! uploaded, too. Anything else answers [`ClipError::Unsupported`], which readers see as
+//! "download it instead".
 //!
 //! Decoding is incremental: one packet at a time, so memory follows the file, never its decoded
 //! length.
@@ -15,7 +16,7 @@ use ogg::reading::PacketReader;
 use symphonia::core::codecs::audio::well_known::{
     CODEC_ID_AAC, CODEC_ID_FLAC, CODEC_ID_MP3, CODEC_ID_PCM_ALAW, CODEC_ID_PCM_F32LE,
     CODEC_ID_PCM_F64LE, CODEC_ID_PCM_MULAW, CODEC_ID_PCM_S16LE, CODEC_ID_PCM_S24LE,
-    CODEC_ID_PCM_S32LE, CODEC_ID_PCM_U8,
+    CODEC_ID_PCM_S32LE, CODEC_ID_PCM_U8, CODEC_ID_VORBIS,
 };
 use symphonia::core::codecs::audio::{AudioCodecId, AudioDecoder, AudioDecoderOptions};
 use symphonia::core::formats::probe::Hint;
@@ -50,6 +51,10 @@ const OGG_CAPTURE_PATTERN: &[u8; 4] = b"OggS";
 const OGG_GRANULE_OFFSET: usize = 6;
 /// "No packet ends on this page" (RFC 3533).
 const OGG_NO_GRANULE: u64 = u64::MAX;
+/// A page header's segment count; the segment table follows, then the first packet.
+const OGG_SEGMENT_COUNT_OFFSET: usize = 26;
+/// The Vorbis identification header's start (packet type 1, then "vorbis").
+const VORBIS_IDENTIFICATION_MAGIC: &[u8; 7] = b"\x01vorbis";
 
 /// Why a file is not played.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, thiserror::Error)]
@@ -98,7 +103,7 @@ pub(crate) fn open_clip(
     {
         return Err(ClipError::Unsupported);
     }
-    if content_type == "audio/ogg" {
+    if content_type == "audio/ogg" && !starts_with_vorbis_packet(&bytes) {
         Ok(Box::new(OggOpusClip::open(bytes)?))
     } else {
         Ok(Box::new(SymphoniaClip::open(bytes, content_type)?))
@@ -107,7 +112,7 @@ pub(crate) fn open_clip(
 
 /// Whether the first bytes are those of the type the instance sniffed (ADR-0038): a file whose
 /// type was set by something else is never handed to a decoder.
-fn starts_like(bytes: &[u8], content_type: &str) -> bool {
+pub(crate) fn starts_like(bytes: &[u8], content_type: &str) -> bool {
     let is_mpeg_frame = |at: usize| {
         bytes.get(at) == Some(&0xFF) && bytes.get(at + 1).is_some_and(|byte| byte & 0xE0 == 0xE0)
     };
@@ -122,6 +127,17 @@ fn starts_like(bytes: &[u8], content_type: &str) -> bool {
         "audio/mp4" => bytes.get(4..8) == Some(b"ftyp"),
         _ => false,
     }
+}
+
+/// Whether an Ogg file's first packet is a Vorbis identification header.
+fn starts_with_vorbis_packet(bytes: &[u8]) -> bool {
+    let first_packet = bytes
+        .get(OGG_SEGMENT_COUNT_OFFSET)
+        .map(|&segments| OGG_SEGMENT_COUNT_OFFSET + 1 + usize::from(segments));
+    first_packet.is_some_and(|start| {
+        bytes.get(start..start + VORBIS_IDENTIFICATION_MAGIC.len())
+            == Some(VORBIS_IDENTIFICATION_MAGIC)
+    })
 }
 
 /// Keeps the frames of `decoded` (interleaved, `channels` wide, starting at frame `first`) that
@@ -282,7 +298,7 @@ impl ClipDecoder for OggOpusClip {
     }
 }
 
-// ---- symphonia: WAV, FLAC, MP3, AAC, M4A ----
+// ---- symphonia: WAV, FLAC, MP3, AAC, M4A, Ogg Vorbis ----
 
 struct SymphoniaClip {
     bytes: Arc<[u8]>,
@@ -372,6 +388,7 @@ fn is_codec_expected_for_type(codec: AudioCodecId, content_type: &str) -> bool {
         "audio/flac" => codec == CODEC_ID_FLAC,
         "audio/mpeg" => codec == CODEC_ID_MP3,
         "audio/aac" | "audio/mp4" => codec == CODEC_ID_AAC,
+        "audio/ogg" => codec == CODEC_ID_VORBIS,
         _ => false,
     }
 }
@@ -616,14 +633,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn vorbis_surround_and_mislabelled_files_are_not_decoded() {
+    fn ogg_vorbis_goes_to_symphonia_and_a_broken_one_is_refused() {
+        let vorbis = include_bytes!("../tests/fixtures/tone-vorbis.ogg");
+        let mut clip = open_clip(vorbis.as_slice().into(), "audio/ogg").unwrap();
+        assert_eq!((clip.sample_rate(), clip.channels()), (44_100, 2));
+        assert!(decode_all(clip.as_mut()) > 20_000);
+
         let mut vorbis_head = b"\x01vorbis".to_vec();
         vorbis_head.resize(30, 0);
-        let vorbis = ogg_file(&vorbis_head, &[vec![0; 10]], 960, 960);
-        assert_eq!(
-            open_clip(vorbis.into(), "audio/ogg").err(),
-            Some(ClipError::Unsupported)
-        );
+        let broken = ogg_file(&vorbis_head, &[vec![0; 10]], 960, 960);
+        assert!(open_clip(broken.into(), "audio/ogg").is_err());
+    }
+
+    #[test]
+    fn surround_and_mislabelled_files_are_not_decoded() {
         let mut surround_head = opus_head(6, 0);
         surround_head[18] = 1;
         let surround = ogg_file(&surround_head, &[vec![0; 10]], 960, 960);

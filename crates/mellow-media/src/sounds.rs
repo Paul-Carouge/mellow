@@ -5,6 +5,8 @@
 
 use std::sync::Arc;
 
+use mellow_protocol::Snowflake;
+
 use crate::audio_format::{Frame, VOICE_SAMPLE_RATE};
 
 /// A sound ready to play: mono, 48 kHz, `f32` in `[-1, 1]`. Cheap to clone.
@@ -180,12 +182,42 @@ fn render_notes<'a>(
 /// burst of soundboard plays never grows the list.
 const MAXIMUM_SOUNDS_PLAYING: usize = 8;
 
+/// Whom a soundboard sound plays for, so it can be stopped (`stopPlayingSounds` on the web).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundboardPlayer {
+    /// A preview, for the reader only.
+    Preview,
+    /// Played by someone in the call (the reader included).
+    Person(Snowflake),
+}
+
+/// Which soundboard sounds stop: previews (a dialog's Stop), one person's (muted for the reader),
+/// or every one (the reader deafened).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SoundboardSoundsToStop {
+    Previews,
+    PlayedBy(Snowflake),
+    All,
+}
+
+impl SoundboardSoundsToStop {
+    fn includes(self, player: SoundboardPlayer) -> bool {
+        match self {
+            Self::Previews => player == SoundboardPlayer::Preview,
+            Self::PlayedBy(user_id) => player == SoundboardPlayer::Person(user_id),
+            Self::All => true,
+        }
+    }
+}
+
 /// One sound being played.
 #[derive(Debug)]
 struct PlayingSound {
     samples: LocalSound,
     position: usize,
     gain: f32,
+    /// `None` for the app's own sounds (cues, the chime), which are never stopped.
+    soundboard_player: Option<SoundboardPlayer>,
 }
 
 /// The sounds playing on an output, mixed 10 ms at a time.
@@ -196,6 +228,24 @@ pub(crate) struct PlayingSounds {
 
 impl PlayingSounds {
     pub(crate) fn play(&mut self, samples: LocalSound, gain: f32) {
+        self.start(samples, gain, None);
+    }
+
+    pub(crate) fn play_soundboard(
+        &mut self,
+        samples: LocalSound,
+        gain: f32,
+        player: SoundboardPlayer,
+    ) {
+        self.start(samples, gain, Some(player));
+    }
+
+    fn start(
+        &mut self,
+        samples: LocalSound,
+        gain: f32,
+        soundboard_player: Option<SoundboardPlayer>,
+    ) {
         if self.sounds.len() >= MAXIMUM_SOUNDS_PLAYING {
             self.sounds.remove(0);
         }
@@ -203,6 +253,15 @@ impl PlayingSounds {
             samples,
             position: 0,
             gain,
+            soundboard_player,
+        });
+    }
+
+    pub(crate) fn stop_soundboard(&mut self, which: SoundboardSoundsToStop) {
+        self.sounds.retain(|sound| {
+            sound
+                .soundboard_player
+                .is_none_or(|player| !which.includes(player))
         });
     }
 
@@ -292,5 +351,23 @@ mod tests {
             playing.play(vec![0.1; 10].into(), 1.0);
         }
         assert_eq!(playing.sounds.len(), MAXIMUM_SOUNDS_PLAYING);
+    }
+
+    #[test]
+    fn soundboard_sounds_stop_by_whom_they_play_for_and_cues_never() {
+        let alice = Snowflake::from_raw(1);
+        let bob = Snowflake::from_raw(2);
+        let mut playing = PlayingSounds::default();
+        let sound: LocalSound = vec![0.1; 10].into();
+        playing.play(sound.clone(), 1.0);
+        playing.play_soundboard(sound.clone(), 1.0, SoundboardPlayer::Preview);
+        playing.play_soundboard(sound.clone(), 1.0, SoundboardPlayer::Person(alice));
+        playing.play_soundboard(sound, 1.0, SoundboardPlayer::Person(bob));
+        playing.stop_soundboard(SoundboardSoundsToStop::Previews);
+        assert_eq!(playing.sounds.len(), 3);
+        playing.stop_soundboard(SoundboardSoundsToStop::PlayedBy(alice));
+        assert_eq!(playing.sounds.len(), 2);
+        playing.stop_soundboard(SoundboardSoundsToStop::All);
+        assert_eq!(playing.sounds.len(), 1, "the cue plays on");
     }
 }

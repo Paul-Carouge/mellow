@@ -11,7 +11,10 @@ use crate::audio_format::{Frame, SAMPLES_PER_FRAME};
 use crate::devices::AudioDevices;
 use crate::enhancement::PeakLimiter;
 use crate::playback::Playback;
-use crate::sounds::{LocalSound, PlayingSounds, VoiceCue, render_notification_chime};
+use crate::sounds::{
+    LocalSound, PlayingSounds, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue,
+    render_notification_chime,
+};
 
 /// How often the thread feeds the open output: well under a frame.
 const WORK_PERIOD: Duration = Duration::from_millis(5);
@@ -22,6 +25,8 @@ const IDLE_FRAMES_BEFORE_CLOSING: u32 = 100;
 #[derive(Debug)]
 enum SoundPlayerCommand {
     Play { sound: LocalSound, gain: f32 },
+    PlayPreview { sound: LocalSound, gain: f32 },
+    StopPreviews,
     PlayCue(VoiceCue),
     PlayNotificationChime,
     SetOutputDevice(Option<String>),
@@ -61,6 +66,15 @@ impl SoundPlayer {
     /// Any sound at `gain` (soundboard sounds: [`crate::soundboard_gain`]).
     pub fn play(&self, sound: LocalSound, gain: f32) {
         self.send(SoundPlayerCommand::Play { sound, gain });
+    }
+
+    /// A soundboard sound previewed outside a call, at `gain` ([`crate::soundboard_gain`]).
+    pub fn play_soundboard_preview(&self, sound: LocalSound, gain: f32) {
+        self.send(SoundPlayerCommand::PlayPreview { sound, gain });
+    }
+
+    pub fn stop_soundboard_previews(&self) {
+        self.send(SoundPlayerCommand::StopPreviews);
     }
 
     /// Sounds play where voices do; `None` is the system's default output.
@@ -113,6 +127,12 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<SoundPlayerCommand>) {
         for command in command.into_iter().chain(commands.try_iter()) {
             match command {
                 SoundPlayerCommand::Play { sound, gain } => sounds.play(sound, gain),
+                SoundPlayerCommand::PlayPreview { sound, gain } => {
+                    sounds.play_soundboard(sound, gain, SoundboardPlayer::Preview);
+                }
+                SoundPlayerCommand::StopPreviews => {
+                    sounds.stop_soundboard(SoundboardSoundsToStop::Previews);
+                }
                 SoundPlayerCommand::PlayCue(cue) => sounds.play(cue.render(), 1.0),
                 SoundPlayerCommand::PlayNotificationChime => {
                     sounds.play(

@@ -22,7 +22,9 @@ rtrb.workspace = true
 rubato.workspace = true
 sonora.workspace = true
 str0m.workspace = true
-symphonia.workspace = true
+# Ogg Vorbis: sound effects people pick for the soundboard, and attachments the instance keeps as
+# uploaded (it never transcodes Ogg).
+symphonia = { workspace = true, features = ["ogg", "vorbis"] }
 thiserror.workspace = true
 tracing.workspace = true
 yuv.workspace = true

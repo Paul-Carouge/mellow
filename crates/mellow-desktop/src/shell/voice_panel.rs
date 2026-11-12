@@ -478,7 +478,7 @@ impl DuskShell {
                                 }),
                         ),
                 )
-                // The soundboard's button goes here, before Disconnect (`SoundboardPopover.svelte`).
+                .child(self.render_soundboard_button(cx))
                 .child(
                     IconButton::new(
                         "voice-disconnect",

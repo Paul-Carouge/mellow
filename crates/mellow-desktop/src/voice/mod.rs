@@ -27,13 +27,13 @@
 //!   [`Voice::global_push_to_talk_key_changed`], next to the in-window handler
 //!   ([`Voice::push_to_talk_key_down`] and friends); pressing and releasing are idempotent, so a
 //!   key heard by both while the window is focused presses once.
-//! - **Soundboard**: [`Voice::engine`] plays sounds ([`mellow_media::VoiceSession::play_soundboard_sound`]),
-//!   [`Voice::connected_place`] says where; the panel's button slot is marked in
-//!   `shell/voice_panel.rs`.
-//!   A peer's join sound replaces the peer-join cue in [`Voice::note_peer_change`].
+//! - **Soundboard** (`soundboard.rs`): [`Voice::play_soundboard_sound`] sends the reader's
+//!   sounds, [`Voice::soundboard_block`] says why it cannot; played sounds, join sounds and
+//!   previews play here.
 
 pub mod global_push_to_talk;
 pub mod media_settings;
+mod soundboard;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -58,8 +58,9 @@ use mellow_client_core::state::StateChange;
 use mellow_media::{
     AudioDeviceDescription, AudioDeviceError, AudioDevices, AudioDirection, ConnectionProblem,
     InMemoryPersonVoiceSettings, MicrophoneTest, MicrophoneTestOptions, PersonSoundSource,
-    PersonVoiceSettingsStore as _, SoundPlayer, SystemAudioDevices, VoiceCue, VoicePhase,
-    VoiceSession, VoiceSessionEvent, VoiceSessionOptions, VoiceToggles,
+    PersonVoiceSettingsStore as _, SoundCache, SoundPlayer, SoundboardSoundsToStop,
+    SystemAudioDevices, VoiceCue, VoicePhase, VoiceSession, VoiceSessionEvent, VoiceSessionOptions,
+    VoiceToggles,
 };
 use mellow_protocol::Snowflake;
 
@@ -143,6 +144,8 @@ pub struct Voice {
     applied_settings: VoiceSettings,
     /// Sounds outside a call: the leave cue, toggles, the chime. Started at the first one.
     sound_player: Option<SoundPlayer>,
+    /// Soundboard sounds already downloaded, decoded.
+    sound_cache: SoundCache,
     /// The settings' microphone test, outside a call only.
     microphone_test: Option<MicrophoneTest>,
     /// "Hear yourself", in the test or in the call.
@@ -381,6 +384,7 @@ impl Voice {
             held_modifiers: Modifiers::default(),
             applied_settings: VoiceSettings::DEFAULT,
             sound_player: None,
+            sound_cache: SoundCache::default(),
             microphone_test: None,
             is_monitoring: false,
             is_recording_push_to_talk_key: false,
@@ -795,9 +799,7 @@ impl Voice {
         match event {
             VoiceSessionEvent::Connected => {
                 call.phase = CallPhase::Connected;
-                if let Some(engine) = call.engine.as_ref() {
-                    engine.play_cue(VoiceCue::SelfJoin);
-                }
+                self.play_own_join(cx);
             }
             VoiceSessionEvent::PhaseChanged(phase) => {
                 call.phase = match *phase {
@@ -911,23 +913,31 @@ impl Voice {
 
     fn follow_state(&mut self, changes: &[StateChange], cx: &mut Context<Self>) {
         for change in changes {
-            if let StateChange::VoiceParticipant {
-                guild_id,
-                user_id,
-                previous_channel_id,
-                channel_id,
-            } = *change
-            {
-                let change = participant_change(previous_channel_id, channel_id, self.channel_id());
-                if let Some(change) = change {
-                    self.note_peer_change(guild_id, user_id, change, cx);
+            match *change {
+                StateChange::VoiceParticipant {
+                    guild_id,
+                    user_id,
+                    previous_channel_id,
+                    channel_id,
+                } => {
+                    let change =
+                        participant_change(previous_channel_id, channel_id, self.channel_id());
+                    if let Some(change) = change {
+                        self.note_peer_change(guild_id, user_id, change, cx);
+                    }
                 }
+                StateChange::SoundPlayed {
+                    channel_id,
+                    user_id,
+                    sound_id,
+                } => self.note_sound_played(channel_id, user_id, sound_id, cx),
+                _ => {}
             }
         }
     }
 
-    /// Someone else came into or left the call: an announcement and a cue (a join sound, once
-    /// the soundboard plays them, replaces the join cue).
+    /// Someone else came into or left the call: an announcement and a cue (their join sound, when
+    /// they have one, replaces the join cue).
     fn note_peer_change(
         &mut self,
         guild_id: Snowflake,
@@ -956,19 +966,14 @@ impl Voice {
             .and_then(|channel_id| state.guild_channel(channel_id))
             .map(|channel| channel.name.clone())
             .unwrap_or_default();
-        let (sentence, cue) = match change {
-            ParticipantChange::Joined => (
-                strings.voice().peer_joined(&name, &channel_name),
-                VoiceCue::PeerJoin,
-            ),
-            ParticipantChange::Left => (
-                strings.voice().peer_left(&name, &channel_name),
-                VoiceCue::PeerLeave,
-            ),
-        };
-        self.announcement = sentence.into();
-        if let Some(engine) = self.engine() {
-            engine.play_cue(cue);
+        self.announcement = match change {
+            ParticipantChange::Joined => strings.voice().peer_joined(&name, &channel_name),
+            ParticipantChange::Left => strings.voice().peer_left(&name, &channel_name),
+        }
+        .into();
+        match change {
+            ParticipantChange::Joined => self.play_peer_join(guild_id, user_id, cx),
+            ParticipantChange::Left => self.play_call_cue(VoiceCue::PeerLeave),
         }
         cx.notify();
     }
@@ -995,6 +1000,9 @@ impl Voice {
         let mut toggles = self.toggles;
         toggles.set_deafened(!toggles.is_deafened());
         self.set_toggles(toggles, cx);
+        if toggles.is_deafened() {
+            self.stop_soundboard_sounds(SoundboardSoundsToStop::All);
+        }
         self.play_cue(
             if toggles.is_deafened() {
                 VoiceCue::Deafen
@@ -1182,6 +1190,9 @@ impl Voice {
             ..current
         };
         self.set_person_setting(user_id, setting, cx);
+        if setting.is_locally_muted {
+            self.stop_soundboard_sounds(SoundboardSoundsToStop::PlayedBy(user_id));
+        }
     }
 
     fn set_person_setting(

@@ -52,6 +52,10 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 
+/// Popovers draw at menus' priority; modal dialogs' scrims draw at 2.
+const POPOVER_DRAW_PRIORITY: usize = 1;
+const OVER_DIALOGS_DRAW_PRIORITY: usize = 3;
+
 /// Cells in a row: as many as the panel's inside holds (the web's `auto-fill` grid).
 #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // Positive, far below `usize::MAX`.
 pub const EMOJI_PICKER_COLUMNS: usize = ((COMPONENT_EMOJI_PICKER_WIDTH
@@ -170,6 +174,8 @@ pub struct EmojiPicker {
     bar_focus: FocusHandle,
     grid_focus: FocusHandle,
     position: gpui::Point<Pixels>,
+    /// Drawn above menus, or above modal dialogs for a picker inside one.
+    draw_priority: usize,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -254,10 +260,18 @@ impl EmojiPicker {
             bar_focus: cx.focus_handle().tab_stop(true),
             grid_focus: cx.focus_handle().tab_stop(true),
             position: point(px(left), px(top)),
+            draw_priority: POPOVER_DRAW_PRIORITY,
             _subscriptions: subscriptions,
         };
         picker.rebuild_sections("");
         picker
+    }
+
+    /// A picker opened from inside a modal dialog draws above the dialog's scrim.
+    #[must_use]
+    pub fn over_dialogs(mut self) -> Self {
+        self.draw_priority = OVER_DIALOGS_DRAW_PRIORITY;
+        self
     }
 
     fn rebuild_sections(&mut self, query: &str) {
@@ -695,7 +709,12 @@ fn category_icon(kind: PickerSectionKind) -> IconName {
 }
 
 /// A server emoji's picture at `size`, still under reduced motion (`CustomEmojiImage.svelte`).
-fn custom_emoji_picture(id: Snowflake, size: f32, window: &Window, cx: &App) -> AnyElement {
+pub(crate) fn custom_emoji_picture(
+    id: Snowflake,
+    size: f32,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     img(picture_for_box(
         DownloadableFile::Icon(id),
         size,
@@ -800,6 +819,8 @@ impl Render for EmojiPicker {
             }))
             // A right-click inside must not reach what lies under it.
             .on_mouse_down(gpui::MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            // Clicks inside never reach what lies under it (a dialog's scrim closes the dialog).
+            .occlude()
             .flex()
             .flex_col()
             .gap(length(COMPONENT_EMOJI_PICKER_GAP))
@@ -836,7 +857,7 @@ impl Render for EmojiPicker {
                 .snap_to_window_with_margin(px(COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN))
                 .child(card),
         )
-        .with_priority(1)
+        .with_priority(self.draw_priority)
     }
 }
 

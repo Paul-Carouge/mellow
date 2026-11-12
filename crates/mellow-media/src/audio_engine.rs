@@ -28,7 +28,10 @@ use crate::processing::{ProcessingSettings, VoiceProcessor};
 use crate::resampling::{Interpolation, ResamplingError, StreamResampler};
 use crate::session::{AudioDirection, VoiceSessionEvent};
 use crate::soundboard::soundboard_gain;
-use crate::sounds::{LocalSound, PlayingSounds, VoiceCue, render_notification_chime};
+use crate::sounds::{
+    LocalSound, PlayingSounds, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue,
+    render_notification_chime,
+};
 use crate::transport::{IncomingAudioPacket, OutgoingVoicePacket};
 
 /// How often the thread looks at its devices when no command wakes it: well under a frame.
@@ -63,7 +66,8 @@ pub(crate) enum AudioCommand {
     /// The message chime, at full level like the cues.
     PlayNotificationChime,
     /// A soundboard or join sound, at the output volume times the soundboard volume.
-    PlaySoundboardSound(LocalSound),
+    PlaySoundboardSound(LocalSound, SoundboardPlayer),
+    StopSoundboardSounds(SoundboardSoundsToStop),
     SetInputMode(InputMode),
     SetPushToTalkPressed(bool),
     SetProcessing(ProcessingSettings),
@@ -349,10 +353,12 @@ impl AudioEngine {
             AudioCommand::PlayNotificationChime => {
                 self.sounds.play(render_notification_chime(), 1.0);
             }
-            AudioCommand::PlaySoundboardSound(sound) => self.sounds.play(
+            AudioCommand::PlaySoundboardSound(sound, player) => self.sounds.play_soundboard(
                 sound,
                 soundboard_gain(self.settings.output_volume, self.settings.soundboard_volume),
+                player,
             ),
+            AudioCommand::StopSoundboardSounds(which) => self.sounds.stop_soundboard(which),
             AudioCommand::SetInputMode(mode) => {
                 self.settings.input_mode = mode;
                 self.capture.gate.set_mode(mode);
@@ -857,6 +863,7 @@ mod tests {
             .engine
             .handle_command(AudioCommand::PlaySoundboardSound(
                 vec![0.4; SAMPLES_PER_FRAME].into(),
+                SoundboardPlayer::Preview,
             ));
         driven.engine.mix_one_frame();
         // Output volume 1 times soundboard volume 0.5.

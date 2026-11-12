@@ -1716,6 +1716,7 @@ export const fr: Catalogue = {
       unreadable: (fileName) => `Ton navigateur ne sait pas lire ${fileName} comme un son. Essaie un fichier MP3, WAV, Ogg ou M4A.`,
       tooLargeFile: (size) =>
         `Ce fichier pèse ${size}. Choisis-en un de moins de ${SOUND_SOURCE_MEGABYTES}${NO_BREAK_SPACE}Mo${NARROW_NO_BREAK_SPACE}: seules 5,2${NO_BREAK_SPACE}secondes sont gardées de toute façon.`,
+      tooLongFile: `Ce son est trop long pour être découpé ici. Choisis un fichier de moins de 10${NO_BREAK_SPACE}minutes${NARROW_NO_BREAK_SPACE}: seules 5,2${NO_BREAK_SPACE}secondes sont gardées de toute façon.`,
       trim: "Partie à garder",
       waveform: (fileName) => `Forme d’onde de ${fileName}`,
       trimHelp: `Jusqu’à 5,2${NO_BREAK_SPACE}secondes. Clique ou fais glisser sur la forme d’onde pour déplacer la sélection${NARROW_NO_BREAK_SPACE}; les curseurs règlent son début et sa fin.`,
