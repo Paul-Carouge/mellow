@@ -27,17 +27,37 @@ impl Session {
         Answer: Send + 'static,
         Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
     {
+        self.send_settings_request(action, request, cx, move |answer, cx| {
+            let outcome = answer
+                .map(|_| ())
+                .map_err(|error| describe_error(&error, &failure_summary, strings(cx)));
+            on_done(outcome, cx);
+        });
+    }
+
+    /// Sends one request built by `request` and hands its answer to `on_done` as it came, for a
+    /// page that lists what it reads or says why an upload failed; deferred so it may read the
+    /// session. A session being torn down answers `NotSignedIn`.
+    pub fn send_settings_request<Answer, Request>(
+        &mut self,
+        action: &'static str,
+        request: impl FnOnce(RestClient) -> Request,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<Answer, ClientError>, &mut App) + 'static,
+    ) where
+        Answer: Send + 'static,
+        Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
+    {
         let Some(rest) = self.rest_client().cloned() else {
-            // A session being torn down: answer anyway, or the page would stay busy.
-            cx.defer(move |cx| on_done(Err(failure_summary), cx));
+            // Answered anyway, or the page would stay busy.
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
         self.run_request(cx, request(rest), move |session, answer, cx| {
-            let outcome = answer.map(|_| ()).map_err(|error| {
-                session.report_request_error(&error, action, cx);
-                describe_error(&error, &failure_summary, strings(cx))
-            });
-            cx.defer(move |cx| on_done(outcome, cx));
+            if let Err(error) = &answer {
+                session.report_request_error(error, action, cx);
+            }
+            cx.defer(move |cx| on_done(answer, cx));
         });
     }
 }
