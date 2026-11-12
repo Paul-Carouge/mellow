@@ -23,7 +23,9 @@ use mellow_client_core::shared_logic::search_suggestions::{
 use mellow_protocol::{ChannelKind, PublicUser, RelationshipKind};
 
 use super::MessageSearchView;
-use crate::components::{Avatar, AvatarPerson, IconButton, focus_ring, icon, shadow, with_type};
+use crate::components::{
+    Avatar, AvatarPerson, IconButton, focus_ring, icon, polite_live_region, shadow, with_type,
+};
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
 use crate::messages::{local_day_of, picture_animation, picture_for_box};
@@ -429,10 +431,9 @@ impl MessageSearchView {
         let (context, looks, _, offers_go_to) = self.listed_options(window, cx);
         let option_count = looks.len() + usize::from(offers_go_to);
         // A new list starts on its first option only for values: there Enter means "this one".
-        let context_key = format!("{context:?}");
-        if context_key != self.shown_context_key {
-            self.shown_context_key = context_key;
+        if self.shown_context.as_ref() != Some(&context) {
             self.active_index = matches!(context, SearchCaretContext::Value { .. }).then_some(0);
+            self.shown_context = Some(context.clone());
         }
         let active = self.active_index.filter(|index| *index < option_count);
         let group_label = match &context {
@@ -648,14 +649,10 @@ impl MessageSearchView {
                     }),
             )
             .children(list)
-            .child(
-                div()
-                    .id("search-suggestions-status")
-                    .role(Role::Status)
-                    .aria_label(suggestions_count)
-                    .size_0()
-                    .overflow_hidden(),
-            )
+            .child(polite_live_region(
+                "search-suggestions-status",
+                suggestions_count.into(),
+            ))
             .into_any_element()
     }
 

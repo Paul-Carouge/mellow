@@ -23,14 +23,16 @@ use gpui::{
 };
 use gpui_component::input::{InputEvent, InputState, Position};
 use mellow_client_core::shared_logic::message_search::{
-    AfterTyping, MessageSearch, SEARCH_TYPING_PAUSE_MILLISECONDS, SearchRequest,
+    AfterTyping, MessageSearch, MessageSearchStatus, SEARCH_TYPING_PAUSE_MILLISECONDS,
+    SearchRequest,
 };
-use mellow_client_core::shared_logic::search_query::is_typing_filter_value;
+use mellow_client_core::shared_logic::search_query::{SearchCaretContext, is_typing_filter_value};
 use mellow_protocol::{MessageSearchSort, Snowflake};
 
 use crate::i18n::strings;
 use crate::messages::MessageBody;
 use crate::session::Session;
+use crate::theme::tokens::COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
 
 pub use self::field::FieldPlacement;
 
@@ -59,7 +61,7 @@ pub struct MessageSearchView {
     /// The suggestion the arrows point at; `None` until they move (a value's first is active).
     active_index: Option<usize>,
     /// The caret context the suggestions were last listed for, to start a new list at its top.
-    shown_context_key: String,
+    shown_context: Option<SearchCaretContext>,
     typing_pause: Option<Task<()>>,
     /// Why the last result chosen could not open, said in the results.
     notice: Option<SharedString>,
@@ -69,6 +71,8 @@ pub struct MessageSearchView {
     bodies: HashMap<Snowflake, Rc<MessageBody>>,
     /// The query and sort the results were scrolled for: a new search starts at the top.
     scrolled_for: (String, MessageSearchSort),
+    /// The results' count and state last drawn: a new page is measured once it is laid out.
+    drawn_page: (usize, MessageSearchStatus),
     results_scroll: ScrollHandle,
     _subscriptions: Vec<Subscription>,
 }
@@ -106,12 +110,13 @@ impl MessageSearchView {
             shown_placeholder: SharedString::from(placeholder),
             dismissed_at: None,
             active_index: None,
-            shown_context_key: String::new(),
+            shown_context: None,
             typing_pause: None,
             notice: None,
             revealed_blocked_ids: HashSet::new(),
             bodies: HashMap::new(),
             scrolled_for: (String::new(), MessageSearchSort::Relevance),
+            drawn_page: (0, MessageSearchStatus::Idle),
             results_scroll: ScrollHandle::new(),
             _subscriptions: subscriptions,
         }
@@ -240,6 +245,19 @@ impl MessageSearchView {
         let request = self.search.load_more();
         self.send(request, cx);
         cx.notify();
+    }
+
+    /// The next page, once the end of the laid-out list is near (or in view).
+    fn load_more_when_near_end(&mut self, cx: &mut Context<Self>) {
+        if !self.search.can_load_more() || self.search.is_loading_more() {
+            return;
+        }
+        // The handle describes the last frame laid out; the offset is negative going down.
+        let distance_to_end =
+            f32::from(self.results_scroll.max_offset().y + self.results_scroll.offset().y);
+        if distance_to_end <= COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE {
+            self.load_more(cx);
+        }
     }
 
     fn retry(&mut self, cx: &mut Context<Self>) {
