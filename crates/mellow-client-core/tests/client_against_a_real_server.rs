@@ -19,7 +19,7 @@ use mellow_protocol::{
     ReorderRolesRequest, SendMessageRequest, SetPermissionOverwriteRequest, Snowflake,
     UpdateChannelRequest, UpdateCurrentUserRequest, UpdateRoleRequest,
 };
-use mellow_server::commands::{InitializeOptions, initialize_instance, serve_instance};
+use mellow_server::commands::{InitializeOptions, initialize_instance, serve_instance_on_listener};
 use mellow_server::domain::account_rules::RegistrationMode;
 use tokio::sync::{mpsc, oneshot};
 use zeroize::Zeroizing;
@@ -37,11 +37,9 @@ struct RunningInstance {
 impl RunningInstance {
     async fn start() -> Self {
         let directory = tempfile::tempdir().unwrap();
-        // shortcut: the port is free when probed but could be taken before the server binds it.
-        let listen_address = std::net::TcpListener::bind("127.0.0.1:0")
-            .unwrap()
-            .local_addr()
-            .unwrap();
+        // Kept bound and handed to the server: a probed port could be taken by another test first.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let listen_address = listener.local_addr().unwrap();
         let mut config = initialize_instance(&InitializeOptions {
             config_path: directory.path().join("mellow.toml"),
             data_directory: directory.path().join("data"),
@@ -56,18 +54,12 @@ impl RunningInstance {
         config.guild_creation = mellow_server::domain::account_rules::GuildCreationPolicy::Everyone;
         let (stop, stopped) = oneshot::channel::<()>();
         let server = tokio::spawn(async move {
-            serve_instance(&config, async {
+            serve_instance_on_listener(&config, listener, async {
                 let _ = stopped.await;
             })
             .await
         });
         let address = InstanceAddress::parse(&format!("http://{listen_address}")).unwrap();
-        for _ in 0..100 {
-            if tokio::net::TcpStream::connect(listen_address).await.is_ok() {
-                break;
-            }
-            tokio::time::sleep(Duration::from_millis(20)).await;
-        }
         Self {
             _directory: directory,
             address,
