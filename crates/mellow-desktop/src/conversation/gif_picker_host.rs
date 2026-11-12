@@ -15,11 +15,10 @@ impl ConversationView {
     /// The composer's GIF button: opens the picker, or closes it.
     pub(super) fn toggle_gif_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // The click outside that closed it lands on the button: it must not open it again.
-        let is_same_click_as_dismissal = self
-            .gif_picker_dismissed_by_pointer_at
-            .take()
-            .is_some_and(|position| position == window.mouse_position());
-        if is_same_click_as_dismissal {
+        if self
+            .gif_picker_dismissal
+            .is_closing_click(window.mouse_position(), &())
+        {
             return;
         }
         if self.gif_picker.is_some() {
@@ -67,7 +66,8 @@ impl ConversationView {
                     .focus_handle(cx)
                     .contains_focused(window, cx);
                 if *by_pointer {
-                    self.gif_picker_dismissed_by_pointer_at = Some(window.mouse_position());
+                    self.gif_picker_dismissal
+                        .remember(window.mouse_position(), ());
                 }
                 self.close_gif_picker(cx);
                 if had_focus {
