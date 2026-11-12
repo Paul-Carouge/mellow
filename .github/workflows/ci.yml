@@ -99,6 +99,32 @@ jobs:
       # Vesper's audio filters are portable (ADR-0051): tested on macOS too.
       - run: cargo test --locked -p vesper-dsp -p vesper-core
 
+  desktop-windows:
+    name: Desktop client (Windows)
+    # Builds only, so Windows does not drift while macOS and Linux come first (ADR-0051); tests
+    # come later. libvpx is built from source by MSBuild (mellow-media's build.rs), driven by
+    # MSYS2's sh and make (preinstalled on the runner; first in PATH, since a native make would
+    # start libvpx's `#!/bin/bash` scripts with WSL's bash) and assembled by yasm; nasm assembles
+    # rav1d and aws-lc; libopus is built by cmake (on the runner).
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+      - name: Install the C build tools
+        shell: pwsh
+        run: |
+          choco install --yes --no-progress nasm yasm
+          C:\msys64\usr\bin\pacman.exe --sync --noconfirm --needed make diffutils perl
+          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+      - name: Build
+        shell: pwsh
+        run: |
+          # rustc and cc find MSVC's link.exe by its full path, so MSYS2's link does not matter.
+          $env:PATH = "C:\msys64\usr\bin;$env:PATH"
+          cargo build --locked -p mellow-desktop -p mellow-media
+
   web:
     name: Web client
     runs-on: ubuntu-latest
