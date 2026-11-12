@@ -2385,6 +2385,15 @@ export const en = {
     voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
     /** The voice panel, when no sound output could be opened at all. */
     voiceOutputUnavailable: "No sound output found: you can't hear the others until one is plugged in.",
+    /** User settings, Voice: where the web's sentences name the browser. */
+    voiceStandardNoiseSuppression: "Standard",
+    voiceStandardNoiseSuppressionDescription: "WebRTC's filter, built into Mellow: lighter, it lets more noise through.",
+    voiceAutomaticSensitivityDescription: "Mellow tells your voice from silence.",
+    voiceEnhancementDescription:
+      "Evens out your voice and gives it presence for a clean, steady sound, like on a stream. It replaces the automatic gain.",
+    voicePushToTalkFocusNote: "Mellow only sees your keys while its window is in front.",
+    /** The microphone test found no microphone to open. */
+    voiceTestNoMicrophone: "No microphone found. Plug one in, then test again.",
   },
 };
 
