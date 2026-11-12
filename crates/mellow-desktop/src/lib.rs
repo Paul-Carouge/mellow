@@ -20,6 +20,7 @@ pub mod home;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
+pub mod message_search;
 pub mod messages;
 pub mod navigation;
 pub mod notifier;

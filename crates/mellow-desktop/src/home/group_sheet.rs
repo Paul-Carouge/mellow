@@ -153,13 +153,7 @@ pub fn group_sheet_rows(
     }
 
     let state = session.read(cx).state();
-    let current_user = state.current_user().map(|user| PublicUser {
-        id: user.id,
-        username: user.username.clone(),
-        display_name: user.display_name.clone(),
-        avatar: user.avatar,
-        banner: user.banner,
-    });
+    let current_user = state.current_user_as_public_user();
     let current_user_id = current_user.as_ref().map(|user| user.id);
     let is_owner = current_user_id.is_some() && group.owner_id == current_user_id;
     let people = people_of(group, current_user);

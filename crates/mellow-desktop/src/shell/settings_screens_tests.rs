@@ -79,7 +79,8 @@ fn a_typed_name_keeps_the_reader_on_the_page_until_it_is_undone(cx: &mut TestApp
     });
     cx.run_until_parked();
     assert!(is_open(&shell, cx));
-    // From the Overview item, Tab reaches the channel's name.
+    // From the Overview item, Tab passes the Permissions item and reaches the channel's name.
+    press(cx, "tab");
     press(cx, "tab");
     cx.simulate_input("-chat");
     cx.run_until_parked();
@@ -104,6 +105,15 @@ fn the_shell_keys_wait_while_the_settings_cover_it(cx: &mut TestAppContext) {
         cx.update(|window, cx| window.focused(cx)),
         focused_in_sheet,
         "F6 does not move focus under the sheet"
+    );
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.focus_message_search(window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|window, cx| window.focused(cx)),
+        focused_in_sheet,
+        "Ctrl+F does not reach the search field under the sheet"
     );
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));

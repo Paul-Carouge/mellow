@@ -32,7 +32,7 @@ pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
-pub use forward::ForwardOrigin;
+pub use forward::{ForwardFrame, ForwardOrigin};
 pub use gif::{MessageGif, message_gif_url};
 pub use item::{MessageAuthor, MessageItem, MessageItemContent};
 pub use link_previews::MessageLinkPreviews;
