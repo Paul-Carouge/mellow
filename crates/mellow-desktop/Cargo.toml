@@ -33,6 +33,9 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features =
 gpui-component = "=0.9.0"
 # Pinned with gpui-component, which depends on it; Mellow calls it to re-read reduced motion.
 gpui-base = "=0.9.0"
+# Push-to-talk while the app is not focused: Carbon hot keys, Win32 hot keys, an X11 key grab
+# (ADR-0053). Wayland uses the XDG portal below instead.
+global-hotkey.workspace = true
 # GIF, JPEG, PNG and WebP pictures, still and animated: the version GPUI's own frames use.
 image.workspace = true
 # The OS secret store (Keychain, Secret Service, Credential Manager) for the session token, as the
@@ -60,6 +63,12 @@ tracing.workspace = true
 # `tracing-log` forwards the `log` records of GPUI and wgpu, whose errors would otherwise be lost.
 tracing-subscriber = { workspace = true, features = ["tracing-log"] }
 zeroize.workspace = true
+
+# The XDG GlobalShortcuts portal for push-to-talk on Wayland (ADR-0053): the ashpd and runtime
+# Vesper's capture already builds.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { workspace = true, features = ["global_shortcuts"] }
+futures-lite.workspace = true
 
 # rav1d's x86-64 assembly builds with nasm (already needed by the server's rav1e); its arm64
 # assembly does not build from the published crate (`src/arm/asm-offsets.h` is left out of the

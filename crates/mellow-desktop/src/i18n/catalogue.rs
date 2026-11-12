@@ -14794,6 +14794,90 @@ impl DesktopStrings {
         }
     }
 
+    pub fn global_push_to_talk_listening(self) -> &'static str {
+        match self.language {
+            Language::English => "Works in other apps too.",
+            Language::French => "Marche aussi dans les autres applis.",
+        }
+    }
+
+    pub fn global_push_to_talk_listening_key_taken(self) -> &'static str {
+        match self.language {
+            Language::English => "Works in other apps too, where this key does nothing else during the call.",
+            Language::French => "Marche aussi dans les autres applis, où cette touche ne fait plus rien d’autre pendant l’appel.",
+        }
+    }
+
+    pub fn global_push_to_talk_listening_as(self, trigger: &str) -> String {
+        match self.language {
+            Language::English => format!("Works in other apps too, with {trigger}."),
+            Language::French => format!("Marche aussi dans les autres applis, avec {trigger}."),
+        }
+    }
+
+    pub fn global_push_to_talk_x11_only(self) -> &'static str {
+        match self.language {
+            Language::English => "In other apps, works only while an X11 window is focused: your desktop has no global shortcuts portal.",
+            Language::French => "Dans les autres applis, ne marche que quand une fenêtre X11 est active\u{a0}: ton bureau n’a pas de portail de raccourcis globaux.",
+        }
+    }
+
+    pub fn global_push_to_talk_modifier_window_only(self) -> &'static str {
+        match self.language {
+            Language::English => "A modifier key alone works only while Mellow is focused.",
+            Language::French => "Une touche de modification seule ne marche que quand Mellow est actif.",
+        }
+    }
+
+    pub fn global_push_to_talk_key_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: another app may already use this key.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: une autre appli utilise peut-être déjà cette touche.",
+        }
+    }
+
+    pub fn global_push_to_talk_refused(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: the system shortcut wasn't allowed.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: le raccourci système n’a pas été autorisé.",
+        }
+    }
+
+    pub fn global_push_to_talk_no_portal(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: your desktop has no global shortcuts portal.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: ton bureau n’a pas de portail de raccourcis globaux.",
+        }
+    }
+
+    pub fn global_push_to_talk_portal_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: your desktop's global shortcuts portal ran into an error.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: le portail de raccourcis globaux de ton bureau a rencontré une erreur.",
+        }
+    }
+
+    pub fn global_push_to_talk_bound_without_key(self) -> &'static str {
+        match self.language {
+            Language::English => "To use it in other apps, choose a key for “Push to talk in Mellow” in your desktop's shortcut settings.",
+            Language::French => "Pour t’en servir dans les autres applis, choisis une touche pour «\u{a0}Appuyer pour parler dans Mellow\u{a0}» dans les réglages de raccourcis de ton bureau.",
+        }
+    }
+
+    pub fn global_push_to_talk_key_not_on_layout(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: this key isn't on your current keyboard layout.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: cette touche n’est pas sur ta disposition de clavier actuelle.",
+        }
+    }
+
+    pub fn global_push_to_talk_shortcut_name(self) -> &'static str {
+        match self.language {
+            Language::English => "Push to talk in Mellow",
+            Language::French => "Appuyer pour parler dans Mellow",
+        }
+    }
+
     pub fn voice_standard_noise_suppression(self) -> &'static str {
         "Standard"
     }
@@ -14819,10 +14903,10 @@ impl DesktopStrings {
         }
     }
 
-    pub fn voice_push_to_talk_focus_note(self) -> &'static str {
+    pub fn voice_push_to_talk_other_apps_note(self) -> &'static str {
         match self.language {
-            Language::English => "Mellow only sees your keys while its window is in front.",
-            Language::French => "Mellow ne voit tes touches que lorsque sa fenêtre est au premier plan.",
+            Language::English => "During a call, it also works in other apps when your system allows it; the voice panel tells you.",
+            Language::French => "Pendant un appel, elle marche aussi dans les autres applis si ton système le permet\u{a0}; le panneau vocal te le dit.",
         }
     }
 

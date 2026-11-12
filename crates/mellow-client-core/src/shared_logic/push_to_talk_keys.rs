@@ -125,6 +125,131 @@ fn both_name(stored: &str, pressed: &str) -> bool {
     modifier_of_code(stored).is_some() && modifier_of_code(stored) == modifier_of_code(pressed)
 }
 
+/// The key a global-shortcut listener holds now: push-to-talk chosen, a key recorded, in a voice
+/// channel (connecting included, so the key works from the first second).
+#[must_use]
+pub fn global_push_to_talk_code(
+    settings: &VoiceSettings,
+    is_in_voice_channel: bool,
+) -> Option<&str> {
+    settings
+        .push_to_talk_key
+        .as_ref()
+        .filter(|_| settings.input_mode == VoiceInputMode::PushToTalk && is_in_voice_channel)
+        .map(|key| key.code.as_str())
+}
+
+/// The trigger offered to the XDG `GlobalShortcuts` portal for `code`: an xkbcommon keysym name, as
+/// the XDG "shortcuts" specification wants. `None` when no keysym fits (a modifier alone, a media
+/// key): the compositor then lets the person pick one.
+#[must_use]
+pub fn portal_trigger_of_code(code: &str) -> Option<String> {
+    if let Some(letter) = code.strip_prefix("Key")
+        && letter.len() == 1
+        && letter
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
+    {
+        return Some(letter.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit")
+        && digit.len() == 1
+        && digit.chars().all(|character| character.is_ascii_digit())
+    {
+        return Some(digit.to_owned());
+    }
+    if let Some(digit) = code.strip_prefix("Numpad")
+        && digit.len() == 1
+        && digit.chars().all(|character| character.is_ascii_digit())
+    {
+        return Some(format!("KP_{digit}"));
+    }
+    if let Some(number) = code.strip_prefix('F')
+        && let Ok(number) = number.parse::<u8>()
+        && (1..=24).contains(&number)
+    {
+        return Some(format!("F{number}"));
+    }
+    let keysym = match code {
+        "Space" => "space",
+        "Enter" => "Return",
+        "Backspace" => "BackSpace",
+        "Tab" => "Tab",
+        "Escape" => "Escape",
+        "ArrowLeft" => "Left",
+        "ArrowRight" => "Right",
+        "ArrowUp" => "Up",
+        "ArrowDown" => "Down",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "Page_Up",
+        "PageDown" => "Page_Down",
+        "Insert" => "Insert",
+        "Delete" => "Delete",
+        "Minus" => "minus",
+        "Equal" => "equal",
+        "BracketLeft" => "bracketleft",
+        "BracketRight" => "bracketright",
+        "Backslash" => "backslash",
+        "Semicolon" => "semicolon",
+        "Quote" => "apostrophe",
+        "Comma" => "comma",
+        "Period" => "period",
+        "Slash" => "slash",
+        "Backquote" => "grave",
+        "CapsLock" => "Caps_Lock",
+        "ScrollLock" => "Scroll_Lock",
+        "Pause" => "Pause",
+        "PrintScreen" => "Print",
+        "ContextMenu" => "Menu",
+        _ => return None,
+    };
+    Some(keysym.to_owned())
+}
+
+/// Whether a global grab of `code` takes it from other apps for the call: every key but the ones
+/// no app uses (F13 to F24, Pause, Scroll Lock). Enter, the arrows or a letter stop working there.
+#[must_use]
+pub fn does_grab_take_key_from_other_apps(code: &str) -> bool {
+    let is_unused_function_key = code
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (13..=24).contains(&number));
+    !(is_unused_function_key || matches!(code, "Pause" | "ScrollLock"))
+}
+
+/// The character the key of `code` types without a modifier, as [`code_of_toolkit_key`] read it
+/// from the active layout; `None` for a key that types none (F keys, arrows, Space).
+#[must_use]
+pub fn character_of_code(code: &str) -> Option<char> {
+    if let Some(rest) = code
+        .strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"))
+    {
+        let mut characters = rest.chars();
+        return match (characters.next(), characters.next()) {
+            (Some(character), None) if character.is_ascii_alphanumeric() => {
+                Some(character.to_ascii_lowercase())
+            }
+            _ => None,
+        };
+    }
+    match code {
+        "Minus" => Some('-'),
+        "Equal" => Some('='),
+        "BracketLeft" => Some('['),
+        "BracketRight" => Some(']'),
+        "Backslash" => Some('\\'),
+        "Semicolon" => Some(';'),
+        "Quote" => Some('\''),
+        "Comma" => Some(','),
+        "Period" => Some('.'),
+        "Slash" => Some('/'),
+        "Backquote" => Some('`'),
+        _ => None,
+    }
+}
+
 /// A key went down. Keys pressed while recording a new one belong to the recorder.
 #[must_use]
 pub fn push_to_talk_key_down(
@@ -239,6 +364,74 @@ mod tests {
             push_to_talk_key_down(&settings, false, "KeyV", true, false),
             PushToTalkKeyEffect::Nothing
         );
+    }
+
+    #[test]
+    fn a_global_listener_holds_the_key_only_in_a_voice_channel_with_push_to_talk_on() {
+        let settings = settings_with("KeyV");
+        assert_eq!(global_push_to_talk_code(&settings, true), Some("KeyV"));
+        assert_eq!(global_push_to_talk_code(&settings, false), None);
+        let voice_activity = VoiceSettings {
+            input_mode: VoiceInputMode::VoiceActivity,
+            ..settings.clone()
+        };
+        assert_eq!(global_push_to_talk_code(&voice_activity, true), None);
+        let no_key = VoiceSettings {
+            push_to_talk_key: None,
+            ..settings
+        };
+        assert_eq!(global_push_to_talk_code(&no_key, true), None);
+    }
+
+    #[test]
+    fn offers_the_portal_xkb_keysym_names() {
+        for (code, trigger) in [
+            ("KeyV", "v"),
+            ("Digit7", "7"),
+            ("Numpad3", "KP_3"),
+            ("F13", "F13"),
+            ("Space", "space"),
+            ("Enter", "Return"),
+            ("PageDown", "Page_Down"),
+            ("Quote", "apostrophe"),
+            ("Backquote", "grave"),
+            ("CapsLock", "Caps_Lock"),
+        ] {
+            assert_eq!(portal_trigger_of_code(code).as_deref(), Some(trigger));
+        }
+        for code in ["ControlLeft", "MediaPlayPause", "F25", "Keyv", "KeyAB", ""] {
+            assert_eq!(portal_trigger_of_code(code), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn warns_that_a_grab_takes_every_key_but_the_unused_ones() {
+        for code in [
+            "KeyV",
+            "Digit1",
+            "Space",
+            "Enter",
+            "ArrowLeft",
+            "PageUp",
+            "F1",
+            "F12",
+        ] {
+            assert!(does_grab_take_key_from_other_apps(code), "{code}");
+        }
+        for code in ["F13", "F24", "Pause", "ScrollLock"] {
+            assert!(!does_grab_take_key_from_other_apps(code), "{code}");
+        }
+    }
+
+    #[test]
+    fn reads_back_the_character_a_recorded_key_typed() {
+        for character in ('a'..='z').chain('0'..='9').chain("-=[]\\;',./`".chars()) {
+            let code = code_of_toolkit_key(&character.to_string()).unwrap_or_default();
+            assert_eq!(character_of_code(&code), Some(character), "{code}");
+        }
+        for code in ["Space", "F13", "ArrowLeft", "KeyAB", "Keyé", ""] {
+            assert_eq!(character_of_code(code), None, "{code}");
+        }
     }
 
     #[test]

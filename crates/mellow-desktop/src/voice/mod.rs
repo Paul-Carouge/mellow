@@ -23,14 +23,15 @@
 //!   [`Voice::audio_devices`] off the UI thread (tests inject synthetic ones). The meter reads
 //!   [`Voice::microphone_decibels`]: the call's microphone, else the test's, which only a click
 //!   starts. The push-to-talk key is a W3C code (`shared_logic::push_to_talk_keys`).
-//! - **Global push-to-talk**: call [`Voice::press_push_to_talk`] and
-//!   [`Voice::release_push_to_talk`] from the listener, as the in-window handler
-//!   ([`Voice::push_to_talk_key_down`] and friends) does; both are idempotent, so a key heard by
-//!   both while the window is focused presses once.
+//! - **Global push-to-talk** ([`global_push_to_talk`]): the listener calls
+//!   [`Voice::global_push_to_talk_key_changed`], next to the in-window handler
+//!   ([`Voice::push_to_talk_key_down`] and friends); pressing and releasing are idempotent, so a
+//!   key heard by both while the window is focused presses once.
 //! - **Soundboard** (`soundboard.rs`): [`Voice::play_soundboard_sound`] sends the reader's
 //!   sounds, [`Voice::soundboard_block`] says why it cannot; played sounds, join sounds and
 //!   previews play here.
 
+pub mod global_push_to_talk;
 pub mod media_settings;
 mod soundboard;
 
@@ -67,7 +68,18 @@ use crate::preferences::{PreferencesStore, change_preferences, preferences};
 use crate::session::{Session, StateChanged, VoiceSignal};
 use crate::tokio_bridge::spawn_on_network_runtime;
 
+use self::global_push_to_talk::GlobalPushToTalkStatus;
 use self::media_settings::{gain_of_percent, input_mode_of, person_setting_of, processing_of};
+
+/// The push-to-talk key as the global listener of the current binding reports it.
+#[derive(Debug, Clone, Copy, Default)]
+struct GlobalPushToTalkKey {
+    /// Heard going down and not yet up.
+    is_held: bool,
+    /// The binding delivered a release: until it has, losing focus releases the key anyway, so a
+    /// listener that never reports one cannot leave the microphone open.
+    has_reported_release: bool,
+}
 
 /// Bounds the forwarding queue to the UI; when it is full the forwarding thread waits (the
 /// engine's own channel behind it is unbounded).
@@ -124,6 +136,8 @@ pub struct Voice {
     /// Who joined or left the call last, read out politely.
     announcement: SharedString,
     is_push_to_talk_pressed: bool,
+    global_push_to_talk_key: GlobalPushToTalkKey,
+    global_push_to_talk_status: GlobalPushToTalkStatus,
     /// Modifier keys held at the last change, to tell a press from a release.
     held_modifiers: Modifiers,
     /// The settings last applied to the engine and the sounds.
@@ -365,6 +379,8 @@ impl Voice {
             problem: None,
             announcement: SharedString::default(),
             is_push_to_talk_pressed: false,
+            global_push_to_talk_key: GlobalPushToTalkKey::default(),
+            global_push_to_talk_status: GlobalPushToTalkStatus::Off,
             held_modifiers: Modifiers::default(),
             applied_settings: VoiceSettings::DEFAULT,
             sound_player: None,
@@ -434,6 +450,23 @@ impl Voice {
         self.call
             .as_ref()
             .map_or_else(DeviceNotices::default, |call| call.devices)
+    }
+
+    /// Whether the push-to-talk key also works while another app is focused.
+    #[must_use]
+    pub fn global_push_to_talk_status(&self) -> &GlobalPushToTalkStatus {
+        &self.global_push_to_talk_status
+    }
+
+    fn set_global_push_to_talk_status(
+        &mut self,
+        status: GlobalPushToTalkStatus,
+        cx: &mut Context<Self>,
+    ) {
+        if self.global_push_to_talk_status != status {
+            self.global_push_to_talk_status = status;
+            cx.notify();
+        }
     }
 
     /// The live engine, once started: the soundboard plays through it.
@@ -1104,10 +1137,33 @@ impl Voice {
         }
     }
 
-    /// The window lost focus: a held key would never come up here.
+    /// The global listener heard the key go down or up, in any app. Pressing again while the
+    /// in-window handler already pressed does nothing.
+    pub fn global_push_to_talk_key_changed(&mut self, is_pressed: bool, cx: &mut Context<Self>) {
+        self.global_push_to_talk_key.is_held = is_pressed;
+        if is_pressed {
+            self.press_push_to_talk(cx);
+        } else {
+            self.global_push_to_talk_key.has_reported_release = true;
+            self.release_push_to_talk(cx);
+        }
+    }
+
+    /// The global listener let the key go (left the call, another mode or key): a key it held
+    /// would never come up.
+    pub fn global_push_to_talk_unbound(&mut self, cx: &mut Context<Self>) {
+        self.global_push_to_talk_key = GlobalPushToTalkKey::default();
+        self.release_push_to_talk(cx);
+    }
+
+    /// The window lost focus: a held key would never come up here, unless the global listener
+    /// holds it and has shown it hears releases wherever focus went.
     pub fn window_deactivated(&mut self, cx: &mut Context<Self>) {
         self.held_modifiers = Modifiers::default();
-        self.release_push_to_talk(cx);
+        let key = self.global_push_to_talk_key;
+        if !(key.is_held && key.has_reported_release) {
+            self.release_push_to_talk(cx);
+        }
     }
 
     // ---- Per person ----

@@ -29,7 +29,7 @@ const PASSWORD: &str = "correct horse battery staple";
 const STEP_DEADLINE: Duration = Duration::from_secs(30);
 const POLL_INTERVAL: Duration = Duration::from_millis(10);
 
-struct RunningInstance {
+pub(super) struct RunningInstance {
     _directory: tempfile::TempDir,
     address: InstanceAddress,
     stop: oneshot::Sender<()>,
@@ -37,7 +37,7 @@ struct RunningInstance {
 }
 
 impl RunningInstance {
-    async fn start() -> Self {
+    pub(super) async fn start() -> Self {
         let directory = tempfile::tempdir().unwrap();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let listen_address = listener.local_addr().unwrap();
@@ -88,7 +88,7 @@ impl RunningInstance {
     }
 
     /// Waits for the database to close: SQLCipher crashes if it is still closing at exit.
-    async fn stop(self) {
+    pub(super) async fn stop(self) {
         let _ = self.stop.send(());
         self.server.await.unwrap().unwrap();
     }
@@ -134,7 +134,7 @@ fn synthetic_devices(sound: SyntheticSound) -> AudioDevicesFactory {
     })
 }
 
-fn wait_until(
+pub(super) fn wait_until(
     cx: &mut TestAppContext,
     what: &str,
     mut condition: impl FnMut(&mut TestAppContext) -> bool,
@@ -318,7 +318,7 @@ async fn create_voice_channel(owner: &RestClient, guild_id: Snowflake, name: &st
 }
 
 /// One signed-in owner and two voice channels of their server.
-fn owner_with_two_voice_channels(
+pub(super) fn owner_with_two_voice_channels(
     runtime: &Runtime,
     instance: &RunningInstance,
     cx: &mut TestAppContext,
@@ -377,6 +377,31 @@ fn a_mute_and_push_to_talk_chosen_while_connecting_reach_the_engine(cx: &mut Tes
     });
     assert!(should_swallow);
     voice.update(cx, |voice, cx| voice.push_to_talk_key_up("space", cx));
+    assert!(!voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
+
+    // Before the global listener has delivered a release, losing focus still releases: a
+    // listener that never reports one cannot leave the microphone open.
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(true, cx);
+        voice.window_deactivated(cx);
+    });
+    assert!(!voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(false, cx);
+    });
+
+    // Heard by the global listener and the window at once, then the window goes to the back:
+    // the key stays held until the listener hears it come up.
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(true, cx);
+        voice.push_to_talk_key_down("space", Some(" "), Modifiers::default(), cx);
+        voice.window_deactivated(cx);
+    });
+    assert!(voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
+    voice.update(cx, |voice, cx| {
+        voice.global_push_to_talk_key_changed(false, cx);
+    });
+    assert!(!voice.read_with(cx, |voice, _| voice.is_push_to_talk_pressed));
 
     voice.update(cx, Voice::leave);
     drop((voice, session));
