@@ -3,6 +3,7 @@
 //! the cooldown's echo and the sound lists come with the gateway (`ClientState`).
 
 use gpui::Context;
+use mellow_client_core::state::{ClientState, StateChange};
 use mellow_protocol::{ClientFrame, Snowflake};
 
 use super::{Session, StateChanged, now_unix_milliseconds};
@@ -20,6 +21,20 @@ impl Session {
             cx.notify();
         }
         is_sent
+    }
+
+    /// A sound's REST answer (created, edited, deleted) applied now, as the web does: the
+    /// gateway's list may come late, and its event changes nothing more.
+    pub fn apply_sound_answer(
+        &mut self,
+        apply: impl FnOnce(&mut ClientState) -> StateChange,
+        cx: &mut Context<Self>,
+    ) {
+        let change = apply(&mut self.state);
+        if change != StateChange::Nothing {
+            cx.emit(StateChanged(vec![change]));
+        }
+        cx.notify();
     }
 
     /// A join sound this app plays: its emoji shows by `user_id`'s name for the sound's length.

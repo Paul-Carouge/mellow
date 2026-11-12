@@ -542,12 +542,22 @@ impl SoundForm {
         };
         let guild_id = self.guild_id;
         let form = cx.entity().downgrade();
-        self.session.update(cx, |session, cx| {
-            session.send_settings_request(
+        let session = self.session.downgrade();
+        self.session.update(cx, |session_now, cx| {
+            session_now.send_settings_request(
                 "edit a sound",
                 move |rest| async move { rest.update_sound(guild_id, sound_id, &request).await },
                 cx,
                 move |answer, cx| {
+                    if let Ok(updated) = &answer {
+                        let updated = updated.clone();
+                        let _ = session.update(cx, |session, cx| {
+                            session.apply_sound_answer(
+                                |state| state.replace_updated_sound(guild_id, updated),
+                                cx,
+                            );
+                        });
+                    }
                     let _ = form.update(cx, |form, cx| {
                         let sentence =
                             answer.map(|_| strings(cx).server_settings().sounds().saved(&name));
@@ -599,12 +609,22 @@ impl SoundForm {
                 });
                 return;
             };
+            let session_later = session.downgrade();
             session.update(cx, |session, cx| {
                 session.send_settings_request(
                     "add a sound",
                     move |rest| async move { rest.create_sound(guild_id, &query, wav).await },
                     cx,
                     move |answer, cx| {
+                        if let Ok(created) = &answer {
+                            let created = created.clone();
+                            let _ = session_later.update(cx, |session, cx| {
+                                session.apply_sound_answer(
+                                    |state| state.add_created_sound(guild_id, created),
+                                    cx,
+                                );
+                            });
+                        }
                         let _ = form.update(cx, |form, cx| {
                             let sentence = answer
                                 .map(|created| {

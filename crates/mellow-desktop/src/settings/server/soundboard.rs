@@ -62,8 +62,7 @@ pub struct ServerSoundboardPage {
     adding_or_editing: Option<OpenDialog>,
     deleting: Option<DeleteDialog>,
     upload_focus: FocusHandle,
-    /// A deleted row took focus with it: the next row's Delete takes it once drawn, else Upload
-    /// (`Some(None)`).
+    /// A deleted row took focus with it: the next row's Delete takes it once drawn, else Upload.
     focus_after_delete: Option<FocusAfterDelete>,
     _session_changes: Subscription,
 }
@@ -238,6 +237,7 @@ impl ServerSoundboardPage {
         });
         let guild_id = self.guild_id;
         let page = cx.entity().downgrade();
+        let session_later = self.session.downgrade();
         self.session.update(cx, |session, cx| {
             session.send_settings_request(
                 "delete a sound",
@@ -247,6 +247,12 @@ impl ServerSoundboardPage {
                     dialog.update(cx, |dialog, cx| dialog.set_busy(false, cx));
                     match answer {
                         Ok(()) => {
+                            let _ = session_later.update(cx, |session, cx| {
+                                session.apply_sound_answer(
+                                    |state| state.remove_deleted_sound(guild_id, sound_id),
+                                    cx,
+                                );
+                            });
                             let _ = page.update(cx, |page, cx| {
                                 page.focus_after_delete = Some(
                                     focus_after_removal(&shown_ids, sound_id)
