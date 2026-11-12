@@ -23,13 +23,18 @@ use super::{CallPhase, Voice, current_settings};
 use crate::session::now_unix_milliseconds;
 use crate::tokio_bridge::spawn_on_network_runtime;
 
+/// A sound slower than this to arrive is given up (`SOUND_DOWNLOAD_TIMEOUT_MILLISECONDS` on the
+/// web), so a join sound gives way to its cue while the arrival is still news.
+const SOUND_DOWNLOAD_TIMEOUT: Duration = Duration::from_secs(5);
+
 /// What a downloaded sound is for once it arrives.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum SoundUse {
-    /// Played in the call by `player`; `fallback` plays instead when the sound cannot load (a
-    /// join sound standing in for its cue).
+    /// Played in the call on `channel_id` by `player`; `fallback` plays instead when the sound
+    /// cannot load (a join sound standing in for its cue).
     Heard {
         player: Snowflake,
+        channel_id: Snowflake,
         fallback: Option<VoiceCue>,
     },
     Preview,
@@ -97,6 +102,7 @@ impl Voice {
                 sound_id,
                 SoundUse::Heard {
                     player,
+                    channel_id,
                     fallback: None,
                 },
                 cx,
@@ -158,8 +164,8 @@ impl Voice {
         join_cue: VoiceCue,
         cx: &mut Context<Self>,
     ) {
-        match cue {
-            JoinCue::Sound(sound_id) => {
+        match (cue, self.channel_id()) {
+            (JoinCue::Sound(sound_id), Some(channel_id)) => {
                 self.session.update(cx, |session, cx| {
                     session.show_sound_indicator(user_id, guild_id, sound_id, cx);
                 });
@@ -168,12 +174,13 @@ impl Voice {
                     sound_id,
                     SoundUse::Heard {
                         player: user_id,
+                        channel_id,
                         fallback: Some(join_cue),
                     },
                     cx,
                 );
             }
-            JoinCue::Chime => self.play_call_cue(join_cue),
+            _ => self.play_call_cue(join_cue),
         }
     }
 
@@ -259,17 +266,22 @@ impl Voice {
         let Some(rest) = self.session.read(cx).rest_client().cloned() else {
             return;
         };
-        let download =
-            spawn_on_network_runtime(cx, async move { download_sound(&rest, sound_id).await });
+        let download = spawn_on_network_runtime(cx, async move {
+            tokio::time::timeout(SOUND_DOWNLOAD_TIMEOUT, download_sound(&rest, sound_id)).await
+        });
         cx.spawn(async move |this, cx| {
             let downloaded = download.await;
             let _ = this.update(cx, |voice, cx| match downloaded {
-                Ok(Ok(sound)) => {
+                Ok(Ok(Ok(sound))) => {
                     voice.sound_cache.insert(sound_id, sound.clone());
                     voice.play_loaded(sound, use_, cx);
                 }
-                Ok(Err(error)) => {
+                Ok(Ok(Err(error))) => {
                     tracing::warn!(%error, "couldn't play a soundboard sound");
+                    voice.play_fallback(use_);
+                }
+                Ok(Err(_elapsed)) => {
+                    tracing::warn!("a soundboard sound took too long to download");
                     voice.play_fallback(use_);
                 }
                 Err(error) => {
@@ -281,19 +293,22 @@ impl Voice {
         .detach();
     }
 
-    /// Plays a sound that arrived, if it is still wanted: the reader may have left, deafened
-    /// or muted its player meanwhile.
+    /// Plays a sound that arrived, if it is still wanted: the reader may have left or changed
+    /// channel, deafened or muted its player meanwhile.
     fn play_loaded(&mut self, sound: LocalSound, use_: SoundUse, cx: &mut Context<Self>) {
         match use_ {
             SoundUse::Preview => self.play_preview(sound, cx),
-            SoundUse::Heard { player, .. } => {
+            SoundUse::Heard {
+                player, channel_id, ..
+            } => {
                 let is_mine = self
                     .session
                     .read(cx)
                     .state()
                     .current_user()
                     .is_some_and(|user| user.id == player);
-                let is_wanted = !self.toggles.is_deafened()
+                let is_wanted = self.channel_id() == Some(channel_id)
+                    && !self.toggles.is_deafened()
                     && (is_mine || !Self::person_setting(player, cx).is_locally_muted);
                 if let Some(engine) = self.engine().filter(|_| is_wanted) {
                     engine.play_soundboard_sound(sound, SoundboardPlayer::Person(player));
@@ -304,9 +319,11 @@ impl Voice {
 
     fn play_fallback(&self, use_: SoundUse) {
         if let SoundUse::Heard {
+            channel_id,
             fallback: Some(cue),
             ..
         } = use_
+            && self.channel_id() == Some(channel_id)
         {
             self.play_call_cue(cue);
         }
