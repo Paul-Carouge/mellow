@@ -100,6 +100,39 @@ fn ring_buffer_capacity(format: StreamFormat) -> usize {
     usize::try_from(samples).unwrap_or(usize::MAX)
 }
 
+/// Which of the host's devices the settings list, by cpal host name. Linux hosts list more than
+/// the devices the system's sound settings show:
+/// - cpal's `PipeWire` host adds its three "follow the default" nodes (the settings' own "Default"
+///   entry stands for them), every sink again as a capture source (it would record what the sink
+///   plays; sinks are its only duplex nodes) and other apps' playback streams (outputs only), so
+///   microphones are its input nodes and outputs its duplex ones.
+/// - cpal's ALSA host (no `PipeWire` daemon) adds every PCM hint and the raw `hw:` and `plughw:`
+///   devices, often held exclusively; one `sysdefault:` entry per card is what a person picks.
+///
+/// shortcut: another app's recording stream is an input node too and stays listed while it
+/// records, cpal not telling it from a microphone; filter it once cpal exposes the media class.
+fn is_listed_device(
+    host_name: &str,
+    device_id: &str,
+    direction: cpal::DeviceDirection,
+    is_input: bool,
+) -> bool {
+    use cpal::DeviceDirection::{Duplex, Input, Output};
+    match host_name {
+        "PipeWire" if is_input => direction == Input && device_id != "input_default",
+        "PipeWire" => direction == Duplex && device_id != "sink_default",
+        "ALSA" => {
+            device_id.starts_with("sysdefault:")
+                && match direction {
+                    Input => is_input,
+                    Output => !is_input,
+                    _ => true,
+                }
+        }
+        _ => true,
+    }
+}
+
 pub use system::SystemAudioDevices;
 
 mod system {
@@ -111,10 +144,10 @@ mod system {
 
     use super::{
         AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, PlaybackStream,
-        RunningStream, StreamFormat, ring_buffer_capacity,
+        RunningStream, StreamFormat, is_listed_device, ring_buffer_capacity,
     };
 
-    /// The system's audio devices: `CoreAudio`, WASAPI, ALSA (and `PipeWire` through it).
+    /// The system's audio devices: `CoreAudio`, WASAPI, `PipeWire` (ALSA without its daemon).
     #[derive(Debug, Default, Clone, Copy)]
     pub struct SystemAudioDevices;
 
@@ -130,13 +163,31 @@ mod system {
     fn describe(
         devices: impl Iterator<Item = cpal::Device>,
         default_id: Option<&cpal::DeviceId>,
+        is_input: bool,
     ) -> Vec<AudioDeviceDescription> {
         devices
             .filter_map(|device| {
                 let id = device.id().ok()?;
-                let name = device.description().map_or_else(
-                    |_| device.to_string(),
-                    |description| description.name().to_owned(),
+                let description = device.description().ok();
+                let direction = description
+                    .as_ref()
+                    .map_or(cpal::DeviceDirection::Unknown, |description| {
+                        description.direction()
+                    });
+                if !is_listed_device(id.host().name(), id.id(), direction, is_input) {
+                    return None;
+                }
+                // ALSA describes a device on two lines: its name, then what kind of PCM it is.
+                let name = description.map_or_else(
+                    || device.to_string(),
+                    |description| {
+                        description
+                            .name()
+                            .lines()
+                            .next()
+                            .unwrap_or_default()
+                            .to_owned()
+                    },
                 );
                 Some(AudioDeviceDescription {
                     is_default: default_id == Some(&id),
@@ -255,7 +306,7 @@ mod system {
                 .default_input_device()
                 .and_then(|device| device.id().ok());
             let devices = host.input_devices().map_err(|error| system_error(&error))?;
-            Ok(describe(devices, default_id.as_ref()))
+            Ok(describe(devices, default_id.as_ref(), true))
         }
 
         fn output_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError> {
@@ -266,7 +317,7 @@ mod system {
             let devices = host
                 .output_devices()
                 .map_err(|error| system_error(&error))?;
-            Ok(describe(devices, default_id.as_ref()))
+            Ok(describe(devices, default_id.as_ref(), false))
         }
 
         fn open_capture(&self, device_id: Option<&str>) -> Result<CaptureStream, AudioDeviceError> {
@@ -516,4 +567,82 @@ mod synthetic {
 /// Whether a stream reported a failure; for the engine's reopen logic.
 pub(crate) fn has_failed(flag: &AtomicBool) -> bool {
     flag.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use cpal::DeviceDirection::{Duplex, Input, Output};
+
+    use super::is_listed_device;
+
+    #[test]
+    fn pipewire_lists_its_sources_as_microphones_and_its_sinks_as_outputs() {
+        let microphone = "alsa_input.usb-Blue_Yeti-00.analog-stereo";
+        let sink = "alsa_output.pci-0000_00_1f.3.analog-stereo";
+        assert!(is_listed_device("PipeWire", microphone, Input, true));
+        assert!(!is_listed_device("PipeWire", microphone, Input, false));
+        assert!(is_listed_device("PipeWire", sink, Duplex, false));
+        // A sink as a capture source records what it plays: not a microphone.
+        assert!(!is_listed_device("PipeWire", sink, Duplex, true));
+        // Another app's playback stream.
+        assert!(!is_listed_device("PipeWire", "Firefox", Output, false));
+    }
+
+    #[test]
+    fn pipewire_s_default_nodes_are_the_settings_default_entry() {
+        assert!(!is_listed_device("PipeWire", "input_default", Input, true));
+        assert!(!is_listed_device("PipeWire", "sink_default", Duplex, false));
+        assert!(!is_listed_device(
+            "PipeWire",
+            "output_default",
+            Output,
+            false
+        ));
+    }
+
+    #[test]
+    fn alsa_lists_one_entry_per_card() {
+        assert!(is_listed_device(
+            "ALSA",
+            "sysdefault:CARD=PCH",
+            Duplex,
+            true
+        ));
+        assert!(is_listed_device(
+            "ALSA",
+            "sysdefault:CARD=PCH",
+            Duplex,
+            false
+        ));
+        assert!(!is_listed_device(
+            "ALSA",
+            "sysdefault:CARD=Mic",
+            Input,
+            false
+        ));
+        for raw in [
+            "hw:CARD=0,DEV=0",
+            "plughw:CARD=0,DEV=0",
+            "front:CARD=PCH,DEV=0",
+            "default",
+        ] {
+            assert!(!is_listed_device("ALSA", raw, Duplex, false), "{raw}");
+        }
+    }
+
+    #[test]
+    fn other_hosts_list_everything() {
+        assert!(is_listed_device(
+            "CoreAudio",
+            "BuiltInMicrophoneDevice",
+            Input,
+            true
+        ));
+        assert!(is_listed_device(
+            "WASAPI",
+            "{0.0.1.00000000}",
+            Duplex,
+            false
+        ));
+    }
 }
