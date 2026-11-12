@@ -34,6 +34,7 @@ pub mod shell;
 mod shell_fixtures;
 pub mod sign_in_form;
 pub mod sign_in_screen;
+pub mod soundboard;
 pub mod strings_pending_i18n;
 pub mod theme;
 pub mod tokio_bridge;
