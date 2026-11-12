@@ -586,24 +586,6 @@ pub fn person_voice_settings_to_json(settings: &[(Snowflake, PersonVoiceSetting)
     )
 }
 
-/// The gain one incoming voice plays at: the output volume times that person's volume; nothing
-/// while deafened or muted for the reader.
-#[must_use]
-pub fn playback_gain(
-    output_volume_percent: u32,
-    person: Option<PersonVoiceSetting>,
-    is_deafened: bool,
-) -> f32 {
-    if is_deafened || person.is_some_and(|person| person.is_locally_muted) {
-        return 0.0;
-    }
-    let person_percent = person.map_or(DEFAULT_VOLUME_PERCENT, |person| person.volume_percent);
-    // Both are at most 200: exact in `f32`.
-    #[allow(clippy::cast_precision_loss)]
-    let gain = (output_volume_percent as f32 / 100.0) * (person_percent as f32 / 100.0);
-    gain
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -842,20 +824,5 @@ mod tests {
             stored,
             json!({ "8": { "volumePercent": 60, "isLocallyMuted": false } })
         );
-    }
-
-    #[test]
-    fn multiplies_the_output_and_the_persons_volume_deafen_and_local_mute_silence() {
-        let person = |volume_percent, is_locally_muted| {
-            Some(PersonVoiceSetting {
-                volume_percent,
-                is_locally_muted,
-            })
-        };
-        assert!((playback_gain(100, None, false) - 1.0).abs() < f32::EPSILON);
-        assert!((playback_gain(200, person(200, false), false) - 4.0).abs() < f32::EPSILON);
-        assert!((playback_gain(50, person(150, false), false) - 0.75).abs() < f32::EPSILON);
-        assert!(playback_gain(100, person(100, true), false).abs() < f32::EPSILON);
-        assert!(playback_gain(100, None, true).abs() < f32::EPSILON);
     }
 }
