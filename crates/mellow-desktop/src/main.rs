@@ -1,5 +1,10 @@
 //! `mellow`, the desktop client.
 
+// Upstream cause: macOS ld warns once a debug binary holds more than 16 MB of `__eh_frame`, which
+// its compact unwind table cannot encode; with the voice engine (str0m, WebRTC's processing,
+// libvpx) the app crosses it. Only the speed of unwinding a panic is affected.
+#![cfg_attr(target_os = "macos", allow(linker_messages))]
+
 use std::process::ExitCode;
 
 use mellow_desktop::session::LOGOUT_ON_EXIT_TIMEOUT;

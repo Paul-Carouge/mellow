@@ -15,6 +15,11 @@ use mellow_client_core::shared_logic::emoji_picker::{recent_emoji_from, remember
 use mellow_client_core::shared_logic::notification_settings::{
     NotificationSettings, notification_settings_to_json, parse_notification_settings,
 };
+use mellow_client_core::shared_logic::voice_settings::{
+    PersonVoiceSetting, StoredVoiceToggles, VoiceSettings, parse_person_voice_settings,
+    parse_voice_settings, parse_voice_toggles, person_voice_settings_to_json,
+    voice_settings_to_json, voice_toggles_to_json,
+};
 use mellow_protocol::Snowflake;
 
 const FILE_NAME: &str = "preferences";
@@ -34,11 +39,17 @@ const MEDIA_MUTED_KEY: &str = "media-muted";
 const RECENT_EMOJI_KEY: &str = "recent-emoji";
 const THEME_KEY: &str = "theme";
 const LANGUAGE_KEY: &str = "language";
+const VOICE_SETTINGS_KEY: &str = "voice-settings";
+const VOICE_TOGGLES_KEY: &str = "voice-toggles";
+const VOICE_PEOPLE_KEY: &str = "voice-people";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
 /// hostile or corrupted file cannot grow the lists without bound.
 pub const MAXIMUM_REMEMBERED_PLACES: usize = 200;
+/// The people whose voice volume or local mute is kept, most recent last: bounded for the same
+/// reason as the places.
+pub const MAXIMUM_REMEMBERED_VOICE_PEOPLE: usize = 200;
 /// The accounts whose notification choices are kept, most recent last: each may hold thousands of
 /// places, so only a few accounts fit the file.
 const MAXIMUM_REMEMBERED_NOTIFICATION_ACCOUNTS: usize = 4;
@@ -148,6 +159,14 @@ pub struct Preferences {
     pub recent_emoji_by_user: Vec<(Snowflake, Vec<String>)>,
     pub theme: ThemeChoice,
     pub language: LanguageChoice,
+    /// Devices, input mode, processing and volumes (the web's `mellow.voice-settings`); change
+    /// them through `voice::change_voice_settings`, which applies them to a call.
+    pub voice_settings: VoiceSettings,
+    /// The microphone and headset toggles, kept before joining and across launches.
+    pub voice_toggles: StoredVoiceToggles,
+    /// Each person's volume and local mute, only those changed from the default, most recent
+    /// last.
+    pub voice_people: Vec<(Snowflake, PersonVoiceSetting)>,
 }
 
 impl Preferences {
@@ -166,7 +185,7 @@ impl Preferences {
         self.last_channel_by_guild
             .retain(|(guild, _)| *guild != guild_id);
         self.last_channel_by_guild.push((guild_id, channel_id));
-        keep_latest(&mut self.last_channel_by_guild);
+        keep_latest(&mut self.last_channel_by_guild, MAXIMUM_REMEMBERED_PLACES);
     }
 
     /// The notification choices of `user_id`; the defaults when it has none yet.
@@ -221,18 +240,37 @@ impl Preferences {
         self.recent_emoji_by_user.drain(..excess);
     }
 
+    /// The volume and local mute the reader gave `user_id`.
+    #[must_use]
+    pub fn voice_person(&self, user_id: Snowflake) -> PersonVoiceSetting {
+        self.voice_people
+            .iter()
+            .find(|(user, _)| *user == user_id)
+            .map(|(_, setting)| *setting)
+            .unwrap_or_default()
+    }
+
+    /// Keeps `setting` for `user_id`; a default one is forgotten.
+    pub fn set_voice_person(&mut self, user_id: Snowflake, setting: PersonVoiceSetting) {
+        self.voice_people.retain(|(user, _)| *user != user_id);
+        if !setting.is_default() {
+            self.voice_people.push((user_id, setting));
+            keep_latest(&mut self.voice_people, MAXIMUM_REMEMBERED_VOICE_PEOPLE);
+        }
+    }
+
     /// Opens or closes the docked member sheet of a server or group, for next time.
     pub fn remember_member_sheet(&mut self, place_id: Snowflake, is_open: bool) {
         self.member_sheet_place_ids.retain(|id| *id != place_id);
         if is_open {
             self.member_sheet_place_ids.push(place_id);
-            keep_latest(&mut self.member_sheet_place_ids);
+            keep_latest(&mut self.member_sheet_place_ids, MAXIMUM_REMEMBERED_PLACES);
         }
     }
 }
 
-fn keep_latest<T>(list: &mut Vec<T>) {
-    let excess = list.len().saturating_sub(MAXIMUM_REMEMBERED_PLACES);
+fn keep_latest<T>(list: &mut Vec<T>, maximum_length: usize) {
+    let excess = list.len().saturating_sub(maximum_length);
     list.drain(..excess);
 }
 
@@ -348,6 +386,23 @@ impl Preferences {
                 MEDIA_MUTED_KEY => preferences.is_media_muted = value == "true",
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
+                // The web's JSON, validated field by field as the web reads it.
+                VOICE_SETTINGS_KEY | VOICE_TOGGLES_KEY | VOICE_PEOPLE_KEY => {
+                    let stored = serde_json::from_str(value).unwrap_or(serde_json::Value::Null);
+                    match key.trim() {
+                        VOICE_SETTINGS_KEY => {
+                            preferences.voice_settings = parse_voice_settings(&stored);
+                        }
+                        VOICE_TOGGLES_KEY => {
+                            preferences.voice_toggles = parse_voice_toggles(&stored);
+                        }
+                        _ => {
+                            for (user_id, setting) in parse_person_voice_settings(&stored) {
+                                preferences.set_voice_person(user_id, setting);
+                            }
+                        }
+                    }
+                }
                 // `<user id>:<the web's JSON>`, validated field by field as the web reads it.
                 NOTIFICATIONS_KEY => {
                     if let Some((user, json)) = value.split_once(':')
@@ -421,6 +476,18 @@ impl Preferences {
             let _ = writeln!(text, "{LANGUAGE_KEY}={language}");
         }
         // Compact JSON escapes line breaks, so each account stays on one line.
+        if self.voice_settings != VoiceSettings::DEFAULT {
+            let json = voice_settings_to_json(&self.voice_settings);
+            let _ = writeln!(text, "{VOICE_SETTINGS_KEY}={json}");
+        }
+        if self.voice_toggles != StoredVoiceToggles::default() {
+            let json = voice_toggles_to_json(self.voice_toggles);
+            let _ = writeln!(text, "{VOICE_TOGGLES_KEY}={json}");
+        }
+        if !self.voice_people.is_empty() {
+            let json = person_voice_settings_to_json(&self.voice_people);
+            let _ = writeln!(text, "{VOICE_PEOPLE_KEY}={json}");
+        }
         for (user_id, settings) in &self.notification_settings_by_user {
             let json = notification_settings_to_json(settings);
             let _ = writeln!(text, "{NOTIFICATIONS_KEY}={user_id}:{json}");
@@ -540,6 +607,13 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     recent_emoji_by_user: Vec::new(),
     theme: ThemeChoice::System,
     language: LanguageChoice::System,
+    voice_settings: VoiceSettings::DEFAULT,
+    voice_toggles: StoredVoiceToggles {
+        is_microphone_muted: false,
+        is_deafened: false,
+        was_microphone_muted_before_deafening: false,
+    },
+    voice_people: Vec::new(),
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -711,6 +785,46 @@ mod tests {
             media-muted=yes\ntheme=sepia\nlanguage=de\n";
         let preferences = Preferences::from_file_text(text);
         assert_eq!(preferences, Preferences::default());
+    }
+
+    #[test]
+    fn voice_settings_toggles_and_people_survive_a_round_trip_and_tampering_keeps_defaults() {
+        use mellow_client_core::shared_logic::voice_settings::{PushToTalkKey, VoiceInputMode};
+        let mut preferences = Preferences {
+            voice_settings: VoiceSettings {
+                input_device_id: Some("pipewire:alsa_input.usb-Blue_Yeti".into()),
+                input_mode: VoiceInputMode::PushToTalk,
+                push_to_talk_key: Some(PushToTalkKey {
+                    code: "KeyV".into(),
+                    label: "V".into(),
+                }),
+                ..VoiceSettings::DEFAULT
+            },
+            voice_toggles: StoredVoiceToggles {
+                is_microphone_muted: true,
+                is_deafened: false,
+                was_microphone_muted_before_deafening: false,
+            },
+            ..Preferences::default()
+        };
+        preferences.set_voice_person(
+            id(7),
+            PersonVoiceSetting {
+                volume_percent: 40,
+                is_locally_muted: true,
+            },
+        );
+        preferences.set_voice_person(id(8), PersonVoiceSetting::default());
+        assert_eq!(preferences.voice_people.len(), 1);
+        assert_eq!(
+            Preferences::from_file_text(&preferences.to_file_text()),
+            preferences
+        );
+        let tampered = "voice-settings={not json\nvoice-toggles=[1]\nvoice-people=\"x\"\n";
+        assert_eq!(
+            Preferences::from_file_text(tampered),
+            Preferences::default()
+        );
     }
 
     #[test]

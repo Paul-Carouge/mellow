@@ -39,7 +39,6 @@ use mellow_client_core::shared_logic::notifications::{
     should_alert_about, window_title,
 };
 use mellow_client_core::state::ClientState;
-use mellow_media::{SoundPlayer, SystemAudioDevices};
 use mellow_protocol::{Message, Snowflake};
 
 use crate::dock_and_tray;
@@ -80,8 +79,6 @@ pub struct Notifier {
     /// Notifications shown per channel since the reader last looked at it.
     alert_count_by_channel: HashMap<Snowflake, u32>,
     last_sound_at: Option<Instant>,
-    /// Opened at the first chime; its output closes by itself between sounds.
-    sound_player: Option<SoundPlayer>,
     /// System notifications shown since the window was last active.
     notifications_shown_while_away: u32,
     shown_attention_count: u32,
@@ -162,7 +159,6 @@ impl Notifier {
             window: window.window_handle(),
             alert_count_by_channel: HashMap::new(),
             last_sound_at: None,
-            sound_player: None,
             notifications_shown_while_away: 0,
             shown_attention_count: 0,
             mute_end_timer: None,
@@ -229,46 +225,51 @@ impl Notifier {
         if delivery == AlertDelivery::None {
             return;
         }
-        if settings.is_sound_enabled {
-            self.play_chime();
-        }
+        let should_chime = settings.is_sound_enabled && self.is_chime_due();
+        let mut notification = None;
         if delivery == AlertDelivery::System && settings.are_desktop_notifications_enabled {
             let count = self
                 .alert_count_by_channel
                 .entry(message.channel_id)
                 .or_insert(0);
             *count = count.saturating_add(1);
-            if !should_show_system_notification(
+            if should_show_system_notification(
                 *count,
                 self.notifications_shown_while_away,
                 CAN_REPLACE_SYSTEM_NOTIFICATIONS,
             ) {
-                return;
+                self.notifications_shown_while_away =
+                    self.notifications_shown_while_away.saturating_add(1);
+                notification = Some(notification_for(
+                    state,
+                    message,
+                    place,
+                    *count,
+                    settings.should_show_previews,
+                    strings(cx),
+                ));
             }
-            self.notifications_shown_while_away =
-                self.notifications_shown_while_away.saturating_add(1);
-            let notification = notification_for(
-                state,
-                message,
-                place,
-                *count,
-                settings.should_show_previews,
-                strings(cx),
-            );
+        }
+        if should_chime {
+            // On the voice output, through the call during one (`voice`).
+            crate::voice::play_notification_chime(cx);
+        }
+        if let Some(notification) = notification {
             cx.show_system_notification(notification);
         }
     }
 
-    fn play_chime(&mut self) {
+    /// Chimes stay apart by `MINIMUM_TIME_BETWEEN_SOUNDS`; true marks this one as played.
+    fn is_chime_due(&mut self) -> bool {
         let now = Instant::now();
         if self
             .last_sound_at
             .is_some_and(|last| now.duration_since(last) < MINIMUM_TIME_BETWEEN_SOUNDS)
         {
-            return;
+            return false;
         }
         self.last_sound_at = Some(now);
-        play_chime_with(&mut self.sound_player);
+        true
     }
 
     /// A notification was clicked: the window comes to the front at its channel.
@@ -371,22 +372,6 @@ impl Notifier {
 /// How long to wait for a mute ending at `end`: just past it, at most [`MAXIMUM_MUTE_END_WAIT`].
 fn mute_end_wait(end: u64, now: u64) -> Duration {
     Duration::from_millis(end.saturating_sub(now).saturating_add(1)).min(MAXIMUM_MUTE_END_WAIT)
-}
-
-/// Plays the chime, opening the system's output in `player` the first time.
-pub fn play_chime_with(player: &mut Option<SoundPlayer>) {
-    if player.is_none() {
-        match SoundPlayer::new(Box::new(SystemAudioDevices)) {
-            Ok(opened) => *player = Some(opened),
-            Err(error) => {
-                tracing::warn!(error = %error.kind(), "cannot start the sound player");
-                return;
-            }
-        }
-    }
-    if let Some(player) = player {
-        player.play_notification_chime();
-    }
 }
 
 /// Where notifications cannot be replaced, a channel shows only its first one until it is seen,

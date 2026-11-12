@@ -280,6 +280,23 @@ impl std::fmt::Debug for VoiceSession {
     }
 }
 
+/// Whether a voice session may read `event` (a `VoiceStateDelete` only when it is the session's
+/// own user): a client forwards only these to [`VoiceSession::handle_gateway_event`].
+#[must_use]
+pub fn is_voice_session_event(event: &GatewayEvent) -> bool {
+    matches!(
+        event,
+        GatewayEvent::VoiceSessionDescription { .. }
+            | GatewayEvent::VoiceJoinRefused { .. }
+            | GatewayEvent::VoiceSlotAssigned { .. }
+            | GatewayEvent::VoiceVideoLayers { .. }
+            | GatewayEvent::VoiceVideoRefused { .. }
+            | GatewayEvent::VoiceVideoPaused { .. }
+            | GatewayEvent::VoiceDisconnected { .. }
+            | GatewayEvent::VoiceStateDelete { .. }
+    )
+}
+
 impl VoiceSession {
     /// Opens the devices, makes the offer and sends `voice_join`. Events arrive on the returned
     /// receiver; feed the gateway's events to [`VoiceSession::handle_gateway_event`].
@@ -400,15 +417,8 @@ impl VoiceSession {
     /// Passes on the gateway's voice events; ignores the others without copying them.
     pub fn handle_gateway_event(&self, event: &GatewayEvent) {
         let is_for_voice = match event {
-            GatewayEvent::VoiceSessionDescription { .. }
-            | GatewayEvent::VoiceJoinRefused { .. }
-            | GatewayEvent::VoiceSlotAssigned { .. }
-            | GatewayEvent::VoiceVideoLayers { .. }
-            | GatewayEvent::VoiceVideoRefused { .. }
-            | GatewayEvent::VoiceVideoPaused { .. }
-            | GatewayEvent::VoiceDisconnected { .. } => true,
             GatewayEvent::VoiceStateDelete { user_id, .. } => *user_id == self.own_user_id,
-            _ => false,
+            _ => is_voice_session_event(event),
         };
         if is_for_voice {
             self.network(NetworkCommand::Gateway(Box::new(event.clone())));
@@ -580,6 +590,11 @@ impl VoiceSession {
     /// Plays a cue on the voice output, where the echo canceller hears it.
     pub fn play_cue(&self, cue: VoiceCue) {
         self.command(AudioCommand::PlayCue(cue));
+    }
+
+    /// Plays the message chime on the voice output, where the echo canceller hears it.
+    pub fn play_notification_chime(&self) {
+        self.command(AudioCommand::PlayNotificationChime);
     }
 
     /// Plays a soundboard or join sound at the output volume times the soundboard volume; who

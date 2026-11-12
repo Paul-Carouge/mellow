@@ -37,8 +37,10 @@ use crate::theme::tokens::{
     COMPONENT_MEMBER_ROW_HEIGHT, COMPONENT_NAVIGATOR_RADIUS, COMPONENT_NAVIGATOR_STRIP_WIDTH,
     COMPONENT_SIDEBAR_HEADER_HEIGHT, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE,
     COMPONENT_VOICE_PARTICIPANT_GAP, COMPONENT_VOICE_PARTICIPANT_INDENT,
-    COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM,
-    TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
+    COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP,
+    COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH, COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+    SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME,
+    TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -67,6 +69,16 @@ struct SidebarRow {
     is_muted: bool,
     /// The place whose menu a right-click, the Menu key or Shift+F10 opens.
     menu: Option<PlaceMenuTarget>,
+    /// A voice channel's row: pressing it joins, never opens.
+    voice: Option<VoiceRowLook>,
+}
+
+/// What a voice channel's row adds (`voiceChannelRow` in `ChannelSidebar.svelte`).
+struct VoiceRowLook {
+    /// Where the reader is reads bright, without the selected wash.
+    is_here: bool,
+    /// "2/5" when the channel has a limit.
+    count_and_limit: Option<String>,
 }
 
 impl DuskShell {
@@ -83,6 +95,8 @@ impl DuskShell {
         let strings = strings(cx);
         let rail = self.render_server_rail(window, cx);
         let sidebar = self.render_channel_sidebar(channels_width, window, cx);
+        let voice_panel = self.render_voice_panel(window, cx);
+        let voice_announcements = self.render_voice_announcements(cx);
         let user_card = self.render_user_card(window, cx);
         div()
             .debug_selector(|| "navigator".to_owned())
@@ -112,6 +126,8 @@ impl DuskShell {
                     .child(rail)
                     .child(sidebar),
             )
+            .children(voice_panel)
+            .children(voice_announcements)
             .child(user_card)
     }
 
@@ -264,11 +280,17 @@ impl DuskShell {
                         .voice_participants(channel.id)
                         .map(|voice_state| voice_state.user_id)
                         .collect();
-                    if !is_collapsed || !participant_ids.is_empty() {
+                    let is_here = self
+                        .voice
+                        .as_ref()
+                        .is_some_and(|voice| voice.read(cx).channel_id() == Some(channel.id));
+                    if !is_collapsed || !participant_ids.is_empty() || is_here {
+                        let child_index = rows.len();
                         rows.push(self.voice_channel_row(
                             channel,
                             guild_id,
                             &participant_ids,
+                            (tab_stop, child_index),
                             window,
                             cx,
                         ));
@@ -333,6 +355,7 @@ impl DuskShell {
                         channel_id: Some(channel.id),
                         is_muted,
                         menu: Some(PlaceMenuTarget::Channel(channel.id)),
+                        voice: None,
                     },
                     (tab_stop, rows.len()),
                     window,
@@ -428,122 +451,286 @@ impl DuskShell {
             .into_any_element()
     }
 
-    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
-    /// A voice channel and the people in it. Voice channels are joined, never opened.
-    /// shortcut: joining from the row comes with voice (M3 step 7); the row is read, not pressed.
+    /// A voice channel and the people in it. Voice channels are joined, never opened: pressing
+    /// the row joins, and each participant opens their volume and "Mute for me".
     fn voice_channel_row(
         &mut self,
         channel: &Channel,
         guild_id: Snowflake,
         participant_ids: &[Snowflake],
+        tab_stop: (&mut RovingTabStop, usize),
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let strings = strings(cx);
+        let state = self.session.read(cx).state();
+        let can_connect = state
+            .my_channel_permissions(channel.id)
+            .is_none_or(|permissions| permissions.contains(Permissions::CONNECT));
+        let is_here = self
+            .voice
+            .as_ref()
+            .is_some_and(|voice| voice.read(cx).channel_id() == Some(channel.id));
+        let people = i64::try_from(participant_ids.len()).unwrap_or(i64::MAX);
+        let limit = channel.user_limit.map(i64::from);
+        let label = strings
+            .voice()
+            .row_label(&channel.name, people, limit, is_here, can_connect);
+        let leading_ink = row_ink(
+            RowLook {
+                is_selected: false,
+                has_unread: is_here,
+                is_muted: false,
+            },
+            false,
+            cx,
+        );
+        let row = Self::sidebar_row(
+            SidebarRow {
+                id: ElementId::from(("voice-row", channel.id.raw())),
+                label,
+                name: channel.name.clone().into(),
+                second_line: None,
+                leading: icon(
+                    if can_connect {
+                        IconName::SpeakerHigh
+                    } else {
+                        IconName::Lock
+                    },
+                    COMPONENT_CHANNEL_ROW_ICON_SIZE,
+                    leading_ink,
+                )
+                .into_any_element(),
+                height: COMPONENT_CHANNEL_ROW_HEIGHT,
+                is_selected: false,
+                has_unread: false,
+                mention_count: 0,
+                channel_id: Some(channel.id),
+                is_muted: false,
+                menu: Some(PlaceMenuTarget::Channel(channel.id)),
+                voice: Some(VoiceRowLook {
+                    is_here,
+                    count_and_limit: limit.map(|limit| format!("{people}/{limit}")),
+                }),
+            },
+            tab_stop,
+            window,
+            cx,
+        );
+        let participants: Vec<AnyElement> = participant_ids
+            .iter()
+            .map(|user_id| self.voice_participant_row(guild_id, *user_id, window, cx))
+            .collect();
+        div()
+            .child(row)
+            .when(!participants.is_empty(), |item| {
+                item.child(
+                    div()
+                        .id(ElementId::from(("voice-participants", channel.id.raw())))
+                        .role(Role::List)
+                        .aria_label(strings.voice().participants_in(&channel.name))
+                        .children(participants),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// One person in a voice channel: the speaking ring, their name, and their marks (microphone
+    /// off, sound off, muted for the reader). Speaking is shown, never announced.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
+    fn voice_participant_row(
+        &mut self,
+        guild_id: Snowflake,
+        user_id: Snowflake,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tokens = theme(cx);
         let strings = strings(cx);
         let state = self.session.read(cx).state();
-        let can_connect = state
-            .my_channel_permissions(channel.id)
-            .is_none_or(|permissions| permissions.contains(Permissions::CONNECT));
-        let people = i64::try_from(participant_ids.len()).unwrap_or(i64::MAX);
-        let limit = channel.user_limit.map(i64::from);
-        let label = strings
-            .voice()
-            .row_label(&channel.name, people, limit, false, can_connect);
-        let ink = color(tokens.component_channel_row_text_read);
-        let participants: Vec<AnyElement> = participant_ids
+        let is_me = state.current_user().is_some_and(|user| user.id == user_id);
+        let voice_state = state.voice_state_of(user_id).cloned();
+        let person = state
+            .members(guild_id)
             .iter()
-            .map(|user_id| {
-                let person = state
-                    .members(guild_id)
-                    .iter()
-                    .map(|member| &member.user)
-                    .find(|user| user.id == *user_id)
-                    .cloned();
-                let (name, avatar) = if let Some(user) = person {
-                    let picture = user.avatar.map(|image| {
-                        profile_picture(image, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, window)
-                    });
+            .map(|member| member.user.clone())
+            .find(|user| user.id == user_id)
+            .or_else(|| {
+                state
+                    .current_user_as_public_user()
+                    .filter(|user| user.id == user_id)
+            });
+        let is_speaking_by_server = state.is_speaking(user_id);
+        let (name, avatar) = if let Some(user) = person {
+            let picture = user.avatar.map(|image| {
+                profile_picture(image, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, window)
+            });
+            (
+                display_name(&user).to_owned(),
+                AvatarPerson::from_user(&user, picture),
+            )
+        } else {
+            // The member list is still on its way.
+            let someone = strings.voice().someone();
+            let placeholder = mellow_protocol::PublicUser {
+                id: user_id,
+                username: someone.to_owned(),
+                display_name: someone.to_owned(),
+                avatar: None,
+                banner: None,
+            };
+            (
+                someone.to_owned(),
+                AvatarPerson::from_user(&placeholder, None),
+            )
+        };
+        let is_self_speaking = self
+            .voice
+            .as_ref()
+            .is_some_and(|voice| voice.read(cx).is_self_speaking());
+        let is_speaking = is_speaking_by_server || (is_me && is_self_speaking);
+        let is_muted_for_me =
+            !is_me && crate::voice::Voice::person_setting(user_id, cx).is_locally_muted;
+        let (is_deafened, is_self_muted, is_suppressed) =
+            voice_state
+                .as_ref()
+                .map_or((false, false, false), |voice_state| {
                     (
-                        display_name(&user).to_owned(),
-                        AvatarPerson::from_user(&user, picture),
+                        voice_state.self_deaf,
+                        voice_state.self_mute,
+                        voice_state.suppressed,
                     )
-                } else {
-                    // The member list is still on its way.
-                    let someone = strings.voice().someone();
-                    let placeholder = mellow_protocol::PublicUser {
-                        id: *user_id,
-                        username: someone.to_owned(),
-                        display_name: someone.to_owned(),
-                        avatar: None,
-                        banner: None,
-                    };
-                    (
-                        someone.to_owned(),
-                        AvatarPerson::from_user(&placeholder, None),
-                    )
-                };
-                div()
-                    .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
-                    .h(length(COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT))
-                    .pl(length(COMPONENT_VOICE_PARTICIPANT_INDENT))
-                    .flex()
-                    .items_center()
-                    .gap(length(COMPONENT_VOICE_PARTICIPANT_GAP))
-                    .child(Avatar::new(avatar, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE))
-                    .child(
-                        with_type(div(), TYPE_BODY_SM)
-                            .min_w_0()
-                            .truncate()
-                            .text_color(color(tokens.component_voice_participant_name_text))
-                            .child(name),
-                    )
-                    .into_any_element()
-            })
-            .collect();
+                });
+        let is_microphone_off = is_self_muted || is_suppressed;
+        let states: Vec<&str> = [
+            (is_deafened, strings.voice().sound_off()),
+            (
+                is_self_muted && !is_deafened,
+                strings.voice().microphone_off(),
+            ),
+            (is_suppressed, strings.voice().cannot_speak()),
+            (is_muted_for_me, strings.voice().muted_for_you()),
+        ]
+        .into_iter()
+        .filter_map(|(is_shown, word)| is_shown.then_some(word))
+        .collect();
+        let label = strings.voice().participant_label(&name, &states);
+        let id = ElementId::from(("voice-participant", user_id.raw()));
+        let focus_handle = remembered_focus_handle(&id, window, cx);
+        let hover = remembered_hover(&id, window, cx);
+        let is_hovered = *hover.read(cx);
+        let is_ring_shown = is_focus_visible(&focus_handle, window);
+        let state_ink = color(tokens.component_voice_participant_state_icon);
+        let ring = length(
+            COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP
+                + COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH,
+        );
+        let popover_name: SharedString = name.clone().into();
+        // Your own row opens nothing: the user card holds your toggles.
+        let can_open = !is_me && self.voice.is_some();
         div()
-            .mt(length(COMPONENT_CHANNEL_ROW_GAP))
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .track_focus(&focus_handle)
+            .relative()
+            .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
+            .h(length(COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT))
+            .pl(length(COMPONENT_VOICE_PARTICIPANT_INDENT))
+            .pr(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
+            .flex()
+            .items_center()
+            .gap(length(COMPONENT_VOICE_PARTICIPANT_GAP))
+            .rounded(length(COMPONENT_CHANNEL_ROW_RADIUS))
+            .when(is_hovered, |row| {
+                row.bg(color(tokens.component_voice_participant_background_hover))
+            })
+            .when(can_open, |row| {
+                row.cursor_pointer().on_click(cx.listener(
+                    move |shell, event: &gpui::ClickEvent, window, cx| {
+                        shell.open_voice_person_popover(
+                            user_id,
+                            popover_name.clone(),
+                            event.position(),
+                            window,
+                            cx,
+                        );
+                    },
+                ))
+            })
+            .on_hover(move |is_hovered, _, cx| {
+                hover.update(cx, |remembered, cx| {
+                    *remembered = *is_hovered;
+                    cx.notify();
+                });
+            })
             .child(
                 div()
-                    .id(ElementId::from(("voice-row", channel.id.raw())))
-                    .role(Role::Group)
-                    .aria_label(label)
-                    .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
-                    .h(length(COMPONENT_CHANNEL_ROW_HEIGHT))
-                    .px(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
-                    .flex()
-                    .items_center()
-                    .gap(length(COMPONENT_CHANNEL_ROW_ICON_GAP))
-                    .text_color(ink)
-                    .child(icon(
-                        if can_connect {
-                            IconName::SpeakerHigh
-                        } else {
-                            IconName::Lock
-                        },
-                        COMPONENT_CHANNEL_ROW_ICON_SIZE,
-                        ink,
-                    ))
-                    .child(
-                        with_type(div(), TYPE_CHANNEL_NAME)
-                            .flex_1()
-                            .min_w_0()
-                            .truncate()
-                            .child(channel.name.clone()),
-                    )
-                    .when_some(limit, |row, limit| {
-                        row.child(
-                            with_type(div(), TYPE_BODY_SM)
-                                .flex_none()
-                                .text_color(color(tokens.component_voice_participant_limit_text))
-                                .child(format!("{people}/{limit}")),
+                    .relative()
+                    .flex_none()
+                    .child(Avatar::new(avatar, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE))
+                    .when(is_speaking, |avatar| {
+                        // The ring sits outside the picture, a gap of the card between them.
+                        avatar.child(
+                            div()
+                                .absolute()
+                                .top(-ring)
+                                .left(-ring)
+                                .right(-ring)
+                                .bottom(-ring)
+                                .rounded_full()
+                                .border(length(COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH))
+                                .border_color(color(
+                                    tokens.component_voice_participant_speaking_ring,
+                                )),
                         )
                     }),
             )
-            .children(participants)
+            .child(
+                with_type(div(), TYPE_BODY_SM)
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .text_color(color(if is_speaking {
+                        tokens.component_voice_participant_name_text_speaking
+                    } else {
+                        tokens.component_voice_participant_name_text
+                    }))
+                    .child(name),
+            )
+            .when(is_microphone_off && !is_deafened, |row| {
+                row.child(icon(
+                    IconName::MicrophoneSlash,
+                    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+                    state_ink,
+                ))
+            })
+            .when(is_deafened, |row| {
+                row.child(icon(
+                    IconName::SpeakerSlash,
+                    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+                    state_ink,
+                ))
+            })
+            .when(is_muted_for_me, |row| {
+                row.child(icon(
+                    IconName::SpeakerX,
+                    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+                    color(tokens.component_voice_participant_local_mute_icon),
+                ))
+            })
+            .when(is_ring_shown, |row| {
+                row.child(inset_focus_ring(COMPONENT_CHANNEL_ROW_RADIUS, cx))
+            })
             .into_any_element()
     }
 
+    /// Joins a voice channel from its row.
+    fn join_voice(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        if let Some(voice) = self.voice.clone() {
+            voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+        }
+    }
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     /// Home: Friends, then the conversations, most recent first.
     fn conversation_rows(
@@ -592,6 +779,7 @@ impl DuskShell {
                 channel_id: None,
                 is_muted: false,
                 menu: None,
+                voice: None,
             },
             (tab_stop, 0),
             window,
@@ -715,6 +903,7 @@ impl DuskShell {
                     channel_id: Some(conversation.id),
                     is_muted,
                     menu: None,
+                    voice: None,
                 },
                 (tab_stop, child_index),
                 window,
@@ -749,15 +938,18 @@ impl DuskShell {
         );
         let hover = remembered_hover(&row.id, window, cx);
         let is_hovered = *hover.read(cx);
+        let is_here = row.voice.as_ref().is_some_and(|voice| voice.is_here);
         let ink = row_ink(
             RowLook {
                 is_selected: row.is_selected,
-                has_unread: row.has_unread,
+                has_unread: row.has_unread || is_here,
                 is_muted: row.is_muted,
             },
             is_hovered,
             cx,
         );
+        let joins_voice = row.voice.is_some();
+        let count_and_limit = row.voice.and_then(|voice| voice.count_and_limit);
         let fill = if row.is_selected {
             Some(tokens.component_channel_row_background_selected)
         } else if is_hovered {
@@ -770,7 +962,11 @@ impl DuskShell {
         let menu_focus = focus_handle.clone();
         let button = div()
             .id(row.id)
-            .role(Role::Link)
+            .role(if joins_voice {
+                Role::Button
+            } else {
+                Role::Link
+            })
             .aria_label(row.label)
             .when(row.is_selected, |button| button.aria_selected(true))
             .track_focus(&focus_handle);
@@ -824,6 +1020,7 @@ impl DuskShell {
                         });
                     })
                     .on_click(cx.listener(move |shell, _, window, cx| match channel_id {
+                        Some(channel_id) if joins_voice => shell.join_voice(channel_id, cx),
                         Some(channel_id) => shell.open_channel(channel_id, window, cx),
                         None => shell.open_place(None, None, window, cx),
                     }))
@@ -859,6 +1056,14 @@ impl DuskShell {
                     })
                     .when(row.mention_count > 0, |button| {
                         button.child(MentionBadge::new(row.mention_count))
+                    })
+                    .when_some(count_and_limit, |button, count_and_limit| {
+                        button.child(
+                            with_type(div(), TYPE_BODY_SM)
+                                .flex_none()
+                                .text_color(color(tokens.component_voice_participant_limit_text))
+                                .child(count_and_limit),
+                        )
                     })
                     .when(is_ring_shown, |button| {
                         button.child(inset_focus_ring(COMPONENT_CHANNEL_ROW_RADIUS, cx))

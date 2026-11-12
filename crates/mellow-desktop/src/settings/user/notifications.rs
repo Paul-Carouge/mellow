@@ -8,13 +8,12 @@ use gpui::{
     SystemNotification, Window, div,
 };
 use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
-use mellow_media::SoundPlayer;
 use mellow_protocol::Snowflake;
 
 use super::parts::body_text;
 use crate::components::Switch;
 use crate::i18n::strings;
-use crate::notifier::{TURNED_ON_NOTIFICATION_TAG, notification_settings_of, play_chime_with};
+use crate::notifier::{TURNED_ON_NOTIFICATION_TAG, notification_settings_of};
 use crate::preferences::{PreferencesStore, change_preferences};
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::length;
@@ -26,8 +25,6 @@ use crate::window_chrome::WINDOW_TITLE;
 /// The page's switches; they follow the preferences, so a change elsewhere shows at once.
 pub struct NotificationsPage {
     user_id: Snowflake,
-    /// Opened when the sound is turned on, to play the chime once.
-    sound_player: Option<SoundPlayer>,
     _preferences_subscription: Subscription,
 }
 
@@ -50,7 +47,6 @@ impl NotificationsPage {
     pub fn new(user_id: Snowflake, cx: &mut Context<Self>) -> Self {
         Self {
             user_id,
-            sound_player: None,
             _preferences_subscription: cx.observe_global::<PreferencesStore>(|_, cx| cx.notify()),
         }
     }
@@ -74,7 +70,6 @@ impl Render for NotificationsPage {
         let words = strings(cx).notifications();
         let settings = notification_settings_of(self.user_id, cx);
         let user_id = self.user_id;
-        let body = cx.entity().downgrade();
         let intro = strings(cx).desktop().notifications_intro();
         let switches = div()
             .mt(length(COMPONENT_SETTINGS_SECTION_GAP))
@@ -137,7 +132,7 @@ impl Render for NotificationsPage {
                     );
                     // Turning it on plays it once, so the reader knows what they chose.
                     if is_on {
-                        let _ = body.update(cx, |body, _| play_chime_with(&mut body.sound_player));
+                        crate::voice::play_notification_chime(cx);
                     }
                 }),
             );

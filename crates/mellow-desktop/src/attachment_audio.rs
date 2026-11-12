@@ -117,6 +117,16 @@ pub fn end_attachment_audio_session(cx: &mut App) {
     store.rest = None;
 }
 
+/// The voice output changed: a playing sound moves there.
+pub fn follow_voice_output_device(output_device_id: Option<String>, cx: &mut App) {
+    if let Some(player) = cx
+        .try_global::<AttachmentAudio>()
+        .and_then(|store| store.player.as_ref())
+    {
+        player.set_output_device(output_device_id);
+    }
+}
+
 /// Another channel opened: the sound stops and is freed, as the web's element goes with the page.
 pub fn stop_attachment_audio(cx: &mut App) {
     if let Some(store) = cx.try_global::<AttachmentAudio>()
@@ -257,6 +267,8 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
             .insert(attachment_id);
         return;
     }
+    let output_device_id = crate::preferences::preferences(cx)
+        .and_then(|preferences| preferences.voice_settings.output_device_id.clone());
     let store = cx.default_global::<AttachmentAudio>();
     let Some(rest) = store.rest.clone() else {
         return;
@@ -271,7 +283,11 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
     store.stop();
     if store.player.is_none() {
         match ClipPlayer::new(Box::new(SystemAudioDevices)) {
-            Ok(player) => store.player = Some(player),
+            Ok(player) => {
+                // Attachments play where voices do (the web's `setSinkId` on its elements).
+                player.set_output_device(output_device_id);
+                store.player = Some(player);
+            }
             Err(error) => {
                 tracing::warn!(error = %error.kind(), "cannot start the attachment player");
                 return;

@@ -2380,6 +2380,11 @@ export const en = {
     /** Security: the recovery codes file was saved where the person chose. */
     codesSaved: "Recovery codes saved.",
     codesSaveFailed: "Couldn't save the file. Copy the codes instead.",
+    /** The voice panel, when the app's voice engine could not start (no sound device thread, no address for the instance). */
+    voiceCouldNotStartTitle: "Voice couldn't start",
+    voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
+    /** The voice panel, when no sound output could be opened at all. */
+    voiceOutputUnavailable: "No sound output found: you can't hear the others until one is plugged in.",
   },
 };
 

@@ -80,6 +80,17 @@ pub enum MembersLoad {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StateChanged(pub Vec<StateChange>);
 
+/// What the voice session needs from the gateway: its own events, and the gateway identifying
+/// again or resuming (`crate::voice` hands them to `mellow_media::VoiceSession`).
+#[derive(Debug, Clone, PartialEq)]
+pub enum VoiceSignal {
+    Event(Box<GatewayEvent>),
+    Ready,
+    Resumed,
+    /// Signed out: the gateway is gone, voice stops without a word to the instance.
+    SessionEnded,
+}
+
 /// A message new to this session, once the state took it in (the web's `onIncomingMessage`):
 /// the notifier decides whether to tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -142,6 +153,7 @@ impl std::fmt::Debug for Session {
 impl EventEmitter<StateChanged> for Session {}
 impl EventEmitter<SendRefused> for Session {}
 impl EventEmitter<IncomingMessage> for Session {}
+impl EventEmitter<VoiceSignal> for Session {}
 
 impl Session {
     /// A session that first looks for one kept in the secret store.
@@ -330,6 +342,7 @@ impl Session {
         let mut changes: Vec<StateChange> = Vec::new();
         let mut should_resend_failed_messages = false;
         let mut incoming_messages = Vec::new();
+        let mut voice_signals = Vec::new();
         let now = now_unix_milliseconds();
         for update in burst {
             let change = match update {
@@ -340,6 +353,7 @@ impl Session {
                     self.member_loads.clear();
                     self.conversation.forget_history();
                     self.load_gif_settings(cx);
+                    voice_signals.push(VoiceSignal::Ready);
                     self.state.apply_ready(*ready)
                 }
                 GatewayUpdate::Event(event) => {
@@ -348,10 +362,14 @@ impl Session {
                     {
                         incoming_messages.push(message.clone());
                     }
+                    if mellow_media::is_voice_session_event(&event) {
+                        voice_signals.push(VoiceSignal::Event(Box::new(event.clone())));
+                    }
                     self.state.apply_event(event, now)
                 }
                 GatewayUpdate::Resumed => {
                     self.status = ConnectionStatus::Connected;
+                    voice_signals.push(VoiceSignal::Resumed);
                     should_resend_failed_messages = true;
                     // Pages that failed while the link was down are asked again (the web's
                     // `retryFailedLoads`): their views hear it and ask.
@@ -384,6 +402,9 @@ impl Session {
         }
         for message in incoming_messages {
             cx.emit(IncomingMessage(message));
+        }
+        for signal in voice_signals {
+            cx.emit(signal);
         }
         cx.notify();
     }
@@ -490,6 +511,7 @@ impl Session {
         self.status_error = None;
         self.conversation = messages::ConversationRequests::default();
         end_attachment_audio_session(cx);
+        cx.emit(VoiceSignal::SessionEnded);
         if self.is_kept_on_this_device {
             end_picture_session(cx);
             forget_saved_drafts(cx);
@@ -861,6 +883,14 @@ impl Session {
             std::future::ready(())
         })
         .detach();
+    }
+
+    /// The live gateway, for the voice session's frames.
+    #[must_use]
+    pub fn gateway_handle(&self) -> Option<GatewayHandle> {
+        self.connection
+            .as_ref()
+            .map(|connection| connection.gateway.clone())
     }
 
     /// The signed-in user's REST client, for the views that call the API themselves.

@@ -78,7 +78,7 @@ pub use resampling::ResamplingError;
 pub use session::{
     AudioDirection, GOOD_ROUND_TRIP, LatencyQuality, MEDIUM_ROUND_TRIP, VoiceSession,
     VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions, VoiceSignalling, VoiceToggles,
-    WatchedVideo, latency_quality,
+    WatchedVideo, is_voice_session_event, latency_quality,
 };
 pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;

@@ -27,6 +27,12 @@ thiserror.workspace = true
 tracing.workspace = true
 yuv.workspace = true
 
+# Linux desktops run PipeWire: its own host lists the devices by their PipeWire node name, stable
+# across launches, with the session's real default; without a PipeWire daemon cpal falls back to
+# ALSA (ids are ALSA PCM names, by card name, also stable).
+[target.'cfg(target_os = "linux")'.dependencies]
+cpal = { workspace = true, features = ["pipewire"] }
+
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6.2"
