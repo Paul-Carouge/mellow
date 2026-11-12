@@ -37,7 +37,9 @@ use mellow_client_core::shared_logic::slash_commands::SlashCommandId;
 use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Role as ServerRole, Snowflake};
 
-use crate::components::{Button, IconButton, focus_ring, is_focus_visible, with_type};
+use crate::components::{
+    Button, IconButton, LiveRegion as _, focus_ring, is_focus_visible, with_type,
+};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{Language, Strings, strings};
 use crate::theme::icons::IconName;
@@ -1406,16 +1408,20 @@ impl Render for Composer {
             }))
             .map(SharedString::from)
             .collect();
-        let error_lines =
-            div()
-                .id("composer-errors")
-                .role(Role::Alert)
-                .children(errors.into_iter().map(|error| {
-                    with_type(div(), TYPE_BODY)
-                        .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
-                        .text_color(color(tokens.component_composer_error_text))
-                        .child(error)
-                }));
+        let announced_errors = errors
+            .iter()
+            .map(AsRef::<str>::as_ref)
+            .collect::<Vec<_>>()
+            .join(" ");
+        let error_lines = div()
+            .id("composer-errors")
+            .live_assertive(announced_errors)
+            .children(errors.into_iter().map(|error| {
+                with_type(div(), TYPE_BODY)
+                    .py(length(COMPONENT_COMPOSER_ERROR_PADDING_BLOCK))
+                    .text_color(color(tokens.component_composer_error_text))
+                    .child(error)
+            }));
 
         let suggestion_rows = self.suggestions.visible().to_vec();
         let suggestion_list = (self.can_send_messages && !suggestion_rows.is_empty()).then(|| {
@@ -1726,8 +1732,7 @@ impl Render for Composer {
                 // Upload results, for screen readers only.
                 div()
                     .id("composer-announcement")
-                    .role(Role::Status)
-                    .aria_label(self.announcement.clone())
+                    .live_polite(self.announcement.clone())
                     .size_0()
                     .overflow_hidden(),
             )

@@ -36,8 +36,8 @@ use mellow_protocol::{
 use super::MessageSearchView;
 use super::field::FieldPlacement;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonSize, ButtonVariant, IconButton, focus_ring, icon,
-    is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
+    Avatar, AvatarPerson, Button, ButtonSize, ButtonVariant, IconButton, LiveRegion as _,
+    focus_ring, icon, is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, format_count, strings};
@@ -365,25 +365,47 @@ impl MessageSearchView {
 
         let body: AnyElement = match status {
             MessageSearchStatus::Idle => Self::render_idle(guild_name.as_deref(), cx),
-            MessageSearchStatus::TooLarge(problem) => with_type(div(), TYPE_BODY)
-                .id("search-too-large")
-                .role(Role::Alert)
-                .pt(length(SPACE_XS))
-                .text_color(color(tokens.color_text_secondary))
-                .child(match problem {
+            MessageSearchStatus::TooLarge(problem) => {
+                let sentence = match problem {
                     SearchQueryProblem::TooLong => {
                         search_strings.too_long(plural_count(MAXIMUM_SEARCH_QUERY_LENGTH))
                     }
                     SearchQueryProblem::TooManyParts => {
                         search_strings.too_many_parts(plural_count(MAXIMUM_SEARCH_QUERY_PARTS))
                     }
-                })
-                .into_any_element(),
+                };
+                with_type(div(), TYPE_BODY)
+                    .id("search-too-large")
+                    .live_assertive(sentence.clone())
+                    .pt(length(SPACE_XS))
+                    .text_color(color(tokens.color_text_secondary))
+                    .child(sentence)
+                    .into_any_element()
+            }
             MessageSearchStatus::RateLimited | MessageSearchStatus::Failed => {
                 let view = cx.entity().downgrade();
+                let failure_reason = (status == MessageSearchStatus::Failed).then(|| {
+                    self.search.failure().map_or_else(
+                        || search_strings.failed().to_owned(),
+                        |error| {
+                            describe_error(
+                                error,
+                                search_strings.failed(),
+                                crate::strings_pending_i18n::strings(cx),
+                            )
+                        },
+                    )
+                });
+                let announced = failure_reason.clone().unwrap_or_else(|| {
+                    format!(
+                        "{} {}",
+                        search_strings.rate_limited_title(),
+                        search_strings.rate_limited_body()
+                    )
+                });
                 div()
                     .id("search-failed")
-                    .role(Role::Alert)
+                    .live_assertive(announced)
                     .flex()
                     .flex_col()
                     .items_start()
@@ -402,17 +424,7 @@ impl MessageSearchView {
                                     .child(search_strings.rate_limited_body()),
                             )
                     })
-                    .when(status == MessageSearchStatus::Failed, |alert| {
-                        let reason = self.search.failure().map_or_else(
-                            || search_strings.failed().to_owned(),
-                            |error| {
-                                describe_error(
-                                    error,
-                                    search_strings.failed(),
-                                    crate::strings_pending_i18n::strings(cx),
-                                )
-                            },
-                        );
+                    .when_some(failure_reason, |alert, reason| {
                         alert.child(
                             with_type(div(), TYPE_BODY)
                                 .text_color(color(tokens.color_text_secondary))
@@ -430,8 +442,7 @@ impl MessageSearchView {
             }
             MessageSearchStatus::Loading => div()
                 .id("search-loading")
-                .role(Role::Status)
-                .aria_label(search_strings.searching())
+                .live_polite(search_strings.searching())
                 .flex()
                 .flex_col()
                 .gap(length(COMPONENT_SEARCH_RESULT_GAP))
@@ -968,18 +979,22 @@ impl MessageSearchView {
             Some(
                 div()
                     .id("search-loading-more")
-                    .role(Role::Status)
-                    .aria_label(search_strings.loading_more())
+                    .live_polite(search_strings.loading_more())
                     .mt(length(COMPONENT_SEARCH_RESULT_GAP))
                     .child(skeleton_slip(cx))
                     .into_any_element(),
             )
         } else if let Some(error) = self.search.load_more_error() {
             let view = cx.entity().downgrade();
+            let sentence = describe_error(
+                error,
+                search_strings.load_more_failed(),
+                crate::strings_pending_i18n::strings(cx),
+            );
             Some(
                 div()
                     .id("search-load-more-failed")
-                    .role(Role::Alert)
+                    .live_assertive(sentence.clone())
                     .mt(length(SPACE_SM))
                     .flex()
                     .flex_col()
@@ -988,11 +1003,7 @@ impl MessageSearchView {
                     .child(
                         with_type(div(), TYPE_BODY)
                             .text_color(color(tokens.color_text_secondary))
-                            .child(describe_error(
-                                error,
-                                search_strings.load_more_failed(),
-                                crate::strings_pending_i18n::strings(cx),
-                            )),
+                            .child(sentence),
                     )
                     .child(
                         Button::new("search-load-more-again", catalogue.common().try_again())

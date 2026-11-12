@@ -17,6 +17,7 @@ use mellow_protocol::{
 };
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::components::LiveRegion as _;
 use crate::local_widgets::{TextField, error_line, link_button, primary_button, text_style};
 use crate::preferences::{Preferences, change_preferences};
 use crate::session::Session;
@@ -968,16 +969,16 @@ impl Render for SignInScreen {
 
         let submit = primary_button("submit", self.primary_label(strings), self.is_busy, tokens)
             .on_click(cx.listener(|screen, _, window, cx| screen.submit(window, cx)));
-        let form_error = div().id("sign-in-error").role(Role::Alert).when_some(
-            self.error_message.clone(),
-            |region, message| {
+        let form_error = div()
+            .id("sign-in-error")
+            .live_assertive(self.error_message.clone().unwrap_or_default())
+            .when_some(self.error_message.clone(), |region, message| {
                 region.child(error_line(
                     message,
                     tokens.component_auth_card_error_text,
                     COMPONENT_AUTH_CARD_ERROR_ICON_SIZE,
                 ))
-            },
-        );
+            });
 
         let (mode_row, another_instance) = self.render_links(cx);
 

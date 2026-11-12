@@ -19,8 +19,8 @@ use std::rc::Rc;
 
 use gpui::{
     AppContext as _, Bounds, Context, DismissEvent, Div, Entity, FocusHandle,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels, Role,
-    SharedString, Stateful, StatefulInteractiveElement as _, Subscription, WeakEntity, Window, div,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
+    SharedString, Stateful, Subscription, WeakEntity, Window, div,
 };
 use mellow_client_core::shared_logic::context_menus_places::{
     CategoryMenuAction, CategoryMenuFacts, ChannelMenuAction, ChannelMenuFacts,
@@ -38,8 +38,8 @@ use super::DuskShell;
 use super::place_notifications::{InitialGroup, PlaceNotificationsBody};
 use super::regions::Region;
 use crate::components::{
-    ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent,
+    ContextMenu, LiveRegion as _, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, ModalDialog, ModalDialogEvent,
 };
 use crate::i18n::strings;
 use crate::notifier::notification_settings_of;
@@ -722,8 +722,7 @@ impl DuskShell {
             .chain(std::iter::once(
                 div()
                     .id("place-menu-announcement")
-                    .role(Role::Status)
-                    .aria_label(menus.announcement.clone())
+                    .live_polite(menus.announcement.clone())
                     .into_any_element(),
             ))
             .collect()

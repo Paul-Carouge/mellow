@@ -4,11 +4,11 @@
 
 use gpui::{
     App, ClipboardItem, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
-    ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Task, Window, div,
+    ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Task, Window, div,
 };
 
-use super::{Button, with_type};
+use super::{Button, LiveRegion as _, with_type};
 use crate::i18n::strings;
 use crate::theme::tokens::{
     COMPONENT_DIALOG_COPIED_LABEL_DURATION, COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP,
@@ -131,8 +131,7 @@ impl RenderOnce for FriendCode {
             .child(
                 div()
                     .id("friend-code-announcement")
-                    .role(Role::Status)
-                    .aria_label(announcement)
+                    .live_polite(announcement)
                     .h_0()
                     .overflow_hidden(),
             )

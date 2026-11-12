@@ -15,8 +15,9 @@ use mellow_protocol::{ChosenStatus, PublicUser};
 use super::custom_status_dialog::CustomStatusForm;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, ContextMenu, IconButton, MenuAlignment, MenuAnchor, MenuEntry, MenuItem,
-    MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible, remembered_hover, with_type,
+    Avatar, AvatarPerson, ContextMenu, IconButton, LiveRegion as _, MenuAlignment, MenuAnchor,
+    MenuEntry, MenuItem, MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible,
+    remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
@@ -198,8 +199,7 @@ impl DuskShell {
                             lines.child(
                                 with_type(div(), TYPE_BODY_SM)
                                     .id("status-error")
-                                    .role(Role::Alert)
-                                    .aria_label(error.clone())
+                                    .live_assertive(error.clone())
                                     .truncate()
                                     .text_color(color(tokens.color_text_danger))
                                     .child(error),

@@ -3,11 +3,11 @@
 //! a retry button.
 
 use gpui::{
-    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Window, div, relative,
+    App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
+    SharedString, Styled as _, Window, div, relative,
 };
 
-use super::{ActivationHandler, Button, child_id, icon, with_type};
+use super::{ActivationHandler, Button, LiveRegion as _, child_id, icon, with_type};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_ROW_GAP,
@@ -55,8 +55,7 @@ impl RenderOnce for SettingsListStatus {
                 let fill = color(tokens.component_server_settings_skeleton_fill);
                 div()
                     .id(self.id)
-                    .role(Role::Status)
-                    .aria_label(label)
+                    .live_polite(label)
                     .flex()
                     .flex_col()
                     .children(SKELETON_TEXT_SHARES.iter().map(|share| {
@@ -93,7 +92,7 @@ impl RenderOnce for SettingsListStatus {
                 let retry_id = child_id(&self.id, "retry");
                 div()
                     .id(self.id)
-                    .role(Role::Alert)
+                    .live_assertive(failure_text.clone())
                     .flex()
                     .flex_col()
                     .items_start()

@@ -16,7 +16,7 @@ use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, IconButton, bounds_recorder, inset_focus_ring,
+    Avatar, AvatarPerson, Button, IconButton, LiveRegion as _, bounds_recorder, inset_focus_ring,
     is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, remembered_bounds, remembered_focus_handle, remembered_hover,
     with_type,
@@ -121,7 +121,7 @@ impl DuskShell {
                     vec![
                         div()
                             .id("members-failed")
-                            .role(Role::Alert)
+                            .live_assertive(strings.members().load_failed())
                             .px(length(SPACE_MD))
                             .pt(length(SPACE_XS))
                             .flex()
@@ -147,7 +147,7 @@ impl DuskShell {
                     vec![
                         with_type(div(), TYPE_BODY)
                             .id("members-loading")
-                            .role(Role::Status)
+                            .live_polite(strings.members().loading())
                             .px(length(SPACE_MD))
                             .pt(length(SPACE_XS))
                             .text_color(color(tokens.color_text_muted))

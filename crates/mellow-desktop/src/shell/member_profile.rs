@@ -26,8 +26,8 @@ use mellow_protocol::{
 
 use super::DuskShell;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, Tooltip, avatar_tint, icon, inset_focus_ring,
-    is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tooltip, avatar_tint, icon,
+    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{MessageBody, MessageMarkdown, picture_animation, picture_for_box};
@@ -556,8 +556,7 @@ impl DuskShell {
             .map(|error| {
                 with_type(div(), TYPE_BODY)
                     .id("profile-error")
-                    .role(Role::Alert)
-                    .aria_label(error.clone())
+                    .live_assertive(error.clone())
                     .text_color(color(tokens.component_profile_popover_error_text))
                     .child(error)
             });
@@ -617,8 +616,7 @@ impl DuskShell {
                     .child(
                         div()
                             .id("profile-relationship-announcement")
-                            .role(Role::Status)
-                            .aria_label(SharedString::from(
+                            .live_polite(SharedString::from(
                                 self.member_profile.relationship_announcement.clone(),
                             ))
                             .h_0()

@@ -32,9 +32,9 @@ use mellow_client_core::shared_logic::emoji_picker::{
 use mellow_protocol::{CustomEmoji, Snowflake};
 
 use crate::components::{
-    FocusNextControl, FocusPreviousControl, MenuAnchor, Tooltip, easing, focus_next_inside,
-    focus_previous_inside, icon, inset_focus_ring, popover_position_beside_anchor, shadow,
-    with_type,
+    FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, Tooltip, easing,
+    focus_next_inside, focus_previous_inside, icon, inset_focus_ring,
+    popover_position_beside_anchor, shadow, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::{picture_animation, picture_for_box};
@@ -767,7 +767,7 @@ impl Render for EmojiPicker {
         } else {
             with_type(div(), TYPE_BODY)
                 .id("emoji-no-results")
-                .role(Role::Status)
+                .live_polite(words.no_results(&query))
                 .p(length(SPACE_XS))
                 .text_color(color(tokens.component_emoji_picker_empty_text))
                 .child(words.no_results(&query))

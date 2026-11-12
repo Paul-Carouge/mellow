@@ -15,7 +15,9 @@ use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{CustomEmoji, PublicUser, ReactionSummary, Snowflake};
 
-use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, Tabs, icon, with_type};
+use crate::components::{
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tabs, icon, with_type,
+};
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
 use crate::session::Session;
@@ -220,7 +222,7 @@ impl ReactionsDialogBody {
         match self.load_state {
             LoadState::Loading => note(reactions.loading_who())
                 .id("reactions-loading")
-                .role(Role::Status)
+                .live_polite(reactions.loading_who())
                 .into_any_element(),
             LoadState::Failed => {
                 // No Remove button is drawn: a pending focus falls back to the dialog.
@@ -303,9 +305,10 @@ impl ReactionsDialogBody {
     /// A removal the instance refused, said at once.
     fn render_error(&self, cx: &Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        div().id("reactions-error").role(Role::Alert).when_some(
-            self.error_message.clone(),
-            |slot, error| {
+        div()
+            .id("reactions-error")
+            .live_assertive(self.error_message.clone().unwrap_or_default())
+            .when_some(self.error_message.clone(), |slot, error| {
                 slot.child(
                     with_type(div(), TYPE_BODY)
                         .flex()
@@ -318,8 +321,7 @@ impl ReactionsDialogBody {
                         ))
                         .child(error),
                 )
-            },
-        )
+            })
     }
 }
 

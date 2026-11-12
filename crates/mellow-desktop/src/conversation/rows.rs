@@ -29,8 +29,8 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
-    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, Tooltip, easing,
-    icon, inset_focus_ring, menu_origin_at_pointer, shadow, with_type,
+    Button, IconButton, IconButtonTone, LiveRegion as _, MenuAlignment, MenuAnchor, MenuOrigin,
+    Tooltip, easing, icon, inset_focus_ring, menu_origin_at_pointer, shadow, with_type,
 };
 use crate::home::{OpenPersonMenu, PersonMenuRequest};
 use crate::i18n::strings;
@@ -523,7 +523,7 @@ impl ConversationView {
             };
             return container
                 .id(HISTORY_START_KEY)
-                .role(Role::Alert)
+                .live_assertive(sentence.clone())
                 .flex()
                 .flex_col()
                 .items_start()
@@ -589,8 +589,7 @@ impl ConversationView {
         };
         container
             .id(HISTORY_START_KEY)
-            .role(Role::Status)
-            .aria_label(catalogue.messages().loading())
+            .live_polite(catalogue.messages().loading())
             .children(SKELETON_SHAPES.iter().take(count).map(|(name, lines)| {
                 div()
                     .relative()
