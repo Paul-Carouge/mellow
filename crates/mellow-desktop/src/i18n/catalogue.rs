@@ -14794,10 +14794,10 @@ impl DesktopStrings {
         }
     }
 
-    pub fn global_push_to_talk_listening_typing(self) -> &'static str {
+    pub fn global_push_to_talk_listening_key_taken(self) -> &'static str {
         match self.language {
-            Language::English => "Works in other apps too, where this key stops typing during the call.",
-            Language::French => "Marche aussi dans les autres applis, où cette touche n’écrit plus pendant l’appel.",
+            Language::English => "Works in other apps too, where this key does nothing else during the call.",
+            Language::French => "Marche aussi dans les autres applis, où cette touche ne fait plus rien d’autre pendant l’appel.",
         }
     }
 
@@ -14840,6 +14840,27 @@ impl DesktopStrings {
         match self.language {
             Language::English => "Works only while Mellow is focused: your desktop has no global shortcuts portal.",
             Language::French => "Ne marche que quand Mellow est actif\u{a0}: ton bureau n’a pas de portail de raccourcis globaux.",
+        }
+    }
+
+    pub fn global_push_to_talk_portal_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: your desktop's global shortcuts portal ran into an error.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: le portail de raccourcis globaux de ton bureau a rencontré une erreur.",
+        }
+    }
+
+    pub fn global_push_to_talk_bound_without_key(self) -> &'static str {
+        match self.language {
+            Language::English => "To use it in other apps, choose a key for “Push to talk in Mellow” in your desktop's shortcut settings.",
+            Language::French => "Pour t’en servir dans les autres applis, choisis une touche pour «\u{a0}Appuyer pour parler dans Mellow\u{a0}» dans les réglages de raccourcis de ton bureau.",
+        }
+    }
+
+    pub fn global_push_to_talk_key_not_on_layout(self) -> &'static str {
+        match self.language {
+            Language::English => "Works only while Mellow is focused: this key isn't on your current keyboard layout.",
+            Language::French => "Ne marche que quand Mellow est actif\u{a0}: cette touche n’est pas sur ta disposition de clavier actuelle.",
         }
     }
 

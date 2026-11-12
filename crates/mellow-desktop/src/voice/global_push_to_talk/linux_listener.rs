@@ -13,13 +13,13 @@ use futures_lite::StreamExt as _;
 use futures_lite::future::{block_on, or};
 use global_hotkey::GlobalHotKeyManager;
 use mellow_client_core::shared_logic::push_to_talk_keys::{
-    does_code_type_a_character, portal_trigger_of_code,
+    does_grab_take_key_from_other_apps, portal_trigger_of_code,
 };
-use tokio::sync::{mpsc, oneshot};
+use tokio::sync::oneshot;
 
 use super::{
-    GlobalPushToTalkStatus, ListenerEvent, NO_BINDING, hotkey_of_code,
-    install_hotkey_event_handler, send_listener_event, status_without_hotkey,
+    GlobalPushToTalkStatus, KeyListener, ListenerReports, NO_BINDING, hotkey_of_code,
+    install_hotkey_event_handler, status_without_hotkey,
 };
 
 /// The shortcut's id in the portal session; the compositor remembers the binding under it.
@@ -32,7 +32,7 @@ fn is_wayland_session(wayland_display: Option<&OsStr>, session_type: Option<&OsS
 }
 
 pub(super) struct Listener {
-    events: mpsc::Sender<ListenerEvent>,
+    reports: ListenerReports,
     /// Read by the X11 grab's callback to stamp its events.
     binding: Arc<AtomicU64>,
     /// Dropping it tells the binding's thread to let the key go.
@@ -41,26 +41,23 @@ pub(super) struct Listener {
 }
 
 impl Listener {
-    pub(super) fn new(events: mpsc::Sender<ListenerEvent>) -> Self {
+    pub(super) fn new(reports: ListenerReports) -> Self {
         Self {
-            events,
+            reports,
             binding: Arc::new(AtomicU64::new(NO_BINDING)),
             stop: None,
             last_thread: None,
         }
     }
+}
 
+impl KeyListener for Listener {
     /// Starts listening for `code` on a thread, which reports the status when it knows it.
-    pub(super) fn bind(
-        &mut self,
-        code: &str,
-        binding: u64,
-        shortcut_name: &str,
-    ) -> GlobalPushToTalkStatus {
-        install_hotkey_event_handler(self.events.clone(), Arc::clone(&self.binding));
+    fn bind(&mut self, code: &str, binding: u64, shortcut_name: &str) -> GlobalPushToTalkStatus {
+        install_hotkey_event_handler(self.reports.clone(), Arc::clone(&self.binding));
         self.binding.store(binding, Ordering::Release);
         let (stop, stopped) = oneshot::channel();
-        let job = Job {
+        let listener_binding = ListenerBinding {
             code: code.to_owned(),
             shortcut_name: shortcut_name.to_owned(),
             binding,
@@ -69,7 +66,7 @@ impl Listener {
                 std::env::var_os("XDG_SESSION_TYPE").as_deref(),
             ),
             has_x11_display: std::env::var_os("DISPLAY").is_some_and(|display| !display.is_empty()),
-            events: self.events.clone(),
+            reports: self.reports.clone(),
             stopped,
         };
         let previous = self.last_thread.take();
@@ -81,7 +78,7 @@ impl Listener {
                 {
                     tracing::warn!("the previous push-to-talk listener ended with a panic");
                 }
-                block_on(job.run());
+                block_on(listener_binding.run());
             });
         match spawned {
             Ok(thread) => {
@@ -97,20 +94,20 @@ impl Listener {
         }
     }
 
-    pub(super) fn unbind(&mut self) {
+    fn unbind(&mut self) {
         self.binding.store(NO_BINDING, Ordering::Release);
         self.stop = None;
     }
 }
 
 /// One binding's work, on its thread.
-struct Job {
+struct ListenerBinding {
     code: String,
     shortcut_name: String,
     binding: u64,
     is_wayland: bool,
     has_x11_display: bool,
-    events: mpsc::Sender<ListenerEvent>,
+    reports: ListenerReports,
     stopped: oneshot::Receiver<()>,
 }
 
@@ -122,7 +119,7 @@ enum PortalOutcome {
     Failed,
 }
 
-impl Job {
+impl ListenerBinding {
     async fn run(mut self) {
         let x11_status = if self.is_wayland {
             match self.listen_through_portal().await {
@@ -135,58 +132,48 @@ impl Job {
                     return self.report(GlobalPushToTalkStatus::PortalRefused);
                 }
                 PortalOutcome::Failed => {
-                    return self.report(GlobalPushToTalkStatus::KeyUnavailable);
+                    return self.report(GlobalPushToTalkStatus::PortalFailed);
                 }
             }
         } else {
             GlobalPushToTalkStatus::Listening {
                 trigger: None,
-                does_key_stop_typing: does_code_type_a_character(&self.code),
+                is_key_taken_from_other_apps: does_grab_take_key_from_other_apps(&self.code),
             }
         };
         self.listen_through_x11(x11_status).await;
     }
 
     fn report(&self, status: GlobalPushToTalkStatus) {
-        send_listener_event(
-            &self.events,
-            ListenerEvent::Status {
-                binding: self.binding,
-                status,
-            },
-        );
+        self.reports.status(self.binding, status);
     }
 
     fn report_key(&self, is_pressed: bool) {
-        send_listener_event(
-            &self.events,
-            ListenerEvent::Key {
-                binding: self.binding,
-                is_pressed,
-            },
-        );
+        self.reports.key(self.binding, is_pressed);
     }
 
+    /// Every portal call waits under the stop signal: a portal that never answers keeps no
+    /// thread once the binding ends.
     async fn listen_through_portal(&mut self) -> PortalOutcome {
-        register_host_app_once().await;
-        let portal = match GlobalShortcuts::new().await {
-            Ok(portal) => portal,
-            Err(error) => {
-                tracing::info!(%error, "no global shortcuts portal");
-                return PortalOutcome::Missing;
-            }
-        };
-        let session = match portal.create_session(CreateSessionOptions::default()).await {
-            Ok(session) => session,
-            Err(error) => {
-                tracing::warn!(%error, "the global shortcuts portal refused a session");
-                return PortalOutcome::Failed;
-            }
-        };
         let mut stopped = std::mem::replace(&mut self.stopped, oneshot::channel().1);
-        let outcome = or(
+        let opened = or(
             async {
                 // A dropped sender is the stop signal.
+                let _ = (&mut stopped).await;
+                Err(PortalOutcome::Stopped)
+            },
+            open_portal_session(),
+        )
+        .await;
+        let (portal, session) = match opened {
+            Ok(opened) => opened,
+            Err(outcome) => {
+                self.stopped = stopped;
+                return outcome;
+            }
+        };
+        let outcome = or(
+            async {
                 let _ = (&mut stopped).await;
                 PortalOutcome::Stopped
             },
@@ -235,7 +222,7 @@ impl Job {
         else {
             return PortalOutcome::Refused;
         };
-        self.report(listening_with(shortcut.trigger_description()));
+        self.report(status_of_trigger(shortcut.trigger_description()));
         let mut signals = activated
             .filter(|signal| signal.shortcut_id() == PORTAL_SHORTCUT_ID)
             .map(|_| PortalSignal::Pressed)
@@ -255,7 +242,13 @@ impl Job {
             match signal {
                 PortalSignal::Pressed => self.report_key(true),
                 PortalSignal::Released => self.report_key(false),
-                PortalSignal::Rebound(trigger) => self.report(listening_with(&trigger)),
+                PortalSignal::Rebound(trigger) => {
+                    // A key held while its binding was removed would never come up.
+                    if trigger.is_empty() {
+                        self.report_key(false);
+                    }
+                    self.report(status_of_trigger(&trigger));
+                }
             }
         }
         // The portal went away (its service restarted): a held key would never come up; the
@@ -298,12 +291,36 @@ enum PortalSignal {
     Rebound(String),
 }
 
-fn listening_with(trigger_description: &str) -> GlobalPushToTalkStatus {
-    GlobalPushToTalkStatus::Listening {
-        trigger: (!trigger_description.is_empty()).then(|| trigger_description.to_owned().into()),
-        // The compositor may have chosen another key: say only which.
-        does_key_stop_typing: false,
+/// What the panel says of the binding the portal reports: a key, or none chosen yet.
+fn status_of_trigger(trigger_description: &str) -> GlobalPushToTalkStatus {
+    if trigger_description.is_empty() {
+        return GlobalPushToTalkStatus::PortalBoundWithoutKey;
     }
+    GlobalPushToTalkStatus::Listening {
+        trigger: Some(trigger_description.to_owned().into()),
+        // The compositor may have chosen another key: say only which.
+        is_key_taken_from_other_apps: false,
+    }
+}
+
+/// Opens a portal session. A failure to open one counts as no portal: without the service,
+/// ashpd still builds the proxy (it reads a missing version as 1) and only the session fails,
+/// and the `XWayland` grab may still work.
+async fn open_portal_session()
+-> Result<(GlobalShortcuts, ashpd::desktop::Session<GlobalShortcuts>), PortalOutcome> {
+    register_host_app_once().await;
+    let portal = GlobalShortcuts::new().await.map_err(|error| {
+        tracing::info!(%error, "no global shortcuts portal");
+        PortalOutcome::Missing
+    })?;
+    let session = portal
+        .create_session(CreateSessionOptions::default())
+        .await
+        .map_err(|error| {
+            tracing::info!(%error, "the global shortcuts portal opened no session");
+            PortalOutcome::Missing
+        })?;
+    Ok((portal, session))
 }
 
 /// Tells the portal which app this unsandboxed process is, once per process and before any other
@@ -326,6 +343,21 @@ async fn register_host_app_once() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_portal_binding_without_a_key_is_not_called_listening() {
+        assert_eq!(
+            status_of_trigger(""),
+            GlobalPushToTalkStatus::PortalBoundWithoutKey
+        );
+        assert_eq!(
+            status_of_trigger("Ctrl+V"),
+            GlobalPushToTalkStatus::Listening {
+                trigger: Some("Ctrl+V".into()),
+                is_key_taken_from_other_apps: false,
+            }
+        );
+    }
 
     #[test]
     fn follows_gpui_in_telling_wayland_from_x11() {

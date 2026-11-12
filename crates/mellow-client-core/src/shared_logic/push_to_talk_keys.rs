@@ -139,13 +139,6 @@ pub fn global_push_to_talk_code(
         .map(|key| key.code.as_str())
 }
 
-/// The accelerator `global-hotkey` parses for `code` (it reads W3C codes); `None` for a modifier
-/// alone, which Carbon and Win32 hot keys cannot grab without a key.
-#[must_use]
-pub fn global_hotkey_accelerator_of_code(code: &str) -> Option<&str> {
-    modifier_of_code(code).is_none().then_some(code)
-}
-
 /// The trigger offered to the XDG `GlobalShortcuts` portal for `code`: an xkbcommon keysym name, as
 /// the XDG "shortcuts" specification wants. `None` when no keysym fits (a modifier alone, a media
 /// key): the compositor then lets the person pick one.
@@ -214,33 +207,47 @@ pub fn portal_trigger_of_code(code: &str) -> Option<String> {
     Some(keysym.to_owned())
 }
 
-/// Whether holding `code` types a character in other apps: a global grab keeps it from typing
-/// there while push-to-talk listens.
+/// Whether a global grab of `code` takes it from other apps for the call: every key but the ones
+/// no app uses (F13 to F24, Pause, Scroll Lock). Enter, the arrows or a letter stop working there.
 #[must_use]
-pub fn does_code_type_a_character(code: &str) -> bool {
-    let is_single_after = |prefix: &str| {
-        code.strip_prefix(prefix)
-            .is_some_and(|rest| rest.len() == 1 && rest.chars().all(|c| c.is_ascii_alphanumeric()))
-    };
-    is_single_after("Key")
-        || is_single_after("Digit")
-        || is_single_after("Numpad")
-        || matches!(
-            code,
-            "Space"
-                | "Minus"
-                | "Equal"
-                | "BracketLeft"
-                | "BracketRight"
-                | "Backslash"
-                | "Semicolon"
-                | "Quote"
-                | "Comma"
-                | "Period"
-                | "Slash"
-                | "Backquote"
-                | "IntlBackslash"
-        )
+pub fn does_grab_take_key_from_other_apps(code: &str) -> bool {
+    let is_unused_function_key = code
+        .strip_prefix('F')
+        .and_then(|number| number.parse::<u8>().ok())
+        .is_some_and(|number| (13..=24).contains(&number));
+    !(is_unused_function_key || matches!(code, "Pause" | "ScrollLock"))
+}
+
+/// The character the key of `code` types without a modifier, as [`code_of_toolkit_key`] read it
+/// from the active layout; `None` for a key that types none (F keys, arrows, Space).
+#[must_use]
+pub fn character_of_code(code: &str) -> Option<char> {
+    if let Some(rest) = code
+        .strip_prefix("Key")
+        .or_else(|| code.strip_prefix("Digit"))
+    {
+        let mut characters = rest.chars();
+        return match (characters.next(), characters.next()) {
+            (Some(character), None) if character.is_ascii_alphanumeric() => {
+                Some(character.to_ascii_lowercase())
+            }
+            _ => None,
+        };
+    }
+    match code {
+        "Minus" => Some('-'),
+        "Equal" => Some('='),
+        "BracketLeft" => Some('['),
+        "BracketRight" => Some(']'),
+        "Backslash" => Some('\\'),
+        "Semicolon" => Some(';'),
+        "Quote" => Some('\''),
+        "Comma" => Some(','),
+        "Period" => Some('.'),
+        "Slash" => Some('/'),
+        "Backquote" => Some('`'),
+        _ => None,
+    }
 }
 
 /// A key went down. Keys pressed while recording a new one belong to the recorder.
@@ -377,14 +384,6 @@ mod tests {
     }
 
     #[test]
-    fn global_hotkey_takes_w3c_codes_but_not_a_modifier_alone() {
-        assert_eq!(global_hotkey_accelerator_of_code("KeyV"), Some("KeyV"));
-        assert_eq!(global_hotkey_accelerator_of_code("F13"), Some("F13"));
-        assert_eq!(global_hotkey_accelerator_of_code("ControlRight"), None);
-        assert_eq!(global_hotkey_accelerator_of_code("MetaLeft"), None);
-    }
-
-    #[test]
     fn offers_the_portal_xkb_keysym_names() {
         for (code, trigger) in [
             ("KeyV", "v"),
@@ -406,12 +405,32 @@ mod tests {
     }
 
     #[test]
-    fn tells_the_keys_that_type_a_character() {
-        for code in ["KeyV", "Digit1", "Numpad5", "Space", "Comma", "Backquote"] {
-            assert!(does_code_type_a_character(code), "{code}");
+    fn warns_that_a_grab_takes_every_key_but_the_unused_ones() {
+        for code in [
+            "KeyV",
+            "Digit1",
+            "Space",
+            "Enter",
+            "ArrowLeft",
+            "PageUp",
+            "F1",
+            "F12",
+        ] {
+            assert!(does_grab_take_key_from_other_apps(code), "{code}");
         }
-        for code in ["F13", "ControlLeft", "PageUp", "CapsLock", "KeyAB"] {
-            assert!(!does_code_type_a_character(code), "{code}");
+        for code in ["F13", "F24", "Pause", "ScrollLock"] {
+            assert!(!does_grab_take_key_from_other_apps(code), "{code}");
+        }
+    }
+
+    #[test]
+    fn reads_back_the_character_a_recorded_key_typed() {
+        for character in ('a'..='z').chain('0'..='9').chain("-=[]\\;',./`".chars()) {
+            let code = code_of_toolkit_key(&character.to_string()).unwrap_or_default();
+            assert_eq!(character_of_code(&code), Some(character), "{code}");
+        }
+        for code in ["Space", "F13", "ArrowLeft", "KeyAB", "Keyé", ""] {
+            assert_eq!(character_of_code(code), None, "{code}");
         }
     }
 

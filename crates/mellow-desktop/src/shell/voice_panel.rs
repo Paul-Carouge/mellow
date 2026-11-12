@@ -97,15 +97,26 @@ fn global_push_to_talk_sentence(
         } => (false, desktop.global_push_to_talk_listening_as(trigger)),
         GlobalPushToTalkStatus::Listening {
             trigger: None,
-            does_key_stop_typing: true,
+            is_key_taken_from_other_apps: true,
         } => (
             false,
-            desktop.global_push_to_talk_listening_typing().to_owned(),
+            desktop.global_push_to_talk_listening_key_taken().to_owned(),
         ),
         GlobalPushToTalkStatus::Listening {
             trigger: None,
-            does_key_stop_typing: false,
+            is_key_taken_from_other_apps: false,
         } => (false, desktop.global_push_to_talk_listening().to_owned()),
+        GlobalPushToTalkStatus::PortalBoundWithoutKey => (
+            true,
+            desktop.global_push_to_talk_bound_without_key().to_owned(),
+        ),
+        GlobalPushToTalkStatus::KeyNotOnKeyboardLayout => (
+            true,
+            desktop.global_push_to_talk_key_not_on_layout().to_owned(),
+        ),
+        GlobalPushToTalkStatus::PortalFailed => {
+            (true, desktop.global_push_to_talk_portal_failed().to_owned())
+        }
         GlobalPushToTalkStatus::ListeningWhileX11WindowFocused => {
             (true, desktop.global_push_to_talk_x11_only().to_owned())
         }
@@ -272,6 +283,11 @@ impl DuskShell {
             })
             .unwrap_or_default();
         let devices = device_sentences(voice, strings).join(" ");
+        // The Linux status comes after the compositor's dialog: heard once it is known.
+        let global_push_to_talk =
+            global_push_to_talk_sentence(strings, voice.global_push_to_talk_status())
+                .map(|(_, sentence)| sentence)
+                .unwrap_or_default();
         Some(
             div()
                 .child(polite_live_region("voice-phase-announcement", phase.into()))
@@ -286,6 +302,10 @@ impl DuskShell {
                 .child(polite_live_region(
                     "voice-device-announcement",
                     devices.into(),
+                ))
+                .child(polite_live_region(
+                    "voice-global-push-to-talk-announcement",
+                    global_push_to_talk.into(),
                 ))
                 .into_any_element(),
         )
