@@ -58,6 +58,30 @@ pub fn unsaved_changes_labels(catalogue: Strings) -> UnsavedChangesLabels {
     }
 }
 
+/// What failed, with its warning icon, announced at once (`role="alert"`). The node is always
+/// drawn, empty when nothing failed, so the alert is heard when its text arrives.
+pub fn error_alert(id: &'static str, message: Option<SharedString>, cx: &App) -> impl IntoElement {
+    let tokens = theme(cx);
+    let text_color = color(tokens.component_roles_error_text);
+    div()
+        .id(id)
+        .role(Role::Alert)
+        .when_some(message, |alert, message| {
+            alert.aria_label(message.clone()).child(
+                with_type(div(), TYPE_BODY)
+                    .flex()
+                    .gap(length(COMPONENT_SETTINGS_ERROR_ICON_GAP))
+                    .text_color(text_color)
+                    .child(icon(
+                        IconName::WarningCircle,
+                        COMPONENT_SETTINGS_ERROR_ICON_SIZE,
+                        text_color,
+                    ))
+                    .child(div().min_w_0().child(message)),
+            )
+        })
+}
+
 /// "Changes saved" under a form once the bar is gone. The status node is always drawn, empty
 /// when nothing is said, because screen readers often miss a live region inserted with its text.
 pub fn saved_notice(id: &'static str, notice: Option<SharedString>, cx: &App) -> impl IntoElement {
