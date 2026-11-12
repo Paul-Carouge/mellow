@@ -1,25 +1,23 @@
 //! What the moderation pages' lists share (`BanSettings.svelte`, `InviteSettings.svelte`,
 //! `ModerationLogSettings.svelte`, `EmojiSettings.svelte`): the row, a person's avatar, the line
-//! of secondary text, an error said at once, and the status line read out after an action.
+//! of secondary text and the status line read out after an action.
 
 use gpui::{
     App, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    StatefulInteractiveElement as _, Styled as _, Window, div,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_protocol::PublicUser;
 
 use crate::components::{
-    Avatar, AvatarPerson, SettingsListStatus, SettingsListStatusKind, icon, with_type,
+    Avatar, AvatarPerson, SettingsListStatus, SettingsListStatusKind, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
-use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_ROW_GAP,
     COMPONENT_SERVER_SETTINGS_ROW_MIN_HEIGHT, COMPONENT_SERVER_SETTINGS_ROW_PADDING_BLOCK,
-    COMPONENT_SERVER_SETTINGS_TEXT_GAP, COMPONENT_SETTINGS_ERROR_ICON_GAP,
-    COMPONENT_SETTINGS_ERROR_ICON_SIZE, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM,
+    COMPONENT_SERVER_SETTINGS_TEXT_GAP, TYPE_BODY_LG, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
 
@@ -73,32 +71,6 @@ pub(super) fn person_avatar(user: &PublicUser, window: &Window, cx: &App) -> imp
         AvatarPerson::from_user(user, picture),
         COMPONENT_SERVER_SETTINGS_AVATAR_SIZE,
     )
-}
-
-/// What failed, said at once; the node stays drawn so screen readers hear what appears in it.
-pub(super) fn alert_line(
-    id: &'static str,
-    message: Option<SharedString>,
-    cx: &App,
-) -> impl IntoElement {
-    let tokens = theme(cx);
-    div()
-        .id(id)
-        .role(Role::Alert)
-        .when_some(message, |slot, message| {
-            slot.child(
-                with_type(div(), TYPE_BODY)
-                    .flex()
-                    .gap(length(COMPONENT_SETTINGS_ERROR_ICON_GAP))
-                    .text_color(color(tokens.component_settings_error_text))
-                    .child(icon(
-                        IconName::WarningCircle,
-                        COMPONENT_SETTINGS_ERROR_ICON_SIZE,
-                        color(tokens.component_settings_error_icon),
-                    ))
-                    .child(message),
-            )
-        })
 }
 
 /// "Paul can join again": read out after an action, never shown.

@@ -18,7 +18,7 @@ use mellow_client_core::shared_logic::server_settings::{PermissionKey, holds};
 use mellow_protocol::{AuditLogEntry, AuditLogQuery, Permissions, PublicUser, Snowflake};
 
 use super::list_rows::{
-    alert_line, empty_sentence, list_row, list_status, person_avatar, secondary_line, text_column,
+    empty_sentence, list_row, list_status, person_avatar, secondary_line, text_column,
 };
 use crate::components::{Button, with_type};
 use crate::i18n::catalogue::PermissionsOrAllowOrDeny;
@@ -26,7 +26,7 @@ use crate::i18n::{Strings, strings};
 use crate::messages::{full_timestamp_label, local_date_time};
 use crate::session::Session;
 use crate::settings::permission_words::permission_words;
-use crate::settings::{SettingsPage, SettingsPageEvent};
+use crate::settings::{SettingsPage, SettingsPageEvent, error_alert};
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_TOOLBAR_GAP,
     COMPONENT_SETTINGS_SECTION_LABEL_GAP, TYPE_BODY, TYPE_BODY_LG,
@@ -410,7 +410,7 @@ impl Render for ServerModerationLogPage {
                                 let _ = page.update(cx, ServerModerationLogPage::load_older);
                             }),
                         )
-                        .child(alert_line(
+                        .child(error_alert(
                             "moderation-log-older-error",
                             self.has_older_failed
                                 .then(|| words.load_older_failed().into()),

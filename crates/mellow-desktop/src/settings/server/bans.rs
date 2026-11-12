@@ -13,14 +13,14 @@ use mellow_client_core::shared_logic::server_settings::focus_after_removal;
 use mellow_protocol::{Ban, Snowflake};
 
 use super::list_rows::{
-    alert_line, empty_sentence, list_row, list_status, person_avatar, secondary_line,
-    status_notice, text_column,
+    empty_sentence, list_row, list_status, person_avatar, secondary_line, status_notice,
+    text_column,
 };
 use crate::components::{Button, with_type};
 use crate::i18n::strings;
 use crate::messages::{full_timestamp_label, local_date_time};
 use crate::session::Session;
-use crate::settings::{SettingsPage, SettingsPageEvent};
+use crate::settings::{SettingsPage, SettingsPageEvent, error_alert};
 use crate::sign_in_form::describe_error;
 use crate::theme::tokens::{TYPE_BODY, TYPE_MEMBER_NAME};
 use crate::theme::{color, theme};
@@ -278,7 +278,7 @@ impl Render for ServerBansPage {
         div()
             .flex()
             .flex_col()
-            .child(alert_line("bans-error", self.error_message.clone(), cx))
+            .child(error_alert("bans-error", self.error_message.clone(), cx))
             .child(
                 div()
                     .id("bans-list")
