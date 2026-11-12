@@ -277,7 +277,7 @@ impl DuskShell {
         let facts = ServerMenuFacts {
             // Their screens come with server management (see the module's shortcut).
             can_invite_people: false,
-            can_open_settings: crate::settings::server::can_open_server_settings(guild),
+            can_open_settings: crate::settings::server::has_server_settings_page_for_reader(guild),
             can_create_channels: false,
             ..server_menu_facts_of(
                 guild,
@@ -354,7 +354,9 @@ impl DuskShell {
         let guild_id = guild.id;
         let shown_name = format!("#{}", channel.name);
         let facts = ChannelMenuFacts {
-            can_edit_channel: crate::settings::channel::can_edit_channel(state, channel_id),
+            can_edit_channel: crate::settings::channel::has_channel_settings_page_for_reader(
+                state, channel_id,
+            ),
             is_muted: is_target_muted(&settings, channel_id, now),
             can_move_up: false,
             can_move_down: false,
@@ -408,11 +410,7 @@ impl DuskShell {
         let words = strings(cx);
         let shell = cx.entity().downgrade();
         let state = self.state(cx);
-        let category = state
-            .guilds()
-            .iter()
-            .flat_map(|guild| &guild.channels)
-            .find(|channel| channel.id == category_id)?;
+        let category = state.guild_channel(category_id)?;
         let facts = CategoryMenuFacts {
             // Renaming, moving and deleting come with server management.
             can_manage: false,
@@ -449,7 +447,9 @@ impl DuskShell {
             .map(|conversation| conversation.id);
         let facts = ChatHeaderMenuFacts {
             is_group: group_id.is_some(),
-            can_edit_channel: crate::settings::channel::can_edit_channel(state, channel_id),
+            can_edit_channel: crate::settings::channel::has_channel_settings_page_for_reader(
+                state, channel_id,
+            ),
         };
         let items = entries(chat_header_menu_actions(facts), |action| match action {
             ChatHeaderMenuAction::GoTo => Some(

@@ -10,8 +10,8 @@
 //! A track adds one page module beside `overview.rs` (in `server/` or `channel/`): a view that
 //! implements [`SettingsPage`], reports `SettingsPageEvent::UnsavedChanges` when its form differs
 //! from what is stored (only if it has a form) and draws the `UnsavedChangesBar` with the
-//! attention it is given. Then, in the screen's `mod.rs`, it adds the section to
-//! `SECTIONS_WITH_A_PAGE` and one arm to `make_page`. Nothing else changes: the navigation, its
+//! attention it is given. Then, in the screen's `mod.rs`, it turns the section's arm to `true` in
+//! `has_page` and makes its page in `make_page`. Nothing else changes: the navigation, its
 //! groups and order, the narrow layout and the unsaved-changes guard come from the shared rules.
 //! Edits are sent with `Session::send_settings_change` and shown from the gateway's echo.
 

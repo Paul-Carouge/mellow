@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions, Presence, Ready,
-    Relationship, Snowflake, VoiceState, compute_channel_permissions,
+    Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions, Presence,
+    Ready, Relationship, Snowflake, VoiceState, compute_channel_permissions,
 };
 
 mod checklists;
@@ -256,6 +256,15 @@ impl ClientState {
                 .iter()
                 .any(|channel| channel.id == channel_id)
         })
+    }
+
+    /// A server's channel or category; `None` for a conversation or an unknown channel.
+    #[must_use]
+    pub fn guild_channel(&self, channel_id: Snowflake) -> Option<&Channel> {
+        self.guilds
+            .iter()
+            .flat_map(|guild| &guild.channels)
+            .find(|channel| channel.id == channel_id)
     }
 
     /// Most recent activity first.

@@ -77,8 +77,6 @@ pub struct SettingsNavigation<Section> {
     is_page_shown_when_narrow: bool,
     page: Option<ShownPage<Section>>,
     nav_focus: HashMap<Section, FocusHandle>,
-    /// "Delete server", "Delete channel".
-    pub danger_focus: FocusHandle,
     pub container_focus: FocusHandle,
     pub page_focus: FocusHandle,
 }
@@ -103,7 +101,6 @@ impl<Section: Copy + PartialEq + Eq + Hash + 'static> SettingsNavigation<Section
             is_page_shown_when_narrow: initial_section.is_some() && !is_wide,
             page: None,
             nav_focus: HashMap::new(),
-            danger_focus: cx.focus_handle(),
             container_focus: cx.focus_handle(),
             page_focus: cx.focus_handle(),
         }

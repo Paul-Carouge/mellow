@@ -13,7 +13,7 @@ use mellow_client_core::shared_logic::channel_settings::{
     ChannelSettingsSection, visible_channel_sections,
 };
 use mellow_client_core::state::ClientState;
-use mellow_protocol::{Channel, Snowflake};
+use mellow_protocol::Snowflake;
 
 use self::overview::ChannelOverviewPage;
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
@@ -21,33 +21,30 @@ use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, Settin
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 
-/// The sections the desktop has a page for, in no particular order (the rules give the order).
-const SECTIONS_WITH_A_PAGE: &[ChannelSettingsSection] = &[ChannelSettingsSection::Overview];
-
-fn channel_of(state: &ClientState, channel_id: Snowflake) -> Option<&Channel> {
-    state
-        .guilds()
-        .iter()
-        .flat_map(|guild| &guild.channels)
-        .find(|channel| channel.id == channel_id)
+/// Whether the desktop has a page for `section`: one arm per section, so a new one is decided.
+fn has_page(section: ChannelSettingsSection) -> bool {
+    match section {
+        ChannelSettingsSection::Overview => true,
+        ChannelSettingsSection::Permissions => false,
+    }
 }
 
 /// The sections offered to the reader for `channel_id`, in the navigation's order; none for a
 /// channel gone or out of sight.
 #[must_use]
 pub fn offered_sections(state: &ClientState, channel_id: Snowflake) -> Vec<ChannelSettingsSection> {
-    let Some(channel) = channel_of(state, channel_id) else {
+    let Some(channel) = state.guild_channel(channel_id) else {
         return Vec::new();
     };
     visible_channel_sections(channel.kind, state.my_channel_permissions(channel_id))
         .into_iter()
-        .filter(|section| SECTIONS_WITH_A_PAGE.contains(section))
+        .filter(|section| has_page(*section))
         .collect()
 }
 
 /// Whether "Edit channel" has a page for the reader (the menus' `can_edit_channel`).
 #[must_use]
-pub fn can_edit_channel(state: &ClientState, channel_id: Snowflake) -> bool {
+pub fn has_channel_settings_page_for_reader(state: &ClientState, channel_id: Snowflake) -> bool {
     !offered_sections(state, channel_id).is_empty()
 }
 
@@ -101,11 +98,6 @@ impl ChannelSettings {
         }
     }
 
-    #[must_use]
-    pub fn channel_id(&self) -> Snowflake {
-        self.channel_id
-    }
-
     fn navigation(&mut self) -> &mut SettingsNavigation<ChannelSettingsSection> {
         &mut self.navigation
     }
@@ -146,7 +138,9 @@ impl Render for ChannelSettings {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalogue = strings(cx);
         let state = self.session.read(cx).state();
-        let channel_name = channel_of(state, self.channel_id).map(|channel| channel.name.clone());
+        let channel_name = state
+            .guild_channel(self.channel_id)
+            .map(|channel| channel.name.clone());
         let offered = offered_sections(state, self.channel_id);
         // The channel was deleted or hidden, or the reader lost every section.
         let Some(channel_name) = channel_name.filter(|_| !offered.is_empty()) else {

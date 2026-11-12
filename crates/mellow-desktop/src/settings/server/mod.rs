@@ -3,7 +3,7 @@
 //! module for how a section is added.
 //!
 //! shortcut: "Delete server" (the owner's danger item) and every section but Overview come with
-//! the M3 step 6 settings tracks; until then an owner without `MANAGE_GUILD` has nothing here.
+//! the M3 step 6 settings tracks.
 
 mod overview;
 
@@ -21,21 +21,32 @@ use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, Settin
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 
-/// The sections the desktop has a page for, in no particular order (the rules give the order).
-const SECTIONS_WITH_A_PAGE: &[ServerSettingsSection] = &[ServerSettingsSection::Overview];
+/// Whether the desktop has a page for `section`: one arm per section, so a new one is decided.
+fn has_page(section: ServerSettingsSection) -> bool {
+    match section {
+        ServerSettingsSection::Overview => true,
+        ServerSettingsSection::Roles
+        | ServerSettingsSection::Emoji
+        | ServerSettingsSection::Soundboard
+        | ServerSettingsSection::Invites
+        | ServerSettingsSection::Members
+        | ServerSettingsSection::Bans
+        | ServerSettingsSection::ModerationLog => false,
+    }
+}
 
 /// The sections offered to the reader in `guild`, in the navigation's order.
 #[must_use]
 pub fn offered_sections(guild: &Guild) -> Vec<ServerSettingsSection> {
     visible_sections(guild)
         .into_iter()
-        .filter(|section| SECTIONS_WITH_A_PAGE.contains(section))
+        .filter(|section| has_page(*section))
         .collect()
 }
 
 /// Whether "Server settings" has a page for the reader (the menus' `can_open_settings`).
 #[must_use]
-pub fn can_open_server_settings(guild: &Guild) -> bool {
+pub fn has_server_settings_page_for_reader(guild: &Guild) -> bool {
     !offered_sections(guild).is_empty()
 }
 
@@ -105,11 +116,6 @@ impl ServerSettings {
         }
     }
 
-    #[must_use]
-    pub fn guild_id(&self) -> Snowflake {
-        self.guild_id
-    }
-
     fn navigation(&mut self) -> &mut SettingsNavigation<ServerSettingsSection> {
         &mut self.navigation
     }
@@ -128,7 +134,13 @@ impl ServerSettings {
                 });
                 Some(shown_page(section, page, Self::navigation, cx))
             }
-            _ => None,
+            ServerSettingsSection::Roles
+            | ServerSettingsSection::Emoji
+            | ServerSettingsSection::Soundboard
+            | ServerSettingsSection::Invites
+            | ServerSettingsSection::Members
+            | ServerSettingsSection::Bans
+            | ServerSettingsSection::ModerationLog => None,
         }
     }
 

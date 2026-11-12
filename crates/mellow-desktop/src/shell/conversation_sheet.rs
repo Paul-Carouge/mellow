@@ -278,7 +278,10 @@ impl DuskShell {
         let folds_keys = has_navigation_drawer && is_conversation_open;
         // A server channel whose settings have a page for the reader.
         let editable_channel_id = self.navigation.selected_channel_id().filter(|channel_id| {
-            crate::settings::channel::can_edit_channel(self.state(cx), *channel_id)
+            crate::settings::channel::has_channel_settings_page_for_reader(
+                self.state(cx),
+                *channel_id,
+            )
         });
         // The Friends tabs sit in the header after a divider where the navigator is docked.
         let friends_tabs = (self.navigation.place()
