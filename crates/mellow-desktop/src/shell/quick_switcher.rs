@@ -20,7 +20,8 @@ use mellow_protocol::{PublicUser, RelationshipKind};
 
 use super::channel_sidebar::can_send_in;
 use crate::components::{
-    FocusNextControl, FocusPreviousControl, easing, focus_ring, icon, shadow, with_type,
+    FocusNextControl, FocusPreviousControl, LiveRegion as _, easing, focus_ring, icon, shadow,
+    with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
@@ -453,8 +454,7 @@ impl Render for QuickSwitcher {
                 // Outside the list, and announced: the count, or why there is nothing to choose.
                 with_type(div(), TYPE_BODY)
                     .id("quick-switcher-status")
-                    .role(Role::Status)
-                    .aria_label(status_text.clone())
+                    .live_polite(status_text.clone())
                     .when(count > 0, |status| status.h_0().overflow_hidden())
                     .when(count == 0, |status| {
                         status
@@ -469,8 +469,7 @@ impl Render for QuickSwitcher {
                 card.child(
                     with_type(div(), TYPE_BODY)
                         .id("quick-switcher-error")
-                        .role(Role::Alert)
-                        .aria_label(SharedString::from(error.clone()))
+                        .live_assertive(SharedString::from(error.clone()))
                         .mt(length(SPACE_SM))
                         .text_color(color(tokens.component_dialog_error_text))
                         .child(error),

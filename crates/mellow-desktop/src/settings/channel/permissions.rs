@@ -29,9 +29,9 @@ use mellow_protocol::{
 
 use super::add_overwrite_target::{AddOverwriteTarget, AddOverwriteTargetEvent};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, UnsavedChangesBar, child_id, focus_ring, icon,
-    inset_focus_ring, is_focus_visible, next_choice_index, remembered_focus_handle,
-    remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, UnsavedChangesBar, child_id,
+    focus_ring, icon, inset_focus_ring, is_focus_visible, next_choice_index,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
@@ -1169,8 +1169,7 @@ impl Render for ChannelPermissionsPage {
             .child(
                 div()
                     .id("channel-permissions-alert")
-                    .role(Role::Alert)
-                    .aria_label(SharedString::from(
+                    .live_assertive(SharedString::from(
                         self.error_message.clone().unwrap_or_default(),
                     ))
                     .when_some(self.error_message.clone(), |alert, message| {
@@ -1203,8 +1202,7 @@ impl Render for ChannelPermissionsPage {
                 // Said, not shown: the bar going away already shows it.
                 div()
                     .id("channel-permissions-notice")
-                    .role(Role::Status)
-                    .aria_label(self.notice.clone().unwrap_or_default())
+                    .live_polite(self.notice.clone().unwrap_or_default())
                     .h_0()
                     .overflow_hidden(),
             )
