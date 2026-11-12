@@ -20,6 +20,7 @@ mod regions;
 mod resize_handle;
 mod server_rail;
 mod settings_screens;
+mod soundboard_host;
 mod user_card;
 mod voice_panel;
 
@@ -254,6 +255,7 @@ pub struct DuskShell {
     /// The app's voice; `None` in tests of other views.
     voice: Option<Entity<crate::voice::Voice>>,
     voice_person_popover: Option<voice_panel::VoicePersonPopover>,
+    soundboard: soundboard_host::SoundboardHost,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -329,6 +331,7 @@ impl DuskShell {
             regions: RegionFocus::new(cx),
             voice,
             voice_person_popover: None,
+            soundboard: soundboard_host::SoundboardHost::new(cx),
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
@@ -1233,7 +1236,8 @@ impl Render for DuskShell {
                 root.child(dialog.clone())
             })
             .children(self.render_place_menus(window, cx))
-            .children(self.render_voice_person_popover(cx));
+            .children(self.render_voice_person_popover(cx))
+            .children(self.render_soundboard_popover(window, cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

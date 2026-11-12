@@ -10727,6 +10727,13 @@ impl ServerSettingsSoundsStrings {
         }
     }
 
+    pub fn too_long_file(self) -> &'static str {
+        match self.language {
+            Language::English => "This sound is too long to trim here. Choose a file under 10 minutes: only 5.2 seconds are kept anyway.",
+            Language::French => "Ce son est trop long pour être découpé ici. Choisis un fichier de moins de 10\u{a0}minutes\u{202f}: seules 5,2\u{a0}secondes sont gardées de toute façon.",
+        }
+    }
+
     pub fn trim(self) -> &'static str {
         match self.language {
             Language::English => "Part to keep",

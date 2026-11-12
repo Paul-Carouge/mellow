@@ -2,7 +2,7 @@
 //! "Moderation", each only with its permission and once the desktop has its page. See the parent
 //! module for how a section is added.
 //!
-//! shortcut: "Delete server" (the owner's danger item) and Soundboard come with later M3 steps.
+//! shortcut: "Delete server" (the owner's danger item) comes with a later M3 step.
 
 mod bans;
 mod emoji;
@@ -14,6 +14,8 @@ mod moderation_log;
 mod overview;
 mod role_icon_editor;
 mod roles;
+mod sound_form;
+mod soundboard;
 #[cfg(test)]
 mod test_support;
 
@@ -32,6 +34,7 @@ use self::members::MembersPage;
 use self::moderation_log::ServerModerationLogPage;
 use self::overview::ServerOverviewPage;
 use self::roles::RolesPage;
+use self::soundboard::ServerSoundboardPage;
 #[cfg(test)]
 pub(crate) use self::{
     bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
@@ -51,8 +54,8 @@ fn has_page(section: ServerSettingsSection) -> bool {
         | ServerSettingsSection::Emoji
         | ServerSettingsSection::Invites
         | ServerSettingsSection::Bans
+        | ServerSettingsSection::Soundboard
         | ServerSettingsSection::ModerationLog => true,
-        ServerSettingsSection::Soundboard => false,
     }
 }
 
@@ -147,47 +150,51 @@ impl ServerSettings {
         section: ServerSettingsSection,
         window: &mut Window,
         cx: &mut Context<Self>,
-    ) -> Option<ShownPage<ServerSettingsSection>> {
+    ) -> ShownPage<ServerSettingsSection> {
         match section {
             ServerSettingsSection::Overview => {
                 let page = cx.new(|cx| {
                     ServerOverviewPage::new(self.session.clone(), self.guild_id, window, cx)
                 });
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::Emoji => {
                 let page = cx.new(|cx| {
                     ServerEmojiPage::new(self.session.clone(), self.guild_id, window, cx)
                 });
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::Invites => {
                 let page =
                     cx.new(|cx| ServerInvitesPage::new(self.session.clone(), self.guild_id, cx));
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::Bans => {
                 let page =
                     cx.new(|cx| ServerBansPage::new(self.session.clone(), self.guild_id, cx));
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::ModerationLog => {
                 let page = cx.new(|cx| {
                     ServerModerationLogPage::new(self.session.clone(), self.guild_id, cx)
                 });
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::Roles => {
                 let page =
                     cx.new(|cx| RolesPage::new(self.session.clone(), self.guild_id, window, cx));
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
             ServerSettingsSection::Members => {
                 let page =
                     cx.new(|cx| MembersPage::new(self.session.clone(), self.guild_id, window, cx));
-                Some(shown_page(section, page, Self::navigation, cx))
+                shown_page(section, page, Self::navigation, cx)
             }
-            ServerSettingsSection::Soundboard => None,
+            ServerSettingsSection::Soundboard => {
+                let page =
+                    cx.new(|cx| ServerSoundboardPage::new(self.session.clone(), self.guild_id, cx));
+                shown_page(section, page, Self::navigation, cx)
+            }
         }
     }
 
@@ -221,7 +228,7 @@ impl Render for ServerSettings {
         };
         let section = self.navigation.section(&offered);
         if !self.navigation.is_showing(section) {
-            let page = section.and_then(|section| self.make_page(section, window, cx));
+            let page = section.map(|section| self.make_page(section, window, cx));
             self.navigation.replace_page(page);
         }
         let is_wide = is_wide(window);

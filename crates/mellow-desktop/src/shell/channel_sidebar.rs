@@ -561,6 +561,19 @@ impl DuskShell {
                     .filter(|user| user.id == user_id)
             });
         let is_speaking_by_server = state.is_speaking(user_id);
+        // The sound they just played, for its length: shown, never announced, like speaking.
+        let played_sound = state
+            .sound_indicator(user_id, crate::session::now_unix_milliseconds())
+            .map(|indicator| {
+                let sound = state
+                    .sounds_of(indicator.guild_id)
+                    .iter()
+                    .find(|sound| sound.id == indicator.sound_id);
+                (
+                    sound.and_then(|sound| sound.emoji.clone()),
+                    sound.map(|sound| sound.name.clone()).unwrap_or_default(),
+                )
+            });
         let (name, avatar) = if let Some(user) = person {
             let picture = user.avatar.map(|image| {
                 profile_picture(image, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, window)
@@ -698,6 +711,24 @@ impl DuskShell {
                     }))
                     .child(name),
             )
+            .when_some(played_sound, |row, (emoji, sound_name)| {
+                let tooltip: SharedString = strings.soundboard().plays(&sound_name).into();
+                row.child(
+                    div()
+                        .id("voice-participant-sound")
+                        .flex_none()
+                        .tooltip(move |_, cx| crate::components::Tooltip::view(tooltip.clone(), cx))
+                        .tooltip_show_delay(crate::components::Tooltip::show_delay())
+                        .child(crate::soundboard::sound_emoji(
+                            emoji.as_deref(),
+                            crate::theme::tokens::COMPONENT_REACTION_EMOJI_SIZE,
+                            color(tokens.component_voice_participant_name_text_speaking),
+                            self.session.read(cx).state(),
+                            window,
+                            cx,
+                        )),
+                )
+            })
             .when(is_microphone_off && !is_deafened, |row| {
                 row.child(icon(
                     IconName::MicrophoneSlash,
