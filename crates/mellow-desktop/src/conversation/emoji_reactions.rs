@@ -92,13 +92,10 @@ impl ConversationView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let is_same_click_as_dismissal =
-            self.emoji_picker_dismissed_at
-                .take()
-                .is_some_and(|(position, dismissed)| {
-                    dismissed == target && position == window.mouse_position()
-                });
-        if is_same_click_as_dismissal {
+        if self
+            .emoji_picker_dismissal
+            .is_closing_click(window.mouse_position(), &target)
+        {
             return;
         }
         if self
@@ -134,11 +131,14 @@ impl ConversationView {
                     let position = window.mouse_position();
                     // Only a click on the opener is a toggle; a click anywhere else, then a
                     // shortcut or another message's button, must still open a picker.
-                    view.emoji_picker_dismissed_at = view
+                    match view
                         .emoji_picker
                         .as_ref()
                         .filter(|open| !should_return_focus && open.anchor.contains(&position))
-                        .map(|open| (position, open.target));
+                    {
+                        Some(open) => view.emoji_picker_dismissal.remember(position, open.target),
+                        None => view.emoji_picker_dismissal.forget(),
+                    }
                     view.close_emoji_picker(*should_return_focus, window, cx);
                 }
             },
