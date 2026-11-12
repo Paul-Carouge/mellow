@@ -1,5 +1,5 @@
-//! The server and channel settings screens (`ServerSettings.svelte`, `ChannelSettings.svelte`,
-//! DESIGN.md §5.8) in the full-window `SettingsSheet`. Each section shows only to members holding
+//! The server, channel and user settings screens (`ServerSettings.svelte`,
+//! `ChannelSettings.svelte`, `UserSettings.svelte`, DESIGN.md §5.8) in the full-window `SettingsSheet`. Each section shows only to members holding
 //! its permission (client-core's `server_settings` and `channel_settings` rules) and only once the
 //! desktop has its page; the screen follows the session, so a lost permission or a deleted server
 //! or channel closes what can no longer be used. A page with unsaved changes keeps the reader in
@@ -18,6 +18,7 @@
 pub mod channel;
 mod navigation;
 pub mod server;
+pub mod user;
 
 use gpui::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, Role, SharedString,

@@ -1,36 +1,53 @@
-//! User settings → Notifications (`NotificationSettings.svelte`): desktop notifications, previews
-//! and the chime, in a dialog opened from the status menu until the desktop has a settings page
-//! (step 6). The choices are the account's, kept in the preferences file as the web keeps them in
+//! User settings, Notifications (`NotificationSettings.svelte`): desktop notifications, previews
+//! and the chime. The choices are the account's, kept in the preferences file as the web keeps them in
 //! the browser. GPUI cannot read the system's permission, so the desktop switch is never locked
 //! as the web's is on "blocked"; turning it on posts a confirmation, so macOS asks right then.
 
 use gpui::{
-    AppContext as _, Context, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
+    Context, EventEmitter, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
     SystemNotification, Window, div,
 };
 use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
 use mellow_media::SoundPlayer;
 use mellow_protocol::Snowflake;
 
-use super::DuskShell;
-use crate::components::{ModalDialog, ModalDialogEvent, Switch};
+use super::parts::body_text;
+use crate::components::Switch;
 use crate::i18n::strings;
 use crate::notifier::{TURNED_ON_NOTIFICATION_TAG, notification_settings_of, play_chime_with};
 use crate::preferences::{PreferencesStore, change_preferences};
+use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::length;
-use crate::theme::tokens::SPACE_SM;
+use crate::theme::tokens::{
+    COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP, SPACE_SM,
+};
 use crate::window_chrome::WINDOW_TITLE;
 
-/// The dialog's switches; they follow the preferences, so a change elsewhere shows at once.
-pub(super) struct NotificationSettingsBody {
+/// The page's switches; they follow the preferences, so a change elsewhere shows at once.
+pub struct NotificationsPage {
     user_id: Snowflake,
     /// Opened when the sound is turned on, to play the chime once.
     sound_player: Option<SoundPlayer>,
     _preferences_subscription: Subscription,
 }
 
-impl NotificationSettingsBody {
-    fn new(user_id: Snowflake, cx: &mut Context<Self>) -> Self {
+impl std::fmt::Debug for NotificationsPage {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("NotificationsPage")
+            .field("user_id", &self.user_id)
+            .finish_non_exhaustive()
+    }
+}
+
+impl EventEmitter<SettingsPageEvent> for NotificationsPage {}
+
+impl SettingsPage for NotificationsPage {
+    fn set_attention(&mut self, _: u32, _: &mut Context<Self>) {}
+}
+
+impl NotificationsPage {
+    pub fn new(user_id: Snowflake, cx: &mut Context<Self>) -> Self {
         Self {
             user_id,
             sound_player: None,
@@ -52,13 +69,15 @@ fn change_notification_settings(
     });
 }
 
-impl Render for NotificationSettingsBody {
+impl Render for NotificationsPage {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let words = strings(cx).notifications();
         let settings = notification_settings_of(self.user_id, cx);
         let user_id = self.user_id;
         let body = cx.entity().downgrade();
-        div()
+        let intro = strings(cx).desktop().notifications_intro();
+        let switches = div()
+            .mt(length(COMPONENT_SETTINGS_SECTION_GAP))
             .flex()
             .flex_col()
             .gap(length(SPACE_SM))
@@ -121,42 +140,15 @@ impl Render for NotificationSettingsBody {
                         let _ = body.update(cx, |body, _| play_chime_with(&mut body.sound_player));
                     }
                 }),
+            );
+        div()
+            .flex()
+            .flex_col()
+            .child(
+                div()
+                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
+                    .child(body_text(intro, cx)),
             )
-    }
-}
-
-impl DuskShell {
-    pub(super) fn open_notification_settings(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) {
-        let Some(user_id) = self
-            .session
-            .read(cx)
-            .state()
-            .current_user()
-            .map(|user| user.id)
-        else {
-            return;
-        };
-        let catalogue = strings(cx);
-        let body = cx.new(|cx| NotificationSettingsBody::new(user_id, cx));
-        let dialog = cx.new(|cx| {
-            ModalDialog::new(
-                catalogue.notifications().title(),
-                catalogue.common().close(),
-                window,
-                cx,
-            )
-            .subtitle(catalogue.desktop().notifications_intro())
-            .body(body.into())
-        });
-        let subscription = cx.subscribe(&dialog, |shell, _, _: &ModalDialogEvent, cx| {
-            shell.notification_settings = None;
-            cx.notify();
-        });
-        self.notification_settings = Some((dialog, subscription));
-        cx.notify();
+            .child(switches)
     }
 }

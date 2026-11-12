@@ -43,7 +43,7 @@ fn a_chosen_language_wins_over_the_systems(cx: &mut TestAppContext) {
         assert_eq!(strings(cx).language(), Language::French);
         assert!(std::ptr::eq(
             crate::strings_pending_i18n::strings(cx),
-            &crate::strings_pending_i18n::FRENCH
+            std::ptr::from_ref(&crate::strings_pending_i18n::FRENCH)
         ));
         crate::preferences::change_preferences(cx, |preferences| {
             preferences.language = LanguageChoice::System;

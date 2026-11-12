@@ -1,7 +1,8 @@
 //! The user card across the navigator's foot (`UserCard.svelte`, ADR-0022 §4): as tall as the
 //! composer's base row and as far from the bottom of its card, so both line up across the window
 //! (`size.dock.*`). The avatar and name open the status menu (DESIGN.md §5.3), which also sets
-//! the custom status, copies the user ID and signs out: the desktop has no settings yet to hold "Sign out".
+//! the custom status and copies the user ID; the gear opens the user settings, which hold
+//! "Sign out" and the notification choices, as on the web.
 
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
@@ -14,16 +15,16 @@ use mellow_protocol::{ChosenStatus, PublicUser};
 use super::custom_status_dialog::CustomStatusForm;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem,
-    MenuItemTone, MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible, remembered_hover,
-    with_type,
+    Avatar, AvatarPerson, ContextMenu, IconButton, MenuAlignment, MenuAnchor, MenuEntry, MenuItem,
+    MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_DIALOG_COPIED_LABEL_DURATION, COMPONENT_STATUS_SIZE_MENU,
-    COMPONENT_USER_PANEL_AVATAR_SIZE, COMPONENT_USER_PANEL_RADIUS, RADIUS_SM, SIZE_DOCK_HEIGHT,
+    COMPONENT_USER_PANEL_AVATAR_SIZE, COMPONENT_USER_PANEL_BUTTON_ICON_SIZE,
+    COMPONENT_USER_PANEL_BUTTON_SIZE, COMPONENT_USER_PANEL_RADIUS, RADIUS_SM, SIZE_DOCK_HEIGHT,
     SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_XS, TYPE_BODY_SM, TYPE_USER_PANEL_NAME,
 };
 use crate::theme::{color, delay, length, theme};
@@ -209,8 +210,29 @@ impl DuskShell {
                     button.child(focus_ring(RADIUS_SM, cx))
                 }),
         )
-        // shortcut: the microphone and headset toggles and the settings gear come with voice and
-        // settings (M3 steps 6 and 7); the card keeps its height meanwhile.
+        // shortcut: the microphone and headset toggles come with voice (M3 step 7).
+        .child(
+            IconButton::new(
+                "user-settings-button",
+                IconName::GearSix,
+                strings.user_card().user_settings(),
+            )
+            .sizes(
+                COMPONENT_USER_PANEL_BUTTON_SIZE,
+                COMPONENT_USER_PANEL_BUTTON_ICON_SIZE,
+            )
+            .key_shortcuts(if cfg!(target_os = "macos") {
+                "Meta+,"
+            } else {
+                "Control+,"
+            })
+            .on_click({
+                let shell = cx.entity().downgrade();
+                move |window, cx| {
+                    let _ = shell.update(cx, |shell, cx| shell.open_user_settings(window, cx));
+                }
+            }),
+        )
     }
 
     /// The status menu across the card, above it: the card sits at the bottom of the window.
@@ -231,14 +253,6 @@ impl DuskShell {
         let shell = cx.entity().downgrade();
         let user_id = user.id;
         entries.push(MenuEntry::Separator);
-        let opener = shell.clone();
-        entries.push(MenuEntry::Item(MenuItem::new(
-            strings.notifications().title(),
-            IconName::Bell,
-            move |window, cx| {
-                let _ = opener.update(cx, |shell, cx| shell.open_notification_settings(window, cx));
-            },
-        )));
         let dialog_shell = shell.clone();
         entries.push(MenuEntry::Item(MenuItem::new(
             if user.custom_status.is_some() {
@@ -262,17 +276,6 @@ impl DuskShell {
                 let _ = shell.update(cx, DuskShell::show_user_id_copied);
             },
         )));
-        entries.push(MenuEntry::Separator);
-        entries.push(MenuEntry::Item(
-            MenuItem::new(
-                strings.settings().sign_out(),
-                IconName::SignOut,
-                move |_, cx| {
-                    session.update(cx, Session::sign_out);
-                },
-            )
-            .tone(MenuItemTone::Danger),
-        ));
         let origin = MenuOrigin::Anchor {
             bounds: MenuAnchor {
                 top: f32::from(card.top()),

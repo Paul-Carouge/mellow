@@ -1,4 +1,4 @@
-//! The server and channel settings over the shell (`Shell.svelte`'s `openDialog`): one at a time,
+//! The server, channel and user settings over the shell (`Shell.svelte`'s `openDialog`): one at a time,
 //! opened from the place menus and the chat header, closed by Esc, its close button, or when what
 //! it shows goes away; focus goes back where it came from.
 
@@ -10,11 +10,13 @@ use super::DuskShell;
 use crate::settings::SettingsClosed;
 use crate::settings::channel::ChannelSettings;
 use crate::settings::server::ServerSettings;
+use crate::settings::user::UserSettings;
 
 /// The settings screen open over the shell.
 pub(super) enum SettingsScreen {
     Server(Entity<ServerSettings>),
     Channel(Entity<ChannelSettings>),
+    User(Entity<UserSettings>),
 }
 
 /// The open screen, what closes it, and what had focus before it opened.
@@ -64,6 +66,23 @@ impl DuskShell {
         cx.notify();
     }
 
+    /// The user card's gear and Ctrl+, (Cmd+, on macOS); does nothing while a screen is open.
+    pub(super) fn open_user_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.open_settings.is_some() {
+            return;
+        }
+        let opener = window.focused(cx);
+        let session = self.session.clone();
+        let screen = cx.new(|cx| UserSettings::new(session, window, cx));
+        let subscription = cx.subscribe_in(&screen, window, Self::close_settings);
+        self.open_settings = Some(OpenSettings {
+            screen: SettingsScreen::User(screen),
+            _subscription: subscription,
+            opener,
+        });
+        cx.notify();
+    }
+
     #[allow(clippy::trivially_copy_pass_by_ref)] // The shape `subscribe_in` calls.
     fn close_settings<Screen>(
         &mut self,
@@ -90,6 +109,7 @@ impl DuskShell {
         self.open_settings.as_ref().map(|open| match &open.screen {
             SettingsScreen::Server(screen) => screen.clone().into_any_element(),
             SettingsScreen::Channel(screen) => screen.clone().into_any_element(),
+            SettingsScreen::User(screen) => screen.clone().into_any_element(),
         })
     }
 }
