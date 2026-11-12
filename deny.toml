@@ -21,7 +21,14 @@ yanked = "deny"
 # Vulnerabilities always fail. "Unmaintained" fails only for our direct dependencies: deep
 # transitive ones (e.g. under winit/AccessKit) have no upgrade path we control.
 unmaintained = "workspace"
-ignore = []
+ignore = [
+    # SQLite < 3.54 can return stale page-cache bytes when it opens a database with a crafted
+    # sibling `-wal` file of another page size. The fix is libsqlite3-sys >= 0.39, but sqlx-sqlite
+    # 0.9 (the latest sqlx) caps it below 0.38. Exploiting it needs write access to the data
+    # directory, whose pages SQLCipher authenticates with a key kept outside it. Drop this entry
+    # when sqlx allows libsqlite3-sys 0.39.
+    { id = "RUSTSEC-2026-0459", reason = "sqlx-sqlite 0.9 caps libsqlite3-sys below the fixed 0.39; local only, needs write access to the data directory" },
+]
 
 [licenses]
 version = 2
