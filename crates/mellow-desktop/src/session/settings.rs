@@ -1,7 +1,7 @@
 //! What the settings pages ask of the instance (the web's `client.renameServer`,
 //! `client.updateChannel`, …). As on the web, an edit is applied from the gateway's echo, never
 //! from the answer (a late answer would put older state back): the page only learns whether the
-//! instance took it.
+//! instance took it. Only a created role and removals are read from the answer.
 
 use std::future::Future;
 
@@ -27,17 +27,36 @@ impl Session {
         Answer: Send + 'static,
         Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
     {
+        self.send_settings_request(action, request, cx, move |answer, cx| {
+            let outcome = answer
+                .map(|_| ())
+                .map_err(|error| describe_error(&error, &failure_summary, strings(cx)));
+            on_done(outcome, cx);
+        });
+    }
+
+    /// As [`Self::send_settings_change`], for a page that needs the answer (a created role) or
+    /// words its own failures (a role icon too large); a lost session answers `NotSignedIn`.
+    pub fn send_settings_request<Answer, Request>(
+        &mut self,
+        action: &'static str,
+        request: impl FnOnce(RestClient) -> Request,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<Answer, ClientError>, &mut App) + 'static,
+    ) where
+        Answer: Send + 'static,
+        Request: Future<Output = Result<Answer, ClientError>> + Send + 'static,
+    {
         let Some(rest) = self.rest_client().cloned() else {
             // A session being torn down: answer anyway, or the page would stay busy.
-            cx.defer(move |cx| on_done(Err(failure_summary), cx));
+            cx.defer(move |cx| on_done(Err(ClientError::NotSignedIn), cx));
             return;
         };
         self.run_request(cx, request(rest), move |session, answer, cx| {
-            let outcome = answer.map(|_| ()).map_err(|error| {
-                session.report_request_error(&error, action, cx);
-                describe_error(&error, &failure_summary, strings(cx))
-            });
-            cx.defer(move |cx| on_done(outcome, cx));
+            if let Err(error) = &answer {
+                session.report_request_error(error, action, cx);
+            }
+            cx.defer(move |cx| on_done(answer, cx));
         });
     }
 }

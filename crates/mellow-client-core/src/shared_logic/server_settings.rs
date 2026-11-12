@@ -11,6 +11,12 @@ use super::search_text::fold_for_search;
 
 /// The longest server name the instance takes, in characters (`MAXIMUM_SERVER_NAME_LENGTH`).
 pub const MAXIMUM_SERVER_NAME_LENGTH: usize = 100;
+/// The longest role name the instance takes, in characters (`MAXIMUM_ROLE_NAME_LENGTH`).
+pub const MAXIMUM_ROLE_NAME_LENGTH: usize = 100;
+/// The longest ban reason the instance takes, in characters (`MAXIMUM_BAN_REASON_LENGTH`).
+pub const MAXIMUM_BAN_REASON_LENGTH: usize = 512;
+/// Uploaded role icon pictures larger than this are refused (ADR-0050).
+pub const MAXIMUM_ROLE_ICON_UPLOAD_BYTES: u64 = 256 * 1024;
 
 /// A page of the server settings.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -519,6 +525,43 @@ pub fn outranks_member(
         || manager.highest_role_position > highest_position(&guild.roles, &member.role_ids)
 }
 
+/// What the manager may do to one member (`ManageMemberDialog.svelte`): give or take any role
+/// they manage, whoever the member is (the server's `add_member_role`), and kick or ban only
+/// those they outrank.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[allow(clippy::struct_excessive_bools)] // Three independent actions, as the web's three flags.
+pub struct MemberActions {
+    pub can_give_roles: bool,
+    pub can_kick: bool,
+    pub can_ban: bool,
+}
+
+impl MemberActions {
+    /// Whether the member's row offers "Manage" (`MemberSettings.svelte`'s `canManage`).
+    #[must_use]
+    pub fn has_any(self) -> bool {
+        self.can_give_roles || self.can_kick || self.can_ban
+    }
+}
+
+#[must_use]
+pub fn member_actions(
+    guild: &Guild,
+    manager: &RoleManager,
+    member: &Member,
+    user_id: Option<Snowflake>,
+) -> MemberActions {
+    let outranks = outranks_member(guild, manager, member, user_id);
+    MemberActions {
+        can_give_roles: guild
+            .roles
+            .iter()
+            .any(|role| role.id != guild.id && can_manage_role(manager, role, guild.id)),
+        can_kick: outranks && holds(guild, Permissions::KICK_MEMBERS),
+        can_ban: outranks && holds(guild, Permissions::BAN_MEMBERS),
+    }
+}
+
 /// Case- and accent-insensitive, on the display name and the username.
 #[must_use]
 pub fn matches_member_search(member: &Member, query: &str) -> bool {
@@ -1015,6 +1058,35 @@ pub(crate) mod tests {
             &member(ME, "Me", &[]),
             me
         ));
+    }
+
+    #[test]
+    fn member_actions_give_roles_to_anyone_but_remove_only_those_outranked() {
+        let me = Some(id(ME));
+        let club = guild(
+            Permissions::MANAGE_ROLES | Permissions::KICK_MEMBERS,
+            &[202],
+        );
+        let manager = role_manager_of(&club, me);
+        let below = member_actions(&club, &manager, &member(OTHER, "Ana", &[201]), me);
+        assert_eq!(
+            below,
+            MemberActions {
+                can_give_roles: true,
+                can_kick: true,
+                can_ban: false,
+            }
+        );
+        let owner = member_actions(&club, &manager, &member(OWNER, "Owner", &[]), me);
+        assert!(owner.can_give_roles && !owner.can_kick && owner.has_any());
+
+        let kicker = guild(Permissions::KICK_MEMBERS, &[202]);
+        let manager = role_manager_of(&kicker, me);
+        let equal = member_actions(&kicker, &manager, &member(OTHER, "Ana", &[202]), me);
+        assert!(
+            !equal.has_any(),
+            "nothing to do to an equal without Manage roles"
+        );
     }
 
     #[test]
