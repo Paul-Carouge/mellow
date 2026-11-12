@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ObjectFit, ParentElement as _, PathPromptOptions, Pixels, Point, Render, Role,
+    IntoElement, ObjectFit, ParentElement as _, PathPromptOptions, Pixels, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
     Window, div, img, prelude::FluentBuilder as _,
 };
@@ -20,7 +20,9 @@ use mellow_client_core::state::reaction_key;
 use mellow_client_core::{ClientError, DownloadableFile};
 use mellow_protocol::{ApiErrorCode, IconCropQuery, Role as GuildRole, Snowflake};
 
-use crate::components::{Button, ButtonVariant, bounds_recorder, icon, with_type};
+use crate::components::{
+    Button, ButtonVariant, OutsideClickDismissal, bounds_recorder, icon, with_type,
+};
 use crate::emoji_picker::{EmojiPicker, EmojiPickerEvent, note_emoji_used, recent_emoji};
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
@@ -70,9 +72,7 @@ pub struct RoleIconEditor {
     emoji_button_focus: FocusHandle,
     emoji_button_bounds: Entity<Option<Bounds<Pixels>>>,
     emoji_picker: Option<(Entity<EmojiPicker>, Subscription)>,
-    /// Where a click outside closed the picker: that same click on the button must not reopen it
-    /// (`createPopoverToggle`).
-    picker_dismissed_at: Option<Point<Pixels>>,
+    picker_dismissal: OutsideClickDismissal,
 }
 
 impl std::fmt::Debug for RoleIconEditor {
@@ -103,7 +103,7 @@ impl RoleIconEditor {
             emoji_button_focus: cx.focus_handle().tab_stop(true),
             emoji_button_bounds: cx.new(|_| None),
             emoji_picker: None,
-            picker_dismissed_at: None,
+            picker_dismissal: OutsideClickDismissal::default(),
         }
     }
 
@@ -236,11 +236,10 @@ impl RoleIconEditor {
     }
 
     fn toggle_emoji_picker(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let is_same_click_as_dismissal = self
-            .picker_dismissed_at
-            .take()
-            .is_some_and(|position| position == window.mouse_position());
-        if is_same_click_as_dismissal {
+        if self
+            .picker_dismissal
+            .is_closing_click(window.mouse_position(), &())
+        {
             return;
         }
         if self.emoji_picker.is_some() {
@@ -280,8 +279,11 @@ impl RoleIconEditor {
                         .emoji_button_bounds
                         .read(cx)
                         .is_some_and(|bounds| bounds.contains(&position));
-                    editor.picker_dismissed_at =
-                        (!should_return_focus && is_on_button).then_some(position);
+                    if !should_return_focus && is_on_button {
+                        editor.picker_dismissal.remember(position, ());
+                    } else {
+                        editor.picker_dismissal.forget();
+                    }
                     editor.close_emoji_picker(*should_return_focus, window, cx);
                 }
             },
