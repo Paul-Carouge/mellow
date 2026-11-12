@@ -106,6 +106,15 @@ fn the_shell_keys_wait_while_the_settings_cover_it(cx: &mut TestAppContext) {
         "F6 does not move focus under the sheet"
     );
     cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.focus_message_search(window, cx));
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        cx.update(|window, cx| window.focused(cx)),
+        focused_in_sheet,
+        "Ctrl+F does not reach the search field under the sheet"
+    );
+    cx.update(|window, cx| {
         shell.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
     });
     cx.run_until_parked();

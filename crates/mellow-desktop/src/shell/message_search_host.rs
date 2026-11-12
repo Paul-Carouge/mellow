@@ -87,7 +87,10 @@ impl DuskShell {
 
     /// Ctrl+F (Cmd+F), as on Discord: the header's field, or the results with their own field.
     pub(super) fn focus_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.is_some() || self.is_member_overlay_open {
+        if self.quick_switcher.is_some()
+            || self.is_member_overlay_open
+            || self.is_settings_screen_open()
+        {
             return;
         }
         if Self::has_room_for_search_sheet(window) {
