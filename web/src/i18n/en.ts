@@ -1741,6 +1741,8 @@ export const en = {
       reading: (fileName: string) => `Reading ${fileName}…`,
       unreadable: (fileName: string) => `Your browser can't read ${fileName} as audio. Try an MP3, WAV, Ogg or M4A file.`,
       tooLargeFile: (size: string) => `This file weighs ${size}. Choose one under ${SOUND_SOURCE_MEGABYTES} MB: only 5.2 seconds are kept anyway.`,
+      /** The desktop app decodes the whole file itself, so it refuses very long ones. */
+      tooLongFile: "This sound is too long to trim here. Choose a file under 10 minutes: only 5.2 seconds are kept anyway.",
       trim: "Part to keep",
       waveform: (fileName: string) => `Waveform of ${fileName}`,
       trimHelp: "Up to 5.2 seconds. Click or drag on the waveform to move the selection; the sliders set its start and end.",

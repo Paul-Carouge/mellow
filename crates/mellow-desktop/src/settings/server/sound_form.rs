@@ -1143,9 +1143,7 @@ impl Render for SoundForm {
                     Reading::TooLarge { size_bytes } => {
                         words.too_large_file(&file_size_label(*size_bytes, catalogue))
                     }
-                    // Longer than ten minutes: told as too large, which it is for the trimmer.
-                    Reading::TooLong => words
-                        .too_large_file(&file_size_label(MAXIMUM_SOUND_SOURCE_BYTES, catalogue)),
+                    Reading::TooLong => words.too_long_file().to_owned(),
                     _ => words.unreadable(&file_name),
                 };
                 column.child(crate::settings::error_alert(
