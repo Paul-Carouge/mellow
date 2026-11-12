@@ -2,9 +2,11 @@
 //! "Moderation", each only with its permission and once the desktop has its page. See the parent
 //! module for how a section is added.
 //!
-//! shortcut: "Delete server" (the owner's danger item) and every section but Overview and Roles
-//! come with the other M3 step 6 settings tracks.
+//! shortcut: "Delete server" (the owner's danger item) and every section but Overview, Roles and
+//! Members come with the other M3 step 6 settings tracks.
 
+mod manage_member;
+mod members;
 mod overview;
 mod role_icon_editor;
 mod roles;
@@ -19,6 +21,7 @@ use gpui::{
 use mellow_client_core::shared_logic::server_settings::{ServerSettingsSection, visible_sections};
 use mellow_protocol::{Guild, Snowflake};
 
+use self::members::MembersPage;
 use self::overview::ServerOverviewPage;
 use self::roles::RolesPage;
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
@@ -29,11 +32,12 @@ use crate::session::Session;
 /// Whether the desktop has a page for `section`: one arm per section, so a new one is decided.
 fn has_page(section: ServerSettingsSection) -> bool {
     match section {
-        ServerSettingsSection::Overview | ServerSettingsSection::Roles => true,
+        ServerSettingsSection::Overview
+        | ServerSettingsSection::Roles
+        | ServerSettingsSection::Members => true,
         ServerSettingsSection::Emoji
         | ServerSettingsSection::Soundboard
         | ServerSettingsSection::Invites
-        | ServerSettingsSection::Members
         | ServerSettingsSection::Bans
         | ServerSettingsSection::ModerationLog => false,
     }
@@ -143,10 +147,14 @@ impl ServerSettings {
                     cx.new(|cx| RolesPage::new(self.session.clone(), self.guild_id, window, cx));
                 Some(shown_page(section, page, Self::navigation, cx))
             }
+            ServerSettingsSection::Members => {
+                let page =
+                    cx.new(|cx| MembersPage::new(self.session.clone(), self.guild_id, window, cx));
+                Some(shown_page(section, page, Self::navigation, cx))
+            }
             ServerSettingsSection::Emoji
             | ServerSettingsSection::Soundboard
             | ServerSettingsSection::Invites
-            | ServerSettingsSection::Members
             | ServerSettingsSection::Bans
             | ServerSettingsSection::ModerationLog => None,
         }
