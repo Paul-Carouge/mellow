@@ -17,6 +17,7 @@
 
 pub mod channel;
 mod navigation;
+mod permission_words;
 pub mod server;
 
 use gpui::{
