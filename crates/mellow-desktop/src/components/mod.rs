@@ -33,6 +33,7 @@ mod menu_opening;
 mod progress;
 mod range_field;
 mod settings_list_status;
+mod settings_sheet;
 mod status;
 mod switch;
 mod tabs;
@@ -65,6 +66,7 @@ pub use menu_opening::{
 pub use progress::ProgressMeter;
 pub use range_field::{RangeBounds, RangeField};
 pub use settings_list_status::{SettingsListStatus, SettingsListStatusKind};
+pub use settings_sheet::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
 pub use status::{ShownStatus, StatusIndicator};
 pub use switch::Switch;
 pub use tabs::{Tabs, next_tab_index};
