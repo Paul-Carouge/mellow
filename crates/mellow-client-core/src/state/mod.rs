@@ -5,8 +5,8 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions, Presence, Ready,
-    Relationship, Snowflake, VoiceState, compute_channel_permissions,
+    CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions, Presence,
+    PublicUser, Ready, Relationship, Snowflake, VoiceState, compute_channel_permissions,
 };
 
 mod checklists;
@@ -205,6 +205,18 @@ impl ClientState {
     #[must_use]
     pub fn current_user(&self) -> Option<&CurrentUser> {
         self.current_user.as_ref()
+    }
+
+    /// The signed-in user as others see them (a message's author, a member, a suggestion).
+    #[must_use]
+    pub fn current_user_as_public_user(&self) -> Option<PublicUser> {
+        self.current_user.as_ref().map(|user| PublicUser {
+            id: user.id,
+            username: user.username.clone(),
+            display_name: user.display_name.clone(),
+            avatar: user.avatar,
+            banner: user.banner,
+        })
     }
 
     fn current_user_id(&self) -> Option<Snowflake> {

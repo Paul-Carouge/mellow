@@ -194,17 +194,6 @@ fn blocked_run_version(run: &BlockedRun) -> u64 {
     ))
 }
 
-/// The signed-in user as a message author.
-pub(super) fn current_user_as_author(session: &crate::session::Session) -> Option<PublicUser> {
-    session.state().current_user().map(|user| PublicUser {
-        id: user.id,
-        username: user.username.clone(),
-        display_name: user.display_name.clone(),
-        avatar: user.avatar,
-        banner: user.banner,
-    })
-}
-
 impl ConversationView {
     /// People, emoji and roles messages are read against: the open server's members, or the
     /// conversation's people, with the reader; every known server's emoji and roles.
@@ -212,7 +201,11 @@ impl ConversationView {
         self.are_sources_stale = false;
         let session = self.session.read(cx);
         let state = session.state();
-        let mut people: Vec<PublicUser> = current_user_as_author(session).into_iter().collect();
+        let mut people: Vec<PublicUser> = session
+            .state()
+            .current_user_as_public_user()
+            .into_iter()
+            .collect();
         let mut role_colours = HashMap::new();
         match self.open_conversation.as_ref() {
             Some(super::OpenConversation {
@@ -826,7 +819,7 @@ impl ConversationView {
                 let Some(pending) = state.pending_messages(channel_id).nth(pending_index) else {
                     return div().into_any_element();
                 };
-                let Some(author) = current_user_as_author(session) else {
+                let Some(author) = session.state().current_user_as_public_user() else {
                     return div().into_any_element();
                 };
                 let body = self.body_cache.body(

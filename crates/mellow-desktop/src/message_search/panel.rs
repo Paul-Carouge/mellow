@@ -123,17 +123,7 @@ impl MessageSearchView {
 
     fn known_people(&self, cx: &App) -> Vec<PublicUser> {
         let state = self.session.read(cx).state();
-        let mut people: Vec<PublicUser> = state
-            .current_user()
-            .map(|me| PublicUser {
-                id: me.id,
-                username: me.username.clone(),
-                display_name: me.display_name.clone(),
-                avatar: me.avatar,
-                banner: me.banner,
-            })
-            .into_iter()
-            .collect();
+        let mut people: Vec<PublicUser> = state.current_user_as_public_user().into_iter().collect();
         match self.search.scope_guild_id() {
             Some(guild_id) => people.extend(
                 state

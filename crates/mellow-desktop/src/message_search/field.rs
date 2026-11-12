@@ -170,14 +170,8 @@ impl MessageSearchView {
                         people.push(user.clone());
                     }
                 };
-                if let Some(me) = state.current_user() {
-                    push(&PublicUser {
-                        id: me.id,
-                        username: me.username.clone(),
-                        display_name: me.display_name.clone(),
-                        avatar: me.avatar,
-                        banner: me.banner,
-                    });
+                if let Some(me) = state.current_user_as_public_user() {
+                    push(&me);
                 }
                 for conversation in state.direct_message_channels() {
                     conversation.recipients.iter().for_each(&mut push);

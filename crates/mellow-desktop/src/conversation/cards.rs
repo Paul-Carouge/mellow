@@ -15,10 +15,10 @@ use mellow_client_core::shared_logic::tracker_form::{
 use mellow_client_core::state::{MessageCard, is_poll_ended};
 use mellow_protocol::{Message, NewProgressBar, Permissions, Snowflake};
 
+use super::ConversationView;
 use super::card_dialogs::{CardDialogKind, open_card_dialog};
 use super::checklist_editor::ChecklistEditor;
 use super::poll_voters_dialog::PollVotersBody;
-use super::{ConversationView, rows::current_user_as_author};
 use crate::components::{ModalDialog, ModalDialogEvent};
 use crate::i18n::strings;
 use crate::messages::{
@@ -197,7 +197,10 @@ impl ConversationView {
                 })
         };
         let reader = || {
-            current_user_as_author(self.session.read(cx))
+            self.session
+                .read(cx)
+                .state()
+                .current_user_as_public_user()
                 .filter(|reader| reader.id == user_id)
                 .map(|reader| display_name(&reader).to_owned())
         };
