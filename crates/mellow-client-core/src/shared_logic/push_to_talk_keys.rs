@@ -125,6 +125,124 @@ fn both_name(stored: &str, pressed: &str) -> bool {
     modifier_of_code(stored).is_some() && modifier_of_code(stored) == modifier_of_code(pressed)
 }
 
+/// The key a global-shortcut listener holds now: push-to-talk chosen, a key recorded, in a voice
+/// channel (connecting included, so the key works from the first second).
+#[must_use]
+pub fn global_push_to_talk_code(
+    settings: &VoiceSettings,
+    is_in_voice_channel: bool,
+) -> Option<&str> {
+    settings
+        .push_to_talk_key
+        .as_ref()
+        .filter(|_| settings.input_mode == VoiceInputMode::PushToTalk && is_in_voice_channel)
+        .map(|key| key.code.as_str())
+}
+
+/// The accelerator `global-hotkey` parses for `code` (it reads W3C codes); `None` for a modifier
+/// alone, which Carbon and Win32 hot keys cannot grab without a key.
+#[must_use]
+pub fn global_hotkey_accelerator_of_code(code: &str) -> Option<&str> {
+    modifier_of_code(code).is_none().then_some(code)
+}
+
+/// The trigger offered to the XDG `GlobalShortcuts` portal for `code`: an xkbcommon keysym name, as
+/// the XDG "shortcuts" specification wants. `None` when no keysym fits (a modifier alone, a media
+/// key): the compositor then lets the person pick one.
+#[must_use]
+pub fn portal_trigger_of_code(code: &str) -> Option<String> {
+    if let Some(letter) = code.strip_prefix("Key")
+        && letter.len() == 1
+        && letter
+            .chars()
+            .all(|character| character.is_ascii_uppercase())
+    {
+        return Some(letter.to_ascii_lowercase());
+    }
+    if let Some(digit) = code.strip_prefix("Digit")
+        && digit.len() == 1
+        && digit.chars().all(|character| character.is_ascii_digit())
+    {
+        return Some(digit.to_owned());
+    }
+    if let Some(digit) = code.strip_prefix("Numpad")
+        && digit.len() == 1
+        && digit.chars().all(|character| character.is_ascii_digit())
+    {
+        return Some(format!("KP_{digit}"));
+    }
+    if let Some(number) = code.strip_prefix('F')
+        && let Ok(number) = number.parse::<u8>()
+        && (1..=24).contains(&number)
+    {
+        return Some(format!("F{number}"));
+    }
+    let keysym = match code {
+        "Space" => "space",
+        "Enter" => "Return",
+        "Backspace" => "BackSpace",
+        "Tab" => "Tab",
+        "Escape" => "Escape",
+        "ArrowLeft" => "Left",
+        "ArrowRight" => "Right",
+        "ArrowUp" => "Up",
+        "ArrowDown" => "Down",
+        "Home" => "Home",
+        "End" => "End",
+        "PageUp" => "Page_Up",
+        "PageDown" => "Page_Down",
+        "Insert" => "Insert",
+        "Delete" => "Delete",
+        "Minus" => "minus",
+        "Equal" => "equal",
+        "BracketLeft" => "bracketleft",
+        "BracketRight" => "bracketright",
+        "Backslash" => "backslash",
+        "Semicolon" => "semicolon",
+        "Quote" => "apostrophe",
+        "Comma" => "comma",
+        "Period" => "period",
+        "Slash" => "slash",
+        "Backquote" => "grave",
+        "CapsLock" => "Caps_Lock",
+        "ScrollLock" => "Scroll_Lock",
+        "Pause" => "Pause",
+        "PrintScreen" => "Print",
+        "ContextMenu" => "Menu",
+        _ => return None,
+    };
+    Some(keysym.to_owned())
+}
+
+/// Whether holding `code` types a character in other apps: a global grab keeps it from typing
+/// there while push-to-talk listens.
+#[must_use]
+pub fn does_code_type_a_character(code: &str) -> bool {
+    let is_single_after = |prefix: &str| {
+        code.strip_prefix(prefix)
+            .is_some_and(|rest| rest.len() == 1 && rest.chars().all(|c| c.is_ascii_alphanumeric()))
+    };
+    is_single_after("Key")
+        || is_single_after("Digit")
+        || is_single_after("Numpad")
+        || matches!(
+            code,
+            "Space"
+                | "Minus"
+                | "Equal"
+                | "BracketLeft"
+                | "BracketRight"
+                | "Backslash"
+                | "Semicolon"
+                | "Quote"
+                | "Comma"
+                | "Period"
+                | "Slash"
+                | "Backquote"
+                | "IntlBackslash"
+        )
+}
+
 /// A key went down. Keys pressed while recording a new one belong to the recorder.
 #[must_use]
 pub fn push_to_talk_key_down(
@@ -239,6 +357,62 @@ mod tests {
             push_to_talk_key_down(&settings, false, "KeyV", true, false),
             PushToTalkKeyEffect::Nothing
         );
+    }
+
+    #[test]
+    fn a_global_listener_holds_the_key_only_in_a_voice_channel_with_push_to_talk_on() {
+        let settings = settings_with("KeyV");
+        assert_eq!(global_push_to_talk_code(&settings, true), Some("KeyV"));
+        assert_eq!(global_push_to_talk_code(&settings, false), None);
+        let voice_activity = VoiceSettings {
+            input_mode: VoiceInputMode::VoiceActivity,
+            ..settings.clone()
+        };
+        assert_eq!(global_push_to_talk_code(&voice_activity, true), None);
+        let no_key = VoiceSettings {
+            push_to_talk_key: None,
+            ..settings
+        };
+        assert_eq!(global_push_to_talk_code(&no_key, true), None);
+    }
+
+    #[test]
+    fn global_hotkey_takes_w3c_codes_but_not_a_modifier_alone() {
+        assert_eq!(global_hotkey_accelerator_of_code("KeyV"), Some("KeyV"));
+        assert_eq!(global_hotkey_accelerator_of_code("F13"), Some("F13"));
+        assert_eq!(global_hotkey_accelerator_of_code("ControlRight"), None);
+        assert_eq!(global_hotkey_accelerator_of_code("MetaLeft"), None);
+    }
+
+    #[test]
+    fn offers_the_portal_xkb_keysym_names() {
+        for (code, trigger) in [
+            ("KeyV", "v"),
+            ("Digit7", "7"),
+            ("Numpad3", "KP_3"),
+            ("F13", "F13"),
+            ("Space", "space"),
+            ("Enter", "Return"),
+            ("PageDown", "Page_Down"),
+            ("Quote", "apostrophe"),
+            ("Backquote", "grave"),
+            ("CapsLock", "Caps_Lock"),
+        ] {
+            assert_eq!(portal_trigger_of_code(code).as_deref(), Some(trigger));
+        }
+        for code in ["ControlLeft", "MediaPlayPause", "F25", "Keyv", "KeyAB", ""] {
+            assert_eq!(portal_trigger_of_code(code), None, "{code}");
+        }
+    }
+
+    #[test]
+    fn tells_the_keys_that_type_a_character() {
+        for code in ["KeyV", "Digit1", "Numpad5", "Space", "Comma", "Backquote"] {
+            assert!(does_code_type_a_character(code), "{code}");
+        }
+        for code in ["F13", "ControlLeft", "PageUp", "CapsLock", "KeyAB"] {
+            assert!(!does_code_type_a_character(code), "{code}");
+        }
     }
 
     #[test]
