@@ -35,10 +35,12 @@ impl DuskShell {
         let id = ElementId::from(match column {
             ResizableColumn::Channels => "resize-channels",
             ResizableColumn::Members => "resize-members",
+            ResizableColumn::Search => "resize-search-results",
         });
         let label = match column {
             ResizableColumn::Channels => strings.shell().resize_channels(),
             ResizableColumn::Members => strings.shell().resize_members(),
+            ResizableColumn::Search => strings.shell().resize_search_results(),
         };
         let focus_handle = remembered_focus_handle(&id, window, cx);
         let hover = remembered_hover(&id, window, cx);
@@ -79,7 +81,9 @@ impl DuskShell {
             .map(|handle| match column {
                 // From the start of the gap onwards: the gap, then the leading edge of the next card.
                 ResizableColumn::Channels => handle.left(relative(1.0)),
-                ResizableColumn::Members => handle.left(-length(SIZE_SHEET_INSET)),
+                ResizableColumn::Members | ResizableColumn::Search => {
+                    handle.left(-length(SIZE_SHEET_INSET))
+                }
             })
             .w(length(COMPONENT_COLUMN_RESIZE_HIT_WIDTH))
             .flex()

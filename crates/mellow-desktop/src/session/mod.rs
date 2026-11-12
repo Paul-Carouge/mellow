@@ -28,6 +28,7 @@ mod forwards;
 mod gifs;
 mod messages;
 mod relationships;
+mod search;
 mod servers;
 
 pub use cards::{ChecklistItemChange, POLL_VOTERS_PAGE_SIZE};

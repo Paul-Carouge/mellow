@@ -337,7 +337,11 @@ fn dragging_the_channel_edge_beside_docked_members_saves_the_width_drawn(cx: &mu
     let (dragged, drawn) = cx.update(|window, cx| {
         let shell = shell.read(cx);
         let drawn = shell
-            .column_layout(window_width_at_default_zoom(window), true, cx)
+            .column_layout(
+                window_width_at_default_zoom(window),
+                Some(ResizableColumn::Members),
+                cx,
+            )
             .channels;
         (shell.column_drag.map(|drag| drag.width), drawn)
     });

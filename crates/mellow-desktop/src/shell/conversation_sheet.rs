@@ -1,5 +1,5 @@
 //! The conversation sheet (`ChatPane.svelte`, ADR-0022 §2): the chat header (the place's name, a
-//! channel's topic, "Go to…", the pinned messages and the member sheet toggle), then
+//! channel's topic, "Go to…", message search, the pinned messages and the member sheet toggle), then
 //! [`DuskShell::conversation_slot`]: the conversation view of the open channel or conversation, or
 //! the sentence a place without one opens with.
 
@@ -274,6 +274,8 @@ impl DuskShell {
             )
         };
         let is_member_sheet_shown = self.is_member_sheet_shown(window, cx);
+        // Both ways around, as the owner asked: "Go to…" (Ctrl+K) and message search (Ctrl+F).
+        let search_control = self.render_search_control(window, cx);
         let is_conversation_open = self.navigation.selected_channel_id().is_some();
         let folds_keys = has_navigation_drawer && is_conversation_open;
         // The Friends tabs sit in the header after a divider where the navigator is docked.
@@ -389,6 +391,7 @@ impl DuskShell {
                     }),
                 )
             })
+            .child(search_control)
             .when(is_conversation_open && !folds_keys, |header| {
                 let conversation = self.conversation.clone();
                 let is_open = conversation.read(cx).is_pins_panel_open();
