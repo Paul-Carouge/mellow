@@ -18,8 +18,8 @@ use mellow_protocol::{OverwriteKind, Permissions, SetPermissionOverwriteRequest,
 
 use super::permissions::{TargetMark, role_colour, target_mark};
 use crate::components::{
-    Button, ModalDialog, ModalDialogEvent, TextField, child_id, focus_ring, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    Button, LiveRegion as _, ModalDialog, ModalDialogEvent, TextField, child_id, focus_ring,
+    is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};
@@ -354,8 +354,7 @@ impl Render for AddOverwriteTarget {
         let status = |text: String| {
             with_type(div(), TYPE_BODY)
                 .id("overwrite-candidates-status")
-                .role(Role::Status)
-                .aria_label(SharedString::from(text.clone()))
+                .live_polite(SharedString::from(text.clone()))
                 .text_color(color(tokens.component_settings_body_text))
                 .child(text)
         };
@@ -382,7 +381,7 @@ impl Render for AddOverwriteTarget {
                 Some(
                     div()
                         .id("overwrite-members-failed")
-                        .role(Role::Alert)
+                        .live_assertive(catalogue.members().load_failed())
                         .flex()
                         .flex_col()
                         .items_start()

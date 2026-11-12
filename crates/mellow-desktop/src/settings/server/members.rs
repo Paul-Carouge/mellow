@@ -18,8 +18,8 @@ use mellow_protocol::{CreateBanRequest, Member, Snowflake};
 
 use super::manage_member::{ConfirmMemberRemoval, ManageMemberBody, MemberRemoval};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ModalDialog, ModalDialogEvent, RoleChip, RoleChips,
-    SettingsListStatus, SettingsListStatusKind, TextField, with_type,
+    Avatar, AvatarPerson, Button, LiveRegion as _, ModalDialog, ModalDialogEvent, RoleChip,
+    RoleChips, SettingsListStatus, SettingsListStatusKind, TextField, with_type,
 };
 use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};
@@ -530,8 +530,7 @@ impl Render for MembersPage {
             .child(
                 div()
                     .id("members-notice")
-                    .role(AccessRole::Status)
-                    .aria_label(self.notice.clone().unwrap_or_default())
+                    .live_polite(self.notice.clone().unwrap_or_default())
                     .h_0()
                     .overflow_hidden(),
             )

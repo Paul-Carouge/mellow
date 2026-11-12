@@ -12,8 +12,8 @@ mod tests;
 
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    Subscription, Window, div, prelude::FluentBuilder as _,
+    ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{InputEvent, InputState};
 use mellow_client_core::ClientError;
@@ -30,7 +30,9 @@ pub use friends_pane::{FriendsPane, FriendsPaneEvent};
 pub use menus::{OpenPersonMenu, PersonMenuRequest};
 pub use people_picker::{PeoplePicker, PeoplePickerEvent};
 
-use crate::components::{ContextMenu, ModalDialog, ModalDialogEvent, ShownStatus, TextField};
+use crate::components::{
+    ContextMenu, LiveRegion as _, ModalDialog, ModalDialogEvent, ShownStatus, TextField,
+};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::sign_in_form::describe_error;
@@ -516,16 +518,14 @@ impl Render for Home {
             .child(
                 div()
                     .id("home-announcement")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(self.announcement.clone()))
+                    .live_polite(SharedString::from(self.announcement.clone()))
                     .h_0()
                     .overflow_hidden(),
             )
             .child(
                 div()
                     .id("friends-announcement")
-                    .role(Role::Status)
-                    .aria_label(SharedString::from(friends_announcement))
+                    .live_polite(SharedString::from(friends_announcement))
                     .h_0()
                     .overflow_hidden(),
             )
