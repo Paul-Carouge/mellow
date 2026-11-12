@@ -25,6 +25,7 @@ use crate::i18n::catalogue::PermissionsOrAllowOrDeny;
 use crate::i18n::{Strings, strings};
 use crate::messages::{full_timestamp_label, local_date_time};
 use crate::session::Session;
+use crate::settings::permission_words::permission_words;
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_TOOLBAR_GAP,
@@ -182,34 +183,6 @@ impl ServerModerationLogPage {
     }
 }
 
-fn permission_label(key: PermissionKey, catalogue: Strings) -> &'static str {
-    let permissions = catalogue.server_settings().permissions();
-    match key {
-        PermissionKey::ViewChannels => permissions.view_channels().label(),
-        PermissionKey::ManageChannels => permissions.manage_channels().label(),
-        PermissionKey::ManageRoles => permissions.manage_roles().label(),
-        PermissionKey::ManageServer => permissions.manage_server().label(),
-        PermissionKey::ManageExpressions => permissions.manage_expressions().label(),
-        PermissionKey::ViewModerationLog => permissions.view_moderation_log().label(),
-        PermissionKey::CreateInvite => permissions.create_invite().label(),
-        PermissionKey::SendMessages => permissions.send_messages().label(),
-        PermissionKey::ReadMessageHistory => permissions.read_message_history().label(),
-        PermissionKey::AttachFiles => permissions.attach_files().label(),
-        PermissionKey::AddReactions => permissions.add_reactions().label(),
-        PermissionKey::SendPolls => permissions.send_polls().label(),
-        PermissionKey::SendChecklists => permissions.send_checklists().label(),
-        PermissionKey::MentionEveryone => permissions.mention_everyone().label(),
-        PermissionKey::ManageMessages => permissions.manage_messages().label(),
-        PermissionKey::Connect => permissions.connect().label(),
-        PermissionKey::Speak => permissions.speak().label(),
-        PermissionKey::UseSoundboard => permissions.use_soundboard().label(),
-        PermissionKey::Stream => permissions.stream().label(),
-        PermissionKey::KickMembers => permissions.kick_members().label(),
-        PermissionKey::BanMembers => permissions.ban_members().label(),
-        PermissionKey::Administrator => permissions.administrator().label(),
-    }
-}
-
 /// `auditEntrySentence` in the reader's words.
 pub(crate) fn sentence_words(sentence: &AuditSentence, catalogue: Strings) -> String {
     let log = catalogue.server_settings().moderation_log();
@@ -282,7 +255,7 @@ fn change_line_words(line: &AuditChangeLine, catalogue: Strings) -> String {
     let log = catalogue.server_settings().moderation_log();
     let names = |keys: &[PermissionKey]| {
         keys.iter()
-            .map(|key| permission_label(*key, catalogue))
+            .map(|key| permission_words(*key, catalogue).0)
             .collect::<Vec<_>>()
             .join(catalogue.typing().list_separator())
     };
