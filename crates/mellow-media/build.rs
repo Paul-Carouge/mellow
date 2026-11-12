@@ -4,6 +4,10 @@
 //! The source is the release archive, checked against its SHA-256, downloaded once into the
 //! build directory; `MELLOW_LIBVPX_SOURCE_DIR` points at an unpacked copy instead, for offline
 //! or packaged builds. Needs `make`, a C compiler, and `nasm` (or `yasm`) on x86-64.
+//!
+//! On Windows (MSVC), libvpx's configure writes a Visual Studio solution that `MSBuild` builds:
+//! `sh` and `make` come from MSYS2 or Git for Windows, and the assembler must be `yasm` (the
+//! generated projects pass it yasm-only flags).
 
 use std::env;
 use std::fmt::Write as _;
@@ -48,10 +52,15 @@ fn build() -> BuildResult<()> {
         None => downloaded_source(&output_directory)?,
     };
     let build_directory = output_directory.join(format!("libvpx-{LIBVPX_VERSION}-build"));
-    let library = build_directory.join("libvpx.a");
-    if !library.exists() {
-        configure_and_make(&source, &build_directory)?;
-    }
+    let target = variable("TARGET")?;
+    let (library_directory, library_name) = if target.ends_with("-pc-windows-msvc") {
+        build_with_msbuild(&source, &build_directory, &target)?
+    } else {
+        if !build_directory.join("libvpx.a").exists() {
+            configure_and_make(&source, &build_directory, &target)?;
+        }
+        (build_directory, "vpx")
+    };
     cc::Build::new()
         .file("src/vp8_shim.c")
         .include(&source)
@@ -60,9 +69,9 @@ fn build() -> BuildResult<()> {
         .map_err(|error| error.to_string())?;
     println!(
         "cargo:rustc-link-search=native={}",
-        build_directory.display()
+        library_directory.display()
     );
-    println!("cargo:rustc-link-lib=static=vpx");
+    println!("cargo:rustc-link-lib=static={library_name}");
     Ok(())
 }
 
@@ -119,41 +128,121 @@ fn libvpx_target(target: &str) -> &'static str {
     }
 }
 
-fn configure_and_make(source: &Path, build_directory: &Path) -> BuildResult<()> {
+/// The configure options every platform shares: VP8 only, real time, the library alone.
+const CONFIGURE_OPTIONS: [&str; 15] = [
+    "--enable-static",
+    "--disable-shared",
+    "--enable-vp8",
+    "--disable-vp9",
+    "--enable-realtime-only",
+    "--disable-examples",
+    "--disable-tools",
+    "--disable-docs",
+    "--disable-unit-tests",
+    "--disable-install-docs",
+    "--disable-install-bins",
+    "--disable-install-srcs",
+    "--disable-webm-io",
+    "--disable-libyuv",
+    "--disable-debug-libs",
+];
+
+/// `sh configure` run in `build_directory`, with the shared options and `extra_options`.
+fn configure(source: &Path, build_directory: &Path, extra_options: &[String]) -> BuildResult<()> {
     fs::create_dir_all(build_directory).map_err(|error| error.to_string())?;
-    let target = variable("TARGET")?;
+    // The script finds its own directory from `$0`, which a Windows path's backslashes break.
+    let configure_script = source
+        .join("configure")
+        .display()
+        .to_string()
+        .replace('\\', "/");
     run(Command::new("sh")
-        .arg(source.join("configure"))
-        .arg(format!("--target={}", libvpx_target(&target)))
-        .args([
-            "--enable-static",
-            "--disable-shared",
-            "--enable-pic",
-            "--enable-vp8",
-            "--disable-vp9",
-            "--enable-realtime-only",
-            "--disable-examples",
-            "--disable-tools",
-            "--disable-docs",
-            "--disable-unit-tests",
-            "--disable-install-docs",
-            "--disable-install-bins",
-            "--disable-install-srcs",
-            "--disable-webm-io",
-            "--disable-libyuv",
-            "--disable-debug-libs",
-        ])
+        .arg(configure_script)
+        .args(CONFIGURE_OPTIONS)
+        .args(extra_options)
         .arg(format!("--size-limit={LARGEST_DECODED_PICTURE}"))
         .current_dir(build_directory))
-    .map_err(|reason| format!("{reason} (on x86-64, install nasm or yasm)"))?;
-    let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".into());
-    run(Command::new("make")
-        .arg(format!("-j{jobs}"))
-        .arg("libvpx.a")
-        // Cargo's jobserver flags would make libvpx's make wait for tokens it never gets.
+    .map_err(|reason| format!("{reason} (on x86-64, install nasm or yasm)"))
+}
+
+/// libvpx's make, without Cargo's jobserver flags, which would make it wait for tokens it never
+/// gets.
+fn make(build_directory: &Path) -> Command {
+    let mut command = Command::new("make");
+    command
         .env_remove("MAKEFLAGS")
         .env_remove("MFLAGS")
-        .current_dir(build_directory))
+        .current_dir(build_directory);
+    command
+}
+
+fn configure_and_make(source: &Path, build_directory: &Path, target: &str) -> BuildResult<()> {
+    configure(
+        source,
+        build_directory,
+        &[
+            format!("--target={}", libvpx_target(target)),
+            "--enable-pic".into(),
+        ],
+    )?;
+    let jobs = env::var("NUM_JOBS").unwrap_or_else(|_| "1".into());
+    run(make(build_directory)
+        .arg(format!("-j{jobs}"))
+        .arg("libvpx.a"))
+}
+
+/// Configures libvpx for Visual Studio, lets its make write the solution without building it,
+/// then builds the Release library with `MSBuild`. Returns the library's directory and name
+/// (`vpxmd`: the DLL C runtime, as Rust's MSVC targets use).
+fn build_with_msbuild(
+    source: &Path,
+    build_directory: &Path,
+    target: &str,
+) -> BuildResult<(PathBuf, &'static str)> {
+    let library_name = "vpxmd";
+    let library_directory = build_directory.join("x64").join("Release");
+    if library_directory
+        .join(format!("{library_name}.lib"))
+        .exists()
+    {
+        return Ok((library_directory, library_name));
+    }
+    if !target.starts_with("x86_64-") {
+        return Err(format!(
+            "libvpx is only built for x86-64 on Windows, not {target}"
+        ));
+    }
+    let visual_studio = match cc::windows_registry::find_vs_version()? {
+        cc::windows_registry::VsVers::Vs17 => "vs17",
+        cc::windows_registry::VsVers::Vs18 => "vs18",
+        older => {
+            return Err(format!(
+                "Visual Studio 2022 or newer is needed, found {older:?}"
+            ));
+        }
+    };
+    configure(
+        source,
+        build_directory,
+        &[
+            format!("--target=x86_64-win64-{visual_studio}"),
+            "--as=yasm".into(),
+        ],
+    )?;
+    // Writes the projects and the solution; MSBuild below builds only the Release library.
+    run(make(build_directory).env("NO_LAUNCH_DEVENV", "1"))?;
+    let mut msbuild = cc::windows_registry::find(target, "msbuild.exe")
+        .ok_or("MSBuild was not found (install Visual Studio's C++ build tools)")?;
+    run(msbuild
+        .args([
+            "vpx.sln",
+            "-m",
+            "-t:Build",
+            "-p:Configuration=Release",
+            "-p:Platform=x64",
+        ])
+        .current_dir(build_directory))?;
+    Ok((library_directory, library_name))
 }
 
 fn run(command: &mut Command) -> BuildResult<()> {
