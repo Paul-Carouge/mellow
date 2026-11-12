@@ -14680,6 +14680,91 @@ impl DesktopStrings {
             Language::French => "Quand ton statut est «\u{a0}Ne pas déranger\u{a0}», rien ne te notifie. Ces réglages restent sur cet ordinateur.",
         }
     }
+
+    pub fn appearance(self) -> &'static str {
+        match self.language {
+            Language::English => "Appearance",
+            Language::French => "Apparence",
+        }
+    }
+
+    pub fn appearance_intro(self) -> &'static str {
+        match self.language {
+            Language::English => "These settings stay on this computer.",
+            Language::French => "Ces réglages restent sur cet ordinateur.",
+        }
+    }
+
+    pub fn theme(self) -> &'static str {
+        match self.language {
+            Language::English => "Theme",
+            Language::French => "Thème",
+        }
+    }
+
+    pub fn theme_system(self) -> &'static str {
+        match self.language {
+            Language::English => "Same as this computer",
+            Language::French => "Comme cet ordinateur",
+        }
+    }
+
+    pub fn theme_light(self) -> &'static str {
+        match self.language {
+            Language::English => "Light",
+            Language::French => "Clair",
+        }
+    }
+
+    pub fn theme_dark(self) -> &'static str {
+        match self.language {
+            Language::English => "Dark",
+            Language::French => "Sombre",
+        }
+    }
+
+    pub fn language(self) -> &'static str {
+        match self.language {
+            Language::English => "Language",
+            Language::French => "Langue",
+        }
+    }
+
+    pub fn language_system(self) -> &'static str {
+        match self.language {
+            Language::English => "Same as this computer",
+            Language::French => "Comme cet ordinateur",
+        }
+    }
+
+    pub fn language_english(self) -> &'static str {
+        "English"
+    }
+
+    pub fn language_french(self) -> &'static str {
+        "Français"
+    }
+
+    pub fn desktop_app(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow for desktop",
+            Language::French => "Mellow pour ordinateur",
+        }
+    }
+
+    pub fn codes_saved(self) -> &'static str {
+        match self.language {
+            Language::English => "Recovery codes saved.",
+            Language::French => "Codes de récupération enregistrés.",
+        }
+    }
+
+    pub fn codes_save_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Couldn't save the file. Copy the codes instead.",
+            Language::French => "Impossible d’enregistrer le fichier. Copie plutôt les codes.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

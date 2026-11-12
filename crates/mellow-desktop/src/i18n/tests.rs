@@ -30,6 +30,30 @@ fn picks_the_first_language_mellow_speaks() {
     );
 }
 
+#[gpui::test]
+fn a_chosen_language_wins_over_the_systems(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(SystemLanguage(Language::English));
+        apply_chosen_language(cx);
+        assert_eq!(strings(cx).language(), Language::English);
+        crate::preferences::change_preferences(cx, |preferences| {
+            preferences.language = LanguageChoice::French;
+        });
+        assert!(apply_chosen_language(cx));
+        assert!(!apply_chosen_language(cx), "French is already spoken");
+        assert_eq!(strings(cx).language(), Language::French);
+        assert!(std::ptr::eq(
+            crate::strings_pending_i18n::strings(cx),
+            std::ptr::from_ref(&crate::strings_pending_i18n::FRENCH)
+        ));
+        crate::preferences::change_preferences(cx, |preferences| {
+            preferences.language = LanguageChoice::System;
+        });
+        apply_chosen_language(cx);
+        assert_eq!(strings(cx).language(), Language::English);
+    });
+}
+
 #[test]
 fn falls_back_to_english() {
     assert_eq!(

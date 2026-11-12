@@ -12,7 +12,6 @@ mod custom_status_dialog;
 mod member_profile;
 mod member_sheet;
 mod message_search_host;
-mod notification_settings;
 mod overlays;
 mod place_menus;
 mod place_notifications;
@@ -83,6 +82,8 @@ actions!(
         ToggleQuickSwitcher,
         /// Ctrl+U: the member sheet.
         ToggleMemberSheet,
+        /// Ctrl+, (Cmd+, on macOS, the platform's settings shortcut): the user settings.
+        OpenUserSettings,
         /// Ctrl+F: the message search field, or the results with their own field.
         FocusMessageSearch
     ]
@@ -125,6 +126,7 @@ pub fn bind_shell_keys(cx: &mut App) {
         KeyBinding::new(secondary!("alt-down"), NextServer, context),
         KeyBinding::new(secondary!("k"), ToggleQuickSwitcher, context),
         KeyBinding::new(secondary!("u"), ToggleMemberSheet, context),
+        KeyBinding::new(secondary!(","), OpenUserSettings, context),
         KeyBinding::new(secondary!("f"), FocusMessageSearch, context),
     ]);
     regions::bind_region_keys(cx, context);
@@ -222,8 +224,6 @@ pub struct DuskShell {
     column_drag: Option<ColumnDrag>,
     quick_switcher: Option<(Entity<QuickSwitcher>, Subscription)>,
     status_menu: Option<(Entity<ContextMenu>, Subscription)>,
-    /// The notification choices, opened from the status menu.
-    notification_settings: Option<(Entity<ModalDialog>, Subscription)>,
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// The menus of servers, channels, categories and the chat header, and their dialogs.
     place_menus: place_menus::PlaceMenus,
@@ -292,7 +292,6 @@ impl DuskShell {
             column_drag: None,
             quick_switcher: None,
             status_menu: None,
-            notification_settings: None,
             custom_status_dialog: None,
             place_menus: place_menus::PlaceMenus::default(),
             open_settings: None,
@@ -1109,6 +1108,9 @@ impl Render for DuskShell {
             .on_action(cx.listener(|shell, _: &ToggleMemberSheet, window, cx| {
                 shell.toggle_member_sheet(window, cx);
             }))
+            .on_action(cx.listener(|shell, _: &OpenUserSettings, window, cx| {
+                shell.open_user_settings(window, cx);
+            }))
             .on_action(cx.listener(|shell, _: &FocusMessageSearch, window, cx| {
                 shell.focus_message_search(window, cx);
             }))
@@ -1163,9 +1165,6 @@ impl Render for DuskShell {
                 root.child(menu.clone())
             })
             .child(self.home.clone())
-            .when_some(self.notification_settings.as_ref(), |root, (dialog, _)| {
-                root.child(dialog.clone())
-            })
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
             })

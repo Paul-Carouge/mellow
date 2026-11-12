@@ -1,5 +1,5 @@
-//! Turns the generated design tokens into GPUI values: the active theme (following the OS
-//! appearance), lengths, colours, motion under reduced motion, and the embedded fonts and icons.
+//! Turns the generated design tokens into GPUI values: the active theme (the one chosen in User
+//! settings, Appearance, or the OS appearance), lengths, colours, motion under reduced motion, and the embedded fonts and icons.
 
 mod assets;
 mod fonts;
@@ -14,6 +14,7 @@ use std::time::Duration;
 
 use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, rems, rgba};
 
+use crate::preferences::{ThemeChoice, preferences};
 pub use assets::EmbeddedAssets;
 pub use fonts::{MONOSPACE_FONT_FAMILY, SANS_FONT_FAMILY, register_embedded_fonts};
 use tokens::{AnimationDuration, DARK_THEME, Delay, LIGHT_THEME, ThemeTokens};
@@ -43,15 +44,53 @@ impl ActiveTheme {
     }
 }
 
-/// Sets the theme from the window's appearance and keeps following the OS while the window lives.
+/// The OS appearance last seen, so choosing "Same as this computer" again knows it.
+#[derive(Debug, Clone, Copy)]
+struct SystemAppearance(WindowAppearance);
+
+impl Global for SystemAppearance {}
+
+/// Sets the theme from the reader's choice, else the window's appearance, and keeps following
+/// the OS while the window lives.
 pub fn follow_window_appearance(window: &mut Window, cx: &mut App) {
-    apply_theme(ActiveTheme::for_appearance(window.appearance()), cx);
+    cx.set_global(SystemAppearance(window.appearance()));
+    apply_chosen_theme(cx);
     window
         .observe_window_appearance(|window, cx| {
-            apply_theme(ActiveTheme::for_appearance(window.appearance()), cx);
-            window.refresh();
+            cx.set_global(SystemAppearance(window.appearance()));
+            if apply_chosen_theme(cx) {
+                window.refresh();
+            }
         })
         .detach();
+}
+
+/// The appearance a theme choice shows when the OS shows `system`.
+#[must_use]
+pub fn chosen_appearance(choice: ThemeChoice, system: WindowAppearance) -> WindowAppearance {
+    match choice {
+        ThemeChoice::System => system,
+        ThemeChoice::Light => WindowAppearance::Light,
+        ThemeChoice::Dark => WindowAppearance::Dark,
+    }
+}
+
+/// Installs the theme the preferences ask for; true when it changed, so the caller redraws.
+pub fn apply_chosen_theme(cx: &mut App) -> bool {
+    let system = cx
+        .try_global::<SystemAppearance>()
+        .map_or(WindowAppearance::Dark, |appearance| appearance.0);
+    let choice = preferences(cx)
+        .map(|preferences| preferences.theme)
+        .unwrap_or_default();
+    let wanted = ActiveTheme::for_appearance(chosen_appearance(choice, system));
+    let is_shown = cx
+        .try_global::<ActiveTheme>()
+        .is_some_and(|active| std::ptr::eq(active.tokens, wanted.tokens));
+    if !is_shown {
+        apply_theme(wanted, cx);
+    }
+    !is_shown
 }
 
 /// Installs a theme, including in gpui-component's text input, which paints from its own theme.
@@ -120,6 +159,30 @@ mod tests {
             DARK_THEME.color_surface_rail, LIGHT_THEME.color_surface_rail,
             "the ground differs per theme"
         );
+    }
+
+    #[gpui::test]
+    fn a_chosen_theme_wins_over_the_os_until_the_system_is_chosen_again(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(SystemAppearance(WindowAppearance::Dark));
+            apply_chosen_theme(cx);
+            assert_eq!(*theme(cx), DARK_THEME);
+            crate::preferences::change_preferences(cx, |preferences| {
+                preferences.theme = ThemeChoice::Light;
+            });
+            assert!(apply_chosen_theme(cx));
+            assert_eq!(*theme(cx), LIGHT_THEME);
+            assert!(
+                !apply_chosen_theme(cx),
+                "nothing to redraw when nothing changed"
+            );
+            crate::preferences::change_preferences(cx, |preferences| {
+                preferences.theme = ThemeChoice::System;
+            });
+            assert!(apply_chosen_theme(cx));
+            assert_eq!(*theme(cx), DARK_THEME);
+        });
     }
 
     #[test]

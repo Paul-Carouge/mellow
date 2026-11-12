@@ -881,6 +881,91 @@ fn the_people_picker_adds_several_friends_to_a_group_one_after_another(cx: &mut 
     });
     harness.stop();
 }
+
+#[gpui::test]
+fn account_changes_go_through_the_session_and_a_wrong_password_keeps_it(cx: &mut TestAppContext) {
+    use mellow_client_core::ClientError;
+    use mellow_protocol::{ApiErrorCode, ChangePasswordRequest, UpdateCurrentUserRequest};
+
+    type OnDone = Box<dyn FnOnce(Result<(), ClientError>, &mut gpui::App)>;
+
+    let (harness, cx) = start(cx);
+    let ada = register(&harness, "ada");
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(ada, cx));
+    wait_until(cx, |cx| {
+        harness.session.read_with(cx, |session, _| {
+            session.status() == ConnectionStatus::Connected
+        })
+    });
+
+    // A new name shows at once, from the answer.
+    answer_of(&harness, cx, |session, cx, on_done| {
+        session.send_current_user_change(
+            "rename account",
+            |rest| async move {
+                rest.update_current_user(&UpdateCurrentUserRequest {
+                    display_name: Some("Ada L".into()),
+                    ..UpdateCurrentUserRequest::default()
+                })
+                .await
+            },
+            cx,
+            on_done,
+        );
+    })
+    .unwrap();
+    let name = harness.session.read_with(cx, |session, _| {
+        session
+            .state()
+            .current_user()
+            .map(|user| user.display_name.clone())
+    });
+    assert_eq!(name.as_deref(), Some("Ada L"));
+
+    let change_password = |current: &'static str| {
+        move |session: &mut Session, cx: &mut gpui::Context<Session>, on_done: OnDone| {
+            session.send_account_request(
+                "change password",
+                move |rest| async move {
+                    rest.change_password(&ChangePasswordRequest {
+                        current_password: current.into(),
+                        new_password: "another long passphrase".into(),
+                    })
+                    .await
+                },
+                cx,
+                on_done,
+            );
+        }
+    };
+    // A wrong current password is the page's to say; the session stays signed in.
+    let refused = answer_of(&harness, cx, change_password("not the password"));
+    assert!(matches!(
+        refused,
+        Err(ClientError::Api {
+            code: ApiErrorCode::InvalidCredentials,
+            ..
+        })
+    ));
+    answer_of(&harness, cx, change_password(PASSWORD)).unwrap();
+    assert_eq!(
+        harness.session.read_with(cx, |session, _| session.status()),
+        ConnectionStatus::Connected
+    );
+    let status = answer_of(&harness, cx, |session, cx, on_done| {
+        session.send_account_request(
+            "load two-factor status",
+            |rest| async move { rest.two_factor_status().await },
+            cx,
+            on_done,
+        );
+    })
+    .unwrap();
+    assert!(!status.is_enabled);
+    harness.stop();
+}
 #[gpui::test]
 fn a_moderator_revokes_a_ban_manages_invites_and_reads_the_log(cx: &mut TestAppContext) {
     use mellow_protocol::{AuditAction, CreateBanRequest, CreateInviteRequest};

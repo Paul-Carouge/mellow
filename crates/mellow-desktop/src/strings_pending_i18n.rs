@@ -11,46 +11,6 @@ use mellow_protocol::ApiErrorCode;
 
 const NO_BREAK_SPACE: char = '\u{a0}';
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Language {
-    English,
-    French,
-}
-
-impl Language {
-    /// The first of the reader's languages the app speaks, in their order; English when none is
-    /// (the web's `chooseLanguage`).
-    #[must_use]
-    pub fn from_preferred_locales<'a>(locales: impl IntoIterator<Item = &'a str>) -> Self {
-        locales
-            .into_iter()
-            .find_map(|tag| {
-                let primary = tag.split(['-', '_']).next()?.to_ascii_lowercase();
-                match primary.as_str() {
-                    "fr" => Some(Self::French),
-                    "en" => Some(Self::English),
-                    _ => None,
-                }
-            })
-            .unwrap_or(Self::English)
-    }
-
-    /// The OS's preferred languages.
-    #[must_use]
-    pub fn of_the_system() -> Self {
-        let locales: Vec<String> = sys_locale::get_locales().collect();
-        Self::from_preferred_locales(locales.iter().map(String::as_str))
-    }
-
-    #[must_use]
-    pub fn strings(self) -> &'static Strings {
-        match self {
-            Self::English => &ENGLISH,
-            Self::French => &FRENCH,
-        }
-    }
-}
-
 /// The strings of the language the app speaks, as a GPUI global.
 #[derive(Debug, Clone, Copy)]
 pub struct ActiveStrings(pub &'static Strings);
@@ -399,24 +359,6 @@ pub static FRENCH: Strings = Strings {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_first_language_the_app_speaks_wins() {
-        assert_eq!(
-            Language::from_preferred_locales(["de-DE", "fr-CA", "en-US"]),
-            Language::French
-        );
-        assert_eq!(
-            Language::from_preferred_locales(["en_GB", "fr"]),
-            Language::English
-        );
-        assert_eq!(Language::from_preferred_locales(["FR"]), Language::French);
-        assert_eq!(
-            Language::from_preferred_locales(["de", "ja"]),
-            Language::English
-        );
-        assert_eq!(Language::from_preferred_locales([]), Language::English);
-    }
 
     #[test]
     fn french_puts_a_no_break_space_before_the_colon() {

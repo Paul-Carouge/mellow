@@ -90,6 +90,8 @@ pub struct SettingsSheet {
     page_focus: FocusHandle,
     on_choose: ChooseHandler,
     on_request_close: ActivationHandler,
+    /// The close button alone, when it must not ask as Esc does; `on_request_close` otherwise.
+    on_close_button: Option<ActivationHandler>,
     on_back: ActivationHandler,
 }
 
@@ -113,6 +115,7 @@ impl SettingsSheet {
             page_focus,
             on_choose: Arc::new(|_, _, _| {}),
             on_request_close: Arc::new(|_, _| {}),
+            on_close_button: None,
             on_back: Arc::new(|_, _| {}),
         }
     }
@@ -152,6 +155,14 @@ impl SettingsSheet {
         self
     }
 
+    /// The close button only, when it closes outright while Esc first closes what is open inside
+    /// (the user settings' forms, as the web's close button calls `onclose`).
+    #[must_use]
+    pub fn on_close_button(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_close_button = Some(Arc::new(handler));
+        self
+    }
+
     /// The back button of a page shown alone when narrow.
     #[must_use]
     pub fn on_back(mut self, handler: impl Fn(&mut Window, &mut App) + 'static) -> Self {
@@ -188,6 +199,7 @@ fn close_button(
         .gap(length(COMPONENT_SETTINGS_CLOSE_LABEL_GAP))
         .child(
             div()
+                .debug_selector(|| "settings-close-button".to_owned())
                 .relative()
                 .size(length(SIZE_HIT_WEB_MIN))
                 .child(ring)
@@ -281,6 +293,10 @@ impl RenderOnce for SettingsSheet {
         let is_wide = self.is_wide;
         let is_navigation_shown = is_wide || !self.is_page_shown_when_narrow;
         let is_page_shown = is_wide || self.is_page_shown_when_narrow;
+        let on_close_button = self
+            .on_close_button
+            .clone()
+            .unwrap_or_else(|| self.on_request_close.clone());
         let narrow_inline = length(COMPONENT_SETTINGS_CONTENT_PADDING_INLINE_NARROW);
 
         let item_focus: Vec<FocusHandle> = self
@@ -339,7 +355,7 @@ impl RenderOnce for SettingsSheet {
         }
 
         let navigation = is_navigation_shown.then(|| {
-            let close = self.on_request_close.clone();
+            let close = on_close_button.clone();
             div()
                 .id(child_id(&self.id, "navigation"))
                 .flex()
@@ -410,7 +426,7 @@ impl RenderOnce for SettingsSheet {
 
         let page = is_page_shown.then(|| {
             let back = self.on_back.clone();
-            let close = self.on_request_close.clone();
+            let close = on_close_button.clone();
             div()
                 .id(child_id(&self.id, "page-scroll"))
                 .relative()

@@ -45,7 +45,6 @@ use tokio::runtime::Handle;
 
 use crate::main_window::MainWindow;
 use crate::session::Session;
-use crate::strings_pending_i18n::{ActiveStrings, Language};
 use crate::window_chrome::WINDOW_TITLE;
 
 actions!(mellow, [Quit]);
@@ -57,6 +56,13 @@ const APP_IDENTIFIER: &str = "org.mellow.desktop";
 const QUIT_KEYSTROKE: &str = "cmd-q";
 #[cfg(not(target_os = "macos"))]
 const QUIT_KEYSTROKE: &str = "ctrl-q";
+
+/// The app menu, in the language spoken; set again when the language changes.
+fn set_app_menus(cx: &mut App) {
+    let quit_label = i18n::strings(cx).desktop().quit_mellow();
+    // Signing out is in User settings, as the web keeps it out of the menu bar.
+    cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action(quit_label, Quit)])]);
+}
 
 /// Sets the app up and opens the main window; called once from GPUI's `run`.
 ///
@@ -73,8 +79,6 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     emoji_picker::bind_emoji_picker_keys(cx);
     tokio_bridge::install_network_runtime(network_runtime, cx);
     preferences::load_preferences_in_background(cx);
-    let strings = Language::of_the_system().strings();
-    cx.set_global(ActiveStrings(strings));
     // Before any notification: Linux names the app with it, Windows groups its toasts by it.
     cx.set_app_identity(APP_IDENTIFIER, WINDOW_TITLE);
     let session = cx.new(Session::new_restoring_stored_session);
@@ -82,12 +86,8 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
-    i18n::use_language(i18n::Language::from_operating_system(), cx);
-    let catalogue = i18n::strings(cx);
-    // Signing out is in the user card's menu, as the web keeps it out of the menu bar.
-    cx.set_menus([
-        Menu::new(WINDOW_TITLE).items([MenuItem::action(catalogue.desktop().quit_mellow(), Quit)])
-    ]);
+    i18n::use_system_language(cx);
+    set_app_menus(cx);
     dock_and_tray::install_menu_bar_item(cx);
     // One window for now: closing it ends the app, on macOS too.
     cx.on_window_closed(|cx, _| {
@@ -106,6 +106,18 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
         cx.activate(true);
         return Ok(());
     }
+    // The theme and language chosen in User settings, once the preferences are read and at
+    // each change; most changes are of something else, so each applies only what differs.
+    cx.observe_global::<preferences::PreferencesStore>(|cx| {
+        if theme::apply_chosen_theme(cx) {
+            cx.refresh_windows();
+        }
+        if i18n::apply_chosen_language(cx) {
+            set_app_menus(cx);
+            dock_and_tray::retitle_menu_bar_item(cx);
+        }
+    })
+    .detach();
     cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
         theme::follow_window_appearance(window, cx);
         cx.new(|cx| {

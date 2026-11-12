@@ -25,6 +25,14 @@ pub fn install_menu_bar_item(cx: &mut App) {
     let _ = cx;
 }
 
+/// Retitles the menu bar item's menu in the language now spoken.
+pub fn retitle_menu_bar_item(cx: &mut App) {
+    #[cfg(target_os = "macos")]
+    macos::retitle_menu_bar_item(cx);
+    #[cfg(not(target_os = "macos"))]
+    let _ = cx;
+}
+
 /// "99+" past 99, as the window's title says it.
 #[cfg_attr(not(target_os = "macos"), allow(dead_code))]
 fn badge_label(count: u32) -> Option<String> {
@@ -106,6 +114,8 @@ mod macos {
         item: Retained<NSStatusItem>,
         /// Without its icon, the item's title carries the name so it stays visible.
         has_icon: bool,
+        open_item: Retained<NSMenuItem>,
+        quit_item: Retained<NSMenuItem>,
         _menu: Retained<NSMenu>,
         _target: Retained<MenuBarTarget>,
     }
@@ -134,6 +144,18 @@ mod macos {
         }
     }
 
+    pub(super) fn retitle_menu_bar_item(cx: &mut App) {
+        let catalogue = strings(cx).desktop();
+        if let Some(menu_bar_item) = cx.try_global::<MenuBarItem>() {
+            menu_bar_item
+                .open_item
+                .setTitle(&NSString::from_str(catalogue.open_mellow()));
+            menu_bar_item
+                .quit_item
+                .setTitle(&NSString::from_str(catalogue.quit_mellow()));
+        }
+    }
+
     pub(super) fn install_menu_bar_item(cx: &mut App) {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
@@ -142,13 +164,11 @@ mod macos {
         let (sender, mut commands) = unbounded_channel();
         let target = MenuBarTarget::new(sender, mtm);
         let menu = NSMenu::new(mtm);
-        for (label, action) in [
+        let [open_item, quit_item] = [
             (catalogue.open_mellow(), sel!(openMellow:)),
             (catalogue.quit_mellow(), sel!(quitMellow:)),
-        ] {
-            if action == sel!(quitMellow:) {
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-            }
+        ]
+        .map(|(label, action)| {
             // SAFETY: the action is one `MenuBarTarget` implements, with the `sender:` argument.
             let item = unsafe {
                 NSMenuItem::initWithTitle_action_keyEquivalent(
@@ -160,8 +180,11 @@ mod macos {
             };
             // SAFETY: the target is kept alive in `MenuBarItem` for as long as the menu.
             unsafe { item.setTarget(Some(&target)) };
-            menu.addItem(&item);
-        }
+            item
+        });
+        menu.addItem(&open_item);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&quit_item);
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
         let mut has_icon = false;
         if let Some(button) = item.button(mtm) {
@@ -187,6 +210,8 @@ mod macos {
         cx.set_global(MenuBarItem {
             item,
             has_icon,
+            open_item,
+            quit_item,
             _menu: menu,
             _target: target,
         });

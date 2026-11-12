@@ -124,3 +124,62 @@ fn the_shell_keys_wait_while_the_settings_cover_it(cx: &mut TestAppContext) {
     press(cx, "escape");
     assert!(!is_open(&shell, cx));
 }
+
+/// Ctrl+, (Cmd+, on macOS), the platform's settings shortcut.
+const USER_SETTINGS_KEY: &str = if cfg!(target_os = "macos") {
+    "cmd-,"
+} else {
+    "ctrl-,"
+};
+
+#[gpui::test]
+fn user_settings_open_with_the_shortcut_and_esc_closes_them(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, USER_SETTINGS_KEY);
+    assert!(is_open(&shell, cx));
+    press(cx, "escape");
+    assert!(!is_open(&shell, cx));
+}
+
+#[gpui::test]
+fn esc_closes_the_open_account_form_before_the_user_settings(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, USER_SETTINGS_KEY);
+    // Past the six sections and "Sign out", Tab reaches the name's Edit button.
+    for _ in 0..7 {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    cx.simulate_input(" B");
+    cx.run_until_parked();
+    press(cx, "escape");
+    assert!(is_open(&shell, cx), "the first Esc closes the form only");
+    press(cx, "escape");
+    assert!(!is_open(&shell, cx));
+}
+
+#[gpui::test]
+fn the_close_button_closes_the_user_settings_even_with_a_form_open(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, USER_SETTINGS_KEY);
+    for _ in 0..7 {
+        press(cx, "tab");
+    }
+    press(cx, "enter");
+    let close_button = cx
+        .debug_bounds("settings-close-button")
+        .expect("the wide sheet shows its close button");
+    cx.simulate_click(close_button.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(!is_open(&shell, cx), "the web's close button calls onclose");
+}
+
+#[gpui::test]
+fn sign_out_closes_the_user_settings_first(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    press(cx, USER_SETTINGS_KEY);
+    // "Sign out" is the navigation's last item.
+    press(cx, "end");
+    press(cx, "enter");
+    assert!(!is_open(&shell, cx));
+}

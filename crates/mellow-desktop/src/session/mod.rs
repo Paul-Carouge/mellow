@@ -22,6 +22,7 @@ use tokio::sync::mpsc;
 use tokio::task::JoinError;
 use zeroize::Zeroizing;
 
+mod account;
 mod blocks;
 mod cards;
 mod forwards;
