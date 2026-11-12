@@ -582,6 +582,11 @@ impl VoiceSession {
         self.command(AudioCommand::PlayCue(cue));
     }
 
+    /// Plays the message chime on the voice output, where the echo canceller hears it.
+    pub fn play_notification_chime(&self) {
+        self.command(AudioCommand::PlayNotificationChime);
+    }
+
     /// Plays a soundboard or join sound at the output volume times the soundboard volume; who
     /// should hear it is
     /// [`mellow_client_core::shared_logic::soundboard::should_hear_sound`]'s call.
