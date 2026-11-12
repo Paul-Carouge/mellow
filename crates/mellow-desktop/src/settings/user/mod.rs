@@ -3,10 +3,9 @@
 //! the open form first (My account, Security), then the settings; focus goes back to the button
 //! that opened them.
 //!
-//! shortcut: the web's Accessibility (animated pictures) and Voice sections are left out: the
-//! desktop has no "animate on hover" yet (pictures follow the system's reduced motion), and voice
-//! settings come with the voice panel (M3 step 7). The desktop's own Appearance section holds the
-//! theme and the language.
+//! shortcut: the web's Accessibility section (animated pictures) is left out: the desktop has no
+//! "animate on hover" yet (pictures follow the system's reduced motion). The desktop's own
+//! Appearance section holds the theme and the language.
 
 mod about;
 mod account;
@@ -15,6 +14,7 @@ mod notifications;
 mod parts;
 mod profile;
 mod security;
+mod voice;
 
 use std::sync::Arc;
 
@@ -30,6 +30,7 @@ use self::appearance::AppearancePage;
 use self::notifications::NotificationsPage;
 use self::profile::ProfilePage;
 use self::security::SecurityPage;
+use self::voice::VoicePage;
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
 use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
 use crate::i18n::{Strings, strings};
@@ -50,6 +51,7 @@ fn section_label(section: UserSettingsSection, catalogue: Strings) -> &'static s
         UserSettingsSection::Profile => settings.profile(),
         UserSettingsSection::Security => catalogue.security().title(),
         UserSettingsSection::Appearance => catalogue.desktop().appearance(),
+        UserSettingsSection::Voice => settings.voice(),
         UserSettingsSection::Notifications => settings.notifications(),
         UserSettingsSection::About => settings.about(),
     }
@@ -105,6 +107,7 @@ impl UserSettings {
     fn make_page(
         &mut self,
         section: UserSettingsSection,
+        window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Option<ShownPage<UserSettingsSection>> {
         let session = self.session.clone();
@@ -126,6 +129,10 @@ impl UserSettings {
             }
             UserSettingsSection::Appearance => {
                 let page = cx.new(AppearancePage::new);
+                shown_page(section, page, Self::navigation, cx)
+            }
+            UserSettingsSection::Voice => {
+                let page = cx.new(|cx| VoicePage::new(window, cx));
                 shown_page(section, page, Self::navigation, cx)
             }
             UserSettingsSection::Notifications => {
@@ -182,7 +189,7 @@ impl Render for UserSettings {
         let offered = sections();
         let section = self.navigation.section(&offered);
         if !self.navigation.is_showing(section) {
-            let page = section.and_then(|section| self.make_page(section, cx));
+            let page = section.and_then(|section| self.make_page(section, window, cx));
             self.navigation.replace_page(page);
         }
         let is_wide = is_wide(window);

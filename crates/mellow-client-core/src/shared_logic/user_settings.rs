@@ -16,13 +16,19 @@ pub enum UserSettingsSection {
     Security,
     /// The desktop's theme and language (the web follows the browser for both).
     Appearance,
+    Voice,
     Notifications,
     About,
 }
 
 impl UserSettingsSection {
     pub const ACCOUNT_GROUP: [Self; 3] = [Self::MyAccount, Self::Profile, Self::Security];
-    pub const APP_GROUP: [Self; 3] = [Self::Appearance, Self::Notifications, Self::About];
+    pub const APP_GROUP: [Self; 4] = [
+        Self::Appearance,
+        Self::Voice,
+        Self::Notifications,
+        Self::About,
+    ];
 }
 
 /// Trimmed, with inner runs of white space made one space, as the instance stores names.

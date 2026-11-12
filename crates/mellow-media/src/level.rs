@@ -1,6 +1,8 @@
 //! Loudness of a frame: its RMS, its level in dBFS and the RFC 6464 audio level the server reads
 //! to tell who speaks (`domain/voice_rules.rs`, louder than -50 dBov).
 
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+
 /// The quietest level RFC 6464 can carry, also what digital silence is sent as.
 pub(crate) const SILENT_AUDIO_LEVEL: u8 = 127;
 
@@ -36,6 +38,49 @@ pub(crate) fn audio_level_attenuation(rms: f32) -> u8 {
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)] // clamped to 0..=127 first
     let level = attenuation.clamp(0.0, f32::from(SILENT_AUDIO_LEVEL)) as u8;
     level
+}
+
+/// The processed microphone's level, written by the audio thread once per 10 ms frame and read
+/// by the interface whenever it redraws its meter.
+#[derive(Debug)]
+pub(crate) struct MicrophoneLevel {
+    /// An `f32` in dBFS; NaN while no microphone is open.
+    decibels_bits: AtomicU32,
+    is_unavailable: AtomicBool,
+}
+
+impl Default for MicrophoneLevel {
+    fn default() -> Self {
+        Self {
+            decibels_bits: AtomicU32::new(f32::NAN.to_bits()),
+            is_unavailable: AtomicBool::new(false),
+        }
+    }
+}
+
+impl MicrophoneLevel {
+    pub(crate) fn set_decibels(&self, decibels: f32) {
+        self.decibels_bits
+            .store(decibels.to_bits(), Ordering::Relaxed);
+    }
+
+    pub(crate) fn clear(&self) {
+        self.set_decibels(f32::NAN);
+    }
+
+    pub(crate) fn set_unavailable(&self, is_unavailable: bool) {
+        self.is_unavailable.store(is_unavailable, Ordering::Relaxed);
+    }
+
+    /// `None` while no microphone is open.
+    pub(crate) fn decibels(&self) -> Option<f32> {
+        let decibels = f32::from_bits(self.decibels_bits.load(Ordering::Relaxed));
+        (!decibels.is_nan()).then_some(decibels)
+    }
+
+    pub(crate) fn is_unavailable(&self) -> bool {
+        self.is_unavailable.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]

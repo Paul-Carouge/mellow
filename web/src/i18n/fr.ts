@@ -2341,5 +2341,12 @@ export const fr: Catalogue = {
     voiceCouldNotStartTitle: "La voix n’a pas pu démarrer",
     voiceCouldNotStart: "Mellow n’a pas pu démarrer son audio ni trouver l’adresse de l’instance. Vérifie ta connexion, puis réessaie.",
     voiceOutputUnavailable: `Aucune sortie audio trouvée${NO_BREAK_SPACE}: tu n’entends pas les autres tant que tu n’en branches pas une.`,
+    voiceStandardNoiseSuppression: "Standard",
+    voiceStandardNoiseSuppressionDescription: `Le filtre de WebRTC, intégré à Mellow${NO_BREAK_SPACE}: plus léger, il laisse passer davantage de bruit.`,
+    voiceAutomaticSensitivityDescription: "Mellow distingue ta voix du silence.",
+    voiceEnhancementDescription:
+      "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique.",
+    voicePushToTalkFocusNote: "Mellow ne voit tes touches que lorsque sa fenêtre est au premier plan.",
+    voiceTestNoMicrophone: "Aucun micro trouvé. Branches-en un, puis relance le test.",
   },
 };

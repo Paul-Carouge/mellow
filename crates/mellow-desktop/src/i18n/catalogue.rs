@@ -14793,6 +14793,45 @@ impl DesktopStrings {
             Language::French => "Aucune sortie audio trouvée\u{a0}: tu n’entends pas les autres tant que tu n’en branches pas une.",
         }
     }
+
+    pub fn voice_standard_noise_suppression(self) -> &'static str {
+        "Standard"
+    }
+
+    pub fn voice_standard_noise_suppression_description(self) -> &'static str {
+        match self.language {
+            Language::English => "WebRTC's filter, built into Mellow: lighter, it lets more noise through.",
+            Language::French => "Le filtre de WebRTC, intégré à Mellow\u{a0}: plus léger, il laisse passer davantage de bruit.",
+        }
+    }
+
+    pub fn voice_automatic_sensitivity_description(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow tells your voice from silence.",
+            Language::French => "Mellow distingue ta voix du silence.",
+        }
+    }
+
+    pub fn voice_enhancement_description(self) -> &'static str {
+        match self.language {
+            Language::English => "Evens out your voice and gives it presence for a clean, steady sound, like on a stream. It replaces the automatic gain.",
+            Language::French => "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique.",
+        }
+    }
+
+    pub fn voice_push_to_talk_focus_note(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow only sees your keys while its window is in front.",
+            Language::French => "Mellow ne voit tes touches que lorsque sa fenêtre est au premier plan.",
+        }
+    }
+
+    pub fn voice_test_no_microphone(self) -> &'static str {
+        match self.language {
+            Language::English => "No microphone found. Plug one in, then test again.",
+            Language::French => "Aucun micro trouvé. Branches-en un, puis relance le test.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

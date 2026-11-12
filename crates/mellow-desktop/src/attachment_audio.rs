@@ -3,12 +3,11 @@
 //! file comes through byte ranges on the authenticated download path, and `mellow-media`'s
 //! [`ClipPlayer`] decodes it off the interface thread. Opening another channel or signing out
 //! stops the sound and frees it. The volume is remembered for the next sound, as the web's
-//! `mellow.media-volume`.
+//! `mellow.media-volume`. Sounds play on the voice output chosen in the settings and move there
+//! when it changes ([`follow_voice_output_device`]), as the web's elements follow `setSinkId`.
 //!
 //! shortcut: a sound keeps playing when its row scrolls far out of the list (the web's element is
 //! removed with the row, which pauses it); stop it from the list once rows report being dropped.
-//! shortcut: sounds play on the system's default output: the desktop has no voice settings yet;
-//! call `ClipPlayer::set_output_device` with the chosen output when they come (M3 step 7).
 
 use std::collections::HashSet;
 use std::sync::Arc;

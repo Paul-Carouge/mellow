@@ -28,6 +28,7 @@ mod enhancement;
 mod input_gate;
 mod jitter_buffer;
 mod level;
+mod microphone_test;
 mod mixer;
 mod offer;
 mod person_settings;
@@ -56,9 +57,9 @@ pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
-    AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, PlaybackProbe,
-    PlaybackStream, RunningStream, StreamFormat, SyntheticAudioDevices, SyntheticSound,
-    SystemAudioDevices,
+    AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, DeviceListing,
+    PlaybackProbe, PlaybackStream, RunningStream, StreamFormat, SyntheticAudioDevices,
+    SyntheticSound, SystemAudioDevices,
 };
 pub use enhancement::{
     EqualizerDecibels, MAXIMUM_EQUALIZER_DECIBELS, MINIMUM_EQUALIZER_DECIBELS,
@@ -69,6 +70,7 @@ pub use input_gate::{
     MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY, MAXIMUM_SENSITIVITY_DECIBELS, MINIMUM_SENSITIVITY_DECIBELS,
     Sensitivity,
 };
+pub use microphone_test::{MicrophoneTest, MicrophoneTestOptions};
 pub use mixer::MAXIMUM_VOLUME;
 pub use offer::{OfferError, ReceiveSlotKind};
 pub use person_settings::{
