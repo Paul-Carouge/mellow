@@ -187,4 +187,30 @@ mod tests {
         assert!(matches!(over_the_cap, Err(GifError::TooManyFavourites)));
         assert!(restarred.is_ok(), "one already starred still moves first");
     }
+
+    #[tokio::test]
+    async fn favourites_starred_in_the_same_millisecond_keep_the_newest_first() {
+        let (_directory, database) = migrated_database().await;
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0);",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let ada = Snowflake::from_raw(1);
+        add_favourite(&database, ada, "happy-cat", NOW)
+            .await
+            .unwrap();
+        add_favourite(&database, ada, "sad-dog", NOW).await.unwrap();
+        let listed = favourites(&database, ada).await.unwrap();
+        add_favourite(&database, ada, "happy-cat", NOW)
+            .await
+            .unwrap();
+        let after_restarring = favourites(&database, ada).await.unwrap();
+        database.close().await;
+
+        assert_eq!(listed, ["sad-dog", "happy-cat"]);
+        assert_eq!(after_restarring, ["happy-cat", "sad-dog"]);
+    }
 }
