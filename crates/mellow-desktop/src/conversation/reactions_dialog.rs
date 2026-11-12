@@ -1,7 +1,8 @@
 //! Who reacted with what (`ReactionsDialog.svelte`, DESIGN.md §5.4): one emoji at a time as tabs,
 //! and the people who reacted with it, asked from the instance (the web's one page of 100) again
 //! whenever the emoji or its count changes, so reactions added or taken back meanwhile show.
-//! Moderators remove someone's reaction from here; focus then goes to the next person's Remove.
+//! Moderators remove someone's reaction from here; focus then goes to the next person's Remove,
+//! or to the dialog when nobody is left.
 
 use std::collections::HashMap;
 
@@ -52,6 +53,11 @@ pub(super) struct ReactionsDialogBody {
     remove_focus: HashMap<Snowflake, FocusHandle>,
     /// Where the removed person's Remove button was, until the list reloads without them.
     removed_row_index: Option<usize>,
+    /// Set when that reload arrives: the next frame, which has every row's handle, focuses there.
+    focus_row_after_reload: Option<usize>,
+    /// Where focus lands when no Remove button is left (the web falls back to the tab): the
+    /// emoji's last reaction went, or every reaction did.
+    body_focus: FocusHandle,
     error_message: Option<SharedString>,
     _session_changes: Subscription,
 }
@@ -80,6 +86,8 @@ impl ReactionsDialogBody {
             can_remove_others,
             remove_focus: HashMap::new(),
             removed_row_index: None,
+            focus_row_after_reload: None,
+            body_focus: cx.focus_handle().tab_stop(false),
             error_message: None,
             _session_changes: session_changes,
         }
@@ -126,23 +134,31 @@ impl ReactionsDialogBody {
                 failure,
                 move |answer, cx| {
                     let _ = view.update(cx, |view, cx| {
-                        if view.question != question {
-                            return;
+                        if view.question == question {
+                            view.show_who_reacted(answer, cx);
                         }
-                        match answer {
-                            Ok(users) => {
-                                view.users = users;
-                                view.load_state = LoadState::Loaded;
-                                view.focus_after_removal(cx);
-                            }
-                            Err(_) => view.load_state = LoadState::Failed,
-                        }
-                        cx.notify();
                     });
                 },
                 cx,
             );
         });
+    }
+
+    /// The people asked for; after a removal, the next frame moves focus (`focus_after_removal`).
+    fn show_who_reacted(
+        &mut self,
+        answer: Result<Vec<PublicUser>, String>,
+        cx: &mut Context<Self>,
+    ) {
+        match answer {
+            Ok(users) => {
+                self.users = users;
+                self.load_state = LoadState::Loaded;
+            }
+            Err(_) => self.load_state = LoadState::Failed,
+        }
+        self.focus_row_after_reload = self.removed_row_index.take();
+        cx.notify();
     }
 
     /// A moderator removes `user_id`'s reaction with `key`; the gateway's event updates the count,
@@ -155,46 +171,42 @@ impl ReactionsDialogBody {
         let view = cx.entity().downgrade();
         let summary = strings(cx).reactions().remove_failed().to_owned();
         self.session.update(cx, |session, cx| {
-            session.send_settings_change(
-                "remove a reaction",
+            session.remove_user_reaction(
+                channel_id,
+                message_id,
+                key,
+                user_id,
                 summary,
-                move |rest| async move {
-                    rest.remove_user_reaction(channel_id, message_id, &key, user_id)
-                        .await
+                move |sentence, cx| {
+                    let _ = view.update(cx, |view, cx| {
+                        view.removed_row_index = None;
+                        view.error_message = Some(sentence.into());
+                        cx.notify();
+                    });
                 },
                 cx,
-                move |outcome, cx| {
-                    if let Err(sentence) = outcome {
-                        let _ = view.update(cx, |view, cx| {
-                            view.removed_row_index = None;
-                            view.error_message = Some(sentence.into());
-                            cx.notify();
-                        });
-                    }
-                },
             );
         });
         cx.notify();
     }
 
-    /// The next person's Remove button, or the previous one at the end; nobody left, focus
-    /// stays in the dialog.
-    fn focus_after_removal(&mut self, cx: &mut Context<Self>) {
-        let Some(index) = self.removed_row_index.take() else {
+    /// After a removal, the next person's Remove button, or the previous one at the end; nobody
+    /// left, the dialog itself, so focus never leaves it.
+    fn focus_after_removal(
+        &mut self,
+        remove_focus: &HashMap<Snowflake, FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(index) = self.focus_row_after_reload.take() else {
             return;
         };
-        let Some(next) = self
+        let next = self
             .users
             .get(index.min(self.users.len().saturating_sub(1)))
-            .and_then(|user| self.remove_focus.get(&user.id).cloned())
-        else {
-            return;
-        };
-        cx.defer(move |cx| {
-            if let Some(window) = cx.active_window() {
-                let _ = window.update(cx, |_, window, cx| window.focus(&next, cx));
-            }
-        });
+            .and_then(|user| remove_focus.get(&user.id))
+            .unwrap_or(&self.body_focus);
+        window.focus(next, cx);
     }
 
     fn render_people(&mut self, window: &mut Window, cx: &mut Context<Self>) -> gpui::AnyElement {
@@ -210,7 +222,11 @@ impl ReactionsDialogBody {
                 .id("reactions-loading")
                 .role(Role::Status)
                 .into_any_element(),
-            LoadState::Failed => note(reactions.who_failed()).into_any_element(),
+            LoadState::Failed => {
+                // No Remove button is drawn: a pending focus falls back to the dialog.
+                self.focus_after_removal(&HashMap::new(), window, cx);
+                note(reactions.who_failed()).into_any_element()
+            }
             LoadState::Loaded => {
                 let selected_key = self.asked.as_ref().map(|(key, _)| key.clone());
                 let can_remove = self.can_remove_others && selected_key.is_some();
@@ -277,6 +293,7 @@ impl ReactionsDialogBody {
                             )
                             .children(remove_button)
                     }));
+                self.focus_after_removal(&remove_focus, window, cx);
                 self.remove_focus = remove_focus;
                 list.into_any_element()
             }
@@ -316,7 +333,11 @@ impl Render for ReactionsDialogBody {
             .and_then(|key| reactions.iter().position(|reaction| reaction.emoji == *key))
             .unwrap_or(0);
         let Some(selected) = reactions.get(selected_index) else {
+            if self.removed_row_index.take().is_some() {
+                window.focus(&self.body_focus, cx);
+            }
             return with_type(div(), TYPE_BODY)
+                .track_focus(&self.body_focus)
                 .text_color(color(theme(cx).color_text_muted))
                 .child(catalogue.reactions().no_reactions())
                 .into_any_element();
@@ -342,6 +363,7 @@ impl Render for ReactionsDialogBody {
             .collect();
         let view = cx.entity().downgrade();
         div()
+            .track_focus(&self.body_focus)
             .flex()
             .flex_col()
             .gap(length(COMPONENT_DIALOG_SECTION_GAP))
@@ -366,3 +388,7 @@ impl Render for ReactionsDialogBody {
             .into_any_element()
     }
 }
+
+#[cfg(test)]
+#[path = "reactions_dialog_tests.rs"]
+mod tests;
