@@ -91,21 +91,6 @@ pub enum VoiceSignal {
     SessionEnded,
 }
 
-/// Whether the voice session reads `event` (`VoiceSession::handle_gateway_event`'s list).
-fn is_voice_session_event(event: &GatewayEvent) -> bool {
-    matches!(
-        event,
-        GatewayEvent::VoiceSessionDescription { .. }
-            | GatewayEvent::VoiceJoinRefused { .. }
-            | GatewayEvent::VoiceSlotAssigned { .. }
-            | GatewayEvent::VoiceVideoLayers { .. }
-            | GatewayEvent::VoiceVideoRefused { .. }
-            | GatewayEvent::VoiceVideoPaused { .. }
-            | GatewayEvent::VoiceDisconnected { .. }
-            | GatewayEvent::VoiceStateDelete { .. }
-    )
-}
-
 /// A message new to this session, once the state took it in (the web's `onIncomingMessage`):
 /// the notifier decides whether to tell.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -377,7 +362,7 @@ impl Session {
                     {
                         incoming_messages.push(message.clone());
                     }
-                    if is_voice_session_event(&event) {
+                    if mellow_media::is_voice_session_event(&event) {
                         voice_signals.push(VoiceSignal::Event(Box::new(event.clone())));
                     }
                     self.state.apply_event(event, now)
