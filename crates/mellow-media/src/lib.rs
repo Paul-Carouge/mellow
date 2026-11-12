@@ -56,9 +56,9 @@ pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
-    AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, PlaybackProbe,
-    PlaybackStream, RunningStream, StreamFormat, SyntheticAudioDevices, SyntheticSound,
-    SystemAudioDevices,
+    AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, DeviceListing,
+    PlaybackProbe, PlaybackStream, RunningStream, StreamFormat, SyntheticAudioDevices,
+    SyntheticSound, SystemAudioDevices,
 };
 pub use enhancement::{
     EqualizerDecibels, MAXIMUM_EQUALIZER_DECIBELS, MINIMUM_EQUALIZER_DECIBELS,

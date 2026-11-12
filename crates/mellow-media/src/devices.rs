@@ -69,6 +69,9 @@ impl std::fmt::Debug for PlaybackStream {
     }
 }
 
+/// One direction's devices, or why they could not be listed.
+pub type DeviceListing = Result<Vec<AudioDeviceDescription>, AudioDeviceError>;
+
 /// Lists and opens audio devices. Opened on the engine's audio thread, which keeps the streams.
 pub trait AudioDevices: Send {
     /// # Errors
@@ -77,6 +80,11 @@ pub trait AudioDevices: Send {
     /// # Errors
     /// The audio system cannot list devices.
     fn output_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError>;
+    /// Both lists at once, `(inputs, outputs)`; one connection to the audio system where listing
+    /// opens one (`PipeWire`). Either list fails on its own.
+    fn input_and_output_devices(&self) -> (DeviceListing, DeviceListing) {
+        (self.input_devices(), self.output_devices())
+    }
     /// Opens the microphone `device_id`, or the default one when `None` or no longer there.
     ///
     /// # Errors
@@ -106,8 +114,12 @@ fn ring_buffer_capacity(format: StreamFormat) -> usize {
 ///   entry stands for them), every sink again as a capture source (it would record what the sink
 ///   plays; sinks are its only duplex nodes) and other apps' playback streams (outputs only), so
 ///   microphones are its input nodes and outputs its duplex ones.
+///   Mellow's own streams (cpal names them `cpal-capture-<pid>` and `cpal-playback-<pid>`) are
+///   nodes too: the test's or the call's microphone would list itself as one.
 /// - cpal's ALSA host (no `PipeWire` daemon) adds every PCM hint and the raw `hw:` and `plughw:`
-///   devices, often held exclusively; one `sysdefault:` entry per card is what a person picks.
+///   devices, often held exclusively; one `sysdefault:` entry per card is what a person picks,
+///   plus `pulse` (the cards through a running `PulseAudio`, which holds them) and the `hdmi:`
+///   outputs (screens, which `sysdefault:` leaves out).
 ///
 /// shortcut: another app's recording stream is an input node too and stays listed while it
 /// records, cpal not telling it from a microphone; filter it once cpal exposes the media class.
@@ -119,10 +131,14 @@ fn is_listed_device(
 ) -> bool {
     use cpal::DeviceDirection::{Duplex, Input, Output};
     match host_name {
+        "PipeWire" if device_id.starts_with("cpal-") => false,
         "PipeWire" if is_input => direction == Input && device_id != "input_default",
         "PipeWire" => direction == Duplex && device_id != "sink_default",
         "ALSA" => {
-            device_id.starts_with("sysdefault:")
+            let is_card = device_id.starts_with("sysdefault:")
+                || device_id == "pulse"
+                || (!is_input && device_id.starts_with("hdmi:"));
+            is_card
                 && match direction {
                     Input => is_input,
                     Output => !is_input,
@@ -143,8 +159,8 @@ mod system {
     use cpal::{FromSample, SampleFormat, SizedSample};
 
     use super::{
-        AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, PlaybackStream,
-        RunningStream, StreamFormat, is_listed_device, ring_buffer_capacity,
+        AudioDeviceDescription, AudioDeviceError, AudioDevices, CaptureStream, DeviceListing,
+        PlaybackStream, RunningStream, StreamFormat, is_listed_device, ring_buffer_capacity,
     };
 
     /// The system's audio devices: `CoreAudio`, WASAPI, `PipeWire` (ALSA without its daemon).
@@ -168,15 +184,10 @@ mod system {
         devices
             .filter_map(|device| {
                 let id = device.id().ok()?;
-                let description = device.description().ok();
-                let direction = description
-                    .as_ref()
-                    .map_or(cpal::DeviceDirection::Unknown, |description| {
-                        description.direction()
-                    });
-                if !is_listed_device(id.host().name(), id.id(), direction, is_input) {
+                if !is_listed_device(id.host().name(), id.id(), direction_of(&device), is_input) {
                     return None;
                 }
+                let description = device.description().ok();
                 // ALSA describes a device on two lines: its name, then what kind of PCM it is.
                 let name = description.map_or_else(
                     || device.to_string(),
@@ -198,15 +209,30 @@ mod system {
             .collect()
     }
 
-    /// The device with `device_id`, or the default when absent or gone (unplugged since).
+    fn direction_of(device: &cpal::Device) -> cpal::DeviceDirection {
+        device
+            .description()
+            .map_or(cpal::DeviceDirection::Unknown, |description| {
+                description.direction()
+            })
+    }
+
+    /// The device with `device_id`, or the default when absent, gone (unplugged since) or one the
+    /// settings do not list: a stored sink monitor would otherwise send what the computer plays
+    /// while the settings read "Unplugged device".
     fn chosen_device(
         host: &cpal::Host,
         device_id: Option<&str>,
+        is_input: bool,
         default: impl FnOnce() -> Option<cpal::Device>,
     ) -> Result<cpal::Device, AudioDeviceError> {
         device_id
             .and_then(|id| id.parse::<cpal::DeviceId>().ok())
-            .and_then(|id| host.device_by_id(&id))
+            .and_then(|id| {
+                host.device_by_id(&id).filter(|device| {
+                    is_listed_device(id.host().name(), id.id(), direction_of(device), is_input)
+                })
+            })
             .or_else(default)
             .ok_or(AudioDeviceError::NoDevice)
     }
@@ -299,30 +325,41 @@ mod system {
         })
     }
 
+    fn input_devices_of(host: &cpal::Host) -> DeviceListing {
+        let default_id = host
+            .default_input_device()
+            .and_then(|device| device.id().ok());
+        let devices = host.input_devices().map_err(|error| system_error(&error))?;
+        Ok(describe(devices, default_id.as_ref(), true))
+    }
+
+    fn output_devices_of(host: &cpal::Host) -> DeviceListing {
+        let default_id = host
+            .default_output_device()
+            .and_then(|device| device.id().ok());
+        let devices = host
+            .output_devices()
+            .map_err(|error| system_error(&error))?;
+        Ok(describe(devices, default_id.as_ref(), false))
+    }
+
     impl AudioDevices for SystemAudioDevices {
-        fn input_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError> {
-            let host = cpal::default_host();
-            let default_id = host
-                .default_input_device()
-                .and_then(|device| device.id().ok());
-            let devices = host.input_devices().map_err(|error| system_error(&error))?;
-            Ok(describe(devices, default_id.as_ref(), true))
+        fn input_devices(&self) -> DeviceListing {
+            input_devices_of(&cpal::default_host())
         }
 
-        fn output_devices(&self) -> Result<Vec<AudioDeviceDescription>, AudioDeviceError> {
+        fn output_devices(&self) -> DeviceListing {
+            output_devices_of(&cpal::default_host())
+        }
+
+        fn input_and_output_devices(&self) -> (DeviceListing, DeviceListing) {
             let host = cpal::default_host();
-            let default_id = host
-                .default_output_device()
-                .and_then(|device| device.id().ok());
-            let devices = host
-                .output_devices()
-                .map_err(|error| system_error(&error))?;
-            Ok(describe(devices, default_id.as_ref(), false))
+            (input_devices_of(&host), output_devices_of(&host))
         }
 
         fn open_capture(&self, device_id: Option<&str>) -> Result<CaptureStream, AudioDeviceError> {
             let host = cpal::default_host();
-            let device = chosen_device(&host, device_id, || host.default_input_device())?;
+            let device = chosen_device(&host, device_id, true, || host.default_input_device())?;
             let supported = device
                 .default_input_config()
                 .map_err(|error| system_error(&error))?;
@@ -341,7 +378,7 @@ mod system {
             device_id: Option<&str>,
         ) -> Result<PlaybackStream, AudioDeviceError> {
             let host = cpal::default_host();
-            let device = chosen_device(&host, device_id, || host.default_output_device())?;
+            let device = chosen_device(&host, device_id, false, || host.default_output_device())?;
             let supported = device
                 .default_output_config()
                 .map_err(|error| system_error(&error))?;
@@ -589,6 +626,22 @@ mod tests {
     }
 
     #[test]
+    fn pipewire_leaves_out_mellow_s_own_streams() {
+        assert!(!is_listed_device(
+            "PipeWire",
+            "cpal-capture-4242",
+            Input,
+            true
+        ));
+        assert!(!is_listed_device(
+            "PipeWire",
+            "cpal-playback-4242",
+            Output,
+            false
+        ));
+    }
+
+    #[test]
     fn pipewire_s_default_nodes_are_the_settings_default_entry() {
         assert!(!is_listed_device("PipeWire", "input_default", Input, true));
         assert!(!is_listed_device("PipeWire", "sink_default", Duplex, false));
@@ -619,6 +672,20 @@ mod tests {
             "sysdefault:CARD=Mic",
             Input,
             false
+        ));
+        assert!(is_listed_device("ALSA", "pulse", Duplex, true));
+        assert!(is_listed_device("ALSA", "pulse", Duplex, false));
+        assert!(is_listed_device(
+            "ALSA",
+            "hdmi:CARD=HDMI,DEV=0",
+            Output,
+            false
+        ));
+        assert!(!is_listed_device(
+            "ALSA",
+            "hdmi:CARD=HDMI,DEV=0",
+            Duplex,
+            true
         ));
         for raw in [
             "hw:CARD=0,DEV=0",
