@@ -287,6 +287,35 @@ fn host_of(url: &str) -> Option<String> {
     Some(host.strip_suffix('.').unwrap_or(host).to_lowercase())
 }
 
+/// The largest avatar or banner the instance takes (the web's `MAXIMUM_PROFILE_IMAGE_BYTES`).
+pub const MAXIMUM_PROFILE_IMAGE_BYTES: u64 = 8 * 1024 * 1024;
+/// The picture formats the instance takes for an avatar or a banner, by extension.
+const PROFILE_PICTURE_EXTENSIONS: [&str; 5] = ["png", "jpg", "jpeg", "gif", "webp"];
+
+/// Why a chosen file cannot become an avatar or banner, checked before sending it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProfileImageFileProblem {
+    NotAPicture,
+    TooLarge,
+}
+
+/// The web's `profileImageFileProblem`, by extension where the web reads the browser's type: a
+/// file without one is left to the instance, as the web leaves an unknown type.
+#[must_use]
+pub fn profile_image_file_problem(
+    file_name: &str,
+    size_bytes: u64,
+) -> Option<ProfileImageFileProblem> {
+    let extension = std::path::Path::new(file_name)
+        .extension()
+        .map(|extension| extension.to_string_lossy().to_lowercase());
+    if extension.is_some_and(|extension| !PROFILE_PICTURE_EXTENSIONS.contains(&extension.as_str()))
+    {
+        return Some(ProfileImageFileProblem::NotAPicture);
+    }
+    (size_bytes > MAXIMUM_PROFILE_IMAGE_BYTES).then_some(ProfileImageFileProblem::TooLarge)
+}
+
 /// Wrong codes older than this no longer warn on the Security page (thirty days).
 const RECENT_WRONG_CODE_MILLISECONDS: u64 = 30 * 24 * 60 * 60 * 1000;
 
@@ -545,6 +574,24 @@ mod tests {
                 label: None,
                 icon_id: Some(Snowflake::from_raw(950)),
             }]
+        );
+    }
+
+    #[test]
+    fn refuses_files_that_are_not_pictures_or_too_large_before_sending_them() {
+        assert_eq!(profile_image_file_problem("me.PNG", 1024), None);
+        assert_eq!(profile_image_file_problem("scan", 1024), None);
+        assert_eq!(
+            profile_image_file_problem("notes.pdf", 1024),
+            Some(ProfileImageFileProblem::NotAPicture)
+        );
+        assert_eq!(
+            profile_image_file_problem("me.webp", MAXIMUM_PROFILE_IMAGE_BYTES + 1),
+            Some(ProfileImageFileProblem::TooLarge)
+        );
+        assert_eq!(
+            profile_image_file_problem("me.gif", MAXIMUM_PROFILE_IMAGE_BYTES),
+            None
         );
     }
 
