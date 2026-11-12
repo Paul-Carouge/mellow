@@ -9,8 +9,8 @@ use gpui::{
 
 use super::{
     Button, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuOrigin, ModalDialog,
-    ModalDialogEvent, RangeBounds, RangeField, Switch, Tabs, bind_tab_navigation,
-    with_tab_navigation,
+    ModalDialogEvent, RangeBounds, RangeField, SettingsNavEntry, SettingsNavItem, SettingsSheet,
+    SettingsSheetLabels, Switch, Tabs, bind_tab_navigation, with_tab_navigation,
 };
 use crate::theme::ActiveTheme;
 use crate::theme::icons::IconName;
@@ -487,4 +487,91 @@ fn a_slider_drag_follows_the_pointer_outside_the_track_until_release(cx: &mut Te
     );
     cx.run_until_parked();
     assert_eq!(value(cx), 200.0, "a release ends the drag");
+}
+
+struct SettingsSheetHarness {
+    root: FocusHandle,
+    container: FocusHandle,
+    page: FocusHandle,
+    items: [FocusHandle; 3],
+    chosen: Option<usize>,
+    close_requests: usize,
+}
+
+impl Render for SettingsSheetHarness {
+    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        let choose_entity = cx.entity();
+        let close_entity = cx.entity();
+        let entries = ["Overview", "Roles", "Delete server"]
+            .into_iter()
+            .zip(&self.items)
+            .enumerate()
+            .map(|(index, (label, focus_handle))| {
+                SettingsNavEntry::Item(SettingsNavItem {
+                    label: label.into(),
+                    focus_handle: focus_handle.clone(),
+                    is_selected: Some(index) == self.chosen,
+                    is_danger: index == 2,
+                })
+            })
+            .collect();
+        with_tab_navigation(div().size_full(), &self.root).child(
+            SettingsSheet::new(
+                "sheet",
+                SettingsSheetLabels {
+                    label: "Server settings, Club".into(),
+                    title: "Server settings".into(),
+                    back: "Back".into(),
+                    close: "Close settings".into(),
+                    escape_key: "Esc".into(),
+                },
+                self.container.clone(),
+                self.page.clone(),
+            )
+            .entries(entries)
+            .page("Overview", div().into_any_element())
+            .on_choose(move |index, _, cx| {
+                choose_entity.update(cx, |harness, cx| {
+                    harness.chosen = Some(index);
+                    cx.notify();
+                });
+            })
+            .on_request_close(move |_, cx| {
+                close_entity.update(cx, |harness, _| harness.close_requests += 1);
+            }),
+        )
+    }
+}
+
+#[gpui::test]
+fn arrows_move_between_settings_sections_enter_chooses_and_escape_asks_to_close(
+    cx: &mut TestAppContext,
+) {
+    set_up(cx);
+    let (harness, cx) = cx.add_window_view(|_, cx| SettingsSheetHarness {
+        root: cx.focus_handle(),
+        container: cx.focus_handle(),
+        page: cx.focus_handle(),
+        items: std::array::from_fn(|_| cx.focus_handle()),
+        chosen: None,
+        close_requests: 0,
+    });
+    let first = harness.read_with(cx, |harness, _| harness.items[0].clone());
+    activate(cx, &first);
+    press(cx, "down");
+    press(cx, "enter");
+    assert_eq!(harness.read_with(cx, |harness, _| harness.chosen), Some(1));
+    press(cx, "up");
+    press(cx, "up");
+    press(cx, "space");
+    assert_eq!(
+        harness.read_with(cx, |harness, _| harness.chosen),
+        Some(2),
+        "Up wraps from the first section to the last item"
+    );
+    press(cx, "escape");
+    assert_eq!(
+        harness.read_with(cx, |harness, _| harness.close_requests),
+        1
+    );
 }

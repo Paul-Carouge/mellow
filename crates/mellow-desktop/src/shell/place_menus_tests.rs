@@ -1,37 +1,16 @@
 //! The menus of places headless: opened by the keyboard and the pointer, and what their items do.
 
-use gpui::{
-    Entity, InputEvent as _, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext,
-    WindowAppearance, px, size,
-};
+use gpui::{Entity, InputEvent as _, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext, px};
 use mellow_client_core::shared_logic::notification_settings::{
     MuteEnd, NotificationSettings, PlaceNotificationSettings, with_place_settings,
 };
 
 use super::*;
-use crate::components::bind_tab_navigation;
-use crate::shell::bind_shell_keys;
-use crate::shell_fixtures::{GUILD_RUST, ME, RUST_GENERAL, RUST_TALK, sample_state};
-use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
-use crate::theme::ActiveTheme;
+use crate::shell_fixtures::{
+    GUILD_RUST, ME, RUST_GENERAL, RUST_TALK, open_shell, sample_state,
+    sample_state_administering_rust,
+};
 use crate::theme::tokens::BREAKPOINT_NAVIGATOR;
-
-fn open_shell(cx: &mut TestAppContext, width: f32) -> (Entity<DuskShell>, &mut VisualTestContext) {
-    cx.update(|cx| {
-        gpui_component::init(cx);
-        cx.set_global(ActiveStrings(&ENGLISH));
-        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
-        bind_tab_navigation(cx);
-        bind_shell_keys(cx);
-    });
-    let session = cx.new(|_| crate::session::Session::signed_out_kept_in_memory_only());
-    session.update(cx, |session, _| *session.state_mut() = sample_state());
-    let (shell, cx) = cx.add_window_view(|window, cx| DuskShell::new(session, window, cx));
-    cx.simulate_resize(size(px(width), px(800.0)));
-    cx.update(|window, _| window.activate_window());
-    cx.run_until_parked();
-    (shell, cx)
-}
 
 /// A full key press: GPUI activates a focused control on the release, as browsers do.
 fn press(cx: &mut VisualTestContext, key: &'static str) {
@@ -89,7 +68,7 @@ fn the_menu_key_and_shift_f10_open_menus_but_not_with_other_modifiers() {
 
 #[gpui::test]
 fn shift_f10_on_a_server_opens_its_menu_and_mute_saves_through_the_dialog(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, 1280.0);
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     // F6 lands on the open server in the rail.
     press(cx, "f6");
     press(cx, "shift-f10");
@@ -124,7 +103,7 @@ fn shift_f10_on_a_server_opens_its_menu_and_mute_saves_through_the_dialog(cx: &m
 
 #[gpui::test]
 fn unmute_on_a_muted_channel_ends_the_mute_and_says_so(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, 1280.0);
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     cx.update(|_, cx| {
         change_preferences(cx, |preferences| {
             let muted = with_place_settings(
@@ -151,7 +130,7 @@ fn unmute_on_a_muted_channel_ends_the_mute_and_says_so(cx: &mut TestAppContext) 
 
 #[gpui::test]
 fn a_category_copies_its_id(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, 1280.0);
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     open_menu_at_a_point(&shell, PlaceMenuTarget::Category(RUST_TALK), cx);
     press(cx, "down");
     press(cx, "enter");
@@ -161,7 +140,7 @@ fn a_category_copies_its_id(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn leave_server_comes_last_and_asks_first(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, 1280.0);
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     open_menu_at_a_point(&shell, PlaceMenuTarget::Server(GUILD_RUST), cx);
     press(cx, "end");
     press(cx, "enter");
@@ -174,7 +153,7 @@ fn leave_server_comes_last_and_asks_first(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn a_narrow_window_folds_go_to_into_more_options(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, BREAKPOINT_NAVIGATOR - 1.0);
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
     cx.update(|window, cx| {
         shell.update(cx, |shell, cx| shell.toggle_chat_header_menu(window, cx));
     });
@@ -186,7 +165,7 @@ fn a_narrow_window_folds_go_to_into_more_options(cx: &mut TestAppContext) {
 
 #[gpui::test]
 fn more_options_records_where_its_button_is_for_the_menu_to_open_under_it(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, BREAKPOINT_NAVIGATOR - 1.0);
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
     let header = cx
         .debug_bounds("chat-header")
         .expect("the chat header is drawn");
@@ -201,7 +180,7 @@ fn more_options_records_where_its_button_is_for_the_menu_to_open_under_it(cx: &m
 
 #[gpui::test]
 fn more_options_pressed_again_closes_its_menu(cx: &mut TestAppContext) {
-    let (shell, cx) = open_shell(cx, BREAKPOINT_NAVIGATOR - 1.0);
+    let (shell, cx) = open_shell(cx, sample_state(), BREAKPOINT_NAVIGATOR - 1.0);
     let button = shell
         .read_with(cx, |shell, _| shell.place_menus.more_options_bounds.get())
         .expect("the button's place is recorded");
@@ -211,4 +190,66 @@ fn more_options_pressed_again_closes_its_menu(cx: &mut TestAppContext) {
     cx.simulate_click(button.center(), gpui::Modifiers::default());
     cx.run_until_parked();
     assert_eq!(open_target(&shell, cx), None);
+}
+
+/// The labels of `target`'s menu items, in order.
+fn menu_labels(
+    shell: &Entity<DuskShell>,
+    target: PlaceMenuTarget,
+    cx: &mut VisualTestContext,
+) -> Vec<String> {
+    shell.update(cx, |shell, cx| {
+        shell
+            .place_menu_entries(target, cx)
+            .map(|(_, entries)| {
+                entries
+                    .into_iter()
+                    .filter_map(|entry| match entry {
+                        MenuEntry::Item(item) => Some(item.label.to_string()),
+                        MenuEntry::Separator => None,
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    })
+}
+
+#[gpui::test]
+fn an_administrator_reaches_the_settings_from_the_menus(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state_administering_rust(), 1280.0);
+    let server = menu_labels(&shell, PlaceMenuTarget::Server(GUILD_RUST), cx);
+    assert!(
+        server.iter().any(|label| label == "Server settings"),
+        "{server:?}"
+    );
+    let channel = menu_labels(&shell, PlaceMenuTarget::Channel(RUST_GENERAL), cx);
+    assert!(
+        channel.iter().any(|label| label == "Edit channel"),
+        "{channel:?}"
+    );
+    let more_options = menu_labels(&shell, PlaceMenuTarget::ChatHeader, cx);
+    assert!(
+        more_options.iter().any(|label| label == "Channel settings"),
+        "{more_options:?}"
+    );
+}
+
+#[gpui::test]
+fn a_plain_member_gets_no_settings_in_the_menus(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    let server = menu_labels(&shell, PlaceMenuTarget::Server(GUILD_RUST), cx);
+    assert!(
+        !server.iter().any(|label| label == "Server settings"),
+        "{server:?}"
+    );
+    let channel = menu_labels(&shell, PlaceMenuTarget::Channel(RUST_GENERAL), cx);
+    assert!(
+        !channel.iter().any(|label| label == "Edit channel"),
+        "{channel:?}"
+    );
+    let more_options = menu_labels(&shell, PlaceMenuTarget::ChatHeader, cx);
+    assert!(
+        !more_options.iter().any(|label| label == "Channel settings"),
+        "{more_options:?}"
+    );
 }

@@ -19,6 +19,7 @@ pub mod quick_switcher;
 mod regions;
 mod resize_handle;
 mod server_rail;
+mod settings_screens;
 mod user_card;
 
 use std::cell::Cell;
@@ -214,6 +215,8 @@ pub struct DuskShell {
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// The menus of servers, channels, categories and the chat header, and their dialogs.
     place_menus: place_menus::PlaceMenus,
+    /// The server or channel settings over the shell.
+    open_settings: Option<settings_screens::OpenSettings>,
     /// The profile a member row opened in the side sheet.
     member_profile: member_profile::MemberProfileState,
     /// Where the user card is drawn, for the status menu to open across it.
@@ -276,6 +279,7 @@ impl DuskShell {
             notification_settings: None,
             custom_status_dialog: None,
             place_menus: place_menus::PlaceMenus::default(),
+            open_settings: None,
             member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
@@ -412,6 +416,10 @@ impl DuskShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The settings sheet covers the shell: its shortcuts wait until it closes.
+        if self.is_settings_screen_open() {
+            return;
+        }
         let state = self.state(cx);
         if let Some(channel_id) = self
             .navigation
@@ -422,6 +430,9 @@ impl DuskShell {
     }
 
     fn step_server(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_settings_screen_open() {
+            return;
+        }
         let state = self.state(cx);
         if let Some(guild_id) = self.navigation.adjacent_server(state, direction) {
             self.open_place(guild_id, None, window, cx);
@@ -478,7 +489,7 @@ impl DuskShell {
         let Some(place_id) = self.member_sheet_place_id(cx) else {
             return;
         };
-        if self.quick_switcher.is_some() {
+        if self.quick_switcher.is_some() || self.is_settings_screen_open() {
             return;
         }
         if window_width_at_default_zoom(window) >= BREAKPOINT_SIDE_SHEET {
@@ -579,7 +590,7 @@ impl DuskShell {
             cx.notify();
             return;
         }
-        if self.is_member_overlay_open {
+        if self.is_member_overlay_open || self.is_settings_screen_open() {
             return;
         }
         // Closed first, so the switcher records the drawer's opener, not the drawer.
@@ -1106,6 +1117,7 @@ impl Render for DuskShell {
             .when(self.is_member_overlay_open, |root| {
                 root.child(self.render_member_overlay(is_full_bleed, window, cx))
             })
+            .children(self.render_settings_screen())
             .when_some(self.quick_switcher.as_ref(), |root, (switcher, _)| {
                 root.child(switcher.clone())
             })

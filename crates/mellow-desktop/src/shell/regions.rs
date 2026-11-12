@@ -321,14 +321,18 @@ impl DuskShell {
         }
     }
 
-    /// `F6` and `Shift+F6`. Menus, dialogs and the quick switcher keep focus while open.
+    /// `F6` and `Shift+F6`. Menus, dialogs, the quick switcher and the settings keep focus while
+    /// open.
     pub(super) fn move_to_region(
         &mut self,
         direction: Direction,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        if self.quick_switcher.is_some() || self.status_menu.is_some() {
+        if self.quick_switcher.is_some()
+            || self.status_menu.is_some()
+            || self.is_settings_screen_open()
+        {
             return;
         }
         let current = self.focused_region(window, cx);

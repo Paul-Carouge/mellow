@@ -184,18 +184,6 @@ fn holds_any(held: Permissions, wanted: Permissions) -> bool {
     held.contains(Permissions::ADMINISTRATOR) || held.intersects(wanted)
 }
 
-/// Whether the server settings have a page for the reader (`canOpenServerSettings`): the owner
-/// always ("Delete server" is theirs alone), anyone else with one section's permission.
-fn can_open_server_settings(guild: &Guild, user_id: Option<Snowflake>) -> bool {
-    let any_section = Permissions::MANAGE_GUILD
-        | Permissions::MANAGE_ROLES
-        | Permissions::MANAGE_EXPRESSIONS
-        | Permissions::KICK_MEMBERS
-        | Permissions::BAN_MEMBERS
-        | Permissions::VIEW_AUDIT_LOG;
-    user_id == Some(guild.owner_id) || holds_any(guild.my_permissions, any_section)
-}
-
 /// What the reader may do with `guild`, from its permission snapshot (`serverMenuFactsOf`).
 #[must_use]
 pub fn server_menu_facts_of(
@@ -205,7 +193,7 @@ pub fn server_menu_facts_of(
 ) -> ServerMenuFacts {
     ServerMenuFacts {
         can_invite_people: holds_any(guild.my_permissions, Permissions::CREATE_INVITE),
-        can_open_settings: can_open_server_settings(guild, user_id),
+        can_open_settings: super::server_settings::can_open_server_settings(guild, user_id),
         can_create_channels: holds_any(guild.my_permissions, Permissions::MANAGE_CHANNELS),
         can_leave: user_id != Some(guild.owner_id),
         is_muted,

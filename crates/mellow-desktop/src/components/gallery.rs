@@ -24,8 +24,9 @@ use super::{
     Avatar, Button, ButtonSize, ButtonVariant, ChoiceGroup, ChoiceOption, ContextMenu, GroupAvatar,
     IconButton, IconButtonTone, MentionBadge, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
     ModalDialog, ModalDialogEvent, ProgressMeter, RangeField, RoleChips, SettingsListStatus,
-    ShownStatus, StatusIndicator, Switch, Tabs, TextField, Tooltip, UnsavedChangesBar,
-    with_tab_navigation, with_type,
+    SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels, ShownStatus,
+    StatusIndicator, Switch, Tabs, TextField, Tooltip, UnsavedChangesBar, with_tab_navigation,
+    with_type,
 };
 use crate::composer::{Composer, ReplyTarget};
 use crate::messages::samples::{MessageSamples, SampleActionHandler};
@@ -68,6 +69,11 @@ pub struct ComponentGallery {
     composer: Entity<Composer>,
     menu: Option<(Entity<ContextMenu>, Subscription)>,
     dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    /// The sample settings sheet's chosen section, while it is open.
+    settings_section: Option<usize>,
+    settings_nav_focus: [FocusHandle; SAMPLE_SETTINGS_SECTIONS.len()],
+    settings_container_focus: FocusHandle,
+    settings_page_focus: FocusHandle,
     menu_button_focus: FocusHandle,
     root_focus: FocusHandle,
     messages: MessageSamples,
@@ -139,6 +145,10 @@ impl ComponentGallery {
             composer,
             menu: None,
             dialog: None,
+            settings_section: None,
+            settings_nav_focus: std::array::from_fn(|_| cx.focus_handle()),
+            settings_container_focus: cx.focus_handle(),
+            settings_page_focus: cx.focus_handle(),
             menu_button_focus: cx.focus_handle().tab_stop(true),
             root_focus: cx.focus_handle(),
             messages: MessageSamples::new(),
@@ -213,6 +223,83 @@ impl ComponentGallery {
         cx.notify();
     }
 
+    fn open_settings_sheet(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.settings_section = Some(0);
+        window.focus(&self.settings_nav_focus[0], cx);
+        cx.notify();
+    }
+
+    /// The sample sheet: three sections and a danger item that only closes it.
+    fn settings_sheet(&self, window: &Window, cx: &Context<Self>) -> Option<SettingsSheet> {
+        let section = self.settings_section?;
+        let entity = cx.entity();
+        let mut entries = vec![SettingsNavEntry::Heading("Rust Lyon".into())];
+        for (index, (label, focus_handle)) in SAMPLE_SETTINGS_SECTIONS
+            .iter()
+            .zip(&self.settings_nav_focus)
+            .enumerate()
+        {
+            if index == SAMPLE_SETTINGS_SECTIONS.len() - 1 {
+                entries.push(SettingsNavEntry::Separator);
+            }
+            entries.push(SettingsNavEntry::Item(SettingsNavItem {
+                label: (*label).into(),
+                focus_handle: focus_handle.clone(),
+                is_selected: index == section,
+                is_danger: index == SAMPLE_SETTINGS_SECTIONS.len() - 1,
+            }));
+        }
+        let close = {
+            let entity = entity.clone();
+            move |window: &mut Window, cx: &mut App| {
+                entity.update(cx, |gallery, cx| {
+                    gallery.settings_section = None;
+                    window.focus(&gallery.root_focus, cx);
+                    cx.notify();
+                });
+            }
+        };
+        let choose_close = close.clone();
+        Some(
+            SettingsSheet::new(
+                "gallery-settings",
+                SettingsSheetLabels {
+                    label: "Server settings, Rust Lyon".into(),
+                    title: "Server settings".into(),
+                    back: "Back to server settings".into(),
+                    close: "Close settings".into(),
+                    escape_key: "Esc".into(),
+                },
+                self.settings_container_focus.clone(),
+                self.settings_page_focus.clone(),
+            )
+            .wide(
+                crate::theme::window_width_at_default_zoom(window)
+                    >= crate::theme::tokens::BREAKPOINT_NAVIGATOR,
+                true,
+            )
+            .entries(entries)
+            .page(
+                SAMPLE_SETTINGS_SECTIONS[section],
+                div()
+                    .child("A section's page: its fields, then the unsaved changes bar.")
+                    .into_any_element(),
+            )
+            .on_choose(move |index, window, cx| {
+                if index == SAMPLE_SETTINGS_SECTIONS.len() - 1 {
+                    choose_close(window, cx);
+                    return;
+                }
+                entity.update(cx, |gallery, cx| {
+                    gallery.settings_section = Some(index);
+                    cx.notify();
+                });
+            })
+            .on_request_close(close.clone())
+            .on_back(close),
+        )
+    }
+
     fn switch_theme(theme_index: usize, window: &mut Window, cx: &mut App) {
         let appearance = if theme_index == 0 {
             WindowAppearance::Dark
@@ -259,7 +346,7 @@ fn person(initial: &'static str, tint_number: u32) -> AvatarPerson {
 
 impl Render for ComponentGallery {
     #[allow(clippy::too_many_lines)] // One page listing every primitive, as the eye scans it.
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
         let entity = cx.entity();
         let is_dark = *tokens == crate::theme::tokens::DARK_THEME;
@@ -582,6 +669,16 @@ impl Render for ComponentGallery {
                             }),
                     )
                     .child(
+                        Button::new("open-settings-sheet", "Open a settings sheet").on_click({
+                            let entity = entity.clone();
+                            move |window, cx| {
+                                entity.update(cx, |gallery, cx| {
+                                    gallery.open_settings_sheet(window, cx);
+                                });
+                            }
+                        }),
+                    )
+                    .child(
                         div()
                             .id("right-click-area")
                             .p(length(SPACE_MD))
@@ -683,6 +780,7 @@ impl Render for ComponentGallery {
                 .children(self.messages.rows(&on_message_action, cx)),
         );
 
+        let settings_sheet = self.settings_sheet(window, cx);
         let overlays: Vec<AnyElement> = self
             .menu
             .iter()
@@ -694,7 +792,7 @@ impl Render for ComponentGallery {
             )
             .collect();
 
-        with_tab_navigation(
+        let gallery = with_tab_navigation(
             div()
                 .id("component-gallery")
                 .size_full()
@@ -727,7 +825,12 @@ impl Render for ComponentGallery {
                 .child(section("Composer", cx).child(self.composer.clone()))
                 .children(overlays),
             &self.root_focus,
-        )
+        );
+        div()
+            .relative()
+            .size_full()
+            .child(gallery)
+            .children(settings_sheet)
     }
 }
 
@@ -757,6 +860,8 @@ pub fn gallery_window_options(cx: &App) -> gpui::WindowOptions {
 }
 
 const GALLERY_SHARE_OF_SCREEN: f32 = 0.95;
+/// The sample settings sheet's sections; the last is its danger item.
+const SAMPLE_SETTINGS_SECTIONS: [&str; 4] = ["Overview", "Roles", "Emoji", "Delete server"];
 /// The message column of a 1280 px window with the navigator and the side sheet docked.
 const MESSAGE_SAMPLE_COLUMN_WIDTH: f32 = 720.0;
 
