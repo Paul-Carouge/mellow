@@ -2,8 +2,9 @@
 //! Off, a short why and one button; turning it on asks for the password, then shows the QR code
 //! (drawn here, the secret never leaves the app) and the code that confirms it, then the recovery
 //! codes, once. On, the codes left, new codes and Turn off, each behind the password and a code.
-//! Typed passwords and codes live in the fields only, dropped when their form closes; the secret
-//! and the recovery codes are wiped from memory once the page lets them go.
+//! Typed passwords and codes live in the fields only, dropped when their form closes. The page's
+//! own copies of the secret, the recovery codes and the requests are wiped when it lets them go;
+//! the copies drawn on screen and the fields' text are freed, not wiped (GPUI owns them).
 
 use std::sync::Arc;
 
@@ -472,7 +473,7 @@ impl SecurityPage {
                 return;
             };
             let written = cx
-                .background_spawn(async move { std::fs::write(path, text.as_bytes()) })
+                .background_spawn(async move { write_private_file(&path, text.as_bytes()) })
                 .await;
             let _ = page.update(cx, |page, cx| {
                 let desktop = strings(cx).desktop();
@@ -554,7 +555,6 @@ impl SecurityPage {
         let codes = self.recovery_codes.as_deref().unwrap_or_default();
         let tokens = theme(cx);
         let words = strings(cx).security();
-        let all = codes.join("\n");
         let page = cx.entity();
         let save_page = cx.entity();
         let done_page = cx.entity();
@@ -581,10 +581,14 @@ impl SecurityPage {
                     .flex_wrap()
                     .gap(length(SPACE_2XS))
                     .text_color(color(tokens.component_settings_two_factor_code_text))
-                    .children(codes.iter().map(|code| {
+                    .children(codes.iter().enumerate().map(|(index, code)| {
+                        let code = SharedString::from(code.clone());
                         div()
+                            .id(("security-code", index))
+                            .role(Role::ListItem)
+                            .aria_label(code.clone())
                             .min_w(length(COMPONENT_SETTINGS_TWO_FACTOR_QR_SIZE))
-                            .child(code.clone())
+                            .child(code)
                     })),
             )
             .child(
@@ -597,10 +601,20 @@ impl SecurityPage {
                         Button::new("security-download", words.download())
                             .on_click(move |_, cx| save_page.update(cx, Self::save_codes_file)),
                     )
-                    .child(
-                        Button::new("security-copy-all", words.copy_all())
-                            .on_click(move |_, cx| page.update(cx, |page, cx| page.copy(&all, cx))),
-                    )
+                    .child(Button::new("security-copy-all", words.copy_all()).on_click(
+                        move |_, cx| {
+                            page.update(cx, |page, cx| {
+                                // Joined on the click only, so no copy outlives it unwiped.
+                                let all = Zeroizing::new(
+                                    page.recovery_codes
+                                        .as_deref()
+                                        .unwrap_or_default()
+                                        .join("\n"),
+                                );
+                                page.copy(&all, cx);
+                            });
+                        },
+                    ))
                     .child(
                         Button::new("security-saved-them", words.saved_them())
                             .variant(ButtonVariant::Primary)
@@ -894,6 +908,17 @@ impl SecurityPage {
     }
 }
 
+/// Writes the recovery codes readable by their owner only: on Linux the suggested folder is often
+/// open to the machine's other accounts. Elsewhere the folder's own permissions apply.
+fn write_private_file(path: &std::path::Path, contents: &[u8]) -> std::io::Result<()> {
+    use std::io::Write as _;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create(true).truncate(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    options.open(path)?.write_all(contents)
+}
+
 /// The QR code, one square per dark module inside the quiet zone, on the light plate scanners
 /// need whatever the theme.
 fn qr_code(matrix: Arc<QrMatrix>, label: &'static str, cx: &App) -> impl IntoElement {
@@ -968,5 +993,28 @@ impl Render for SecurityPage {
                     .child(content),
             )
             .child(saved_notice("security-notice", self.notice.clone(), cx))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[cfg(unix)]
+    #[test]
+    fn the_recovery_codes_file_is_readable_by_its_owner_only() {
+        use std::os::unix::fs::PermissionsExt as _;
+        let directory =
+            std::env::temp_dir().join(format!("mellow-codes-file-test-{}", std::process::id()));
+        std::fs::create_dir_all(&directory).expect("a temporary folder");
+        let path = directory.join("codes.txt");
+        write_private_file(&path, b"AAAA-BBBB").expect("the file is written");
+        let mode = std::fs::metadata(&path)
+            .expect("the file exists")
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+        assert_eq!(std::fs::read(&path).expect("readable back"), b"AAAA-BBBB");
+        std::fs::remove_dir_all(&directory).expect("the folder is removed");
     }
 }
