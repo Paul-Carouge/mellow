@@ -3,7 +3,6 @@
 //! count titles it; then the sort, the filters applied, the facets that narrow, and the results as
 //! slips of the conversation sheet, labelled by channel, with the matched words lit.
 
-use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -37,8 +36,8 @@ use mellow_protocol::{
 use super::MessageSearchView;
 use super::field::FieldPlacement;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonSize, ButtonVariant, IconButton, focus_ring, icon,
-    is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
+    Avatar, AvatarPerson, Button, ButtonSize, ButtonVariant, IconButton, LiveRegion as _,
+    focus_ring, icon, is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, format_count, strings};

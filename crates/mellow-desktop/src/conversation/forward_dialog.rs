@@ -4,7 +4,6 @@
 //! selection, those that failed stay picked with their reason, so trying again only sends what is
 //! missing. Places, search, order and nonces are client-core's (`forward_messages`).
 
-use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 
 use gpui::{
@@ -24,8 +23,8 @@ use mellow_client_core::{ClientError, generate_message_nonce};
 use mellow_protocol::{ApiErrorCode, ForwardOrigin, Message, Role as ServerRole, Snowflake};
 
 use crate::components::{
-    Avatar, AvatarPerson, GroupAvatar, ModalDialog, ModalDialogEvent, TextField, icon,
-    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, GroupAvatar, LiveRegion as _, ModalDialog, ModalDialogEvent, TextField,
+    icon, inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};

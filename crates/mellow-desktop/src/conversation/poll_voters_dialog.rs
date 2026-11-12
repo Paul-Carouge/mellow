@@ -1,7 +1,6 @@
 //! Who voted for one answer of a poll (`PollVotersDialog.svelte`, DESIGN.md §6.83), listed as who
 //! reacted is: avatar and name, a page at a time, "Show more" while pages come full.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
     StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
@@ -10,7 +9,7 @@ use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{PublicUser, Snowflake};
 
-use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, with_type};
+use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, with_type};
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
 use crate::session::{POLL_VOTERS_PAGE_SIZE, Session};

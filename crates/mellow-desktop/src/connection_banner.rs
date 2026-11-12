@@ -2,7 +2,6 @@
 //! "Back online" for a moment (DESIGN.md §5.2 connection dock, §6.37; the web's
 //! `ConnectionBanner.svelte` and `connection-notice.ts`).
 
-use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -11,6 +10,7 @@ use gpui::{
 };
 use gpui_base::Button;
 
+use crate::components::LiveRegion as _;
 use crate::local_widgets::text_style;
 use crate::session::{ConnectionStatus, Session};
 use crate::strings_pending_i18n::strings;

@@ -16,7 +16,6 @@ mod layout;
 #[cfg(test)]
 mod tests;
 
-use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -37,9 +36,9 @@ use mellow_protocol::{ApiErrorCode, GifSettings, MAXIMUM_GIF_FAVOURITES};
 
 use self::layout::{justified_rows, sheet_height};
 use crate::components::{
-    Button, FocusNextControl, FocusPreviousControl, MenuAnchor, Tabs, focus_next_inside,
-    focus_previous_inside, focus_ring, icon, is_focus_visible, polite_live_region,
-    popover_position_beside_anchor, shadow, with_type,
+    Button, FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, Tabs,
+    focus_next_inside, focus_previous_inside, focus_ring, icon, is_focus_visible,
+    polite_live_region, popover_position_beside_anchor, shadow, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::{TOKEN_PIXELS_PER_REM, picture_animation, picture_for_box};

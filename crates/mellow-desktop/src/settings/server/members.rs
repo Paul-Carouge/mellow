@@ -3,7 +3,6 @@
 //! ban: `manage_member`); kicks and bans are confirmed in their own dialog, a ban with an optional
 //! reason. The list is the one the member sheet uses, kept current by the gateway.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Role as AccessRole, SharedString, StatefulInteractiveElement as _,
@@ -19,8 +18,8 @@ use mellow_protocol::{CreateBanRequest, Member, Snowflake};
 
 use super::manage_member::{ConfirmMemberRemoval, ManageMemberBody, MemberRemoval};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ModalDialog, ModalDialogEvent, RoleChip, RoleChips,
-    SettingsListStatus, SettingsListStatusKind, TextField, with_type,
+    Avatar, AvatarPerson, Button, LiveRegion as _, ModalDialog, ModalDialogEvent, RoleChip,
+    RoleChips, SettingsListStatus, SettingsListStatusKind, TextField, with_type,
 };
 use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};

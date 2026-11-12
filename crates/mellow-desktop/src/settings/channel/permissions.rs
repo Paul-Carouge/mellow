@@ -5,7 +5,6 @@
 //! bar, rebased on any change made meanwhile (`rebase_overwrite_edit`). Locked rows and states say
 //! why.
 
-use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -30,9 +29,9 @@ use mellow_protocol::{
 
 use super::add_overwrite_target::{AddOverwriteTarget, AddOverwriteTargetEvent};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, UnsavedChangesBar, child_id, focus_ring, icon,
-    inset_focus_ring, is_focus_visible, next_choice_index, remembered_focus_handle,
-    remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, UnsavedChangesBar, child_id,
+    focus_ring, icon, inset_focus_ring, is_focus_visible, next_choice_index,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;

@@ -4,7 +4,6 @@
 //! so an error always sits under the form that raised it. Typed passwords live in the form's
 //! fields only: the fields are dropped when it closes and the request's copy is wiped once sent.
 
-use crate::components::LiveRegion as _;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -25,7 +24,9 @@ use zeroize::{Zeroize as _, Zeroizing};
 use super::parts::{
     FormButtons, card, describe_failure, edit_form, error_line, password_field, section_label,
 };
-use crate::components::{Button, FriendCode, FriendCodeCopyState, TextField, with_type};
+use crate::components::{
+    Button, FriendCode, FriendCodeCopyState, LiveRegion as _, TextField, with_type,
+};
 use crate::i18n::strings;
 use crate::session::Session;
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};

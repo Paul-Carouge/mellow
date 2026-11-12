@@ -4,7 +4,6 @@
 //! with an optional name. In a group, the friends already in it are left out and the picked ones
 //! are added, one request at a time.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter, Focusable as _,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
@@ -23,8 +22,8 @@ use mellow_protocol::{
 
 use super::conversation_display_name;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, ModalDialog, ModalDialogEvent, TextField,
-    focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, ModalDialog, ModalDialogEvent,
+    TextField, focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
     remembered_hover, with_type,
 };
 use crate::i18n::strings;

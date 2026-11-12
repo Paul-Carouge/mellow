@@ -2,7 +2,6 @@
 //! read out as it appears, the edit form's buttons (`AccountEditForm.svelte`) and the words of a
 //! failure that may be a wrong current password.
 
-use crate::components::LiveRegion as _;
 use std::sync::Arc;
 
 use gpui::{
@@ -14,7 +13,9 @@ use gpui_component::input::InputState;
 use mellow_client_core::ClientError;
 use mellow_protocol::ApiErrorCode;
 
-use crate::components::{Button, ButtonVariant, PasswordToggle, TextField, icon, with_type};
+use crate::components::{
+    Button, ButtonVariant, LiveRegion as _, PasswordToggle, TextField, icon, with_type,
+};
 use crate::i18n::strings;
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings as pending_strings;

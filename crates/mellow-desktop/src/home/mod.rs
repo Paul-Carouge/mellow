@@ -10,7 +10,6 @@ mod people_picker;
 #[cfg(test)]
 mod tests;
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, SharedString, Styled as _, Subscription, Window, div,
@@ -31,7 +30,9 @@ pub use friends_pane::{FriendsPane, FriendsPaneEvent};
 pub use menus::{OpenPersonMenu, PersonMenuRequest};
 pub use people_picker::{PeoplePicker, PeoplePickerEvent};
 
-use crate::components::{ContextMenu, ModalDialog, ModalDialogEvent, ShownStatus, TextField};
+use crate::components::{
+    ContextMenu, LiveRegion as _, ModalDialog, ModalDialogEvent, ShownStatus, TextField,
+};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 use crate::sign_in_form::describe_error;

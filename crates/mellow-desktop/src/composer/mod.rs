@@ -14,7 +14,6 @@ mod slash_menu;
 mod suggestions;
 mod tray;
 
-use crate::components::LiveRegion as _;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -38,7 +37,9 @@ use mellow_client_core::shared_logic::slash_commands::SlashCommandId;
 use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Role as ServerRole, Snowflake};
 
-use crate::components::{Button, IconButton, focus_ring, is_focus_visible, with_type};
+use crate::components::{
+    Button, IconButton, LiveRegion as _, focus_ring, is_focus_visible, with_type,
+};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{Language, Strings, strings};
 use crate::theme::icons::IconName;

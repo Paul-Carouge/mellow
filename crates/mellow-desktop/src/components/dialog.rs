@@ -3,7 +3,6 @@
 //! behind inert. Tab and Shift+Tab stay inside; Esc, Cancel and the scrim close it except while
 //! busy; focus goes back where it came from.
 
-use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -14,8 +13,8 @@ use gpui::{
 };
 
 use super::{
-    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, easing, focus_next_inside,
-    focus_previous_inside, icon, shadow, with_type,
+    Button, ButtonVariant, FocusNextControl, FocusPreviousControl, LiveRegion as _, easing,
+    focus_next_inside, focus_previous_inside, icon, shadow, with_type,
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{

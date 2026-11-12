@@ -22,7 +22,6 @@ mod server_rail;
 mod settings_screens;
 mod user_card;
 
-use crate::components::LiveRegion as _;
 use std::cell::Cell;
 use std::collections::HashSet;
 use std::rc::Rc;
@@ -42,7 +41,7 @@ use crate::column_widths::{
     WIDTH_BESIDE_COLUMNS, clamp_column_width, fit_column_widths, largest_column_width,
     stored_column_width,
 };
-use crate::components::{ContextMenu, ModalDialog, with_tab_navigation};
+use crate::components::{ContextMenu, LiveRegion as _, ModalDialog, with_tab_navigation};
 use crate::connection_banner::ConnectionBanner;
 use crate::conversation::{ConversationView, OpenForwardOrigin};
 use crate::home::{Home, HomeEvent, OpenPersonMenu};

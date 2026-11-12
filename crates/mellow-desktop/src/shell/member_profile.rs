@@ -5,7 +5,6 @@
 //! Accept, or "Request sent") and Block; someone blocked shows Unblock alone (ADR-0025). Back
 //! returns to the list, on the row it came from.
 
-use crate::components::LiveRegion as _;
 use std::rc::Rc;
 
 use gpui::{
@@ -27,8 +26,8 @@ use mellow_protocol::{
 
 use super::DuskShell;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, Tooltip, avatar_tint, icon, inset_focus_ring,
-    is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tooltip, avatar_tint, icon,
+    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{MessageBody, MessageMarkdown, picture_animation, picture_for_box};

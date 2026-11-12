@@ -3,7 +3,6 @@
 //! Unpin for those who may; loading, failure with "Try again", and an empty state that says how
 //! to pin. It drops under the header's trailing end, as the web's popover does.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div,
@@ -14,7 +13,8 @@ use mellow_client_core::state::PinsStatus;
 
 use super::ConversationView;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, icon, shadow, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, LiveRegion as _, icon, shadow,
+    with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{

@@ -2,7 +2,6 @@
 //! search over the roles the reader may target and the members without an overwrite here.
 //! Choosing one adds it at once, all Inherit.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, App, AppContext as _, Context, ElementId, Entity, EventEmitter,
     InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
@@ -19,8 +18,8 @@ use mellow_protocol::{OverwriteKind, Permissions, SetPermissionOverwriteRequest,
 
 use super::permissions::{TargetMark, role_colour, target_mark};
 use crate::components::{
-    Button, ModalDialog, ModalDialogEvent, TextField, child_id, focus_ring, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    Button, LiveRegion as _, ModalDialog, ModalDialogEvent, TextField, child_id, focus_ring,
+    is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};

@@ -2,7 +2,6 @@
 //! kind, arrows and Enter. The field keeps focus; the active result is announced as the field's
 //! active descendant. Ctrl+K again, Esc or the scrim closes it, and focus goes back.
 
-use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -21,7 +20,8 @@ use mellow_protocol::{PublicUser, RelationshipKind};
 
 use super::channel_sidebar::can_send_in;
 use crate::components::{
-    FocusNextControl, FocusPreviousControl, easing, focus_ring, icon, shadow, with_type,
+    FocusNextControl, FocusPreviousControl, LiveRegion as _, easing, focus_ring, icon, shadow,
+    with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};

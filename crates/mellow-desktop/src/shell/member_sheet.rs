@@ -3,7 +3,6 @@
 //! full contrast. Docked beside the conversation where it fits, over it otherwise. Choosing a
 //! member shows their profile in the sheet (`member_profile`).
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseButton, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
@@ -17,7 +16,7 @@ use mellow_protocol::PresenceStatus;
 
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, IconButton, bounds_recorder, inset_focus_ring,
+    Avatar, AvatarPerson, Button, IconButton, LiveRegion as _, bounds_recorder, inset_focus_ring,
     is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, remembered_bounds, remembered_focus_handle, remembered_hover,
     with_type,

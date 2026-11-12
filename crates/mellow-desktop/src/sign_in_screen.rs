@@ -5,7 +5,6 @@
 //! shortcut: Melli does not stand on the card's edge yet, the instance check has no "Cancel" and
 //! the password has no "Show password" toggle; they come with the shared primitives.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
     IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
@@ -18,6 +17,7 @@ use mellow_protocol::{
 };
 use zeroize::{Zeroize as _, Zeroizing};
 
+use crate::components::LiveRegion as _;
 use crate::local_widgets::{TextField, error_line, link_button, primary_button, text_style};
 use crate::preferences::{Preferences, change_preferences};
 use crate::session::Session;

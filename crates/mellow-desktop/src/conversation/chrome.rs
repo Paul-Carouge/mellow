@@ -3,7 +3,6 @@
 //! show, the typing line, the failure of the last action, the composer, and the layers (pins
 //! panel, message menu, emoji picker, confirmation).
 
-use crate::components::LiveRegion as _;
 use gpui::{
     AnyElement, Context, ExternalPaths, FontWeight, HighlightStyle, InteractiveElement as _,
     IntoElement, ModifiersChangedEvent, ParentElement as _, Render, Role, SharedString,
@@ -18,8 +17,8 @@ use mellow_client_core::shared_logic::message_rows::{
 use super::ConversationView;
 use super::rules::typing_segments;
 use crate::components::{
-    child_id, colour_transition, focus_ring, icon, is_focus_visible, polite_live_region,
-    remembered_focus_handle, remembered_hover, with_type,
+    LiveRegion as _, child_id, colour_transition, focus_ring, icon, is_focus_visible,
+    polite_live_region, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
 use crate::local_widgets::error_line;

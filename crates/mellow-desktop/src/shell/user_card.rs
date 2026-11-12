@@ -4,7 +4,6 @@
 //! the custom status and copies the user ID; the gear opens the user settings, which hold
 //! "Sign out" and the notification choices, as on the web.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, AppContext as _, ClipboardItem, Context, InteractiveElement as _, IntoElement,
     ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
@@ -16,8 +15,9 @@ use mellow_protocol::{ChosenStatus, PublicUser};
 use super::custom_status_dialog::CustomStatusForm;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, ContextMenu, IconButton, MenuAlignment, MenuAnchor, MenuEntry, MenuItem,
-    MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible, remembered_hover, with_type,
+    Avatar, AvatarPerson, ContextMenu, IconButton, LiveRegion as _, MenuAlignment, MenuAnchor,
+    MenuEntry, MenuItem, MenuOrigin, ShownStatus, focus_ring, icon, is_focus_visible,
+    remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::session::Session;

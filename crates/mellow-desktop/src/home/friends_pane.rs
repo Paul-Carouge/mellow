@@ -4,7 +4,6 @@
 //! has its actions as round buttons. The shell draws the tab list ([`FriendsPane::tab_list`]) in
 //! its header, or under it in the drawer layout; this view draws the panel.
 
-use crate::components::LiveRegion as _;
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
@@ -30,8 +29,8 @@ use mellow_protocol::{
 use super::{PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, FriendCode, FriendCodeCopyState,
-    MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
+    LiveRegion as _, MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
     is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, next_tab_index, remembered_bounds, remembered_focus_handle,
     remembered_hover, with_type,

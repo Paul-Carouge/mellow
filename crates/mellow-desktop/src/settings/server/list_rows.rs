@@ -2,7 +2,6 @@
 //! `ModerationLogSettings.svelte`, `EmojiSettings.svelte`): the row, a person's avatar, the line
 //! of secondary text and the status line read out after an action.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, Div, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
     Window, div,
@@ -11,7 +10,7 @@ use mellow_client_core::DownloadableFile;
 use mellow_protocol::PublicUser;
 
 use crate::components::{
-    Avatar, AvatarPerson, SettingsListStatus, SettingsListStatusKind, with_type,
+    Avatar, AvatarPerson, LiveRegion as _, SettingsListStatus, SettingsListStatusKind, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};

@@ -7,7 +7,6 @@
 //! ADR-0025), and new messages are not read out to screen readers; both come with the
 //! conversations step (M3 step 4).
 
-use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher as _};
 
@@ -30,8 +29,8 @@ use mellow_protocol::{Message, PublicUser, Snowflake};
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
 use crate::components::{
-    Button, IconButton, IconButtonTone, MenuAlignment, MenuAnchor, MenuOrigin, Tooltip, easing,
-    icon, inset_focus_ring, menu_origin_at_pointer, shadow, with_type,
+    Button, IconButton, IconButtonTone, LiveRegion as _, MenuAlignment, MenuAnchor, MenuOrigin,
+    Tooltip, easing, icon, inset_focus_ring, menu_origin_at_pointer, shadow, with_type,
 };
 use crate::home::{OpenPersonMenu, PersonMenuRequest};
 use crate::i18n::strings;

@@ -2,14 +2,13 @@
 //! account and under "Add friend". The button says "Copied" for the dialog's copied-label duration
 //! and the copy is announced, wherever the row is shown.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, ClipboardItem, Context, ElementId, Entity, InteractiveElement as _, IntoElement,
     ParentElement as _, RenderOnce, SharedString, StatefulInteractiveElement as _, Styled as _,
     Task, Window, div,
 };
 
-use super::{Button, with_type};
+use super::{Button, LiveRegion as _, with_type};
 use crate::i18n::strings;
 use crate::theme::tokens::{
     COMPONENT_DIALOG_COPIED_LABEL_DURATION, COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP,

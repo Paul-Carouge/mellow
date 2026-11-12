@@ -2,7 +2,6 @@
 //! differs from what is stored. Leaving then is refused: the bar shakes (not under reduced motion),
 //! turns red-edged and asks to save or reset first.
 
-use crate::components::LiveRegion as _;
 use std::time::Duration;
 
 use gpui::{
@@ -11,7 +10,10 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 
-use super::{ActivationHandler, Button, ButtonVariant, child_id, easing, icon, shadow, with_type};
+use super::{
+    ActivationHandler, Button, ButtonVariant, LiveRegion as _, child_id, easing, icon, shadow,
+    with_type,
+};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_SETTINGS_ERROR_ICON_GAP, COMPONENT_SETTINGS_ERROR_ICON_SIZE,

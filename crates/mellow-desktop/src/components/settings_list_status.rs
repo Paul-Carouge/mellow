@@ -2,13 +2,12 @@
 //! while it loads (no shimmer, so nothing moves under reduced motion either), or what failed with
 //! a retry button.
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, RenderOnce,
     SharedString, Styled as _, Window, div, relative,
 };
 
-use super::{ActivationHandler, Button, child_id, icon, with_type};
+use super::{ActivationHandler, Button, LiveRegion as _, child_id, icon, with_type};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_ROW_GAP,

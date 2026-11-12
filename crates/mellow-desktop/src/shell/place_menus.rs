@@ -14,7 +14,6 @@
 //! voice comes. Add each with its screen. Server and channel settings show once the desktop has a
 //! page the reader may open (`settings::server`, `settings::channel`).
 
-use crate::components::LiveRegion as _;
 use std::cell::Cell;
 use std::rc::Rc;
 
@@ -39,8 +38,8 @@ use super::DuskShell;
 use super::place_notifications::{InitialGroup, PlaceNotificationsBody};
 use super::regions::Region;
 use crate::components::{
-    ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent,
+    ContextMenu, LiveRegion as _, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, ModalDialog, ModalDialogEvent,
 };
 use crate::i18n::strings;
 use crate::notifier::notification_settings_of;

@@ -12,9 +12,8 @@
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 
-use gpui::Focusable as _;
 use gpui::{
-    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle,
+    AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
     InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
     SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };

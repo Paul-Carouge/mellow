@@ -4,7 +4,6 @@
 //! Moderators remove someone's reaction from here; focus then goes to the next person's Remove,
 //! or to the dialog when nobody is left.
 
-use crate::components::LiveRegion as _;
 use std::collections::HashMap;
 
 use gpui::{
@@ -16,7 +15,9 @@ use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{CustomEmoji, PublicUser, ReactionSummary, Snowflake};
 
-use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, Tabs, icon, with_type};
+use crate::components::{
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tabs, icon, with_type,
+};
 use crate::i18n::strings;
 use crate::messages::{picture_animation, picture_for_box};
 use crate::session::Session;

@@ -21,7 +21,6 @@ mod permission_words;
 pub mod server;
 pub mod user;
 
-use crate::components::LiveRegion as _;
 use gpui::{
     App, InteractiveElement as _, IntoElement, ParentElement as _, SharedString, Styled as _,
     Window, div, prelude::FluentBuilder as _,
@@ -29,7 +28,7 @@ use gpui::{
 
 pub use navigation::{SettingsNavigation, SettingsPage, SettingsPageEvent, ShownPage, shown_page};
 
-use crate::components::{UnsavedChangesLabels, icon, with_type};
+use crate::components::{LiveRegion as _, UnsavedChangesLabels, icon, with_type};
 use crate::i18n::Strings;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
