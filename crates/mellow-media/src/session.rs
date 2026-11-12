@@ -28,7 +28,7 @@ use crate::offer::OfferError;
 use crate::person_settings::{PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore};
 use crate::processing::ProcessingSettings;
 use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
-use crate::sounds::{LocalSound, VoiceCue};
+use crate::sounds::{LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue};
 use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError, VideoLink};
 use crate::uplink::UplinkLayerCeiling;
 use crate::video_frame::DecodedPixelFormat;
@@ -600,8 +600,14 @@ impl VoiceSession {
     /// Plays a soundboard or join sound at the output volume times the soundboard volume; who
     /// should hear it is
     /// [`mellow_client_core::shared_logic::soundboard::should_hear_sound`]'s call.
-    pub fn play_soundboard_sound(&self, sound: LocalSound) {
-        self.command(AudioCommand::PlaySoundboardSound(sound));
+    pub fn play_soundboard_sound(&self, sound: LocalSound, player: SoundboardPlayer) {
+        self.command(AudioCommand::PlaySoundboardSound(sound, player));
+    }
+
+    /// Stops soundboard sounds before their end: when the reader deafens, mutes a player for
+    /// themself, or stops a preview.
+    pub fn stop_soundboard_sounds(&self, which: SoundboardSoundsToStop) {
+        self.command(AudioCommand::StopSoundboardSounds(which));
     }
 
     /// Loses the current network path, as a Wi-Fi drop would: the session must notice and

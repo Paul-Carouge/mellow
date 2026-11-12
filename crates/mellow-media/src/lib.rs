@@ -37,6 +37,7 @@ mod resampling;
 mod session;
 mod simulcast;
 mod sound_player;
+mod sound_source;
 mod soundboard;
 mod sounds;
 mod transport;
@@ -82,11 +83,14 @@ pub use session::{
 };
 pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;
+pub use sound_source::{MAXIMUM_SOUND_SOURCE_SECONDS, SoundSourceError, decode_sound_source};
 pub use soundboard::{
     DEFAULT_SOUNDBOARD_VOLUME, MAXIMUM_SOUND_FILE_BYTES, MAXIMUM_SOUNDBOARD_VOLUME, SoundCache,
     SoundboardError, decode_canonical_wav, download_sound, soundboard_gain,
 };
-pub use sounds::{LocalSound, VoiceCue, render_notification_chime};
+pub use sounds::{
+    LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue, render_notification_chime,
+};
 pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
 pub use video_receiver::VideoFrames;
 pub use video_sender::VideoInput;

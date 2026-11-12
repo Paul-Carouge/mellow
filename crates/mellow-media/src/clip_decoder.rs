@@ -107,7 +107,7 @@ pub(crate) fn open_clip(
 
 /// Whether the first bytes are those of the type the instance sniffed (ADR-0038): a file whose
 /// type was set by something else is never handed to a decoder.
-fn starts_like(bytes: &[u8], content_type: &str) -> bool {
+pub(crate) fn starts_like(bytes: &[u8], content_type: &str) -> bool {
     let is_mpeg_frame = |at: usize| {
         bytes.get(at) == Some(&0xFF) && bytes.get(at + 1).is_some_and(|byte| byte & 0xE0 == 0xE0)
     };
