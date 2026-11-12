@@ -35,8 +35,9 @@ impl Session {
         });
     }
 
-    /// As [`Self::send_settings_change`], for a page that needs the answer (a created role) or
-    /// words its own failures (a role icon too large); a lost session answers `NotSignedIn`.
+    /// As [`Self::send_settings_change`], for a page that needs the answer (a created role, a
+    /// list it reads) or words its own failures (a role icon or an emoji too large); a lost session
+    /// answers `NotSignedIn`.
     pub fn send_settings_request<Answer, Request>(
         &mut self,
         action: &'static str,

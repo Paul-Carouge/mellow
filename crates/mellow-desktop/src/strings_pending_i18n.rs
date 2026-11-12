@@ -41,6 +41,8 @@ pub struct ErrorReasons {
     pub owner_cannot_leave: &'static str,
     pub limit_reached: &'static str,
     pub file_too_large: &'static str,
+    /// A file picked on this computer that could not be read (the web has no such case).
+    pub file_unreadable: &'static str,
     pub conflict: &'static str,
     pub invalid_two_factor_code: &'static str,
 }
@@ -169,6 +171,7 @@ pub static ENGLISH: Strings = Strings {
         owner_cannot_leave: "the owner cannot leave their own server.",
         limit_reached: "a limit of this instance is reached.",
         file_too_large: "the file is larger than this instance accepts.",
+        file_unreadable: "this file can't be read on this computer.",
         conflict: "someone else changed it at the same time. Try again.",
         invalid_two_factor_code: "the code is wrong, already used or too old.",
     },
@@ -270,6 +273,7 @@ pub static FRENCH: Strings = Strings {
         owner_cannot_leave: "tu ne peux pas quitter un serveur qui t’appartient.",
         limit_reached: "une limite de cette instance est atteinte.",
         file_too_large: "le fichier dépasse la taille acceptée par cette instance.",
+        file_unreadable: "ce fichier ne peut pas être lu sur cet ordinateur.",
         conflict: "quelqu’un d’autre l’a modifié au même moment. Réessaie.",
         invalid_two_factor_code: "le code est faux, déjà utilisé ou trop ancien.",
     },

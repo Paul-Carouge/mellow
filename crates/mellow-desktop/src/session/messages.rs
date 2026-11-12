@@ -730,6 +730,65 @@ impl Session {
         );
     }
 
+    /// A moderator removes `user_id`'s reaction with `emoji`; the gateway's event updates the
+    /// counts. A failure comes back as a sentence starting with `failure_summary`.
+    #[allow(clippy::too_many_arguments)] // The message, the reaction and the two outcomes.
+    pub fn remove_user_reaction(
+        &mut self,
+        channel_id: Snowflake,
+        message_id: Snowflake,
+        emoji: String,
+        user_id: Snowflake,
+        failure_summary: String,
+        on_failed: impl FnOnce(String, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rest) = self.cloned_rest_client() else {
+            cx.defer(move |cx| on_failed(failure_summary, cx));
+            return;
+        };
+        self.run_conversation_request(
+            cx,
+            async move {
+                rest.remove_user_reaction(channel_id, message_id, &emoji, user_id)
+                    .await
+            },
+            failure_summary,
+            "remove a reaction",
+            move |_, answer, cx| {
+                if let Err(sentence) = answer {
+                    on_failed(sentence, cx);
+                }
+            },
+        );
+    }
+
+    /// A moderator's "Remove all reactions"; the gateway's event clears them.
+    pub fn remove_all_reactions(
+        &mut self,
+        message: &Message,
+        failure_summary: String,
+        on_failed: impl FnOnce(String, &mut App) + 'static,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(rest) = self.cloned_rest_client() else {
+            cx.defer(move |cx| on_failed(failure_summary, cx));
+            return;
+        };
+        let (channel_id, message_id) = (message.channel_id, message.id);
+        self.run_conversation_request(
+            cx,
+            async move { rest.remove_all_reactions(channel_id, message_id).await },
+            failure_summary,
+            "remove all reactions",
+            move |_, answer, cx| {
+                if let Err(sentence) = answer {
+                    on_failed(sentence, cx);
+                }
+            },
+        );
+    }
+
     /// Pins or unpins; the instance answers with no message, so the change is applied here and
     /// its event repeats it.
     pub fn set_pinned(

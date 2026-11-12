@@ -967,6 +967,104 @@ fn account_changes_go_through_the_session_and_a_wrong_password_keeps_it(cx: &mut
     harness.stop();
 }
 #[gpui::test]
+fn a_moderator_revokes_a_ban_manages_invites_and_reads_the_log(cx: &mut TestAppContext) {
+    use mellow_protocol::{AuditAction, CreateBanRequest, CreateInviteRequest};
+
+    use crate::settings::server::{BansPage, InvitesPage, ModerationLogPage};
+
+    let (harness, cx) = start(cx);
+    let ada = register(&harness, "ada");
+    let bob = register(&harness, "bob");
+    let (guild_id, bob_id) = harness.runtime.block_on(async {
+        let guild = ada.create_guild("Home").await.unwrap();
+        let invite = ada
+            .create_invite(
+                guild.id,
+                &CreateInviteRequest {
+                    max_uses: None,
+                    expires_in_seconds: None,
+                },
+            )
+            .await
+            .unwrap();
+        bob.join_with_invite(&invite.code).await.unwrap();
+        let bob_id = bob.current_user().await.unwrap().id;
+        ada.ban_member(
+            guild.id,
+            bob_id,
+            &CreateBanRequest {
+                reason: "spam".into(),
+            },
+        )
+        .await
+        .unwrap();
+        (guild.id, bob_id)
+    });
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(ada, cx));
+    wait_until(cx, |cx| {
+        harness
+            .session
+            .read_with(cx, |session, _| session.state().guild(guild_id).is_some())
+    });
+
+    // Bans: Bob is listed with the reason given, then can join again.
+    let session = harness.session.clone();
+    let bans = cx.new(|cx| BansPage::new(session, guild_id, cx));
+    wait_until(cx, |cx| {
+        bans.read_with(cx, |page, _| {
+            page.bans()
+                .is_some_and(|bans| bans.len() == 1 && bans[0].reason == "spam")
+        })
+    });
+    bans.update(cx, |page, cx| page.revoke(bob_id, cx));
+    wait_until(cx, |cx| {
+        bans.read_with(cx, |page, _| page.bans().is_some_and(<[_]>::is_empty))
+    });
+
+    // Invites: the one Bob used is listed; "Create invite" adds a second with the default limits.
+    let session = harness.session.clone();
+    let invites = cx.new(|cx| InvitesPage::new(session, guild_id, cx));
+    wait_until(cx, |cx| {
+        invites.read_with(cx, |page, _| {
+            page.invites().is_some_and(|list| list.len() == 1)
+        })
+    });
+    invites.update_in(cx, InvitesPage::open_create_dialog);
+    invites.update(cx, InvitesPage::create);
+    wait_until(cx, |cx| {
+        invites.read_with(cx, |page, _| {
+            page.invites().is_some_and(|list| {
+                list.len() == 2
+                    && list
+                        .iter()
+                        .any(|invite| invite.expires_at_unix_milliseconds.is_some())
+            })
+        })
+    });
+
+    // The log tells the ban and its revocation, newest first.
+    let session = harness.session.clone();
+    let log = cx.new(|cx| ModerationLogPage::new(session, guild_id, cx));
+    wait_until(cx, |cx| {
+        log.read_with(cx, |page, _| {
+            page.entries().is_some_and(|entries| {
+                let actions: Vec<AuditAction> = entries.iter().map(|entry| entry.action).collect();
+                actions.contains(&AuditAction::MemberBanAdd)
+                    && actions.contains(&AuditAction::MemberBanRemove)
+                    && actions
+                        .iter()
+                        .position(|action| *action == AuditAction::MemberBanRemove)
+                        < actions
+                            .iter()
+                            .position(|action| *action == AuditAction::MemberBanAdd)
+            })
+        })
+    });
+    harness.stop();
+}
+#[gpui::test]
 #[allow(clippy::too_many_lines)] // One story against the instance, step by step.
 fn a_search_finds_a_servers_message_with_its_words_lit_and_opens_it(cx: &mut TestAppContext) {
     use mellow_client_core::shared_logic::message_search::MessageSearchStatus;

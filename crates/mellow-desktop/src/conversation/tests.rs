@@ -1036,3 +1036,49 @@ fn ctrl_e_after_a_click_outside_the_picker_opens_it_again(cx: &mut TestAppContex
         Some(emoji_reactions::EmojiTarget::Composer)
     );
 }
+#[gpui::test]
+fn only_a_moderator_removes_all_reactions_and_is_asked_first(cx: &mut TestAppContext) {
+    let mut liked = message(10_001, &ana(), "hi");
+    liked.reactions = vec![mellow_protocol::ReactionSummary {
+        emoji: "👍".into(),
+        count: 2,
+        me: false,
+    }];
+    let (view, session, cx) = open_general(cx, vec![liked], None);
+    let remove_all = MenuLine::Action(MessageMenuAction::RemoveAllReactions);
+    assert!(!menu_actions(&view, 10_001, cx).contains(&remove_all));
+
+    session.update(cx, |session, cx| {
+        let state = session.state_mut();
+        let mut guild = state
+            .guild(GUILD_RUST)
+            .cloned()
+            .expect("the fixture's server");
+        guild.my_permissions |= Permissions::MANAGE_MESSAGES;
+        let change = state.apply_event(
+            mellow_protocol::GatewayEvent::GuildCreate(Box::new(guild)),
+            0,
+        );
+        cx.emit(StateChanged(vec![change]));
+    });
+    cx.run_until_parked();
+    let lines = menu_actions(&view, 10_001, cx);
+    assert_eq!(
+        lines[lines.len() - 2..],
+        [remove_all, MenuLine::Action(MessageMenuAction::Delete)]
+    );
+    cx.update(|window, cx| {
+        view.update(cx, |view, cx| {
+            view.run_menu_action(
+                Snowflake::from_raw(10_001),
+                MessageMenuAction::RemoveAllReactions,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_some()));
+    press(cx, "escape");
+    assert!(view.read_with(cx, |view, _| view.confirmation.is_none()));
+}
