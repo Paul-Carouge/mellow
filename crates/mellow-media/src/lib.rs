@@ -28,6 +28,7 @@ mod enhancement;
 mod input_gate;
 mod jitter_buffer;
 mod level;
+mod microphone_test;
 mod mixer;
 mod offer;
 mod person_settings;
@@ -68,6 +69,7 @@ pub use input_gate::{
     MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY, MAXIMUM_SENSITIVITY_DECIBELS, MINIMUM_SENSITIVITY_DECIBELS,
     Sensitivity,
 };
+pub use microphone_test::{MicrophoneTest, MicrophoneTestOptions};
 pub use mixer::MAXIMUM_VOLUME;
 pub use offer::{OfferError, ReceiveSlotKind};
 pub use person_settings::{
