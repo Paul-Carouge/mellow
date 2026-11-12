@@ -416,6 +416,10 @@ impl DuskShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // The settings sheet covers the shell: its shortcuts wait until it closes.
+        if self.is_settings_screen_open() {
+            return;
+        }
         let state = self.state(cx);
         if let Some(channel_id) = self
             .navigation
@@ -426,6 +430,9 @@ impl DuskShell {
     }
 
     fn step_server(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
+        if self.is_settings_screen_open() {
+            return;
+        }
         let state = self.state(cx);
         if let Some(guild_id) = self.navigation.adjacent_server(state, direction) {
             self.open_place(guild_id, None, window, cx);
@@ -482,7 +489,7 @@ impl DuskShell {
         let Some(place_id) = self.member_sheet_place_id(cx) else {
             return;
         };
-        if self.quick_switcher.is_some() {
+        if self.quick_switcher.is_some() || self.is_settings_screen_open() {
             return;
         }
         if window_width_at_default_zoom(window) >= BREAKPOINT_SIDE_SHEET {
@@ -583,7 +590,7 @@ impl DuskShell {
             cx.notify();
             return;
         }
-        if self.is_member_overlay_open {
+        if self.is_member_overlay_open || self.is_settings_screen_open() {
             return;
         }
         // Closed first, so the switcher records the drawer's opener, not the drawer.
