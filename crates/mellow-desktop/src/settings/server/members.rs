@@ -40,6 +40,7 @@ struct ManagedMember {
 }
 
 struct RemovalConfirmation {
+    removal: MemberRemoval,
     dialog: Entity<ModalDialog>,
     _subscriptions: Vec<Subscription>,
 }
@@ -125,9 +126,37 @@ impl MembersPage {
             .confirmation
             .as_ref()
             .is_some_and(|confirmation| confirmation.dialog.read(cx).is_busy());
-        if self.member(user_id, cx).is_none() && !is_removing {
-            self.close_member_dialogs(window, cx);
+        if is_removing {
+            return;
         }
+        let Some(member) = self.member(user_id, cx) else {
+            self.close_member_dialogs(window, cx);
+            return;
+        };
+        // The reader lost the permission, or the member now outranks them: the confirmation no
+        // longer offers what the instance would refuse.
+        let removal = self
+            .confirmation
+            .as_ref()
+            .map(|confirmation| confirmation.removal);
+        if let Some(removal) = removal
+            && !self.may_remove(&member, removal, cx)
+        {
+            self.confirmation = None;
+            cx.notify();
+        }
+    }
+
+    fn may_remove(&self, member: &Member, removal: MemberRemoval, cx: &App) -> bool {
+        let state = self.session.read(cx).state();
+        let me = state.current_user().map(|user| user.id);
+        state.guild(self.guild_id).is_some_and(|guild| {
+            let actions = member_actions(guild, &role_manager_of(guild, me), member, me);
+            match removal {
+                MemberRemoval::Kick => actions.can_kick,
+                MemberRemoval::Ban => actions.can_ban,
+            }
+        })
     }
 
     fn close_member_dialogs(&mut self, window: &mut Window, cx: &mut Context<Self>) {
@@ -264,6 +293,7 @@ impl MembersPage {
             }));
         }
         self.confirmation = Some(RemovalConfirmation {
+            removal,
             dialog,
             _subscriptions: subscriptions,
         });
@@ -521,6 +551,7 @@ mod tests {
     use mellow_protocol::GatewayEvent;
 
     use super::*;
+    use crate::settings::server::test_support::ADMINS;
     use crate::settings::server::test_support::{open_server_settings, receive, shown_page};
     use crate::shell_fixtures::{GUILD_RUST, ZOE};
 
@@ -568,6 +599,25 @@ mod tests {
         );
         page.read_with(cx, |page, _| {
             assert!(page.confirmation.is_none() && page.managed.is_none());
+        });
+    }
+
+    #[gpui::test]
+    fn a_confirmation_closes_when_the_member_comes_to_outrank_the_reader(cx: &mut TestAppContext) {
+        let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Members);
+        let page = shown_page::<MembersPage>(&settings, cx);
+        confirm_kick(&page, cx);
+        receive(
+            &session,
+            GatewayEvent::GuildMemberUpdate {
+                guild_id: GUILD_RUST,
+                user_id: ZOE,
+                role_ids: vec![ADMINS],
+            },
+            cx,
+        );
+        page.read_with(cx, |page, _| {
+            assert!(page.confirmation.is_none() && page.managed.is_some());
         });
     }
 }
