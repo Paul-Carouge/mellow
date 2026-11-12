@@ -295,9 +295,11 @@ fn the_add_dialog_offers_members_and_roles_the_reader_may_target(cx: &mut TestAp
         candidates.roles.is_empty(),
         "Moderators sits above the reader's highest role"
     );
-    let member_ids: Vec<Snowflake> = candidates
-        .members
-        .expect("the sample world has its members")
+    let super::super::add_overwrite_target::MemberCandidates::Ready(members) = candidates.members
+    else {
+        panic!("the sample world has its members");
+    };
+    let member_ids: Vec<Snowflake> = members
         .iter()
         .map(|candidate| candidate.target.id)
         .collect();
@@ -306,4 +308,133 @@ fn the_add_dialog_offers_members_and_roles_the_reader_may_target(cx: &mut TestAp
     cx.simulate_keystrokes("escape");
     cx.run_until_parked();
     assert!(page.read_with(cx, |page, _| page.add_dialog.is_none()));
+}
+
+#[gpui::test]
+fn a_change_made_while_saving_is_still_to_save(cx: &mut TestAppContext) {
+    let (_session, page, cx) = open_page(cx, administered_state());
+    page.update(cx, |page, cx| {
+        page.change(Permissions::SEND_MESSAGES, OverwriteState::Deny, cx);
+    });
+    let sent = page
+        .read_with(cx, ChannelPermissionsPage::selected_draft)
+        .map(|(_, draft)| draft)
+        .expect("an edit is shown");
+    page.update(cx, |page, cx| {
+        page.busy = Some(Busy::Save);
+        page.change(Permissions::ADD_REACTIONS, OverwriteState::Allow, cx);
+        page.finish_save(sent, Ok(()), cx);
+    });
+    assert!(
+        has_changes(&page, cx),
+        "the change made meanwhile was never sent"
+    );
+
+    // Saved with nothing changed meanwhile: the bar waits for the echo.
+    let sent = page
+        .read_with(cx, ChannelPermissionsPage::selected_draft)
+        .map(|(_, draft)| draft)
+        .expect("an edit is shown");
+    page.update(cx, |page, cx| page.finish_save(sent, Ok(()), cx));
+    assert!(!has_changes(&page, cx));
+}
+
+#[gpui::test]
+fn an_edit_the_reader_lost_the_right_to_make_is_dropped(cx: &mut TestAppContext) {
+    let (session, page, cx) = open_page(cx, administered_state());
+    page.update(cx, |page, cx| {
+        page.change(Permissions::SEND_MESSAGES, OverwriteState::Deny, cx);
+    });
+    assert!(has_changes(&page, cx));
+    session.update(cx, |session, cx| {
+        let mut guild = session
+            .state()
+            .guild(GUILD_RUST)
+            .cloned()
+            .expect("the sample world has Rust Lyon");
+        guild.my_permissions = Permissions::VIEW_CHANNEL | Permissions::MANAGE_ROLES;
+        session
+            .state_mut()
+            .apply_event(GatewayEvent::GuildCreate(Box::new(guild)), 0);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(!has_changes(&page, cx), "the server would refuse it");
+    let shown = editor(&page, cx);
+    let send_messages = shown
+        .groups
+        .iter()
+        .flat_map(|group| &group.permissions)
+        .find(|permission| permission.bit == Permissions::SEND_MESSAGES)
+        .expect("a text channel offers Send Messages");
+    assert!(send_messages.is_locked && shown.is_editable);
+    page.update(cx, |page, cx| {
+        page.change(Permissions::SEND_MESSAGES, OverwriteState::Deny, cx);
+    });
+    assert!(!has_changes(&page, cx), "a locked permission takes no edit");
+}
+
+#[gpui::test]
+fn an_added_target_already_brought_by_the_gateway_is_not_waited_for(cx: &mut TestAppContext) {
+    let (session, page, cx) = open_page(cx, administered_state());
+    cx.update(|window, cx| {
+        page.update(cx, |page, cx| page.open_add_dialog(window, cx));
+    });
+    cx.run_until_parked();
+    let dialog = page
+        .read_with(cx, |page, _| page.add_dialog.clone())
+        .expect("the dialog opens");
+    let zoe = OverwriteTarget {
+        kind: OverwriteKind::Member,
+        id: ZOE,
+    };
+    let zoe_overwrite = overwrite(
+        ZOE,
+        OverwriteKind::Member,
+        Permissions::empty(),
+        Permissions::empty(),
+    );
+    // The echo comes before the REST answer.
+    set_overwrites(&session, vec![zoe_overwrite], cx);
+    dialog.update(cx, |_, cx| cx.emit(AddOverwriteTargetEvent::Added(zoe)));
+    cx.run_until_parked();
+    assert!(page.read_with(cx, |page, _| page.added_target_id.is_none()
+        && page.add_dialog.is_none()));
+    assert_eq!(editor(&page, cx).row.target.id, ZOE);
+
+    // Someone else removes it: `@everyone` takes its place.
+    set_overwrites(&session, Vec::new(), cx);
+    assert_eq!(editor(&page, cx).row.target.id, GUILD_RUST);
+}
+
+#[gpui::test]
+fn arrows_choose_a_state_from_the_keyboard(cx: &mut TestAppContext) {
+    let (_session, page, cx) = open_page(cx, administered_state());
+    let first = editor(&page, cx)
+        .groups
+        .first()
+        .and_then(|group| group.permissions.first())
+        .map(|permission| (permission.bit, permission.current))
+        .expect("the editor has permissions");
+    assert_eq!(first.1, OverwriteState::Inherit);
+    // Tab through the add button and the targets to the first permission's chosen state.
+    let mut tabs = 0;
+    while page.read_with(cx, |page, _| page.edit.is_none()) {
+        assert!(tabs < 10, "a state takes focus from the keyboard");
+        cx.update(Window::focus_next);
+        cx.run_until_parked();
+        cx.simulate_keystrokes("right");
+        tabs += 1;
+    }
+    assert_eq!(
+        state_of(&editor(&page, cx), first.0),
+        OverwriteState::Allow,
+        "right from Inherit chooses Allow"
+    );
+    cx.simulate_keystrokes("right");
+    assert_eq!(
+        state_of(&editor(&page, cx), first.0),
+        OverwriteState::Deny,
+        "the arrows wrap around"
+    );
 }

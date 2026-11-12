@@ -18,7 +18,7 @@ use mellow_protocol::{OverwriteKind, Permissions, SetPermissionOverwriteRequest,
 
 use super::permissions::{TargetMark, role_colour, target_mark};
 use crate::components::{
-    ModalDialog, ModalDialogEvent, TextField, focus_ring, is_focus_visible,
+    Button, ModalDialog, ModalDialogEvent, TextField, child_id, focus_ring, is_focus_visible,
     remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::strings;
@@ -48,11 +48,20 @@ pub(super) struct Candidate {
     mark: TargetMark,
 }
 
-/// What the search finds; `members` is `None` while the member list loads.
-#[derive(Debug, Clone, Default)]
+/// The members the search finds, once the member list is known.
+#[derive(Debug, Clone)]
+pub(super) enum MemberCandidates {
+    Loading,
+    /// The member list could not be loaded: unknown, not empty.
+    Failed,
+    Ready(Vec<Candidate>),
+}
+
+/// What the search finds.
+#[derive(Debug, Clone)]
 pub(super) struct Candidates {
     pub(super) roles: Vec<Candidate>,
-    pub(super) members: Option<Vec<Candidate>>,
+    pub(super) members: MemberCandidates,
 }
 
 pub struct AddOverwriteTarget {
@@ -150,7 +159,10 @@ impl AddOverwriteTarget {
             state.guild_of_channel(self.channel_id),
             state.guild_channel(self.channel_id),
         ) else {
-            return Candidates::default();
+            return Candidates {
+                roles: Vec::new(),
+                members: MemberCandidates::Ready(Vec::new()),
+            };
         };
         let query = self.search.read(cx).value().to_string();
         let manager = role_manager_of(guild, state.current_user().map(|user| user.id));
@@ -166,25 +178,25 @@ impl AddOverwriteTarget {
             })
             .collect();
         let members_list = state.members(guild.id);
-        let is_loading = match session.members_load(guild.id) {
-            Some(MembersLoad::Loading) => true,
-            Some(MembersLoad::Failed) => false,
+        let members = match session.members_load(guild.id) {
+            Some(MembersLoad::Loading) => MemberCandidates::Loading,
+            Some(MembersLoad::Failed) if members_list.is_empty() => MemberCandidates::Failed,
             // Not asked yet: the page asked on opening, so it is on its way.
-            None => members_list.is_empty(),
+            None if members_list.is_empty() => MemberCandidates::Loading,
+            _ => MemberCandidates::Ready(
+                addable_members(channel, members_list, &query)
+                    .into_iter()
+                    .map(|member| Candidate {
+                        target: OverwriteTarget {
+                            kind: OverwriteKind::Member,
+                            id: member.user.id,
+                        },
+                        name: display_name(&member.user).to_owned(),
+                        mark: TargetMark::Member(Some(member.user.clone())),
+                    })
+                    .collect(),
+            ),
         };
-        let members = (!is_loading).then(|| {
-            addable_members(channel, members_list, &query)
-                .into_iter()
-                .map(|member| Candidate {
-                    target: OverwriteTarget {
-                        kind: OverwriteKind::Member,
-                        id: member.user.id,
-                    },
-                    name: display_name(&member.user).to_owned(),
-                    mark: TargetMark::Member(Some(member.user.clone())),
-                })
-                .collect()
-        });
         Candidates { roles, members }
     }
 
@@ -311,10 +323,7 @@ impl AddOverwriteTarget {
             .flex_col()
             .child(
                 with_type(div(), TYPE_CATEGORY)
-                    .id(ElementId::NamedChild(
-                        std::sync::Arc::new(ElementId::from(heading_id)),
-                        SharedString::new_static("title"),
-                    ))
+                    .id(child_id(&ElementId::from(heading_id), "title"))
                     .role(Role::Heading)
                     .aria_level(3)
                     .text_color(color(tokens.component_settings_section_label_text))
@@ -336,14 +345,12 @@ impl AddOverwriteTarget {
 impl Render for AddOverwriteTarget {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        let words = strings(cx).channel_settings().permissions();
+        let catalogue = strings(cx);
+        let words = catalogue.channel_settings().permissions();
         let candidates = self.candidates(cx);
         let query = self.search.read(cx).value().trim().to_owned();
         let is_empty = candidates.roles.is_empty()
-            && candidates
-                .members
-                .as_ref()
-                .is_some_and(std::vec::Vec::is_empty);
+            && matches!(&candidates.members, MemberCandidates::Ready(members) if members.is_empty());
         let status = |text: String| {
             with_type(div(), TYPE_BODY)
                 .id("overwrite-candidates-status")
@@ -362,15 +369,53 @@ impl Render for AddOverwriteTarget {
             )
         });
         let members = match &candidates.members {
-            None => Some(status(words.loading_members().to_owned()).into_any_element()),
-            Some(members) if !members.is_empty() => Some(Self::render_rows(
+            MemberCandidates::Loading => {
+                Some(status(words.loading_members().to_owned()).into_any_element())
+            }
+            MemberCandidates::Failed => {
+                let session = self.session.clone();
+                let guild_id = session
+                    .read(cx)
+                    .state()
+                    .guild_of_channel(self.channel_id)
+                    .map(|guild| guild.id);
+                Some(
+                    div()
+                        .id("overwrite-members-failed")
+                        .role(Role::Alert)
+                        .flex()
+                        .flex_col()
+                        .items_start()
+                        .gap(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
+                        .child(
+                            with_type(div(), TYPE_BODY)
+                                .text_color(color(tokens.component_settings_body_text))
+                                .child(catalogue.members().load_failed()),
+                        )
+                        .child(
+                            Button::new(
+                                "overwrite-members-try-again",
+                                catalogue.common().try_again(),
+                            )
+                            .on_click(move |_, cx| {
+                                if let Some(guild_id) = guild_id {
+                                    session.update(cx, |session, cx| {
+                                        session.load_members(guild_id, true, cx);
+                                    });
+                                }
+                            }),
+                        )
+                        .into_any_element(),
+                )
+            }
+            MemberCandidates::Ready(members) if !members.is_empty() => Some(Self::render_rows(
                 "overwrite-members",
                 words.members(),
                 members,
                 window,
                 cx,
             )),
-            Some(_) => None,
+            MemberCandidates::Ready(_) => None,
         };
         div()
             .flex()

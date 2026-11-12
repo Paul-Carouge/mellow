@@ -281,16 +281,32 @@ impl ChannelPermissionsPage {
         {
             self.added_target_id = None;
         }
+        // An edit the reader lost the right to make is dropped: the server would refuse it.
         let is_edit_over = self.edit.is_some_and(|edit| {
             !targets.iter().any(|target| target.id == edit.target.id)
                 || rebase_overwrite_edit(&edit, stored_overwrite_of(channel, edit.target.id))
                     .is_none()
+                || !self.is_edit_allowed(&edit, cx)
         });
         if is_edit_over {
             self.edit = None;
             self.is_awaiting_echo = false;
         }
         self.refresh(cx);
+    }
+
+    /// The reader may still edit the target and every permission the edit changes.
+    fn is_edit_allowed(&self, edit: &OverwriteEdit, cx: &App) -> bool {
+        let Some((guild, _)) = self.context(cx) else {
+            return false;
+        };
+        let manager = role_manager_of(guild, self.current_user_id(cx));
+        let channel_permissions = self.channel_permissions(cx);
+        let changed = (edit.draft.allow ^ edit.base.allow) | (edit.draft.deny ^ edit.base.deny);
+        can_edit_target(guild, &manager, edit.target)
+            && changed
+                .iter()
+                .all(|bit| can_change_channel_permission(channel_permissions, bit))
     }
 
     fn ask_attention(&mut self, cx: &mut Context<Self>) {
@@ -373,6 +389,12 @@ impl ChannelPermissionsPage {
         let Some((target, draft)) = self.selected_draft(cx) else {
             return;
         };
+        if !self
+            .edit
+            .is_some_and(|edit| self.is_edit_allowed(&edit, cx))
+        {
+            return;
+        }
         self.busy = Some(Busy::Save);
         self.save_error = None;
         cx.notify();
@@ -398,22 +420,32 @@ impl ChannelPermissionsPage {
                 },
                 cx,
                 move |outcome, cx| {
-                    let _ = page.update(cx, |page, cx| {
-                        page.busy = None;
-                        match outcome {
-                            Ok(()) => {
-                                // The echo may have come first and ended the edit already.
-                                page.is_awaiting_echo = page.edit.is_some();
-                                page.notice =
-                                    Some(strings(cx).server_settings().unsaved().saved().into());
-                            }
-                            Err(message) => page.save_error = Some(message),
-                        }
-                        page.refresh(cx);
-                    });
+                    let _ = page.update(cx, |page, cx| page.finish_save(draft, outcome, cx));
                 },
             );
         });
+    }
+
+    /// `sent` is the overwrite the request carried. Only that edit waits for its echo: one changed
+    /// while the request was on its way still has something to save.
+    fn finish_save(
+        &mut self,
+        sent: OverwriteBits,
+        outcome: Result<(), String>,
+        cx: &mut Context<Self>,
+    ) {
+        self.busy = None;
+        match outcome {
+            Ok(()) => {
+                // The echo may have come first and ended the edit already.
+                self.is_awaiting_echo = self
+                    .selected_draft(cx)
+                    .is_some_and(|(_, shown)| shown == sent);
+                self.notice = Some(strings(cx).server_settings().unsaved().saved().into());
+            }
+            Err(message) => self.save_error = Some(message),
+        }
+        self.refresh(cx);
     }
 
     fn remove(&mut self, target: OverwriteTarget, cx: &mut Context<Self>) {
@@ -487,7 +519,8 @@ impl ChannelPermissionsPage {
                 page.notice = None;
                 page.pending_focus = Some(page.add_button_focus.clone());
             }
-            page.refresh(cx);
+            // The gateway may have brought it already: that ends the wait at once.
+            page.follow_stored_channel(cx);
         });
         self.add_dialog_subscription = Some(subscription);
         self.add_dialog = Some(dialog);
@@ -1024,15 +1057,16 @@ fn override_states(
                 })
                 .when_some(fill, |option, fill| option.bg(color(fill)))
                 .text_color(color(text))
+                // Always followed, so a state chosen under the pointer forgets it once it leaves.
+                .on_hover(move |is_hovered, _, cx| {
+                    hover.update(cx, |remembered, cx| {
+                        *remembered = *is_hovered;
+                        cx.notify();
+                    });
+                })
                 .when(!is_locked && !is_chosen, |option| {
                     option
                         .cursor_pointer()
-                        .on_hover(move |is_hovered, _, cx| {
-                            hover.update(cx, |remembered, cx| {
-                                *remembered = *is_hovered;
-                                cx.notify();
-                            });
-                        })
                         .on_click(move |_, _, cx| on_change(state, cx))
                 })
                 .child(icon(
