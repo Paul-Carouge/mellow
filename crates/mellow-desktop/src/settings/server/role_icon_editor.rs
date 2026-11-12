@@ -223,9 +223,9 @@ impl RoleIconEditor {
                         Ok(picture) => {
                             editor.send(IconChange::Picture, IconRequest::Picture(picture), cx);
                         }
-                        Err(error) => {
+                        Err(failure) => {
                             editor.error_message =
-                                Some(describe_icon_error(&error, IconChange::Picture, cx));
+                                Some(describe_picture_read_failure(&failure, cx));
                             cx.notify();
                         }
                     }
@@ -309,18 +309,19 @@ enum IconRequest {
     Remove,
 }
 
-/// The picture's bytes, never more than the instance takes. A file that cannot be read is worded
-/// as the instance's refusal of an unreadable picture (`VALIDATION_FAILED`), as the web does.
-fn read_picture(path: &Path) -> Result<Vec<u8>, ClientError> {
+/// Why a local picture never reached the instance.
+enum PictureReadFailure {
+    Unreadable,
+    TooLarge,
+}
+
+/// The picture's bytes, never more than the instance takes.
+fn read_picture(path: &Path) -> Result<Vec<u8>, PictureReadFailure> {
     use std::io::Read as _;
 
     let unreadable = |error: std::io::Error| {
         tracing::warn!(%error, "a role icon picture could not be read");
-        ClientError::Api {
-            status: 0,
-            code: ApiErrorCode::ValidationFailed,
-            message: String::new(),
-        }
+        PictureReadFailure::Unreadable
     };
     let file = std::fs::File::open(path).map_err(unreadable)?;
     let mut picture = Vec::new();
@@ -329,9 +330,22 @@ fn read_picture(path: &Path) -> Result<Vec<u8>, ClientError> {
         .read_to_end(&mut picture)
         .map_err(unreadable)?;
     if picture.len() as u64 > MAXIMUM_ROLE_ICON_UPLOAD_BYTES {
-        return Err(ClientError::FileTooLarge);
+        return Err(PictureReadFailure::TooLarge);
     }
     Ok(picture)
+}
+
+/// The web's wording of a picture that could not be read or is too large.
+fn describe_picture_read_failure(failure: &PictureReadFailure, cx: &App) -> SharedString {
+    let words = strings(cx);
+    let reason = match failure {
+        PictureReadFailure::Unreadable => words.role_icons().unreadable().to_owned(),
+        PictureReadFailure::TooLarge => words.role_icons().too_large(maximum_kilobytes()),
+    };
+    words
+        .errors()
+        .with_reason(words.role_icons().change_failed(), &reason)
+        .into()
 }
 
 /// The web's wording: too large and unreadable pictures say so, other failures their reason.
