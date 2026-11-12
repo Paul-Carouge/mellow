@@ -10,6 +10,8 @@ mod numbers;
 
 use gpui::{App, Global};
 
+use crate::preferences::{LanguageChoice, preferences};
+
 pub use catalogue::Strings;
 pub use numbers::{format_count, format_number, format_number_like_javascript, is_plural_one};
 
@@ -59,7 +61,49 @@ pub fn strings(cx: &App) -> Strings {
 /// Switches the interface language and redraws every window in it.
 pub fn use_language(language: Language, cx: &mut App) {
     cx.set_global(Strings::new(language));
+    let pending = match language {
+        Language::English => &crate::strings_pending_i18n::ENGLISH,
+        Language::French => &crate::strings_pending_i18n::FRENCH,
+    };
+    cx.set_global(crate::strings_pending_i18n::ActiveStrings(pending));
     cx.refresh_windows();
+}
+
+/// The operating system's language, read once at start-up, for "Same as this computer".
+#[derive(Debug, Clone, Copy)]
+struct SystemLanguage(Language);
+
+impl Global for SystemLanguage {}
+
+/// The language a choice speaks when the operating system's is `system`.
+#[must_use]
+pub fn chosen_language(choice: LanguageChoice, system: Language) -> Language {
+    match choice {
+        LanguageChoice::System => system,
+        LanguageChoice::English => Language::English,
+        LanguageChoice::French => Language::French,
+    }
+}
+
+/// Speaks the operating system's language until the preferences say otherwise.
+pub fn use_system_language(cx: &mut App) {
+    let system = Language::from_operating_system();
+    cx.set_global(SystemLanguage(system));
+    use_language(system, cx);
+}
+
+/// Switches to the language the preferences ask for, if it is not the one spoken.
+pub fn apply_chosen_language(cx: &mut App) {
+    let system = cx
+        .try_global::<SystemLanguage>()
+        .map_or_else(Language::default, |language| language.0);
+    let choice = preferences(cx)
+        .map(|preferences| preferences.language)
+        .unwrap_or_default();
+    let wanted = chosen_language(choice, system);
+    if strings(cx).language() != wanted {
+        use_language(wanted, cx);
+    }
 }
 
 #[cfg(test)]

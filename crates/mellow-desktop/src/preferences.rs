@@ -31,6 +31,8 @@ const NOTIFICATIONS_KEY: &str = "notifications";
 const MEDIA_VOLUME_KEY: &str = "media-volume";
 const MEDIA_MUTED_KEY: &str = "media-muted";
 const RECENT_EMOJI_KEY: &str = "recent-emoji";
+const THEME_KEY: &str = "theme";
+const LANGUAGE_KEY: &str = "language";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -61,6 +63,62 @@ pub enum RememberedPlace {
     },
 }
 
+/// The theme the reader chose in User settings, Appearance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum ThemeChoice {
+    /// The operating system's light or dark appearance, followed live.
+    #[default]
+    System,
+    Light,
+    Dark,
+}
+
+impl ThemeChoice {
+    fn parse(text: &str) -> Self {
+        match text {
+            "light" => Self::Light,
+            "dark" => Self::Dark,
+            _ => Self::System,
+        }
+    }
+
+    fn as_file_text(self) -> Option<&'static str> {
+        match self {
+            Self::System => None,
+            Self::Light => Some("light"),
+            Self::Dark => Some("dark"),
+        }
+    }
+}
+
+/// The interface language the reader chose in User settings, Appearance.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum LanguageChoice {
+    /// The operating system's preferred languages, English when Mellow speaks none of them.
+    #[default]
+    System,
+    English,
+    French,
+}
+
+impl LanguageChoice {
+    fn parse(text: &str) -> Self {
+        match text {
+            "en" => Self::English,
+            "fr" => Self::French,
+            _ => Self::System,
+        }
+    }
+
+    fn as_file_text(self) -> Option<&'static str> {
+        match self {
+            Self::System => None,
+            Self::English => Some("en"),
+            Self::French => Some("fr"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Preferences {
     /// The instance of the last sign-in, offered again on the instance address screen.
@@ -85,6 +143,8 @@ pub struct Preferences {
     /// Each account's recently used emoji, latest first (the web keeps them in `localStorage`),
     /// accounts most recent last.
     pub recent_emoji_by_user: Vec<(Snowflake, Vec<String>)>,
+    pub theme: ThemeChoice,
+    pub language: LanguageChoice,
 }
 
 impl Preferences {
@@ -282,6 +342,8 @@ impl Preferences {
                 MEMBERS_WIDTH_KEY => preferences.members_column_width = parse_column_width(value),
                 MEDIA_VOLUME_KEY => preferences.media_volume = parse_media_volume(value),
                 MEDIA_MUTED_KEY => preferences.is_media_muted = value == "true",
+                THEME_KEY => preferences.theme = ThemeChoice::parse(value),
+                LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 // `<user id>:<the web's JSON>`, validated field by field as the web reads it.
                 NOTIFICATIONS_KEY => {
                     if let Some((user, json)) = value.split_once(':')
@@ -346,6 +408,12 @@ impl Preferences {
         }
         if self.is_media_muted {
             let _ = writeln!(text, "{MEDIA_MUTED_KEY}=true");
+        }
+        if let Some(theme) = self.theme.as_file_text() {
+            let _ = writeln!(text, "{THEME_KEY}={theme}");
+        }
+        if let Some(language) = self.language.as_file_text() {
+            let _ = writeln!(text, "{LANGUAGE_KEY}={language}");
         }
         // Compact JSON escapes line breaks, so each account stays on one line.
         for (user_id, settings) in &self.notification_settings_by_user {
@@ -464,6 +532,8 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     media_volume: None,
     is_media_muted: false,
     recent_emoji_by_user: Vec::new(),
+    theme: ThemeChoice::System,
+    language: LanguageChoice::System,
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -544,6 +614,8 @@ mod tests {
         preferences.members_column_width = Some(264.0);
         preferences.media_volume = Some(0.25);
         preferences.is_media_muted = true;
+        preferences.theme = ThemeChoice::Light;
+        preferences.language = LanguageChoice::French;
 
         write_atomically(&path, &preferences.to_file_text()).unwrap();
         assert_eq!(Preferences::load_from(&path), preferences);
@@ -628,7 +700,7 @@ mod tests {
     fn tampered_navigation_lines_are_ignored() {
         let text = "place=server:abc\nchannel=1:-2\nchannel=1\nmember-sheet=99999999999999999999999\n\
             channels-width=NaN\nmembers-width=-4\nplace=home:\nmedia-volume=1.5\nmedia-volume=NaN\n\
-            media-muted=yes\n";
+            media-muted=yes\ntheme=sepia\nlanguage=de\n";
         let preferences = Preferences::from_file_text(text);
         assert_eq!(preferences, Preferences::default());
     }

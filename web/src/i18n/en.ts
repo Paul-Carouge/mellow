@@ -2363,6 +2363,23 @@ export const en = {
     openMellow: "Open Mellow",
     /** The notification settings dialog's sentence: the choices stay in the app on this computer. */
     notificationsIntro: "While your status is Do not disturb, nothing notifies you. These settings stay on this computer.",
+    /** User settings, Appearance: the theme and the language, kept in the app on this computer. */
+    appearance: "Appearance",
+    appearanceIntro: "These settings stay on this computer.",
+    theme: "Theme",
+    themeSystem: "Same as this computer",
+    themeLight: "Light",
+    themeDark: "Dark",
+    language: "Language",
+    languageSystem: "Same as this computer",
+    /** Language names, each in its own language. */
+    languageEnglish: "English",
+    languageFrench: "Français",
+    /** User settings, About: the app's name. */
+    desktopApp: "Mellow for desktop",
+    /** Security: the recovery codes file was saved where the person chose. */
+    codesSaved: "Recovery codes saved.",
+    codesSaveFailed: "Couldn't save the file. Copy the codes instead.",
   },
 };
 
