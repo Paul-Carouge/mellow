@@ -375,7 +375,7 @@ impl VoicePage {
             key.is_some_and(|key| key.label.chars().count() == 1 || key.code == "Space");
         let mut helper = catalogue
             .desktop()
-            .voice_push_to_talk_focus_note()
+            .voice_push_to_talk_other_apps_note()
             .to_owned();
         if does_key_type_a_character {
             helper.push(' ');

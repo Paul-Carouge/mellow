@@ -2385,13 +2385,30 @@ export const en = {
     voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
     /** The voice panel, when no sound output could be opened at all. */
     voiceOutputUnavailable: "No sound output found: you can't hear the others until one is plugged in.",
+    /** The voice panel, under the push-to-talk hint: whether the key also works while another app is focused (ADR-0053). */
+    globalPushToTalkListening: "Works in other apps too.",
+    globalPushToTalkListeningKeyTaken: "Works in other apps too, where this key does nothing else during the call.",
+    /** The shortcut the system chose, as it describes it ("Ctrl+V"). */
+    globalPushToTalkListeningAs: (trigger: string) => `Works in other apps too, with ${trigger}.`,
+    globalPushToTalkX11Only: "In other apps, works only while an X11 window is focused: your desktop has no global shortcuts portal.",
+    globalPushToTalkModifierWindowOnly: "A modifier key alone works only while Mellow is focused.",
+    globalPushToTalkKeyUnavailable: "Works only while Mellow is focused: another app may already use this key.",
+    globalPushToTalkRefused: "Works only while Mellow is focused: the system shortcut wasn't allowed.",
+    globalPushToTalkNoPortal: "Works only while Mellow is focused: your desktop has no global shortcuts portal.",
+    globalPushToTalkPortalFailed: "Works only while Mellow is focused: your desktop's global shortcuts portal ran into an error.",
+    /** The portal took the shortcut without a key (Hyprland, or the key removed in the system's settings). */
+    globalPushToTalkBoundWithoutKey: "To use it in other apps, choose a key for “Push to talk in Mellow” in your desktop's shortcut settings.",
+    /** macOS: the recorded key's character is on no key of the keyboard layout now in use. */
+    globalPushToTalkKeyNotOnLayout: "Works only while Mellow is focused: this key isn't on your current keyboard layout.",
+    /** The shortcut's name in the system's shortcut settings and its confirmation dialog. */
+    globalPushToTalkShortcutName: "Push to talk in Mellow",
     /** User settings, Voice: where the web's sentences name the browser. */
     voiceStandardNoiseSuppression: "Standard",
     voiceStandardNoiseSuppressionDescription: "WebRTC's filter, built into Mellow: lighter, it lets more noise through.",
     voiceAutomaticSensitivityDescription: "Mellow tells your voice from silence.",
     voiceEnhancementDescription:
       "Evens out your voice and gives it presence for a clean, steady sound, like on a stream. It replaces the automatic gain.",
-    voicePushToTalkFocusNote: "Mellow only sees your keys while its window is in front.",
+    voicePushToTalkOtherAppsNote: "During a call, it also works in other apps when your system allows it; the voice panel tells you.",
     /** The microphone test found no microphone to open. */
     voiceTestNoMicrophone: "No microphone found. Plug one in, then test again.",
   },
