@@ -14787,13 +14787,6 @@ impl DesktopStrings {
         }
     }
 
-    pub fn cannot_watch_screen(self) -> &'static str {
-        match self.language {
-            Language::English => "This app can't play this screen's picture on this computer.",
-            Language::French => "Cette app ne sait pas lire l’image de cet écran sur cet ordinateur.",
-        }
-    }
-
     pub fn voice_could_not_start_title(self) -> &'static str {
         match self.language {
             Language::English => "Voice couldn't start",

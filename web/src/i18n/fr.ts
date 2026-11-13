@@ -2340,7 +2340,6 @@ export const fr: Catalogue = {
     codesSaveFailed: "Impossible d’enregistrer le fichier. Copie plutôt les codes.",
     callUndecodable: "Image non prise en charge par cette app",
     screenUndecodable: "Cette app ne sait pas lire l’image de cet écran (H.264) sur cet ordinateur. Regarde-le depuis un navigateur.",
-    cannotWatchScreen: "Cette app ne sait pas lire l’image de cet écran sur cet ordinateur.",
     voiceCouldNotStartTitle: "La voix n’a pas pu démarrer",
     voiceCouldNotStart: "Mellow n’a pas pu démarrer son audio ni trouver l’adresse de l’instance. Vérifie ta connexion, puis réessaie.",
     voiceOutputUnavailable: `Aucune sortie audio trouvée${NO_BREAK_SPACE}: tu n’entends pas les autres tant que tu n’en branches pas une.`,
