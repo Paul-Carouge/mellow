@@ -5,6 +5,7 @@
 //! web counts UTF-16 units; words shown to people stay out: functions return structured values
 //! the client's own catalogue puts into words, except dates and numbers, which take a [`format::Locale`].
 
+pub mod call_view;
 pub mod channel_order;
 pub mod channel_settings;
 pub mod code_blocks;

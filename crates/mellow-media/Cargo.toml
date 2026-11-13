@@ -34,6 +34,9 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
+# Received H.264 (ADR-0052) through the system FFmpeg the Linux desktop already links for
+# Vesper's encoder (ADR-0051's amendment).
+rusty_ffmpeg.workspace = true
 
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -41,9 +44,12 @@ block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 objc2 = "0.6.5"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSDictionary", "NSError", "NSObject", "NSString", "NSValue"] }
+# Received H.264 (ADR-0052) through VideoToolbox, the system's decoder.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
+objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTDecompressionSession", "VTErrors", "objc2-core-media", "objc2-core-video"] }
 
 [build-dependencies]
 cc.workspace = true
