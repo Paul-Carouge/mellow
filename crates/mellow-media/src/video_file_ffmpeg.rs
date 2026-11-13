@@ -37,6 +37,8 @@ const BGRA_BYTES_PER_PIXEL: usize = 4;
 /// From 720 lines up, a stream that does not say its colours is taken as HD (BT.709), as
 /// players do; below, as BT.601.
 const HIGH_DEFINITION_LINES: c_int = 720;
+/// A display matrix is nine 32-bit numbers.
+const DISPLAY_MATRIX_BYTES: usize = 9 * std::mem::size_of::<i32>();
 /// The only decoders a received file reaches (ADR-0051's amendment), by FFmpeg's names: a
 /// crafted file never routes its bytes to one of the hundreds of others a distribution builds.
 const ALLOWED_DECODERS: &CStr = c"h264,hevc,vp8,vp9,libdav1d,av1,aac,opus,vorbis";
@@ -100,6 +102,33 @@ fn is_allowed_decoder(name: &CStr) -> bool {
         .to_bytes()
         .split(|byte| *byte == b',')
         .any(|allowed| allowed == name.to_bytes())
+}
+
+/// The counter-clockwise angle of a stream's display matrix, when it has a whole, finite one.
+/// Shared with the Linux video compression, which reads the matrix the same way.
+///
+/// # Safety
+/// `parameters` belongs to an opened stream.
+pub(crate) unsafe fn display_rotation_degrees(
+    parameters: *const ff::AVCodecParameters,
+) -> Option<f64> {
+    // SAFETY: the stream's own side data list, checked for null and for the matrix's size
+    // before it is read.
+    let degrees = unsafe {
+        let matrix = ff::av_packet_side_data_get(
+            (*parameters).coded_side_data,
+            (*parameters).nb_coded_side_data,
+            ff::AV_PKT_DATA_DISPLAYMATRIX,
+        );
+        let is_whole_matrix = !matrix.is_null()
+            && (*matrix).size >= DISPLAY_MATRIX_BYTES
+            && !(*matrix).data.is_null();
+        if !is_whole_matrix {
+            return None;
+        }
+        ff::av_display_rotation_get((*matrix).data.cast::<i32>().cast_const())
+    };
+    degrees.is_finite().then_some(degrees)
 }
 
 /// One demuxer over the file in memory.
@@ -406,25 +435,8 @@ impl FfmpegVideoTrack {
             if pixels <= 0 || pixels > i64::try_from(MAXIMUM_SOURCE_PIXELS).unwrap_or(i64::MAX) {
                 return Err(ClipError::Unsupported);
             }
-            let matrix = ff::av_packet_side_data_get(
-                (*parameters).coded_side_data,
-                (*parameters).nb_coded_side_data,
-                ff::AV_PKT_DATA_DISPLAYMATRIX,
-            );
-            let is_whole_matrix = !matrix.is_null()
-                && (*matrix).size >= 9 * std::mem::size_of::<i32>()
-                && !(*matrix).data.is_null();
-            if is_whole_matrix {
-                let degrees =
-                    ff::av_display_rotation_get((*matrix).data.cast::<i32>().cast_const());
-                if degrees.is_nan() {
-                    0
-                } else {
-                    quarter_turns_from_counterclockwise_degrees(degrees)
-                }
-            } else {
-                0
-            }
+            display_rotation_degrees(parameters)
+                .map_or(0, quarter_turns_from_counterclockwise_degrees)
         };
         let duration = demuxer.duration();
         Ok(Self {
