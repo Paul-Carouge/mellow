@@ -82,7 +82,8 @@ impl ServerModerationLogPage {
         page
     }
 
-    #[cfg(test)]
+    // Only the tests against a real server read it; the server refuses Windows (ADR-0006).
+    #[cfg(all(test, not(windows)))]
     pub(crate) fn entries(&self) -> Option<&[AuditLogEntry]> {
         self.entries.as_deref()
     }

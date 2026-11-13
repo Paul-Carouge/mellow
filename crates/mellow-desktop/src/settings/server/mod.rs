@@ -35,7 +35,8 @@ use self::moderation_log::ServerModerationLogPage;
 use self::overview::ServerOverviewPage;
 use self::roles::RolesPage;
 use self::soundboard::ServerSoundboardPage;
-#[cfg(test)]
+// Only the tests against a real server use them; the server refuses Windows (ADR-0006).
+#[cfg(all(test, not(windows)))]
 pub(crate) use self::{
     bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
     moderation_log::ServerModerationLogPage as ModerationLogPage,
