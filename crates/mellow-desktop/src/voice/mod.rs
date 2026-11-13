@@ -618,17 +618,23 @@ impl Voice {
         if self.call.is_none() {
             self.call = self.abandoned_start.take();
         }
-        if let Some(call) = self.call.as_mut() {
-            // Connected: move there. Still starting: the start is retargeted, and the engine
-            // moves when it is claimed.
-            if let Some(engine) = call.engine.as_mut() {
-                engine.move_to(channel_id);
+        if self.call.is_some() {
+            // Video never follows you into another channel, as on the web and Discord.
+            if self.camera_phase() != CameraPhase::Off {
+                self.stop_camera(cx);
             }
-            call.channel_id = channel_id;
-            call.guild_id = guild_id;
-            call.phase = CallPhase::Connecting;
-            call.round_trip = None;
-            call.is_self_speaking = false;
+            if let Some(call) = self.call.as_mut() {
+                // Connected: move there. Still starting: the start is retargeted, and the
+                // engine moves when it is claimed.
+                if let Some(engine) = call.engine.as_mut() {
+                    engine.move_to(channel_id);
+                }
+                call.channel_id = channel_id;
+                call.guild_id = guild_id;
+                call.phase = CallPhase::Connecting;
+                call.round_trip = None;
+                call.is_self_speaking = false;
+            }
             cx.notify();
             return;
         }

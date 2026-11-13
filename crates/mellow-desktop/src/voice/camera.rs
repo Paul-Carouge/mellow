@@ -17,7 +17,7 @@ use std::time::Duration;
 use gpui::{App, AppContext as _, Context};
 use mellow_media::{
     CameraDescription, CameraError, CameraFeed, Cameras, DecodedVideoFrame, SystemCameras,
-    VideoInput, VideoSourceKind, VoiceSessionEvent,
+    VideoInput, VideoSourceKind, VoiceSession, VoiceSessionEvent,
 };
 use mellow_protocol::{Permissions, VoiceVideoRefusal};
 
@@ -271,6 +271,11 @@ pub(super) struct CameraState {
     phase: CameraPhase,
     problem: Option<CameraProblem>,
     worker: Option<CameraWorker>,
+    /// While another camera opens live, the one still sending: kept until the new one works.
+    previous_worker: Option<CameraWorker>,
+    /// The call took the camera's input back with nothing replacing it: the server's reason
+    /// (refused, stopped), which travels apart, may still arrive.
+    is_server_reason_awaited: bool,
     preview: Option<PreviewCamera>,
     preview_problem: Option<CameraProblem>,
     /// The settings' Video part is shown: the call's camera converts pictures for it.
@@ -288,6 +293,8 @@ impl CameraState {
             phase: CameraPhase::Off,
             problem: None,
             worker: None,
+            previous_worker: None,
+            is_server_reason_awaited: false,
             preview: None,
             preview_problem: None,
             is_preview_shown: false,
@@ -299,6 +306,8 @@ impl CameraState {
     /// Leaving the call: the camera goes with it (the engine, gone, needs no telling).
     pub(super) fn end_with_call(&mut self) {
         self.worker = None;
+        self.previous_worker = None;
+        self.is_server_reason_awaited = false;
         self.phase = CameraPhase::Off;
         self.problem = None;
     }
@@ -370,6 +379,7 @@ impl Voice {
         self.camera.preview = None;
         self.camera.preview_problem = None;
         self.camera.problem = None;
+        self.camera.is_server_reason_awaited = false;
         self.camera.phase = CameraPhase::Starting;
         let worker = self.start_camera_worker(CameraUse::Call, cx);
         worker.set_preview_wanted(self.camera.is_preview_shown);
@@ -380,6 +390,7 @@ impl Voice {
     /// Turns the camera off and tells the server.
     pub fn stop_camera(&mut self, cx: &mut Context<Self>) {
         self.camera.worker = None;
+        self.camera.previous_worker = None;
         self.camera.phase = CameraPhase::Off;
         if let Some(engine) = self.engine()
             && engine.video_source() == Some(VideoSourceKind::Camera)
@@ -401,7 +412,7 @@ impl Voice {
         event: &VoiceSessionEvent,
         cx: &mut Context<Self>,
     ) {
-        if self.camera.phase == CameraPhase::Off {
+        if self.camera.phase == CameraPhase::Off && !self.camera.is_server_reason_awaited {
             return;
         }
         let problem = match event {
@@ -409,15 +420,20 @@ impl Voice {
             _ => CameraProblem::Stopped,
         };
         self.stop_camera(cx);
+        self.camera.is_server_reason_awaited = false;
         self.camera.problem = Some(problem);
     }
 
-    /// The chosen camera changed: the camera on (or opening) and the preview move to it at once.
+    /// The chosen camera changed: the camera on (or opening) and the preview move to it. A
+    /// camera on keeps sending until the new one works, and stays if the new one fails, as on
+    /// the web.
     pub(super) fn follow_camera_device(&mut self, cx: &mut Context<Self>) {
         if self.camera.phase != CameraPhase::Off {
-            // The server keeps the camera announced; the encoder repeats the last picture
-            // until the new camera's first one.
-            self.camera.phase = CameraPhase::Starting;
+            let replaced = self.camera.worker.take();
+            // Only a camera that sends is worth keeping; an earlier switch's keeps its place.
+            if self.camera.phase == CameraPhase::On && self.camera.previous_worker.is_none() {
+                self.camera.previous_worker = replaced;
+            }
             let worker = self.start_camera_worker(CameraUse::Call, cx);
             worker.set_preview_wanted(self.camera.is_preview_shown);
             self.camera.worker = Some(worker);
@@ -456,7 +472,10 @@ impl Voice {
     /// pictures for it; hiding it also stops the test preview.
     pub fn set_camera_preview_shown(&mut self, is_shown: bool, cx: &mut Context<Self>) {
         self.camera.is_preview_shown = is_shown;
-        if let Some(worker) = self.camera.worker.as_ref() {
+        for worker in [&self.camera.worker, &self.camera.previous_worker]
+            .into_iter()
+            .flatten()
+        {
             worker.set_preview_wanted(is_shown);
         }
         if !is_shown {
@@ -524,7 +543,13 @@ impl Voice {
                 .camera
                 .worker
                 .as_ref()
-                .and_then(CameraWorker::take_preview),
+                .and_then(CameraWorker::take_preview)
+                .or_else(|| {
+                    self.camera
+                        .previous_worker
+                        .as_ref()
+                        .and_then(CameraWorker::take_preview)
+                }),
         }
     }
 
@@ -607,16 +632,21 @@ impl Voice {
         report: CameraReport,
         cx: &mut Context<Self>,
     ) {
-        if self
-            .camera
-            .worker
-            .as_ref()
-            .is_none_or(|worker| worker.id != worker_id)
-        {
+        let is_of = |worker: &Option<CameraWorker>| {
+            worker.as_ref().is_some_and(|worker| worker.id == worker_id)
+        };
+        if is_of(&self.camera.previous_worker) {
+            self.follow_previous_camera_report(report, cx);
             return;
         }
+        if !is_of(&self.camera.worker) {
+            return;
+        }
+        let is_switching = self.camera.previous_worker.is_some();
         match report {
             CameraReport::Opened => {
+                // Released before the new input replaces its own, so it never reports Closed.
+                self.camera.previous_worker = None;
                 let Some(engine) = self.engine() else {
                     self.stop_camera(cx);
                     return;
@@ -629,6 +659,11 @@ impl Voice {
                 self.camera.phase = CameraPhase::On;
                 self.refresh_cameras(cx);
             }
+            CameraReport::Failed(problem) if is_switching => {
+                // The camera that was on stays on; only the problem shows.
+                self.camera.worker = self.camera.previous_worker.take();
+                self.camera.problem = Some(problem);
+            }
             CameraReport::Failed(problem) => {
                 self.stop_camera(cx);
                 self.camera.problem = Some(problem);
@@ -637,10 +672,32 @@ impl Voice {
                 self.stop_camera(cx);
                 self.camera.problem = Some(CameraProblem::Ended);
             }
+            CameraReport::Closed => self.note_camera_input_closed(),
+        }
+    }
+
+    /// A report from the camera still sending while another one opens.
+    fn follow_previous_camera_report(&mut self, report: CameraReport, cx: &mut Context<Self>) {
+        match report {
+            // Unplugged meanwhile: the new camera, when it opens, carries on alone.
+            CameraReport::Ended | CameraReport::Failed(_) => self.camera.previous_worker = None,
             CameraReport::Closed => {
-                self.camera.worker = None;
-                self.camera.phase = CameraPhase::Off;
+                self.stop_camera(cx);
+                self.note_camera_input_closed();
             }
+            CameraReport::Opened => {}
+        }
+    }
+
+    /// The call took the camera's input back: a shared screen replaced it, or the server
+    /// refused or stopped it (whose reason, sent apart, may come after this).
+    fn note_camera_input_closed(&mut self) {
+        self.camera.worker = None;
+        self.camera.previous_worker = None;
+        self.camera.phase = CameraPhase::Off;
+        if self.engine().and_then(VoiceSession::video_source).is_none() {
+            self.camera.problem = Some(CameraProblem::Stopped);
+            self.camera.is_server_reason_awaited = true;
         }
     }
 

@@ -154,6 +154,8 @@ mod in_a_call {
 
     use super::*;
     use crate::tokio_bridge::build_network_runtime;
+    use mellow_protocol::Snowflake;
+
     use crate::voice::tests::{RunningInstance, owner_with_two_voice_channels};
 
     fn is_video_on(session: &Entity<Session>, cx: &mut TestAppContext) -> bool {
@@ -281,6 +283,171 @@ mod in_a_call {
         drop((voice, session));
         cx.run_until_parked();
         runtime.block_on(instance.stop());
+    }
+
+    /// Joins the first channel with `cameras` and turns the camera on, seen by the instance.
+    fn camera_on_in_a_call(
+        runtime: &Runtime,
+        instance: &RunningInstance,
+        cameras: CamerasFactory,
+        cx: &mut TestAppContext,
+    ) -> (Entity<Session>, Entity<Voice>, Snowflake) {
+        let (session, voice, channel_id, other_channel_id) =
+            owner_with_two_voice_channels(runtime, instance, cx);
+        voice.update(cx, |voice, cx| {
+            voice.set_cameras(cameras);
+            voice.join(channel_id, cx);
+        });
+        wait_until(cx, "the call", |cx| {
+            voice.read_with(cx, |voice, cx| {
+                voice.phase() == Some(CallPhase::Connected)
+                    && voice.listed_cameras().is_some()
+                    && voice.camera_block(cx).is_none()
+            })
+        });
+        voice.update(cx, Voice::toggle_camera);
+        wait_until(cx, "the camera on, seen by the instance", |cx| {
+            voice.read_with(cx, |voice, _| voice.camera_phase() == CameraPhase::On)
+                && is_video_on(&session, cx)
+        });
+        (session, voice, other_channel_id)
+    }
+
+    fn end(
+        runtime: &Runtime,
+        instance: RunningInstance,
+        session: Entity<Session>,
+        voice: Entity<Voice>,
+        cx: &mut TestAppContext,
+    ) {
+        voice.update(cx, Voice::leave);
+        drop((voice, session));
+        cx.run_until_parked();
+        runtime.block_on(instance.stop());
+    }
+
+    #[gpui::test]
+    fn the_camera_stays_behind_when_moving_to_another_channel(cx: &mut TestAppContext) {
+        let runtime: Runtime = build_network_runtime().unwrap();
+        let instance = runtime.block_on(RunningInstance::start());
+        let (session, voice, other_channel_id) =
+            camera_on_in_a_call(&runtime, &instance, synthetic_cameras(), cx);
+
+        voice.update(cx, |voice, cx| voice.join(other_channel_id, cx));
+        voice.read_with(cx, |voice, _| {
+            assert_eq!(voice.camera_phase(), CameraPhase::Off);
+        });
+        wait_until(cx, "the move, without the camera", |cx| {
+            voice.read_with(cx, |voice, _| {
+                voice.phase() == Some(CallPhase::Connected)
+                    && voice.channel_id() == Some(other_channel_id)
+            }) && !is_video_on(&session, cx)
+        });
+
+        end(&runtime, instance, session, voice, cx);
+    }
+
+    #[gpui::test]
+    fn a_camera_chosen_live_that_fails_leaves_the_one_on(cx: &mut TestAppContext) {
+        let runtime: Runtime = build_network_runtime().unwrap();
+        let instance = runtime.block_on(RunningInstance::start());
+        let (session, voice, _) =
+            camera_on_in_a_call(&runtime, &instance, Arc::new(|| Box::new(PickyCameras)), cx);
+
+        cx.update(|cx| {
+            crate::voice::change_voice_settings(cx, |settings| {
+                settings.camera_device_id = Some(REFUSING_CAMERA_ID.into());
+            });
+        });
+        wait_until(cx, "the new camera's refusal", |cx| {
+            voice.read_with(cx, |voice, _| {
+                voice.camera_problem() == Some(CameraProblem::Denied)
+            })
+        });
+        voice.read_with(cx, |voice, _| {
+            assert_eq!(voice.camera_phase(), CameraPhase::On);
+        });
+        assert!(is_video_on(&session, cx));
+        voice.update(cx, |voice, cx| voice.set_camera_preview_shown(true, cx));
+        wait_until(cx, "the camera that stayed on, in the preview", |cx| {
+            voice.read_with(cx, |voice, _| voice.take_camera_preview_picture().is_some())
+        });
+
+        end(&runtime, instance, session, voice, cx);
+    }
+
+    #[gpui::test]
+    fn the_servers_reason_survives_the_camera_closing_first(cx: &mut TestAppContext) {
+        let runtime: Runtime = build_network_runtime().unwrap();
+        let instance = runtime.block_on(RunningInstance::start());
+        let (session, voice, _) = camera_on_in_a_call(&runtime, &instance, synthetic_cameras(), cx);
+
+        // The engine ends the video as a refusal does: the camera's input closes first.
+        voice.update(cx, |voice, _| {
+            if let Some(engine) = voice.engine() {
+                engine.stop_video();
+            }
+        });
+        wait_until(cx, "the camera closed", |cx| {
+            voice.read_with(cx, |voice, _| voice.camera_phase() == CameraPhase::Off)
+        });
+        voice.read_with(cx, |voice, _| {
+            assert_eq!(voice.camera_problem(), Some(CameraProblem::Stopped));
+        });
+        let refusal = VoiceSessionEvent::VideoRefused(VoiceVideoRefusal::TooManyCameras);
+        voice.update(cx, |voice, cx| {
+            voice.note_video_stopped_by_server(&refusal, cx);
+        });
+        voice.read_with(cx, |voice, _| {
+            assert_eq!(
+                voice.camera_problem(),
+                Some(CameraProblem::Refused(VoiceVideoRefusal::TooManyCameras))
+            );
+        });
+        // A later refusal belongs to whatever is shared next, not to the camera.
+        voice.update(cx, Voice::dismiss_camera_problem);
+        voice.update(cx, |voice, cx| {
+            voice.note_video_stopped_by_server(&refusal, cx);
+        });
+        voice.read_with(cx, |voice, _| assert_eq!(voice.camera_problem(), None));
+
+        end(&runtime, instance, session, voice, cx);
+    }
+
+    const REFUSING_CAMERA_ID: &str = "refusing";
+
+    /// The synthetic camera, and a second one that refuses to open.
+    struct PickyCameras;
+
+    impl PickyCameras {
+        fn synthetic() -> SyntheticCameras {
+            SyntheticCameras {
+                width: 64,
+                height: 36,
+            }
+        }
+    }
+
+    impl Cameras for PickyCameras {
+        fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
+            let mut listed = Self::synthetic().cameras()?;
+            listed.push(CameraDescription {
+                id: REFUSING_CAMERA_ID.into(),
+                name: "Refusing camera".into(),
+            });
+            Ok(listed)
+        }
+
+        fn open(
+            &self,
+            device_id: Option<&str>,
+            frames: VideoInput,
+        ) -> Result<Box<dyn RunningCapture>, CameraError> {
+            if device_id == Some(REFUSING_CAMERA_ID) {
+                return Err(CameraError::PermissionDenied);
+            }
+            Self::synthetic().open(device_id, frames)
+        }
     }
 
     struct NoCameras;
