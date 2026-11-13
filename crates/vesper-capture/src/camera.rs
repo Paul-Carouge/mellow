@@ -1,6 +1,9 @@
-//! Webcams, straight from PipeWire (no portal, no raw V4L2): the camera
-//! nodes (`media.class = Video/Source` from a device), and a [`Camera`]
-//! streaming one of them by `node.name`.
+//! Webcams, straight from PipeWire (no raw V4L2): the camera nodes
+//! (`media.class = Video/Source` from a device), and a [`Camera`] streaming
+//! one of them by `node.name`. A sandboxed app (or a session whose PipeWire
+//! hides cameras from plain clients) reaches them through the xdg Camera
+//! portal: [`portal_remote`] gives a PipeWire connection that
+//! [`cameras_on`] and [`OpenOptions::remote`] take.
 //!
 //! The mode is picked from what the node offers ([`modes::select`]): MJPEG
 //! from 720p30 up, raw YUY2/NV12 below. MJPEG is decoded on the GPU (VCN
@@ -17,6 +20,7 @@ mod decode;
 pub mod modes;
 
 use std::cell::{Cell, RefCell};
+use std::os::fd::OwnedFd;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 use std::sync::{Arc, Condvar, Mutex, MutexGuard};
@@ -37,7 +41,7 @@ pub use modes::{Encoding, Matrix, Mode, Range};
 use crate::pw::roundtrip;
 use crate::{Result, format};
 
-/// The biggest mode asked for, and the frame rate wanted.
+/// The biggest mode asked for by default, and the frame rate wanted.
 const MAX_SIZE: (u32, u32) = (1920, 1080);
 const FPS: u32 = 30;
 
@@ -95,15 +99,31 @@ fn info_of(props: &pw::spa::utils::dict::DictRef) -> Option<CameraInfo> {
     )
 }
 
+/// Connects to the session's PipeWire, or to `remote` (a portal's).
+fn connect(context: &pw::context::ContextRc, remote: Option<OwnedFd>) -> Result<CoreRc> {
+    Ok(match remote {
+        Some(fd) => context.connect_fd_rc(fd, None)?,
+        None => context.connect_rc(None)?,
+    })
+}
+
 /// The cameras on the PipeWire graph now, sorted by description. Blocks up
 /// to a few seconds when PipeWire does not answer: call it off the UI thread.
 /// # Errors
 /// When PipeWire cannot be reached.
 pub fn cameras() -> Result<Vec<CameraInfo>> {
+    cameras_on(None)
+}
+
+/// [`cameras`], on the PipeWire connection `remote` when given (from
+/// [`portal_remote`]).
+/// # Errors
+/// When PipeWire cannot be reached.
+pub fn cameras_on(remote: Option<OwnedFd>) -> Result<Vec<CameraInfo>> {
     pw::init();
     let mainloop = MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
-    let core = context.connect_rc(None)?;
+    let core = connect(&context, remote)?;
     let registry = core.get_registry_rc()?;
     let found: Rc<RefCell<Vec<CameraInfo>>> = Rc::default();
     let _listener = registry
@@ -124,6 +144,55 @@ pub fn cameras() -> Result<Vec<CameraInfo>> {
     list.sort_by(|a, b| (&a.description, &a.node_name).cmp(&(&b.description, &b.node_name)));
     list.dedup_by(|a, b| a.node_name == b.node_name);
     Ok(list)
+}
+
+/// Asks the xdg Camera portal for the cameras (`AccessCamera`, which may
+/// show a dialog, then `OpenPipeWireRemote`): a PipeWire connection that
+/// sees them, or `None` when the portal says no camera is present. Blocks
+/// until the user answers: call it off the UI thread.
+/// # Errors
+/// When the portal is missing or fails, or the user refuses (see
+/// [`crate::is_refused`]).
+pub fn portal_remote() -> Result<Option<OwnedFd>> {
+    use ashpd::desktop::camera::{Camera as CameraPortal, CameraAccessOptions};
+    futures_lite::future::block_on(async {
+        let portal = CameraPortal::new().await?;
+        if !portal.is_present().await? {
+            return Ok(None);
+        }
+        portal
+            .request_access(CameraAccessOptions::default())
+            .await?
+            .response()?;
+        let remote = portal
+            .open_pipe_wire_remote(ashpd::desktop::camera::OpenPipeWireRemoteOptions::default())
+            .await?;
+        Ok(Some(remote))
+    })
+}
+
+/// How [`Camera::open_with`] streams a camera.
+#[derive(Debug)]
+pub struct OpenOptions {
+    /// A PipeWire connection from [`portal_remote`]; `None`: the session's.
+    pub remote: Option<OwnedFd>,
+    /// The biggest mode to ask for (a bigger one only when the camera has
+    /// none within it).
+    pub max_size: (u32, u32),
+    /// Decode MJPEG on the GPU into DMA-BUFs ([`CameraFrame::Gpu`]); `false`
+    /// keeps every picture in system memory ([`CameraFrame::Cpu`]), for a
+    /// consumer that encodes on the CPU.
+    pub decode_on_gpu: bool,
+}
+
+impl Default for OpenOptions {
+    fn default() -> Self {
+        Self {
+            remote: None,
+            max_size: MAX_SIZE,
+            decode_on_gpu: true,
+        }
+    }
 }
 
 /// Layout of a [`CpuFrame`].
@@ -196,6 +265,8 @@ struct Shared {
     slot: Mutex<Slot>,
     /// Wakes the decode thread.
     jpeg_ready: Condvar,
+    /// Wakes [`Camera::wait_take`]: a picture came, or the stream ended.
+    frame_ready: Condvar,
     /// Wakes the PipeWire loop, which then checks `stop`.
     wake: pw::channel::Sender<()>,
 }
@@ -205,6 +276,7 @@ impl Shared {
         Self {
             slot: Mutex::default(),
             jpeg_ready: Condvar::new(),
+            frame_ready: Condvar::new(),
             wake,
         }
     }
@@ -218,6 +290,7 @@ impl Shared {
             slot.frame.take()
         };
         self.jpeg_ready.notify_all();
+        self.frame_ready.notify_all();
         // Fails only once the PipeWire thread is gone.
         let _ = self.wake.send(());
         old
@@ -237,6 +310,7 @@ impl Shared {
             }
             slot.frame.replace(frame)
         };
+        self.frame_ready.notify_all();
         // Released outside the lock: a GPU frame's release unrefs a surface.
         drop(old);
     }
@@ -275,6 +349,14 @@ impl Camera {
     /// # Errors
     /// When the camera thread cannot be spawned.
     pub fn open(node_name: &str) -> Result<Self> {
+        Self::open_with(node_name, OpenOptions::default())
+    }
+
+    /// [`Camera::open`] with `options`.
+    ///
+    /// # Errors
+    /// When the camera thread cannot be spawned.
+    pub fn open_with(node_name: &str, options: OpenOptions) -> Result<Self> {
         let (wake, stop_rx) = pw::channel::channel();
         let shared = Arc::new(Shared::new(wake));
         let name = node_name.to_owned();
@@ -282,7 +364,7 @@ impl Camera {
         std::thread::Builder::new()
             .name("vesper-camera".into())
             .spawn(move || {
-                match catch_unwind(AssertUnwindSafe(|| run(&name, &s, stop_rx))) {
+                match catch_unwind(AssertUnwindSafe(|| run(&name, &s, stop_rx, options))) {
                     Ok(Ok(())) => {}
                     Ok(Err(e)) => s.end(e.to_string()),
                     // Ends the decode thread too, and tells the caller.
@@ -300,6 +382,26 @@ impl Camera {
     /// When the camera ended, with the reason.
     pub fn take(&self) -> Result<Option<CameraFrame>> {
         let mut slot = self.shared.lock();
+        match &slot.ended {
+            Some(reason) => Err(reason.clone().into()),
+            None => Ok(slot.frame.take()),
+        }
+    }
+
+    /// [`Camera::take`], waiting up to `timeout` for a picture or the end of
+    /// the stream.
+    ///
+    /// # Errors
+    /// When the camera ended, with the reason.
+    pub fn wait_take(&self, timeout: Duration) -> Result<Option<CameraFrame>> {
+        let slot = self.shared.lock();
+        let (mut slot, _) = self
+            .shared
+            .frame_ready
+            .wait_timeout_while(slot, timeout, |slot| {
+                slot.frame.is_none() && slot.ended.is_none() && !slot.stop
+            })
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         match &slot.ended {
             Some(reason) => Err(reason.clone().into()),
             None => Ok(slot.frame.take()),
@@ -329,14 +431,20 @@ impl Drop for Camera {
 
 /// The decode thread: decodes the newest JPEG, drops the ones it had no
 /// time for.
-fn decode_loop(shared: &Shared) {
-    let mut decoder = match decode::Decoder::gpu() {
-        Ok(d) => Some(d),
-        Err(e) => {
-            warn!("no GPU JPEG decoding ({e}): decoding on the CPU");
-            shared.lock().software = true;
-            None
+fn decode_loop(shared: &Shared, decode_on_gpu: bool) {
+    // Not on the GPU when asked: the consumer reads system memory, a GPU
+    // picture would only be read back.
+    let mut decoder = if decode_on_gpu {
+        match decode::Decoder::gpu() {
+            Ok(d) => Some(d),
+            Err(e) => {
+                warn!("no GPU JPEG decoding ({e}): decoding on the CPU");
+                shared.lock().software = true;
+                None
+            }
         }
+    } else {
+        None
     };
     let (mut gpu_worked, mut failures) = (false, 0u32);
     loop {
@@ -399,6 +507,7 @@ struct State {
     format: Option<(Mode, Matrix, Range)>,
     /// Started on the first MJPEG format.
     decoding: bool,
+    decode_on_gpu: bool,
 }
 
 impl State {
@@ -423,10 +532,12 @@ impl State {
         self.shared.lock().mode = Some(mode);
         if mode.encoding == Encoding::Mjpeg && !self.decoding {
             let shared = self.shared.clone();
+            let decode_on_gpu = self.decode_on_gpu;
             let spawned = std::thread::Builder::new()
                 .name("vesper-camera-decode".into())
                 .spawn(move || {
-                    if catch_unwind(AssertUnwindSafe(|| decode_loop(&shared))).is_err() {
+                    let decode = || decode_loop(&shared, decode_on_gpu);
+                    if catch_unwind(AssertUnwindSafe(decode)).is_err() {
                         shared.end("the camera decode thread crashed".into());
                     }
                 });
@@ -640,11 +751,16 @@ fn find_camera(
 }
 
 /// The camera's PipeWire thread, until stopped or the stream ends.
-fn run(name: &str, shared: &Arc<Shared>, stop: pw::channel::Receiver<()>) -> Result<()> {
+fn run(
+    name: &str,
+    shared: &Arc<Shared>,
+    stop: pw::channel::Receiver<()>,
+    options: OpenOptions,
+) -> Result<()> {
     pw::init();
     let mainloop = MainLoopRc::new(None)?;
     let context = pw::context::ContextRc::new(&mainloop, None)?;
-    let core = context.connect_rc(None)?;
+    let core = connect(&context, options.remote)?;
     let registry = core.get_registry_rc()?;
     // Stopped while connecting: nothing to set up.
     let _stop = stop.attach(mainloop.loop_(), {
@@ -671,7 +787,7 @@ fn run(name: &str, shared: &Arc<Shared>, stop: pw::channel::Receiver<()>) -> Res
     if shared.lock().stop {
         return Ok(());
     }
-    let mode = modes::select(&offered, MAX_SIZE, FPS)
+    let mode = modes::select(&offered, options.max_size, FPS)
         .ok_or("the camera offers no supported format (MJPEG, YUY2 or NV12)")?;
     info!("camera {name}: asking for {mode:?}");
     let stream = StreamRc::new(
@@ -688,6 +804,7 @@ fn run(name: &str, shared: &Arc<Shared>, stop: pw::channel::Receiver<()>) -> Res
         mainloop: mainloop.clone(),
         format: None,
         decoding: false,
+        decode_on_gpu: options.decode_on_gpu,
     };
     let stream_listener = stream
         .add_local_listener_with_user_data(state)

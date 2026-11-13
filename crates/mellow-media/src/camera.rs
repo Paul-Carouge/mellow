@@ -1,15 +1,16 @@
-//! Cameras behind a trait: the system's (`AVFoundation` on macOS; none yet on Linux or Windows)
-//! or a synthetic one for tests and headless use. An open camera pushes its pictures into a session's
-//! [`VideoInput`] from its own thread and stops when dropped or when the input closes.
+//! Cameras behind a trait: the system's (`AVFoundation` on macOS, PipeWire or the xdg Camera
+//! portal on Linux, none on Windows) or a synthetic one for tests and headless use. An open
+//! camera pushes its pictures into a session's [`VideoInput`] (or a [`CameraPreview`]'s) from its
+//! own thread and stops when dropped or when the input closes.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use crate::simulcast::FRAMES_PER_SECOND;
+use crate::simulcast::{FRAMES_PER_SECOND, VideoSourceKind};
 use crate::video_frame::{CapturedFrame, CapturedPixelFormat};
-use crate::video_sender::VideoInput;
+use crate::video_sender::{VideoEncoderControl, VideoInput};
 
 /// The web client's camera request (`camera.ts`): 1280 × 720 at 30 frames per second.
 pub(crate) const PREFERRED_CAMERA_SIZE: (u32, u32) = (1_280, 720);
@@ -28,12 +29,19 @@ pub enum CameraError {
     NoCamera,
     #[error("the system refused access to the camera")]
     PermissionDenied,
+    #[error("another application is using the camera")]
+    Busy,
     #[error("the camera system failed: {0}")]
     System(String),
 }
 
 /// Keeps a camera running; dropping it stops the camera.
-pub trait RunningCapture {}
+pub trait RunningCapture {
+    /// The camera stopped by itself (unplugged, taken by the system): no picture follows.
+    fn has_ended(&self) -> bool {
+        false
+    }
+}
 
 /// Lists and opens cameras.
 pub trait Cameras {
@@ -156,12 +164,53 @@ impl Cameras for SyntheticCameras {
     }
 }
 
-/// The system's cameras: `AVFoundation` on macOS. Elsewhere it lists none yet.
-// shortcut: no camera on Linux (V4L2) or Windows yet; add them when the desktop ships there.
+/// A camera opened on its own, outside any call: its pictures come out one at a time, for
+/// whoever shows them (the settings' preview) or forwards them into a call's [`VideoInput`] once
+/// the camera works. Not `Send` (macOS captures are not): keep it on the thread that opened it.
+pub struct CameraFeed {
+    pictures: Arc<VideoEncoderControl>,
+    capture: Box<dyn RunningCapture>,
+}
+
+impl std::fmt::Debug for CameraFeed {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.debug_struct("CameraFeed").finish_non_exhaustive()
+    }
+}
+
+impl CameraFeed {
+    /// Opens `device_id` (the default when `None` or gone), blocking as [`Cameras::open`] does.
+    ///
+    /// # Errors
+    /// The camera cannot be opened.
+    pub fn open(cameras: &dyn Cameras, device_id: Option<&str>) -> Result<Self, CameraError> {
+        let pictures = Arc::new(VideoEncoderControl::default());
+        let input = pictures.start(VideoSourceKind::Camera);
+        let capture = cameras.open(device_id, input)?;
+        Ok(Self { pictures, capture })
+    }
+
+    /// The camera stopped by itself (unplugged, taken by the system).
+    #[must_use]
+    pub fn has_ended(&self) -> bool {
+        self.capture.has_ended()
+    }
+
+    /// The newest picture since the last call, waiting up to `timeout` for one.
+    #[must_use]
+    pub fn wait_picture(&self, timeout: Duration) -> Option<CapturedFrame> {
+        self.pictures.wait_for_picture(timeout)
+    }
+}
+
+/// The system's cameras: `AVFoundation` on macOS, PipeWire on Linux (through the Camera portal
+/// when PipeWire shows none). Windows lists none.
+// shortcut: no Windows camera (Media Foundation is a capture graph of its own, not a few calls);
+// add it when the desktop ships there.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemCameras;
 
-#[cfg(not(target_os = "macos"))]
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
 impl Cameras for SystemCameras {
     fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
         Ok(Vec::new())
@@ -195,8 +244,21 @@ mod tests {
     #[test]
     fn the_system_s_cameras_exist_on_every_platform() {
         let cameras: Box<dyn Cameras> = Box::new(SystemCameras);
-        if cfg!(not(target_os = "macos")) {
+        if cfg!(not(any(target_os = "macos", target_os = "linux"))) {
             assert_eq!(cameras.cameras().unwrap(), []);
         }
+    }
+
+    #[test]
+    fn a_feed_hands_over_its_newest_picture() {
+        let cameras = SyntheticCameras {
+            width: 64,
+            height: 36,
+        };
+        let feed = CameraFeed::open(&cameras, None).unwrap();
+        // The synthetic camera's first picture comes at once; later ones every 33 ms.
+        let picture = feed.wait_picture(Duration::from_secs(10)).unwrap();
+        assert_eq!((picture.width, picture.height), (64, 36));
+        assert!(!feed.has_ended());
     }
 }

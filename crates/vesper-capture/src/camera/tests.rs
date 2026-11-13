@@ -410,7 +410,7 @@ fn spawn_decoder(shared: &Arc<Shared>) -> std::sync::mpsc::Receiver<()> {
     let (done, exited) = std::sync::mpsc::channel();
     let shared = shared.clone();
     std::thread::spawn(move || {
-        decode_loop(&shared);
+        decode_loop(&shared, true);
         let _ = done.send(());
     });
     exited

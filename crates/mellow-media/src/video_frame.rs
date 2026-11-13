@@ -67,6 +67,24 @@ impl CapturedFrame {
         }
     }
 
+    /// The picture as its owner sees it in a preview: mirrored as in a mirror, shrunk to fit
+    /// `maximum_size`, in BGRA. `None` when its bytes do not match its size and format.
+    #[must_use]
+    pub fn to_mirrored_bgra(&self, maximum_size: (u32, u32)) -> Option<DecodedVideoFrame> {
+        let picture = self.to_i420()?;
+        let (width, height) = fit_within((self.width, self.height), maximum_size);
+        let mut bgra = picture.view().scaled(width, height).view().to_bgra()?;
+        for row in bgra.chunks_exact_mut(to_usize(width) * BGRA_BYTES_PER_PIXEL) {
+            row.as_chunks_mut::<BGRA_BYTES_PER_PIXEL>().0.reverse();
+        }
+        Some(DecodedVideoFrame {
+            width,
+            height,
+            format: DecodedPixelFormat::Bgra,
+            pixels: bgra.into(),
+        })
+    }
+
     /// The picture as I420, or `None` when its bytes do not match its size and format (a
     /// capture backend's bug: the frame is dropped).
     pub(crate) fn to_i420(&self) -> Option<I420Picture> {
@@ -545,6 +563,35 @@ mod tests {
             bytes: nv12,
         };
         assert_eq!(frame.to_i420().unwrap(), picture);
+    }
+
+    #[test]
+    fn a_preview_is_mirrored_and_shrunk() {
+        // 4 × 2 grey picture, its first column white: in the preview it is the last one.
+        let mut picture = I420Picture::black(4, 2);
+        let (luma, blue, red) = picture.planes_mut();
+        for row in luma.chunks_mut(4) {
+            row.copy_from_slice(&[235, 16, 16, 16]);
+        }
+        blue.fill(128);
+        red.fill(128);
+        let frame = CapturedFrame {
+            width: 4,
+            height: 2,
+            format: CapturedPixelFormat::I420,
+            bytes: [
+                picture.luma.clone(),
+                picture.blue_chroma,
+                picture.red_chroma,
+            ]
+            .concat(),
+        };
+        let preview = frame.to_mirrored_bgra((4, 2)).unwrap();
+        assert_eq!((preview.width, preview.height), (4, 2));
+        let first_row = &preview.pixels[..16];
+        assert!(first_row[12] > 240 && first_row[0] < 15, "{first_row:?}");
+        let shrunk = frame.to_mirrored_bgra((2, 2)).unwrap();
+        assert_eq!((shrunk.width, shrunk.height), (2, 2));
     }
 
     #[test]

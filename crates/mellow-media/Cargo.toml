@@ -34,6 +34,8 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
+# Cameras: Vesper's PipeWire capture and its Camera portal fallback (ADR-0051).
+vesper-capture.workspace = true
 
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]
