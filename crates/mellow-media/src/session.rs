@@ -534,6 +534,53 @@ impl VoiceSession {
         quality: ScreenShareQuality,
         sound: &ShareSound,
     ) -> Result<ScreenShare, ScreenCaptureError> {
+        self.screen_share_starter()
+            .start(sources, choice, quality, sound)
+    }
+
+    /// What [`VoiceSession::start_screen_share`] needs, to start a share on another thread
+    /// while the interface keeps the session (a system picker can stay open for minutes).
+    #[must_use]
+    pub fn screen_share_starter(&self) -> ScreenShareStarter {
+        ScreenShareStarter {
+            video_encoder: Arc::clone(&self.video_encoder),
+            network_commands: self.network_commands.clone(),
+            outgoing_video: self.outgoing_video.clone(),
+            outgoing_screen_sound: self.outgoing_screen_sound.clone(),
+        }
+    }
+}
+
+/// Starts screen shares of one session from any thread ([`VoiceSession::screen_share_starter`]).
+/// Once the session is gone, a share it starts goes nowhere and stops when dropped.
+#[derive(Clone)]
+pub struct ScreenShareStarter {
+    video_encoder: Arc<VideoEncoderControl>,
+    network_commands: Sender<NetworkCommand>,
+    outgoing_video: Sender<OutgoingVideoFrame>,
+    outgoing_screen_sound: Sender<OutgoingScreenSoundPacket>,
+}
+
+impl std::fmt::Debug for ScreenShareStarter {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("ScreenShareStarter")
+            .finish_non_exhaustive()
+    }
+}
+
+impl ScreenShareStarter {
+    /// As [`VoiceSession::start_screen_share`]; it blocks the same way.
+    ///
+    /// # Errors
+    /// Cancelled, refused (permission), gone, unavailable on this system, or the system failed.
+    pub fn start(
+        &self,
+        sources: &dyn ScreenSources,
+        choice: &ScreenChoice,
+        quality: ScreenShareQuality,
+        sound: &ShareSound,
+    ) -> Result<ScreenShare, ScreenCaptureError> {
         let context = ScreenShareContext::new(
             quality,
             Arc::clone(&self.video_encoder),
@@ -555,7 +602,9 @@ impl VoiceSession {
             ScreenCaptureError::System(error.to_string())
         })
     }
+}
 
+impl VoiceSession {
     /// A new quality for the shared screen: only bit rates change, as on the web.
     pub fn change_screen_share_quality(&self, quality: ScreenShareQuality) {
         if matches!(self.video_source(), Some(VideoSourceKind::Screen(_))) {
