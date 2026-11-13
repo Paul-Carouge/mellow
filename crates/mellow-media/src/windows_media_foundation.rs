@@ -1,38 +1,26 @@
-//! COM and Media Foundation set up for the thread that calls them: every Windows camera, screen,
-//! sound or H.264 call goes through [`ensure_media_foundation`] first.
+//! COM and Media Foundation for the engine's Windows code: every camera, screen, sound or H.264
+//! call goes through [`ensure_com`] or [`ensure_media_foundation`] first.
 
 use std::sync::OnceLock;
 
 use windows::Win32::Media::MediaFoundation::{MF_VERSION, MFSTARTUP_NOSOCKET, MFStartup};
-use windows::Win32::System::Com::{COINIT_MULTITHREADED, CoInitializeEx, CoUninitialize};
+use windows::Win32::System::Com::CoIncrementMTAUsage;
 
-/// Uninitialises COM when its thread ends, if this thread initialised it.
-struct ComOnThisThread {
-    should_uninitialize: bool,
-}
-
-impl Drop for ComOnThisThread {
-    fn drop(&mut self) {
-        if self.should_uninitialize {
-            // SAFETY: paired with the successful `CoInitializeEx` of this same thread.
-            unsafe { CoUninitialize() };
-        }
-    }
-}
-
-thread_local! {
-    static COM_ON_THIS_THREAD: ComOnThisThread = {
-        // SAFETY: no reserved pointer. On a thread already in another apartment (GPUI's
-        // interface thread is single-threaded) this fails with `RPC_E_CHANGED_MODE` and the
-        // thread keeps its own apartment, which Media Foundation accepts as well.
-        let status = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-        ComOnThisThread { should_uninitialize: status.is_ok() }
-    };
-}
-
-/// Initialises COM on this thread, once, undone when the thread ends.
+/// Keeps COM's multithreaded apartment alive for the whole process (once), so every thread that
+/// did not join an apartment of its own works in it. Never initialising and uninitialising per
+/// thread matters: when the last thread of the apartment uninitialises, the apartment goes, and
+/// with it the factories `windows` caches for the process (`GraphicsCaptureSession`'s,
+/// `Direct3D11CaptureFramePool`'s), which the next caller then reads freed. Threads already in
+/// an apartment (GPUI's interface thread) keep theirs.
 pub(crate) fn ensure_com() {
-    COM_ON_THIS_THREAD.with(|_| ());
+    static APARTMENT: OnceLock<()> = OnceLock::new();
+    APARTMENT.get_or_init(|| {
+        // SAFETY: a plain call; its cookie is never given back, so the apartment lives as long
+        // as the process.
+        if let Err(error) = unsafe { CoIncrementMTAUsage() } {
+            tracing::warn!(%error, "COM's multithreaded apartment could not be kept alive");
+        }
+    });
 }
 
 /// [`ensure_com`], and Media Foundation for the process (once, kept for its life: stopping it
