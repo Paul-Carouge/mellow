@@ -5061,6 +5061,7 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "vesper-capture",
  "yuv",
 ]
 

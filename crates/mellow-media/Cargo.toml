@@ -34,6 +34,8 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
+# Cameras: Vesper's PipeWire capture and its Camera portal fallback (ADR-0051).
+vesper-capture.workspace = true
 # Received H.264 (ADR-0052) through the system FFmpeg the Linux desktop already links for
 # Vesper's encoder (ADR-0051's amendment).
 rusty_ffmpeg.workspace = true
