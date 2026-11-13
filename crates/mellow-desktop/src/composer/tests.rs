@@ -740,3 +740,38 @@ fn a_video_compresses_then_uploads_the_compressed_file_or_its_original_and_remov
         "the three-byte MP4 passes the size check: {statuses:?}"
     );
 }
+
+#[gpui::test]
+fn send_the_original_wins_over_a_result_that_arrives_after_the_click(cx: &mut TestAppContext) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let queued = queue_video_compressions(&composer, cx);
+    let directory = tempfile::tempdir().unwrap();
+    // Four bytes: the five-byte original is refused by size, the three-byte MP4 is not.
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.set_uploads(None, Some(4), cx)));
+    attach(
+        &composer,
+        vec![temporary_file(&directory, "clip.mov", 5)],
+        cx,
+    );
+    cx.run_until_parked();
+
+    // The encode ends with its MP4, then the person asks for the original before the result is
+    // applied.
+    for work in std::mem::take(&mut *queued.lock().unwrap()) {
+        work();
+    }
+    let key = composer.read_with(cx, |composer, _| composer.drafts.tray()[0].key);
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.send_original(key, cx)));
+    cx.run_until_parked();
+
+    let (name, status) = composer.read_with(cx, |composer, _| {
+        let item = &composer.drafts.tray()[0];
+        (item.file_name.clone(), item.status.clone())
+    });
+    assert_eq!(name, "clip.mov");
+    assert!(
+        matches!(&status, TrayItemStatus::Failed(sentence) if sentence.contains("5 bytes, more than")),
+        "the original uploads as it is: {status:?}"
+    );
+}

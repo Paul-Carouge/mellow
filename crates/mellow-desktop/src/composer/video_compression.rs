@@ -147,8 +147,18 @@ impl Composer {
         let Some(item) = self.drafts.tray_item_mut(key) else {
             return;
         };
+        // The encode may have finished just before "Send the original" was clicked: the click wins.
+        let was_original_asked = item.compression.take().is_some_and(|mut compression| {
+            // This task is the one running now: let it end on its own rather than cancel it.
+            if let Some(task) = compression.task.take() {
+                task.detach();
+            }
+            compression.is_cancelled.load(Ordering::Relaxed)
+        });
         // "Send the original" and kept originals upload the file as it is.
-        if let Ok(VideoCompressionOutcome::Compressed(bytes)) = outcome {
+        if let Ok(VideoCompressionOutcome::Compressed(bytes)) = outcome
+            && !was_original_asked
+        {
             item.file_name = compressed_video_file_name(&item.file_name);
             item.size_bytes = u64::try_from(bytes.len()).unwrap_or(u64::MAX);
             item.compressed_bytes = Some(Arc::new(bytes));
