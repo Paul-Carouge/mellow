@@ -518,7 +518,12 @@ impl VoiceSession {
     /// Shares a screen or window from `sources` at `quality`, replacing the camera or another
     /// share (ADR-0054). Blocks while a system picker is open or the system starts the capture:
     /// call it off the interface's thread. Nothing turns on unless the capture starts. Dropping
-    /// the returned share stops it; [`VoiceSession::stop_video`] does too.
+    /// the returned share stops it (off the interface's thread: it waits for the system);
+    /// [`VoiceSession::stop_video`], another video source, the server's refusal or stop and
+    /// leaving the channel turn it off too, and its capture then stops by itself within a
+    /// fraction of a second. The interface still drops it on
+    /// [`VoiceSessionEvent::ScreenShareEnded`], [`VoiceSessionEvent::VideoRefused`] and
+    /// [`VoiceSessionEvent::VideoStoppedByServer`].
     ///
     /// # Errors
     /// Cancelled, refused (permission), gone, unavailable on this system, or the system failed.
@@ -536,13 +541,19 @@ impl VoiceSession {
             self.outgoing_video.clone(),
             self.outgoing_screen_sound.clone(),
         );
-        let capture = sources.start(choice, sound, context.clone())?;
+        // A capture that turned the share on and then failed must not leave it on.
+        let capture = sources
+            .start(choice, sound, context.clone())
+            .inspect_err(|_| context.stop())?;
         if !context.is_on() {
             return Err(ScreenCaptureError::System(
                 "the capture started without pictures".into(),
             ));
         }
-        Ok(ScreenShare::new(context, capture))
+        ScreenShare::new(context.clone(), capture).map_err(|error| {
+            context.stop();
+            ScreenCaptureError::System(error.to_string())
+        })
     }
 
     /// A new quality for the shared screen: only bit rates change, as on the web.

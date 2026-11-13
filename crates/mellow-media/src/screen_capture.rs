@@ -5,7 +5,7 @@
 //! delivers: a cancelled picker never turns the share on.
 
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{RecvTimeoutError, Sender};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
@@ -22,6 +22,9 @@ use crate::video_sender::{EncodedVideoInput, OutgoingVideoFrame, VideoEncoderCon
 
 /// The longest side of a source's thumbnail in the in-app picker.
 pub(crate) const THUMBNAIL_LONGEST_SIDE: u32 = 320;
+/// How often a running share checks it is still on, so the system's capture (and its recording
+/// indicator) stops soon after the server, `stop_video` or another source turned the share off.
+const SHARE_WATCH_INTERVAL: Duration = Duration::from_millis(200);
 
 /// How the person picks what to share on this system.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -286,10 +289,18 @@ impl ScreenShareContext {
 }
 
 /// A running share: dropping it stops the capture and turns the share off (if nothing else did
-/// first).
+/// first). The capture also stops by itself, within a fraction of a second, once anything else
+/// turns the share off (the server refusing or stopping it, `stop_video`, another video source,
+/// leaving the channel), so the system never keeps recording behind a share that is off.
+/// Dropping it waits for the capture to stop (system calls, encoder threads): drop it off the
+/// interface's thread.
 pub struct ScreenShare {
     context: ScreenShareContext,
-    capture: Option<Box<dyn RunningScreenCapture>>,
+    sound: ShareSoundState,
+    /// Dropped to wake the watcher, which then stops the capture.
+    stop_watcher: Option<Sender<()>>,
+    /// Owns the capture and drops it once the share is off.
+    watcher: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for ScreenShare {
@@ -302,11 +313,33 @@ impl std::fmt::Debug for ScreenShare {
 }
 
 impl ScreenShare {
-    pub(crate) fn new(context: ScreenShareContext, capture: Box<dyn RunningScreenCapture>) -> Self {
-        Self {
+    /// Hands `capture` to a watcher thread that stops it once the share is off.
+    ///
+    /// # Errors
+    /// The thread could not start; the capture is then stopped.
+    pub(crate) fn new(
+        context: ScreenShareContext,
+        capture: Box<dyn RunningScreenCapture>,
+    ) -> std::io::Result<Self> {
+        let sound = capture.sound();
+        let (stop_watcher, stop) = std::sync::mpsc::channel::<()>();
+        let share_context = context.clone();
+        let watcher = std::thread::Builder::new()
+            .name("mellow-screen-share-watch".into())
+            .spawn(move || {
+                while let Err(RecvTimeoutError::Timeout) = stop.recv_timeout(SHARE_WATCH_INTERVAL) {
+                    if !share_context.is_on() {
+                        break;
+                    }
+                }
+                drop(capture);
+            })?;
+        Ok(Self {
             context,
-            capture: Some(capture),
-        }
+            sound,
+            stop_watcher: Some(stop_watcher),
+            watcher: Some(watcher),
+        })
     }
 
     /// The codec watchers receive (H.264 from a GPU encoder, else VP8).
@@ -317,9 +350,7 @@ impl ScreenShare {
 
     #[must_use]
     pub fn sound(&self) -> ShareSoundState {
-        self.capture
-            .as_ref()
-            .map_or(ShareSoundState::Off, |capture| capture.sound())
+        self.sound
     }
 
     /// Whether the share is still on (the server or the source may have ended it).
@@ -333,7 +364,12 @@ impl Drop for ScreenShare {
     fn drop(&mut self) {
         // The inputs close first, so capture threads see it and stop sending.
         self.context.stop();
-        self.capture = None;
+        self.stop_watcher = None;
+        if let Some(watcher) = self.watcher.take()
+            && watcher.join().is_err()
+        {
+            tracing::error!("the screen share's capture panicked while stopping");
+        }
     }
 }
 
@@ -642,6 +678,61 @@ mod tests {
             bytes: vec![1; 400],
         };
         assert_eq!(thumbnail_of(&small).unwrap(), small);
+    }
+
+    /// Its drop tells the test the capture stopped.
+    struct WatchedCapture(Sender<()>);
+
+    impl RunningScreenCapture for WatchedCapture {
+        fn sound(&self) -> ShareSoundState {
+            ShareSoundState::Off
+        }
+    }
+
+    impl Drop for WatchedCapture {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    fn context(video_encoder: &Arc<VideoEncoderControl>) -> ScreenShareContext {
+        let (network_commands, _) = std::sync::mpsc::channel();
+        let (outgoing_video, _) = std::sync::mpsc::channel();
+        let (outgoing_sound, _) = std::sync::mpsc::channel();
+        ScreenShareContext::new(
+            ScreenShareQuality::High,
+            Arc::clone(video_encoder),
+            network_commands,
+            outgoing_video,
+            outgoing_sound,
+        )
+    }
+
+    #[test]
+    fn the_capture_stops_once_anything_turns_the_share_off() {
+        let video_encoder = Arc::new(VideoEncoderControl::default());
+        let share_context = context(&video_encoder);
+        let _pictures = share_context.start_pictures();
+        let (stopped, has_stopped) = std::sync::mpsc::channel();
+        let share = ScreenShare::new(share_context, Box::new(WatchedCapture(stopped))).unwrap();
+        assert!(share.is_on());
+        assert!(has_stopped.try_recv().is_err());
+        // What `stop_video`, a refusal or the server's stop do.
+        video_encoder.stop_source();
+        has_stopped.recv_timeout(Duration::from_secs(10)).unwrap();
+        drop(share);
+    }
+
+    #[test]
+    fn dropping_the_share_stops_its_capture() {
+        let video_encoder = Arc::new(VideoEncoderControl::default());
+        let share_context = context(&video_encoder);
+        let _pictures = share_context.start_pictures();
+        let (stopped, has_stopped) = std::sync::mpsc::channel();
+        let share = ScreenShare::new(share_context, Box::new(WatchedCapture(stopped))).unwrap();
+        drop(share);
+        assert!(has_stopped.try_recv().is_ok());
+        assert!(video_encoder.source().is_none());
     }
 
     #[test]

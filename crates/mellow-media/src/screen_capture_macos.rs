@@ -5,8 +5,9 @@
 
 use std::ffi::c_void;
 use std::ptr::NonNull;
-use std::sync::Mutex;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use block2::RcBlock;
@@ -421,8 +422,8 @@ impl StreamOutput {
 
 struct ScreenCaptureKitCapture {
     stream: Retained<SCStream>,
-    // Kept alive while the stream may still call it.
-    _output: Retained<StreamOutput>,
+    // Kept alive while the stream may still call it, and until it confirmed it stopped.
+    output: Retained<StreamOutput>,
     sound: ShareSoundState,
 }
 
@@ -438,8 +439,47 @@ impl RunningScreenCapture for ScreenCaptureKitCapture {
 
 impl Drop for ScreenCaptureKitCapture {
     fn drop(&mut self) {
-        // SAFETY: a running stream this capture owns; stopping needs no answer.
-        unsafe { self.stream.stopCaptureWithCompletionHandler(None) };
+        // Dropped on the share's watcher thread, never one of the stream's queues.
+        stop_stream(&self.stream, &self.output, output_kinds(self.sound), true);
+    }
+}
+
+/// The kinds of output a stream with `sound` delivers.
+fn output_kinds(sound: ShareSoundState) -> &'static [SCStreamOutputType] {
+    if sound == ShareSoundState::Captured {
+        &[SCStreamOutputType::Screen, SCStreamOutputType::Audio]
+    } else {
+        &[SCStreamOutputType::Screen]
+    }
+}
+
+/// Detaches `output` from `stream` and stops it. The output stays alive until the system
+/// confirmed the stop (its block holds it), so a sample already queued never reaches a freed
+/// object. Waits for that confirmation, bounded, when `should_wait`: never from one of the
+/// system's own callbacks, whose queue may be the one to deliver it.
+fn stop_stream(
+    stream: &SCStream,
+    output: &Retained<StreamOutput>,
+    kinds: &[SCStreamOutputType],
+    should_wait: bool,
+) {
+    let stream_output = ProtocolObject::<dyn SCStreamOutput>::from_ref(&**output);
+    for kind in kinds {
+        // SAFETY: the stream and output of this capture. A kind never added is refused, which
+        // leaves nothing to remove.
+        let _ = unsafe { stream.removeStreamOutput_type_error(stream_output, *kind) };
+    }
+    let (stopped, has_stopped) = mpsc::channel();
+    let kept_output = Retained::clone(output);
+    let handler = RcBlock::new(move |_error: *mut NSError| {
+        // Holding the output here keeps it alive until the stream let go of it.
+        let _ = &kept_output;
+        let _ = stopped.send(());
+    });
+    // SAFETY: a stream this capture made; the system keeps the block until it called it.
+    unsafe { stream.stopCaptureWithCompletionHandler(Some(&handler)) };
+    if should_wait && has_stopped.recv_timeout(SYSTEM_ANSWER_TIMEOUT).is_err() {
+        tracing::warn!("the screen capture did not confirm it stopped");
     }
 }
 
@@ -596,7 +636,7 @@ impl ScreenSources for SystemScreenSources {
         match started {
             Ok((stream, output)) => Ok(Box::new(ScreenCaptureKitCapture {
                 stream,
-                _output: output,
+                output,
                 sound: sound_state,
             })),
             Err(error) => {
@@ -626,15 +666,17 @@ fn start_sound(
     })))
 }
 
-/// Makes and starts the stream, waiting for the system's answer.
+/// Makes and starts the stream, waiting for the system's answer. On any failure the stream is
+/// detached and stopped, even when the system starts it after the wait (the person answered the
+/// permission prompt late): nothing keeps recording without an owner.
 fn start_stream(
     filter: &SCContentFilter,
     configuration: &SCStreamConfiguration,
-    output: &StreamOutput,
+    output: &Retained<StreamOutput>,
     sound: ShareSoundState,
 ) -> Result<Retained<SCStream>, ScreenCaptureError> {
-    let delegate = ProtocolObject::<dyn SCStreamDelegate>::from_ref(output);
-    let stream_output = ProtocolObject::<dyn SCStreamOutput>::from_ref(output);
+    let delegate = ProtocolObject::<dyn SCStreamDelegate>::from_ref(&**output);
+    let stream_output = ProtocolObject::<dyn SCStreamOutput>::from_ref(&**output);
     let queue = dispatch2::DispatchQueue::new("fr.mellow.screen", None);
     // SAFETY: valid filter, configuration and delegate; the output and queue outlive the
     // stream's use of them (the capture keeps the output, the stream retains the queue).
@@ -646,27 +688,52 @@ fn start_stream(
             Some(delegate),
         )
     };
-    let mut kinds = vec![SCStreamOutputType::Screen];
-    if sound == ShareSoundState::Captured {
-        kinds.push(SCStreamOutputType::Audio);
-    }
+    let kinds = output_kinds(sound);
     for kind in kinds {
         // SAFETY: as above; one serial queue for both kinds, so callbacks never overlap.
-        unsafe {
-            stream.addStreamOutput_type_sampleHandlerQueue_error(stream_output, kind, Some(&queue))
+        let added = unsafe {
+            stream.addStreamOutput_type_sampleHandlerQueue_error(stream_output, *kind, Some(&queue))
+        };
+        if let Err(error) = added {
+            stop_stream(&stream, output, kinds, false);
+            return Err(error_of(&error));
         }
-        .map_err(|error| error_of(&error))?;
     }
     let (answer, answered) = mpsc::channel();
-    let handler = RcBlock::new(move |error: *mut NSError| {
-        // SAFETY: a valid error or null, alive for the call.
-        let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| Err(error_of(error)));
-        let _ = answer.send(result);
-    });
+    // Set once the wait below gave up: a start that succeeds later stops itself.
+    let is_abandoned = Arc::new(AtomicBool::new(false));
+    let handler = {
+        let is_abandoned = Arc::clone(&is_abandoned);
+        let late_stream = Retained::clone(&stream);
+        let late_output = Retained::clone(output);
+        RcBlock::new(move |error: *mut NSError| {
+            // SAFETY: a valid error or null, alive for the call.
+            let result = unsafe { error.as_ref() }.map_or(Ok(()), |error| Err(error_of(error)));
+            let has_started = result.is_ok();
+            // Answer first: the waiter checks for an answer after marking it abandoned, so one
+            // of the two always stops a late start.
+            let _ = answer.send(result);
+            if has_started && is_abandoned.load(Ordering::SeqCst) {
+                stop_stream(&late_stream, &late_output, kinds, false);
+            }
+        })
+    };
     // SAFETY: a stream made above; the block is kept until called once.
     unsafe { stream.startCaptureWithCompletionHandler(Some(&handler)) };
-    answered.recv_timeout(SYSTEM_ANSWER_TIMEOUT).map_err(|_| {
-        ScreenCaptureError::System("the screen capture did not start in time".into())
-    })??;
-    Ok(stream)
+    match answered.recv_timeout(SYSTEM_ANSWER_TIMEOUT) {
+        Ok(Ok(())) => Ok(stream),
+        Ok(Err(error)) => {
+            stop_stream(&stream, output, kinds, false);
+            Err(error)
+        }
+        Err(_) => {
+            is_abandoned.store(true, Ordering::SeqCst);
+            if matches!(answered.try_recv(), Ok(Ok(()))) {
+                stop_stream(&stream, output, kinds, false);
+            }
+            Err(ScreenCaptureError::System(
+                "the screen capture did not start in time".into(),
+            ))
+        }
+    }
 }
