@@ -148,10 +148,7 @@ impl GifVideo {
         self.work = Some(cx.spawn(async move |video, cx| {
             loop {
                 wake.notified().await;
-                if video
-                    .update(cx, GifVideo::take_picture)
-                    .is_err()
-                {
+                if video.update(cx, GifVideo::take_picture).is_err() {
                     return;
                 }
             }
