@@ -34,9 +34,9 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
-# Screen sharing (ADR-0054): the ScreenCast portal and PipeWire, VA-API H.264 and PipeWire sound
-# through Vesper's crates; X11 sessions through x11rb (already in the tree through GPUI), with
-# MIT-SHM's System V segment through libc.
+# Cameras (ADR-0051) and screen sharing (ADR-0054): PipeWire cameras, the ScreenCast portal and
+# PipeWire, VA-API H.264 and PipeWire sound through Vesper's crates; X11 sessions through x11rb
+# (already in the tree through GPUI), with MIT-SHM's System V segment through libc.
 libc.workspace = true
 vesper-audio.workspace = true
 vesper-capture.workspace = true

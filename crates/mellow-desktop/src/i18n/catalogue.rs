@@ -15155,6 +15155,34 @@ impl DesktopStrings {
             Language::French => "Décoche «\u{a0}Partager son son\u{a0}» dans les options du partage pour n’envoyer que l’image.",
         }
     }
+
+    pub fn camera_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow couldn't start your camera. Turn it on again, or choose another camera in the Voice settings.",
+            Language::French => "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
+        }
+    }
+
+    pub fn camera_denied_macos(self) -> &'static str {
+        match self.language {
+            Language::English => "macOS blocks the camera for Mellow. Allow it in System Settings, under Privacy & Security, then Camera, then turn it on again.",
+            Language::French => "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
+        }
+    }
+
+    pub fn camera_denied_linux(self) -> &'static str {
+        match self.language {
+            Language::English => "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
+            Language::French => "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+        }
+    }
+
+    pub fn open_camera_settings(self) -> &'static str {
+        match self.language {
+            Language::English => "Open System Settings",
+            Language::French => "Ouvrir les Réglages Système",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

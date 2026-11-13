@@ -52,6 +52,12 @@ impl VideoPicture {
             height,
         })
     }
+
+    /// The image itself, for a view that frees its atlas slot on its own (the settings preview).
+    #[must_use]
+    pub fn into_render_image(self) -> Arc<RenderImage> {
+        self.image
+    }
 }
 
 /// How a picture fills its tile.

@@ -5,7 +5,7 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{TestAppContext, VisualTestContext, WindowAppearance};
-use mellow_media::{StreamFormat, SyntheticAudioDevices, SyntheticSound};
+use mellow_media::{StreamFormat, SyntheticAudioDevices, SyntheticCameras, SyntheticSound};
 
 use super::*;
 use crate::session::Session;
@@ -44,6 +44,14 @@ fn open_page(
             }),
             cx,
         )
+    });
+    voice.update(cx, |voice, _| {
+        voice.set_cameras(Arc::new(|| {
+            Box::new(SyntheticCameras {
+                width: 64,
+                height: 36,
+            })
+        }));
     });
     let (page, cx) = cx.add_window_view(VoicePage::new);
     cx.run_until_parked();
@@ -126,4 +134,45 @@ fn leaving_the_page_frees_the_test_s_microphone(cx: &mut TestAppContext) {
         assert!(!voice.is_microphone_test_running());
         assert!(!voice.is_monitoring());
     });
+}
+
+#[gpui::test]
+fn the_video_part_lists_the_cameras_previews_one_and_stops_on_leaving(cx: &mut TestAppContext) {
+    let (page, voice, cx) = open_page(cx);
+    cx.executor().allow_parking();
+    let video = page.read_with(cx, |page, _| page.video.clone());
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice.listed_cameras().map(|cameras| cameras
+            .iter()
+            .map(|camera| camera.name.clone())
+            .collect::<Vec<_>>())),
+        Some(vec!["Synthetic camera".to_owned()])
+    );
+    voice.read_with(cx, |voice, _| assert!(!voice.is_camera_preview_running()));
+
+    cx.update(|_, cx| voice.update(cx, Voice::start_camera_preview));
+    let deadline = Instant::now() + STEP_DEADLINE;
+    while video.read_with(cx, |video, _| video.picture.is_none()) {
+        assert!(
+            Instant::now() < deadline,
+            "the preview never showed a picture"
+        );
+        cx.executor().advance_clock(Duration::from_millis(33));
+        cx.run_until_parked();
+        std::thread::sleep(Duration::from_millis(5));
+    }
+    // Drawn: the camera's 64 × 36 picture as an image.
+    cx.run_until_parked();
+    video.read_with(cx, |video, _| {
+        let size = video.picture.as_ref().map(|picture| picture.size(0));
+        assert_eq!(
+            size.map(|size| (size.width.0, size.height.0)),
+            Some((64, 36))
+        );
+    });
+
+    drop((page, video));
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    voice.read_with(cx, |voice, _| assert!(!voice.is_camera_preview_running()));
 }

@@ -13,7 +13,7 @@
 //! shortcut: the web's native selects are radio groups here (as in Invites), the threshold is a
 //! slider under the meter rather than a mark on it, and the enhancement styles are radio rows
 //! rather than a segmented control; the desktop has no select or segmented control yet.
-//! shortcut: the web's Video part (camera choice and preview) comes with the call view (M3 step 8).
+//! The Video part (camera choice and preview) is `voice_video.rs`.
 
 use std::time::Duration;
 
@@ -57,6 +57,8 @@ use crate::theme::tokens::{
 use crate::theme::{color, length, theme};
 use crate::voice::{Voice, change_voice_settings, current_settings, voice};
 
+use self::video::VoiceVideoSection;
+
 /// How often the device lists are read again while the page is shown.
 const DEVICE_REFRESH_PERIOD: Duration = Duration::from_secs(2);
 /// The meter's redraw rate at most: smooth to the eye, a few redraws a second of the page.
@@ -93,6 +95,7 @@ pub struct VoicePage {
     /// Modifiers held at the last change, to record one pressed alone.
     held_modifiers: Modifiers,
     key_announcement: SharedString,
+    video: Entity<VoiceVideoSection>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -179,6 +182,7 @@ impl VoicePage {
             is_recording_key: false,
             held_modifiers: Modifiers::default(),
             key_announcement: SharedString::default(),
+            video: cx.new(VoiceVideoSection::new),
             _tasks: tasks,
             _subscriptions: subscriptions,
         }
@@ -1044,6 +1048,7 @@ impl Render for VoicePage {
             .child(mode_details)
             .child(processing)
             .child(test)
+            .child(self.video.clone())
     }
 }
 
@@ -1141,6 +1146,9 @@ fn enhancement_details(settings: &VoiceSettings, catalogue: Strings) -> impl Int
             })
         }))
 }
+
+#[path = "voice_video.rs"]
+mod video;
 
 #[cfg(test)]
 #[path = "voice_tests.rs"]

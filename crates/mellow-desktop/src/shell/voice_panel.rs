@@ -489,6 +489,7 @@ impl DuskShell {
                                 }),
                         ),
                 )
+                .child(self.render_camera_button(cx))
                 .child(self.render_soundboard_button(cx))
                 .child(
                     IconButton::new(
@@ -535,6 +536,7 @@ impl DuskShell {
                             },
                         )
                     }))
+                    .children(self.render_camera_notice(cx))
                     .into_any_element(),
             );
         }

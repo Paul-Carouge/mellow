@@ -192,6 +192,17 @@ impl VideoEncoderControl {
         self.inbox().source
     }
 
+    /// The newest picture pushed, waiting up to `timeout` for one: a camera feed without an
+    /// encoding thread reads its pictures this way.
+    pub(crate) fn wait_for_picture(&self, timeout: Duration) -> Option<CapturedFrame> {
+        let inbox = self.inbox();
+        let (mut inbox, _) = self
+            .has_work
+            .wait_timeout_while(inbox, timeout, |inbox| inbox.picture.is_none())
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        inbox.picture.take().map(|(picture, _)| picture)
+    }
+
     /// Ends the encoding thread.
     pub(crate) fn shut_down(&self) {
         self.update(|inbox| inbox.is_stopped = true);

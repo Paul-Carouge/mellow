@@ -30,7 +30,10 @@
 //! - **Soundboard** (`soundboard.rs`): [`Voice::play_soundboard_sound`] sends the reader's
 //!   sounds, [`Voice::soundboard_block`] says why it cannot; played sounds, join sounds and
 //!   previews play here.
+//! - **Camera** (`camera.rs`): [`Voice::toggle_camera`] for the panel, the settings' preview,
+//!   and the chosen camera (`VoiceSettings::camera_device_id`) applied live.
 
+mod camera;
 pub mod global_push_to_talk;
 pub mod media_settings;
 pub mod screen_share;
@@ -39,6 +42,11 @@ mod video;
 pub mod video_view;
 
 pub use self::video::ShownPicture;
+
+pub use camera::{
+    CameraBlock, CameraPhase, CameraProblem, CamerasFactory, open_camera_system_settings,
+    system_cameras,
+};
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -159,6 +167,7 @@ pub struct Voice {
     is_recording_push_to_talk_key: bool,
     /// Bumped by each join: a start that finishes after a leave or another join is stopped.
     attempt: u64,
+    camera: camera::CameraState,
     /// Others' cameras and screens: the call view, the watched screen, their pictures.
     video: video::CallVideo,
     /// Your own shared screen.
@@ -176,6 +185,22 @@ impl std::fmt::Debug for Voice {
             .field("problem", &self.problem)
             .finish_non_exhaustive()
     }
+}
+
+/// Everyone's voice and shared-screen sound settings kept in the preferences, for a new call.
+fn person_settings_from_preferences(cx: &App) -> Arc<InMemoryPersonVoiceSettings> {
+    let store = Arc::new(InMemoryPersonVoiceSettings::default());
+    if let Some(preferences) = preferences(cx) {
+        for (user_id, setting) in &preferences.voice_people {
+            store.write_person_setting(
+                PersonSoundSource::Voice,
+                *user_id,
+                person_setting_of(*setting),
+            );
+        }
+    }
+    video::seed_stream_sound_settings(&store, cx);
+    store
 }
 
 /// The app's voice, as a global.
@@ -398,6 +423,7 @@ impl Voice {
             is_monitoring: false,
             is_recording_push_to_talk_key: false,
             attempt: 0,
+            camera: camera::CameraState::new(system_cameras()),
             video: video::CallVideo::new(cx),
             screen: screen_share::ScreenSharing::system(),
             _subscriptions: subscriptions,
@@ -619,17 +645,23 @@ impl Voice {
         if self.call.is_none() {
             self.call = self.abandoned_start.take();
         }
-        if let Some(call) = self.call.as_mut() {
-            // Connected: move there. Still starting: the start is retargeted, and the engine
-            // moves when it is claimed.
-            if let Some(engine) = call.engine.as_mut() {
-                engine.move_to(channel_id);
+        if self.call.is_some() {
+            // Video never follows you into another channel, as on the web and Discord.
+            if self.camera_phase() != CameraPhase::Off {
+                self.stop_camera(cx);
             }
-            call.channel_id = channel_id;
-            call.guild_id = guild_id;
-            call.phase = CallPhase::Connecting;
-            call.round_trip = None;
-            call.is_self_speaking = false;
+            if let Some(call) = self.call.as_mut() {
+                // Connected: move there. Still starting: the start is retargeted, and the
+                // engine moves when it is claimed.
+                if let Some(engine) = call.engine.as_mut() {
+                    engine.move_to(channel_id);
+                }
+                call.channel_id = channel_id;
+                call.guild_id = guild_id;
+                call.phase = CallPhase::Connecting;
+                call.round_trip = None;
+                call.is_self_speaking = false;
+            }
             cx.notify();
             return;
         }
@@ -646,17 +678,7 @@ impl Voice {
         let attempt = self.attempt;
         let settings = current_settings(cx);
         self.applied_settings = settings.clone();
-        let store = Arc::new(InMemoryPersonVoiceSettings::default());
-        if let Some(preferences) = preferences(cx) {
-            for (user_id, setting) in &preferences.voice_people {
-                store.write_person_setting(
-                    PersonSoundSource::Voice,
-                    *user_id,
-                    person_setting_of(*setting),
-                );
-            }
-        }
-        video::seed_stream_sound_settings(&store, cx);
+        let store = person_settings_from_preferences(cx);
         let start = spawn_on_network_runtime(
             cx,
             start_engine(EngineStart {
@@ -756,6 +778,8 @@ impl Voice {
         // The meter now reads the call's microphone: the test's is let go.
         self.microphone_test = None;
         self.apply_settings(cx);
+        // The camera button needs to know whether there is a camera.
+        self.refresh_cameras(cx);
         cx.notify();
         None
     }
@@ -849,12 +873,15 @@ impl Voice {
                 };
                 self.end_with(problem, cx);
             }
+            // Each of the camera and the screen checks the refusal is its own.
+            VoiceSessionEvent::VideoRefused(_) | VoiceSessionEvent::VideoStoppedByServer => {
+                self.note_video_stopped_by_server(event, cx);
+                self.follow_screen_share_event(event, cx);
+            }
+            VoiceSessionEvent::ScreenShareEnded(_) => self.follow_screen_share_event(event, cx),
             VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
                 self.video.note_paused(*user_id, *is_paused);
             }
-            VoiceSessionEvent::VideoRefused(_)
-            | VoiceSessionEvent::VideoStoppedByServer
-            | VoiceSessionEvent::ScreenShareEnded(_) => self.follow_screen_share_event(event, cx),
         }
     }
 
@@ -883,6 +910,7 @@ impl Voice {
             self.is_monitoring = false;
         }
         self.announcement = SharedString::default();
+        self.camera.end_with_call();
         self.video.end_call(cx);
         self.screen.end_call();
         match self.call.take() {
@@ -1277,6 +1305,9 @@ impl Voice {
             || next.push_to_talk_key != previous.push_to_talk_key;
         if mode_changed {
             self.release_push_to_talk(cx);
+        }
+        if next.camera_device_id != previous.camera_device_id {
+            self.follow_camera_device(cx);
         }
         if let Some(test) = self.microphone_test.as_ref() {
             if next.input_device_id != previous.input_device_id {

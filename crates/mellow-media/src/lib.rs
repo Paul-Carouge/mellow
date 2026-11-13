@@ -17,6 +17,10 @@
 mod audio_engine;
 mod audio_format;
 mod camera;
+#[cfg(any(target_os = "linux", test))]
+mod camera_conversion;
+#[cfg(target_os = "linux")]
+mod camera_linux;
 // AVFoundation is reached only through `unsafe` Objective-C calls; each states its invariant.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
@@ -80,7 +84,8 @@ mod vp8;
 mod watch_list;
 
 pub use camera::{
-    CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
+    CameraDescription, CameraError, CameraFeed, Cameras, RunningCapture, SyntheticCameras,
+    SystemCameras,
 };
 pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
 pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};

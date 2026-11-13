@@ -2394,5 +2394,9 @@ export const fr: Catalogue = {
     screenSoundHelpWayland: `Sous Wayland, ton bureau ne dit pas à quelle app appartient une fenêtre partagée${NO_BREAK_SPACE}: choisis l’app à envoyer dans les options du partage, sous Son.`,
     screenSoundHelpMacos: "Partager le son demande macOS 13 ou plus récent.",
     screenSoundHelpOff: `Décoche «${NO_BREAK_SPACE}Partager son son${NO_BREAK_SPACE}» dans les options du partage pour n’envoyer que l’image.`,
+    cameraFailed: "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
+    cameraDeniedMacos: "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
+    cameraDeniedLinux: "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+    openCameraSettings: "Ouvrir les Réglages Système",
   },
 };

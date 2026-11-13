@@ -2461,6 +2461,14 @@ export const en = {
       "On Wayland, your desktop doesn't say which app a shared window belongs to: choose the app to send in the share options, under Sound.",
     screenSoundHelpMacos: "Sharing sound needs macOS 13 or later.",
     screenSoundHelpOff: "Untick “Share its sound” in the share options to send the picture alone.",
+    /** The camera could not start for a reason the system did not name. */
+    cameraFailed: "Mellow couldn't start your camera. Turn it on again, or choose another camera in the Voice settings.",
+    /** macOS refused the camera to Mellow (Privacy & Security). */
+    cameraDeniedMacos: "macOS blocks the camera for Mellow. Allow it in System Settings, under Privacy & Security, then Camera, then turn it on again.",
+    /** The Camera portal (Linux) refused the camera. */
+    cameraDeniedLinux: "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
+    /** Opens macOS's camera privacy settings. */
+    openCameraSettings: "Open System Settings",
   },
 };
 
