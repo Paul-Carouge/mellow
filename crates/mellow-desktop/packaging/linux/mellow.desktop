@@ -1,0 +1,15 @@
+[Desktop Entry]
+Type=Application
+Name=Mellow
+GenericName=Chat and voice
+GenericName[fr]=Discussion et voix
+Comment=Chat, voice and video with your communities on your own server
+Comment[fr]=Discutez, parlez et partagez la vidéo avec vos communautés, sur votre propre serveur
+Exec=mellow
+Icon=mellow
+Terminal=false
+Categories=Network;InstantMessaging;Chat;AudioVideo;
+Keywords=chat;voice;video;community;server;
+Keywords[fr]=discussion;voix;vidéo;communauté;serveur;
+StartupNotify=true
+StartupWMClass=mellow

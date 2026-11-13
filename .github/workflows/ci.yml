@@ -60,7 +60,7 @@ jobs:
       - name: The Docker kit carries the release public key
         run: cmp release/minisign.pub deploy/docker/minisign.pub
       - name: Shell scripts pass shellcheck
-        run: shellcheck deploy/docker/mellow-update
+        run: shellcheck deploy/docker/mellow-update .github/release-version.sh crates/mellow-desktop/packaging/*/*.sh
 
   test:
     name: Test (${{ matrix.os }})

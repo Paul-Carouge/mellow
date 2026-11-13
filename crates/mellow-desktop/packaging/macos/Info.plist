@@ -1,0 +1,49 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- `cargo xtask macos-app` fills in @VERSION@ from the workspace version (ADR-0055). -->
+<plist version="1.0">
+<dict>
+	<key>CFBundleDevelopmentRegion</key>
+	<string>en</string>
+	<key>CFBundleLocalizations</key>
+	<array>
+		<string>en</string>
+		<string>fr</string>
+	</array>
+	<key>CFBundleDisplayName</key>
+	<string>Mellow</string>
+	<key>CFBundleName</key>
+	<string>Mellow</string>
+	<key>CFBundleExecutable</key>
+	<string>mellow</string>
+	<key>CFBundleIconFile</key>
+	<string>Mellow</string>
+	<!-- The desktop's APP_IDENTIFIER: its notifications are posted under this name. -->
+	<key>CFBundleIdentifier</key>
+	<string>org.mellow.desktop</string>
+	<key>CFBundleInfoDictionaryVersion</key>
+	<string>6.0</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>@VERSION@</string>
+	<key>CFBundleVersion</key>
+	<string>@VERSION@</string>
+	<key>LSApplicationCategoryType</key>
+	<string>public.app-category.social-networking</string>
+	<!-- Rust's floor for Apple silicon; the release binary is built with MACOSX_DEPLOYMENT_TARGET=11.0. -->
+	<key>LSMinimumSystemVersion</key>
+	<string>11.0</string>
+	<key>NSHighResolutionCapable</key>
+	<true/>
+	<key>NSSupportsAutomaticGraphicsSwitching</key>
+	<true/>
+	<key>NSHumanReadableCopyright</key>
+	<string>Mellow, AGPL-3.0-or-later</string>
+	<!-- Screen Recording has no usage string: macOS words that prompt itself. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Mellow uses your camera when you turn it on in a call.</string>
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Mellow uses your microphone in voice channels and calls.</string>
+</dict>
+</plist>

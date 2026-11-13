@@ -1,0 +1,3 @@
+/* The permission prompts' sentences, as in Info.plist. */
+"NSCameraUsageDescription" = "Mellow uses your camera when you turn it on in a call.";
+"NSMicrophoneUsageDescription" = "Mellow uses your microphone in voice channels and calls.";

@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- The hardened runtime's exceptions Mellow needs (ADR-0055): the camera and the microphone.
+     Screen Recording is a privacy permission without an entitlement. No JIT, no unsigned
+     executable memory, no library validation exception: GPUI's Metal shaders are compiled by
+     Apple's own compiler service, and the binary loads no library of its own. -->
+<plist version="1.0">
+<dict>
+	<key>com.apple.security.device.camera</key>
+	<true/>
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+</dict>
+</plist>

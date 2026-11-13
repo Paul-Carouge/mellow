@@ -17,3 +17,6 @@ resvg = { version = "0.48.1", default-features = false }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
