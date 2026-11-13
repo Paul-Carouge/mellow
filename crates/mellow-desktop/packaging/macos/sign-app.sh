@@ -14,7 +14,14 @@ entitlements="${2:?usage: sign-app.sh <Mellow.app> <entitlements.plist>}"
 
 work_directory="$(mktemp -d)"
 keychain="${work_directory}/mellow-signing.keychain-db"
+# The user's keychain search list, put back on exit.
+original_keychains=()
+while IFS= read -r listed; do
+  listed="${listed#"${listed%%[![:space:]]*}"}"
+  original_keychains+=("${listed//\"/}")
+done < <(security list-keychains -d user)
 cleanup() {
+  security list-keychains -d user -s "${original_keychains[@]}" || true
   security delete-keychain "${keychain}" 2>/dev/null || true
   rm -rf "${work_directory}"
 }
@@ -24,13 +31,17 @@ umask 077
 # The keychain's own password only guards it for the few seconds it exists.
 keychain_password="$(openssl rand -hex 24)"
 printf '%s' "${MACOS_SIGNING_CERTIFICATE}" | base64 --decode > "${work_directory}/identity.p12"
+echo "importing the identity into a temporary keychain"
 security create-keychain -p "${keychain_password}" "${keychain}"
 security set-keychain-settings -lut 900 "${keychain}"
 security unlock-keychain -p "${keychain_password}" "${keychain}"
-security import "${work_directory}/identity.p12" -k "${keychain}" \
+# Searched first, as codesign and the partition list below expect on every macOS version.
+security list-keychains -d user -s "${keychain}" "${original_keychains[@]}"
+security import "${work_directory}/identity.p12" -k "${keychain}" -f pkcs12 \
   -P "${MACOS_SIGNING_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
-# Lets codesign use the key without a confirmation dialog.
-security set-key-partition-list -S apple-tool:,apple:,codesign: -s -k "${keychain_password}" \
+echo "allowing codesign to use the key"
+# Without a confirmation dialog; the keychain holds this one key only.
+security set-key-partition-list -S apple-tool:,apple:,codesign: -k "${keychain_password}" \
   "${keychain}" > /dev/null
 
 # A self-signed certificate is not trusted, so `find-identity -v` hides it: name the identity by
