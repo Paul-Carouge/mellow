@@ -28,6 +28,10 @@ const H264_PAYLOAD_TYPE: u8 = 108;
 const H264_RETRANSMISSION_PAYLOAD_TYPE: u8 = 109;
 /// Constrained Baseline at level 3.1, what browsers offer and the server answers (ADR-0052).
 const H264_CONSTRAINED_BASELINE_PROFILE_LEVEL_ID: u32 = 0x42_e0_1f;
+/// Whether the receive lines take H.264, so the server sends this desktop others' H.264 shares.
+// shortcut: no H.264 decoder on this branch; becomes `crate::h264::decodes_h264()` once the call
+// view's decoders land, so an H.264 sharer keeps receiving others' H.264 shares.
+const RECEIVE_LINES_TAKE_H264: bool = false;
 
 /// What a receive m-line carries, from its place in the offer.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -187,7 +191,7 @@ pub(crate) fn new_peer(
     let sdp_offer = offer.to_sdp_string();
     let sdp_offer = if is_h264_camera {
         let h264 = [H264_PAYLOAD_TYPE, H264_RETRANSMISSION_PAYLOAD_TYPE];
-        restrict_video_payload_types(&sdp_offer, &camera_send, &h264)
+        restrict_video_payload_types(&sdp_offer, &camera_send, &h264, RECEIVE_LINES_TAKE_H264)
     } else {
         sdp_offer
     };
@@ -207,11 +211,16 @@ pub(crate) fn new_peer(
 }
 
 /// The offer with the video m-line `camera_mid` carrying only `payload_types` and every other
-/// video m-line carrying all but them. `str0m` offers its whole codec configuration on every
-/// line of a kind, while the server reads the camera line's codecs as what the participant sends
-/// and the receive lines' as what it decodes (ADR-0052). The answer only ever names payload
-/// types of this offer, which `str0m` accepts.
-fn restrict_video_payload_types(sdp: &str, camera_mid: &Mid, payload_types: &[u8]) -> String {
+/// video m-line carrying all but them, unless `receive_lines_keep_them`. `str0m` offers its
+/// whole codec configuration on every line of a kind, while the server reads the camera line's
+/// codecs as what the participant sends and the receive lines' as what it decodes (ADR-0052).
+/// The answer only ever names payload types of this offer, which `str0m` accepts.
+fn restrict_video_payload_types(
+    sdp: &str,
+    camera_mid: &Mid,
+    payload_types: &[u8],
+    receive_lines_keep_them: bool,
+) -> String {
     let mut sections: Vec<Vec<&str>> = vec![Vec::new()];
     for line in sdp.lines() {
         if line.starts_with("m=") {
@@ -228,7 +237,13 @@ fn restrict_video_payload_types(sdp: &str, camera_mid: &Mid, payload_types: &[u8
             .first()
             .is_some_and(|line| line.starts_with("m=video "));
         let is_camera = section.iter().any(|line| *line == camera_mid_line);
-        let keeps = |payload_type: u8| payload_types.contains(&payload_type) == is_camera;
+        let keeps = |payload_type: u8| {
+            if is_camera {
+                payload_types.contains(&payload_type)
+            } else {
+                receive_lines_keep_them || !payload_types.contains(&payload_type)
+            }
+        };
         for line in section {
             let kept = if !is_video {
                 Some(line.to_owned())
@@ -325,6 +340,38 @@ mod tests {
         let sections = media_sections(sdp);
         assert_eq!(sections.len(), 31);
         assert!(!offer().sdp_offer.contains("H264"));
+    }
+
+    /// Where the system decodes H.264, an H.264 sharer's receive lines keep it, so others'
+    /// H.264 shares still reach it; elsewhere they lose it.
+    #[test]
+    fn receive_lines_keep_h264_only_when_the_system_decodes_it() {
+        let section = |mid: &str| {
+            format!(
+                "m=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109\r\na=mid:{mid}\r\n\
+                 a=rtpmap:96 VP8/90000\r\na=rtpmap:97 rtx/90000\r\n\
+                 a=rtpmap:108 H264/90000\r\na=fmtp:108 packetization-mode=1\r\n\
+                 a=rtcp-fb:108 nack\r\na=rtpmap:109 rtx/90000\r\n"
+            )
+        };
+        let sdp = format!("v=0\r\n{}{}", section("0"), section("1"));
+        let h264 = [H264_PAYLOAD_TYPE, H264_RETRANSMISSION_PAYLOAD_TYPE];
+        for receive_lines_keep_them in [false, true] {
+            let restricted =
+                restrict_video_payload_types(&sdp, &Mid::from("0"), &h264, receive_lines_keep_them);
+            let camera = section_of(&restricted, &Mid::from("0"));
+            assert_eq!(camera[0], "m=video 9 UDP/TLS/RTP/SAVPF 108 109");
+            assert!(!camera.join("\n").contains("VP8"));
+            let receive = section_of(&restricted, &Mid::from("1"));
+            assert!(receive.contains(&"a=rtpmap:96 VP8/90000"));
+            if receive_lines_keep_them {
+                assert_eq!(receive[0], "m=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109");
+                assert!(receive.contains(&"a=rtcp-fb:108 nack"));
+            } else {
+                assert_eq!(receive[0], "m=video 9 UDP/TLS/RTP/SAVPF 96 97");
+                assert!(!receive.join("\n").contains("H264"));
+            }
+        }
     }
 
     /// The `m=` lines with their direction, in order.
