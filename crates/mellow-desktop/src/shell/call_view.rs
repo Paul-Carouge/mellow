@@ -62,7 +62,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 use crate::voice::video_view::{VideoFit, VideoPictures, video_view};
-use crate::voice::{ShownPicture, Voice};
+use crate::voice::{CameraPhase, ShownPicture, Voice};
 
 /// 16:9, the shape of cameras and of most screens.
 const TILE_ASPECT_RATIO: f32 = 16.0 / 9.0;
@@ -505,7 +505,11 @@ impl CallView {
                     is_speaking: speaking.contains(&person.user_id),
                     is_microphone_off,
                     is_paused: !is_own && voice.is_video_paused(person.user_id),
-                    sentence: is_undecodable.then(|| strings.desktop().call_undecodable()),
+                    sentence: if is_own && voice.camera_phase() == CameraPhase::Starting {
+                        Some(strings.call().starting_camera())
+                    } else {
+                        is_undecodable.then(|| strings.desktop().call_undecodable())
+                    },
                     is_small,
                     is_in_strip,
                     action_label: action_label.into(),
@@ -811,6 +815,12 @@ impl CallView {
         let strings = strings(cx);
         let microphone_voice = self.voice.downgrade();
         let leave_voice = self.voice.downgrade();
+        let camera_voice = self.voice.downgrade();
+        let (camera_phase, can_use_camera) = {
+            let voice = self.voice.read(cx);
+            (voice.camera_phase(), voice.camera_block(cx).is_none())
+        };
+        let camera_words = strings.camera();
         div()
             .id("call-view-controls")
             .role(Role::Group)
@@ -838,6 +848,32 @@ impl CallView {
                 window,
                 cx,
             ))
+            // As on the web: shown while the camera can be turned on, or to turn it off.
+            .when(
+                can_use_camera || camera_phase != CameraPhase::Off,
+                |controls| {
+                    controls.child(call_control(
+                        "call-control-camera",
+                        if camera_phase == CameraPhase::Off {
+                            IconName::VideoCameraSlash
+                        } else {
+                            IconName::VideoCamera
+                        },
+                        match camera_phase {
+                            CameraPhase::Starting => camera_words.starting(),
+                            CameraPhase::On => camera_words.turn_off(),
+                            CameraPhase::Off => camera_words.turn_on(),
+                        },
+                        Some(camera_phase != CameraPhase::Off),
+                        false,
+                        move |_, cx| {
+                            let _ = camera_voice.update(cx, Voice::toggle_camera);
+                        },
+                        window,
+                        cx,
+                    ))
+                },
+            )
             .child(call_control(
                 "call-control-leave",
                 IconName::PhoneDisconnect,
@@ -867,7 +903,12 @@ impl CallView {
         let tokens = theme(cx);
         let strings = strings(cx);
         let user_id = look.person.id;
-        let picture = if look.is_own || look.is_paused {
+        let picture = if look.is_own {
+            // Your camera, mirrored as on the web; never your shared screen.
+            (look.video == Some(CallVideo::Camera))
+                .then(|| self.pictures.read(cx).own_camera().cloned())
+                .flatten()
+        } else if look.is_paused {
             None
         } else {
             self.pictures.read(cx).picture(user_id).cloned()

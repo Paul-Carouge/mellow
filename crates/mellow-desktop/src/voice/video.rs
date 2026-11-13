@@ -4,6 +4,7 @@
 //! sound volume. The watch list goes to the engine as one list, the watched screen first.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use gpui::{App, Context, Entity, Task};
 use mellow_client_core::shared_logic::call_view::{WatchedPicture, watch_list_of};
@@ -16,10 +17,13 @@ use mellow_media::{
 };
 use mellow_protocol::{Snowflake, VideoCodec, VideoTileSize};
 
-use super::Voice;
 use super::media_settings::person_setting_of;
 use super::video_view::{VideoPictures, new_video_pictures, pump_video_pictures};
+use super::{CameraPhase, Voice};
 use crate::preferences::{change_preferences, preferences};
+
+/// How often your tile takes your camera's newest picture: the camera's 30 frames per second.
+const OWN_CAMERA_FRAME_PERIOD: Duration = Duration::from_millis(33);
 
 /// A picture the interface shows, at its drawn size in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +43,8 @@ pub(super) struct CallVideo {
     pictures: Entity<VideoPictures>,
     /// Brings the engine's pictures; replaced with each engine.
     pump: Option<Task<()>>,
+    /// Brings your camera's pictures to your tile while the call view is open.
+    own_camera_pump: Option<Task<()>>,
 }
 
 impl CallVideo {
@@ -50,6 +56,7 @@ impl CallVideo {
             paused_user_ids: HashSet::new(),
             pictures: new_video_pictures(cx),
             pump: None,
+            own_camera_pump: None,
         }
     }
 
@@ -71,8 +78,11 @@ impl CallVideo {
         self.cameras.clear();
         self.paused_user_ids.clear();
         self.pump = None;
-        self.pictures
-            .update(cx, |pictures, cx| pictures.keep_only(|_| false, cx));
+        self.own_camera_pump = None;
+        self.pictures.update(cx, |pictures, cx| {
+            pictures.keep_only(|_| false, cx);
+            pictures.show_own_camera(None, cx);
+        });
     }
 
     pub(super) fn note_paused(&mut self, user_id: Snowflake, is_paused: bool) {
@@ -142,6 +152,8 @@ impl Voice {
         let is_open = self.call.is_some();
         if self.video.is_call_view_open != is_open {
             self.video.is_call_view_open = is_open;
+            self.set_own_camera_tile_shown(is_open);
+            self.video.own_camera_pump = is_open.then(|| pump_own_camera(cx));
             cx.notify();
         }
     }
@@ -150,6 +162,11 @@ impl Voice {
     pub fn close_call_view(&mut self, cx: &mut Context<Self>) {
         if self.video.is_call_view_open {
             self.video.is_call_view_open = false;
+            self.set_own_camera_tile_shown(false);
+            self.video.own_camera_pump = None;
+            self.video
+                .pictures
+                .update(cx, |pictures, cx| pictures.show_own_camera(None, cx));
             self.video.cameras.clear();
             self.apply_watching(cx);
             cx.notify();
@@ -290,6 +307,32 @@ pub(super) fn seed_stream_sound_settings(store: &InMemoryPersonVoiceSettings, cx
 /// The watched screen's size before the stream view is drawn: a 1080p tile.
 const STREAM_FIRST_WIDTH: u32 = 1_920;
 const STREAM_FIRST_HEIGHT: u32 = 1_080;
+
+/// Your camera's newest picture into your tile at the camera's rate; cleared once it is off.
+fn pump_own_camera(cx: &mut Context<Voice>) -> Task<()> {
+    cx.spawn(async move |voice, cx| {
+        loop {
+            cx.background_executor()
+                .timer(OWN_CAMERA_FRAME_PERIOD)
+                .await;
+            let is_gone = voice
+                .update(cx, |voice, cx| {
+                    let is_off = voice.camera_phase() == CameraPhase::Off;
+                    let picture = voice.take_own_camera_picture();
+                    if is_off || picture.is_some() {
+                        voice
+                            .video
+                            .pictures
+                            .update(cx, |pictures, cx| pictures.show_own_camera(picture, cx));
+                    }
+                })
+                .is_err();
+            if is_gone {
+                return;
+            }
+        }
+    })
+}
 
 #[cfg(test)]
 impl Voice {
