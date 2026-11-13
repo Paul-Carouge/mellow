@@ -106,6 +106,8 @@ aws-lc-rs.workspace = true
 mellow-update = { workspace = true, features = ["test-release-host"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
+# Reads the embedded font files in the font test; already in the tree through fontdb.
+ttf-parser = "=0.25.1"
 zeroize.workspace = true
 
 [target.'cfg(not(windows))'.dev-dependencies]

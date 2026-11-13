@@ -5045,6 +5045,7 @@ dependencies = [
  "tokio",
  "tracing",
  "tracing-subscriber",
+ "ttf-parser",
  "windows 0.62.2",
  "zeroize",
 ]
