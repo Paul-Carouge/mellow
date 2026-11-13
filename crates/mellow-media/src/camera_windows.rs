@@ -11,18 +11,19 @@ use std::thread::JoinHandle;
 
 use windows::Win32::Foundation::E_ACCESSDENIED;
 use windows::Win32::Media::MediaFoundation::{
-    IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSourceReader,
-    MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
+    IMF2DBuffer2, IMFActivate, IMFAttributes, IMFMediaSource, IMFMediaType, IMFSample,
+    IMFSourceReader, MF_DEVSOURCE_ATTRIBUTE_FRIENDLY_NAME, MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_GUID,
     MF_DEVSOURCE_ATTRIBUTE_SOURCE_TYPE_VIDCAP_SYMBOLIC_LINK, MF_E_HW_MFT_FAILED_START_STREAMING,
-    MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_RATE,
-    MF_MT_FRAME_SIZE, MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
+    MF_E_VIDEO_RECORDING_DEVICE_PREEMPTED, MF_MT_FRAME_RATE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
+    MF_MT_SUBTYPE, MF_SOURCE_READER_ENABLE_ADVANCED_VIDEO_PROCESSING,
     MF_SOURCE_READER_FIRST_VIDEO_STREAM, MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED,
-    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MFCreateAttributes, MFCreateMediaType,
-    MFCreateSourceReaderFromMediaSource, MFEnumDeviceSources, MFVideoFormat_NV12,
+    MF_SOURCE_READERF_ENDOFSTREAM, MF_SOURCE_READERF_ERROR, MF2DBuffer_LockFlags_Read,
+    MFCreateAttributes, MFCreateMediaType, MFCreateSourceReaderFromMediaSource,
+    MFEnumDeviceSources, MFMediaType_Video, MFVideoFormat_NV12,
 };
 use windows::Win32::System::Com::CoTaskMemFree;
-use windows::core::PWSTR;
+use windows::core::{Interface, PWSTR};
 
 use crate::camera::{
     CameraDescription, CameraError, Cameras, PREFERRED_CAMERA_SIZE, RunningCapture, SystemCameras,
@@ -163,22 +164,12 @@ struct Nv12Layout {
     stride: usize,
 }
 
-fn current_layout(reader: &IMFSourceReader) -> Option<Nv12Layout> {
+/// The current pictures' width and height.
+fn current_size(reader: &IMFSourceReader) -> Option<(u32, u32)> {
     // SAFETY: plain reads on a valid reader's current type.
     unsafe {
         let current = reader.GetCurrentMediaType(FIRST_VIDEO_STREAM).ok()?;
-        let (width, height) = halves(current.GetUINT64(&MF_MT_FRAME_SIZE).ok()?);
-        // A negative stride (bottom-up) never comes with NV12; it falls back to the width.
-        let stride = current
-            .GetUINT32(&MF_MT_DEFAULT_STRIDE)
-            .ok()
-            .and_then(|stride| usize::try_from(stride.cast_signed()).ok())
-            .unwrap_or(usize::try_from(width).ok()?);
-        Some(Nv12Layout {
-            width,
-            height,
-            stride,
-        })
+        Some(halves(current.GetUINT64(&MF_MT_FRAME_SIZE).ok()?))
     }
 }
 
@@ -252,11 +243,22 @@ fn open_reader(device_id: Option<&str>) -> Result<IMFSourceReader, CameraError> 
         reader
             .SetCurrentMediaType(FIRST_VIDEO_STREAM, None, &native)
             .map_err(|error| system_error(&error))?;
+        // A fresh type, not a copy of the native one: the native stride and sample size (a YUY2
+        // mode's, twice the width) would not describe NV12 pictures.
         let output = MFCreateMediaType().map_err(|error| system_error(&error))?;
-        native
-            .CopyAllItems(&output)
+        output
+            .SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)
             .and_then(|()| output.SetGUID(&MF_MT_SUBTYPE, &MFVideoFormat_NV12))
+            .and_then(|()| {
+                output.SetUINT64(&MF_MT_FRAME_SIZE, native.GetUINT64(&MF_MT_FRAME_SIZE)?)
+            })
             .map_err(|error| system_error(&error))?;
+        // A mode without a rate leaves it to the reader.
+        if let Ok(rate) = native.GetUINT64(&MF_MT_FRAME_RATE) {
+            output
+                .SetUINT64(&MF_MT_FRAME_RATE, rate)
+                .map_err(|error| system_error(&error))?;
+        }
         reader
             .SetCurrentMediaType(FIRST_VIDEO_STREAM, None, &output)
             .map_err(|error| system_error(&error))?;
@@ -270,60 +272,154 @@ struct CaptureState {
     has_ended: AtomicBool,
 }
 
-/// Reads pictures until stopped, the input closes, or the camera goes away.
-fn read_pictures(reader: &IMFSourceReader, frames: &VideoInput, state: &CaptureState) {
-    let mut layout = current_layout(reader);
-    while !state.should_stop.load(Ordering::Relaxed) && frames.is_open() {
-        let mut flags = 0_u32;
-        let mut sample = None;
-        // SAFETY: a synchronous read on a valid reader into owned out values.
-        let read = unsafe {
-            reader.ReadSample(
-                FIRST_VIDEO_STREAM,
-                0,
-                None,
-                Some(&raw mut flags),
-                None,
-                Some(&raw mut sample),
+/// One synchronous read: the stream's flags and the picture, if any.
+fn read_sample(reader: &IMFSourceReader) -> windows::core::Result<(i32, Option<IMFSample>)> {
+    let mut flags = 0_u32;
+    let mut sample = None;
+    // SAFETY: a synchronous read on a valid reader into owned out values.
+    unsafe {
+        reader.ReadSample(
+            FIRST_VIDEO_STREAM,
+            0,
+            None,
+            Some(&raw mut flags),
+            None,
+            Some(&raw mut sample),
+        )?;
+    }
+    Ok((flags.cast_signed(), sample))
+}
+
+fn has_stream_stopped(flags: i32) -> bool {
+    flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) != 0
+}
+
+/// Copies `sample`'s NV12 picture of `size` into `bytes` (reused), with the row pitch its buffer
+/// really has: a 2-D buffer's own, else the width (`Lock` gives packed rows).
+fn copy_picture(
+    sample: &IMFSample,
+    (width, height): (u32, u32),
+    bytes: Vec<u8>,
+) -> Option<CapturedFrame> {
+    // SAFETY: each buffer is locked while its bytes are copied, then unlocked; the slice read
+    // from a 2-D lock ends at the end of the buffer Windows reports.
+    unsafe {
+        let buffer = sample.ConvertToContiguousBuffer().ok()?;
+        if let Ok(planes) = buffer.cast::<IMF2DBuffer2>() {
+            let mut first_row = std::ptr::null_mut();
+            let mut pitch = 0_i32;
+            let mut start = std::ptr::null_mut();
+            let mut length = 0_u32;
+            if planes
+                .Lock2DSize(
+                    MF2DBuffer_LockFlags_Read,
+                    &raw mut first_row,
+                    &raw mut pitch,
+                    &raw mut start,
+                    &raw mut length,
+                )
+                .is_ok()
+            {
+                // A negative pitch (bottom-up) never comes with NV12: refused.
+                let picture = usize::try_from(pitch)
+                    .ok()
+                    .filter(|_| !first_row.is_null())
+                    .and_then(|stride| {
+                        let offset = first_row.addr().checked_sub(start.addr())?;
+                        let available = (length as usize).checked_sub(offset)?;
+                        let source = std::slice::from_raw_parts(first_row, available);
+                        pack_nv12(
+                            bytes,
+                            Nv12Layout {
+                                width,
+                                height,
+                                stride,
+                            },
+                            source,
+                        )
+                    });
+                let _ = planes.Unlock2D();
+                return picture;
+            }
+        }
+        let mut source = std::ptr::null_mut();
+        let mut length = 0_u32;
+        buffer
+            .Lock(&raw mut source, None, Some(&raw mut length))
+            .ok()?;
+        let layout = usize::try_from(width).ok().map(|stride| Nv12Layout {
+            width,
+            height,
+            stride,
+        });
+        let picture = layout.filter(|_| !source.is_null()).and_then(|layout| {
+            pack_nv12(
+                bytes,
+                layout,
+                std::slice::from_raw_parts(source, length as usize),
             )
-        };
-        let flags = flags.cast_signed();
-        if read.is_err()
-            || flags & (MF_SOURCE_READERF_ERROR.0 | MF_SOURCE_READERF_ENDOFSTREAM.0) != 0
-        {
+        });
+        let _ = buffer.Unlock();
+        picture
+    }
+}
+
+/// Sends pictures, starting with the `first` read, until stopped, the input closes, or the
+/// camera goes away.
+fn read_pictures(
+    reader: &IMFSourceReader,
+    first: (i32, Option<IMFSample>),
+    frames: &VideoInput,
+    state: &CaptureState,
+) {
+    let mut size = current_size(reader);
+    let mut has_logged_a_refused_picture = false;
+    let mut read = first;
+    loop {
+        let (flags, sample) = read;
+        if has_stream_stopped(flags) {
             // Unplugged, taken by the system, or turned off by its privacy switch.
             state.has_ended.store(true, Ordering::Relaxed);
             return;
         }
         if flags & MF_SOURCE_READERF_CURRENTMEDIATYPECHANGED.0 != 0 {
-            layout = current_layout(reader);
+            size = current_size(reader);
         }
-        let (Some(sample), Some(layout)) = (sample, layout) else {
-            continue;
-        };
-        // SAFETY: the buffer is locked while its bytes are copied, then unlocked.
-        let picture = unsafe {
-            let Ok(buffer) = sample.ConvertToContiguousBuffer() else {
-                continue;
-            };
-            let mut bytes = std::ptr::null_mut();
-            let mut length = 0_u32;
-            if buffer
-                .Lock(&raw mut bytes, None, Some(&raw mut length))
-                .is_err()
-            {
-                continue;
+        if let (Some(sample), Some(size)) = (sample, size) {
+            match copy_picture(&sample, size, frames.recycled_bytes()) {
+                Some(picture) => frames.push(picture),
+                None if !has_logged_a_refused_picture => {
+                    has_logged_a_refused_picture = true;
+                    tracing::debug!(?size, "a camera picture did not match its NV12 layout");
+                }
+                None => {}
             }
-            let picture = (!bytes.is_null())
-                .then(|| std::slice::from_raw_parts(bytes, length as usize))
-                .and_then(|source| pack_nv12(frames.recycled_bytes(), layout, source));
-            let _ = buffer.Unlock();
-            picture
-        };
-        if let Some(picture) = picture {
-            frames.push(picture);
         }
+        if state.should_stop.load(Ordering::Relaxed) || !frames.is_open() {
+            return;
+        }
+        let Ok(next) = read_sample(reader) else {
+            state.has_ended.store(true, Ordering::Relaxed);
+            return;
+        };
+        read = next;
     }
+}
+
+/// A reader and its first read.
+type StartedReader = (IMFSourceReader, (i32, Option<IMFSample>));
+
+/// Opens the reader and reads its first picture: Media Foundation starts the stream there, and
+/// a privacy refusal or a busy camera often shows only then.
+fn start_reading(device_id: Option<&str>) -> Result<StartedReader, CameraError> {
+    let reader = open_reader(device_id)?;
+    let first = read_sample(&reader).map_err(|error| system_error(&error))?;
+    if has_stream_stopped(first.0) {
+        return Err(CameraError::System(
+            "the camera stopped as it started".into(),
+        ));
+    }
+    Ok((reader, first))
 }
 
 struct MediaFoundationCapture {
@@ -370,10 +466,10 @@ impl Cameras for SystemCameras {
             // The reader is made, used and released on this thread (COM's apartment rules).
             std::thread::Builder::new()
                 .name("mellow-camera-windows".into())
-                .spawn(move || match open_reader(device_id.as_deref()) {
-                    Ok(reader) => {
+                .spawn(move || match start_reading(device_id.as_deref()) {
+                    Ok((reader, first)) => {
                         let _ = opened.send(Ok(()));
-                        read_pictures(&reader, &frames, &state);
+                        read_pictures(&reader, first, &frames, &state);
                     }
                     Err(error) => {
                         let _ = opened.send(Err(error));
