@@ -650,6 +650,8 @@ impl Voice {
             if self.camera_phase() != CameraPhase::Off {
                 self.stop_camera(cx);
             }
+            self.stop_screen_share(cx);
+            self.close_screen_picker(cx);
             if let Some(call) = self.call.as_mut() {
                 // Connected: move there. Still starting: the start is retargeted, and the
                 // engine moves when it is claimed.
@@ -912,7 +914,7 @@ impl Voice {
         self.announcement = SharedString::default();
         self.camera.end_with_call();
         self.video.end_call(cx);
-        self.screen.end_call();
+        self.screen.end_call(cx);
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),

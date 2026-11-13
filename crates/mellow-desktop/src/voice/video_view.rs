@@ -53,6 +53,12 @@ impl VideoPicture {
         })
     }
 
+    /// Frees its tiles in the windows' atlases: a picture no longer drawn (a closed picker's
+    /// thumbnail) would otherwise keep its texture for the window's life.
+    pub fn free(self, cx: &mut App) {
+        free_atlas_tiles(self.image, cx);
+    }
+
     /// The image itself, for a view that frees its atlas slot on its own (the settings preview).
     #[must_use]
     pub fn into_render_image(self) -> Arc<RenderImage> {

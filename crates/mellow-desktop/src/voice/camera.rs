@@ -657,6 +657,8 @@ impl Voice {
                     worker.send_to(input);
                 }
                 self.camera.phase = CameraPhase::On;
+                // The call sends one video: the camera replaced a shared screen.
+                self.note_camera_replaced_screen_share(cx);
                 self.refresh_cameras(cx);
             }
             CameraReport::Failed(problem) if is_switching => {

@@ -11,15 +11,16 @@
 
 use std::sync::Arc;
 
-use gpui::{Context, SharedString};
+use gpui::{App, Context, SharedString};
 use mellow_media::{
     ScreenCaptureError, ScreenChoice, ScreenPicker, ScreenShare, ScreenShareEnd,
     ScreenShareQuality, ScreenSourceKind, ScreenSources, ShareSound, ShareSoundState,
-    SoundApplication, SystemScreenSources, VoiceSessionEvent,
+    SoundApplication, SystemScreenSources, VideoSourceKind, VoiceSession, VoiceSessionEvent,
 };
 use mellow_protocol::{VideoCodec, VoiceVideoRefusal};
 
 use super::Voice;
+use super::camera::CameraPhase;
 use super::video_view::VideoPicture;
 use crate::preferences::{change_preferences, preferences};
 
@@ -176,11 +177,42 @@ impl ScreenSharing {
     }
 
     /// The call ended: nothing of its share remains.
-    pub(super) fn end_call(&mut self) {
+    pub(super) fn end_call(&mut self, cx: &mut App) {
         self.turn_off();
-        self.listing = None;
+        self.replace_listing(None, cx);
         self.problem = None;
         self.announcement = SharedString::default();
+    }
+
+    /// Replaces the picker's list, freeing the thumbnails of the one it replaces.
+    fn replace_listing(&mut self, listing: Option<ScreenSourceListing>, cx: &mut App) {
+        if let Some(ScreenSourceListing::Listed(cards)) =
+            std::mem::replace(&mut self.listing, listing)
+        {
+            for thumbnail in cards.into_iter().filter_map(|card| card.thumbnail) {
+                thumbnail.free(cx);
+            }
+        }
+    }
+
+    /// Shows `problem`; the polite region reads it in place of the last announcement, which
+    /// must not come back once the problem is dismissed.
+    fn show_problem(&mut self, problem: Option<ScreenShareProblem>) {
+        if problem.is_some() {
+            self.announcement = SharedString::default();
+        }
+        self.problem = problem;
+    }
+}
+
+/// Stops sending the shared screen, at once and on the UI thread, before its capture is dropped
+/// elsewhere: a capture stopping late would otherwise stop whatever replaced it (a new share).
+/// A camera that replaced the share is left on.
+fn stop_sending_screen(engine: Option<&VoiceSession>) {
+    if let Some(engine) = engine
+        && matches!(engine.video_source(), Some(VideoSourceKind::Screen(_)))
+    {
+        engine.stop_video();
     }
 }
 
@@ -252,6 +284,15 @@ impl Voice {
             && self.screen.picker != ScreenPicker::Unavailable
     }
 
+    /// A running share can switch source in the app's picker: only where the picker lists
+    /// sources and a shared screen leaves Mellow's windows out (macOS). On X11 a shared screen
+    /// would broadcast the picker's window titles and thumbnails (ADR-0054), so the share is
+    /// stopped, then started again.
+    #[must_use]
+    pub fn can_switch_screen_source(&self) -> bool {
+        self.screen.picker == ScreenPicker::InApp && cfg!(target_os = "macos")
+    }
+
     #[must_use]
     pub fn screen_share_phase(&self) -> ScreenSharePhase {
         self.screen.phase
@@ -320,6 +361,7 @@ impl Voice {
     pub fn start_screen_share(&mut self, cx: &mut Context<Self>) {
         if !self.can_share_screen()
             || self.screen.phase == ScreenSharePhase::Starting
+            || (self.screen.phase == ScreenSharePhase::On && !self.can_switch_screen_source())
             || self.screen.listing.is_some()
         {
             return;
@@ -336,6 +378,7 @@ impl Voice {
         let Some(listed) =
             run_on_own_thread("mellow-screen-sources", move || sources.sources(true))
         else {
+            self.screen.announcement = SharedString::default();
             self.screen.listing = Some(ScreenSourceListing::Failed(
                 ScreenShareProblem::CouldNotStart,
             ));
@@ -350,7 +393,7 @@ impl Voice {
                 if voice.screen.listing_generation != generation || voice.screen.listing.is_none() {
                     return;
                 }
-                voice.screen.listing = Some(match listed {
+                let listing = match listed {
                     Ok(sources) => ScreenSourceListing::Listed(
                         sources
                             .into_iter()
@@ -369,11 +412,15 @@ impl Voice {
                             })
                             .collect(),
                     ),
-                    Err(error) => ScreenSourceListing::Failed(
-                        ScreenShareProblem::of_error(&error)
-                            .unwrap_or(ScreenShareProblem::CouldNotStart),
-                    ),
-                });
+                    Err(error) => {
+                        voice.screen.announcement = SharedString::default();
+                        ScreenSourceListing::Failed(
+                            ScreenShareProblem::of_error(&error)
+                                .unwrap_or(ScreenShareProblem::CouldNotStart),
+                        )
+                    }
+                };
+                voice.screen.replace_listing(Some(listing), cx);
                 cx.notify();
             });
         })
@@ -391,7 +438,8 @@ impl Voice {
 
     /// The picker closed (a choice, or none): a running share goes on.
     pub fn close_screen_picker(&mut self, cx: &mut Context<Self>) {
-        if self.screen.listing.take().is_some() {
+        if self.screen.listing.is_some() {
+            self.screen.replace_listing(None, cx);
             cx.notify();
         }
     }
@@ -405,13 +453,16 @@ impl Voice {
         };
         // Starting replaces a running share (switching source), as on the web.
         if let Some(share) = self.screen.share.take() {
+            stop_sending_screen(self.engine());
             stop_off_the_ui_thread(share);
         }
         self.screen.generation += 1;
         let generation = self.screen.generation;
         self.screen.phase = ScreenSharePhase::Starting;
-        self.screen.listing = None;
+        self.screen.replace_listing(None, cx);
         self.screen.problem = None;
+        // Cleared so that the same sentence (a second cancelled dialog) is read out again.
+        self.screen.announcement = SharedString::default();
         let quality = Self::screen_share_quality(cx);
         let sound = self.share_sound(cx);
         let sources = Arc::clone(&self.screen.sources);
@@ -420,7 +471,8 @@ impl Voice {
             share_starter.start(sources.as_ref(), &choice, quality, &started_sound)
         }) else {
             self.screen.phase = ScreenSharePhase::Off;
-            self.screen.problem = Some(ScreenShareProblem::CouldNotStart);
+            self.screen
+                .show_problem(Some(ScreenShareProblem::CouldNotStart));
             cx.notify();
             return;
         };
@@ -492,7 +544,8 @@ impl Voice {
             }
             Err(error) => {
                 self.screen.phase = ScreenSharePhase::Off;
-                self.screen.problem = ScreenShareProblem::of_error(&error);
+                self.screen
+                    .show_problem(ScreenShareProblem::of_error(&error));
                 if self.screen.problem.is_none() {
                     self.screen.announcement = strings.screen_share().problems().denied().into();
                 } else {
@@ -510,12 +563,11 @@ impl Voice {
             return;
         }
         let was_on = self.screen.phase == ScreenSharePhase::On;
+        // Turned off at once for the server, also when a capture just started meanwhile (its
+        // late answer is dropped); the capture stops on its own thread.
+        stop_sending_screen(self.engine());
         self.screen.turn_off();
         if was_on {
-            // Turned off at once for the server; the capture stops on its own thread.
-            if let Some(engine) = self.engine() {
-                engine.stop_video();
-            }
             self.screen.announcement = crate::i18n::strings(cx)
                 .desktop()
                 .screen_share_source_closed()
@@ -589,6 +641,23 @@ impl Voice {
         .detach();
     }
 
+    /// The camera replaced the share in the call (it turned on): the share stops, as the web's
+    /// `releaseScreen()`. Its capture had already stopped, its generation replaced.
+    pub(super) fn note_camera_replaced_screen_share(&mut self, cx: &mut Context<Self>) {
+        if self.screen.phase == ScreenSharePhase::Off {
+            return;
+        }
+        let was_on = self.screen.phase == ScreenSharePhase::On;
+        self.screen.turn_off();
+        if was_on {
+            self.screen.announcement = crate::i18n::strings(cx)
+                .desktop()
+                .screen_share_source_closed()
+                .into();
+        }
+        cx.notify();
+    }
+
     pub fn dismiss_screen_share_problem(&mut self, cx: &mut Context<Self>) {
         self.screen.problem = None;
         cx.notify();
@@ -601,10 +670,17 @@ impl Voice {
         event: &VoiceSessionEvent,
         cx: &mut Context<Self>,
     ) {
-        if !matches!(
-            self.screen.phase,
-            ScreenSharePhase::On | ScreenSharePhase::Starting
-        ) {
+        // A camera that is on owns a refusal that comes while the share still starts: the
+        // share has not replaced it yet.
+        let is_concerned = match self.screen.phase {
+            ScreenSharePhase::On => true,
+            ScreenSharePhase::Starting => {
+                matches!(event, VoiceSessionEvent::ScreenShareEnded(_))
+                    || self.camera_phase() != CameraPhase::On
+            }
+            ScreenSharePhase::Off => false,
+        };
+        if !is_concerned {
             return;
         }
         let problem = match event {
@@ -618,7 +694,7 @@ impl Voice {
         };
         // A refusal while the capture starts: its answer finds the share off and is dropped.
         self.screen.turn_off();
-        self.screen.problem = problem;
+        self.screen.show_problem(problem);
         if problem.is_none() {
             self.screen.announcement = crate::i18n::strings(cx)
                 .desktop()

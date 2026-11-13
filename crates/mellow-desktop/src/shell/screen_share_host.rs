@@ -487,11 +487,12 @@ impl DuskShell {
         let strings = strings(cx);
         let current_quality = Voice::screen_share_quality(cx);
         let is_sound_on = Voice::is_screen_share_sound_on(cx);
-        let (picker, is_on, applications, chosen) = {
+        let (picker, is_on, can_switch_source, applications, chosen) = {
             let voice = voice.read(cx);
             (
                 voice.screen_picker(),
                 voice.is_sharing_screen(),
+                voice.can_switch_screen_source(),
                 voice.sound_applications().to_vec(),
                 voice
                     .chosen_sound_application()
@@ -556,11 +557,11 @@ impl DuskShell {
             }
         }
         entries.push(MenuEntry::Separator);
-        if is_on && picker == ScreenPicker::InApp {
+        if is_on && can_switch_source {
             let shell = cx.entity().downgrade();
             let switch_voice = voice.clone();
             entries.push(MenuEntry::Item(MenuItem::new(
-                strings.screen_share().share(),
+                strings.desktop().screen_share_switch_source(),
                 IconName::MonitorArrowUp,
                 move |window, cx| {
                     let _ = shell.update(cx, |shell, cx| {

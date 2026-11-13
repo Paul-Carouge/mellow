@@ -2431,6 +2431,8 @@ export const en = {
     /** Wayland: the desktop's own dialog asks what to share. */
     screenShareWaitingForSystem: "Choose what to share in your desktop's dialog…",
     screenShareStarting: "Starting your screen share…",
+    /** The share menu's item that replaces what a running share sends. */
+    screenShareSwitchSource: "Share something else",
     screenSharePermissionDenied:
       "Mellow isn't allowed to record your screen. Allow it in System Settings, Privacy & Security, Screen & System Audio Recording, then share again.",
     openSystemSettings: "Open System Settings",

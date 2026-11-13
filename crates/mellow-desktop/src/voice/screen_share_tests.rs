@@ -10,10 +10,12 @@ use std::sync::Arc;
 use gpui::TestAppContext;
 use mellow_media::{
     RunningScreenCapture, ScreenCaptureError, ScreenChoice, ScreenPicker, ScreenShareContext,
-    ScreenSourceDescription, ScreenSources, ShareSound, SyntheticScreens,
+    ScreenSourceDescription, ScreenSources, ShareSound, SyntheticCameras, SyntheticScreens,
 };
+use mellow_protocol::Snowflake;
 use tokio::runtime::Runtime;
 
+use super::camera::CameraPhase;
 use super::screen_share::{ScreenSharePhase, ScreenShareProblem, ScreenSourceListing, SharedSound};
 use super::tests::{RunningInstance, owner_with_two_voice_channels, wait_until};
 use super::*;
@@ -195,4 +197,153 @@ fn a_cancelled_dialog_is_no_problem_and_a_refused_permission_is_one(cx: &mut Tes
     drop((voice, session));
     cx.run_until_parked();
     runtime.block_on(instance.stop());
+}
+/// The one source `SyntheticScreens` lists.
+const SYNTHETIC_SCREEN_ID: &str = "synthetic-screen";
+
+/// Joins the first channel and shares the synthetic screen, seen by the instance.
+fn sharing_in_a_call(
+    runtime: &Runtime,
+    instance: &RunningInstance,
+    cx: &mut TestAppContext,
+) -> (Entity<Session>, Entity<Voice>, Snowflake) {
+    let (session, voice, channel_id, other_channel_id) =
+        owner_with_two_voice_channels(runtime, instance, cx);
+    voice.update(cx, |voice, cx| {
+        voice.set_screen_sources_for_tests(Arc::new(SyntheticScreens {
+            width: 640,
+            height: 360,
+        }));
+        voice.join(channel_id, cx);
+    });
+    wait_until(cx, "the call", |cx| {
+        voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+    });
+    voice.update(cx, |voice, cx| {
+        voice.share_screen_source(SYNTHETIC_SCREEN_ID.into(), cx);
+    });
+    wait_until(cx, "the share, seen by the instance", |cx| {
+        voice.read_with(cx, |voice, _| voice.is_sharing_screen()) && is_streaming(&session, cx)
+    });
+    (session, voice, other_channel_id)
+}
+
+fn end(
+    runtime: &Runtime,
+    instance: RunningInstance,
+    session: Entity<Session>,
+    voice: Entity<Voice>,
+    cx: &mut TestAppContext,
+) {
+    voice.update(cx, Voice::leave);
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}
+
+#[gpui::test]
+fn the_share_stays_behind_when_moving_to_another_channel(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, other_channel_id) = sharing_in_a_call(&runtime, &instance, cx);
+
+    voice.update(cx, |voice, cx| voice.join(other_channel_id, cx));
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice.screen_share_phase()),
+        ScreenSharePhase::Off
+    );
+    wait_until(cx, "the move, without the share", |cx| {
+        voice.read_with(cx, |voice, _| {
+            voice.phase() == Some(CallPhase::Connected)
+                && voice.channel_id() == Some(other_channel_id)
+        }) && !is_streaming(&session, cx)
+    });
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice
+            .engine()
+            .and_then(VoiceSession::video_source)),
+        None
+    );
+
+    end(&runtime, instance, session, voice, cx);
+}
+
+#[gpui::test]
+fn the_camera_replaces_the_share_and_a_late_stop_leaves_it_on(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, _) = sharing_in_a_call(&runtime, &instance, cx);
+
+    voice.update(cx, |voice, cx| {
+        voice.set_cameras(Arc::new(|| {
+            Box::new(SyntheticCameras {
+                width: 64,
+                height: 36,
+            })
+        }));
+        voice.refresh_cameras(cx);
+    });
+    wait_until(cx, "the camera list", |cx| {
+        voice.read_with(cx, |voice, cx| {
+            voice.listed_cameras().is_some() && voice.camera_block(cx).is_none()
+        })
+    });
+    voice.update(cx, Voice::toggle_camera);
+    wait_until(cx, "the camera in place of the share", |cx| {
+        voice.read_with(cx, |voice, _| {
+            voice.camera_phase() == CameraPhase::On
+                && voice.screen_share_phase() == ScreenSharePhase::Off
+        })
+    });
+    voice.read_with(cx, |voice, _| {
+        assert_eq!(
+            voice.engine().and_then(VoiceSession::video_source),
+            Some(mellow_media::VideoSourceKind::Camera)
+        );
+        assert_eq!(
+            voice.screen_share_announcement(),
+            "Your screen share ended."
+        );
+    });
+
+    // A late Stop (the share is already off) leaves the camera alone.
+    voice.update(cx, Voice::stop_screen_share);
+    voice.read_with(cx, |voice, _| {
+        assert_eq!(voice.camera_phase(), CameraPhase::On);
+        assert_eq!(
+            voice.engine().and_then(VoiceSession::video_source),
+            Some(mellow_media::VideoSourceKind::Camera)
+        );
+    });
+
+    end(&runtime, instance, session, voice, cx);
+}
+
+#[gpui::test]
+fn a_dismissed_problem_leaves_no_old_announcement(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    let (session, voice, _) = sharing_in_a_call(&runtime, &instance, cx);
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice.screen_share_announcement()),
+        "You're sharing your screen"
+    );
+
+    voice.update(cx, |voice, cx| {
+        voice.follow_screen_share_event(&VoiceSessionEvent::VideoStoppedByServer, cx);
+    });
+    voice.read_with(cx, |voice, _| {
+        assert_eq!(
+            voice.screen_share_problem(),
+            Some(ScreenShareProblem::StoppedByServer)
+        );
+        assert_eq!(voice.screen_share_announcement(), "");
+    });
+    voice.update(cx, Voice::dismiss_screen_share_problem);
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice.screen_share_announcement()),
+        ""
+    );
+
+    end(&runtime, instance, session, voice, cx);
 }

@@ -2372,6 +2372,7 @@ export const fr: Catalogue = {
     screenPickerWithoutSound: (quality) => `${quality}, sans le son. Modifiable dans les options du partage.`,
     screenShareWaitingForSystem: "Choisis quoi partager dans la fenêtre de ton bureau…",
     screenShareStarting: "Démarrage du partage d’écran…",
+    screenShareSwitchSource: "Partager autre chose",
     screenSharePermissionDenied: "Mellow n’a pas le droit d’enregistrer ton écran. Autorise-le dans Réglages Système, Confidentialité et sécurité, Enregistrement de l’écran et de l’audio système, puis partage à nouveau.",
     openSystemSettings: "Ouvrir les Réglages Système",
     screenShareUnavailable: "Ton système ne permet pas à Mellow de partager l’écran. Sous Linux, installe le xdg-desktop-portal de ton bureau, puis partage à nouveau.",

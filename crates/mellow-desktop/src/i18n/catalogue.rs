@@ -15002,6 +15002,13 @@ impl DesktopStrings {
         }
     }
 
+    pub fn screen_share_switch_source(self) -> &'static str {
+        match self.language {
+            Language::English => "Share something else",
+            Language::French => "Partager autre chose",
+        }
+    }
+
     pub fn screen_share_permission_denied(self) -> &'static str {
         match self.language {
             Language::English => "Mellow isn't allowed to record your screen. Allow it in System Settings, Privacy & Security, Screen & System Audio Recording, then share again.",
