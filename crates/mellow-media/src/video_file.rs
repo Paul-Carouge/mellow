@@ -74,11 +74,10 @@ pub fn video_container(bytes: &[u8], content_type: &str) -> Option<VideoContaine
 /// `WebM`; Windows has no video decoding yet.
 #[must_use]
 pub fn plays_video_type(content_type: &str) -> bool {
-    match content_type {
-        "video/mp4" | "video/quicktime" => cfg!(any(target_os = "linux", target_os = "macos")),
-        "video/webm" => cfg!(target_os = "linux"),
-        _ => false,
-    }
+    let is_mp4 = matches!(content_type, "video/mp4" | "video/quicktime");
+    let is_webm = content_type == "video/webm";
+    (is_mp4 && cfg!(any(target_os = "linux", target_os = "macos")))
+        || (is_webm && cfg!(target_os = "linux"))
 }
 
 /// A decoded picture and when it shows, from the start of the video.
