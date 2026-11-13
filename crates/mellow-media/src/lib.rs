@@ -10,9 +10,9 @@
 //! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
 //! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
 //! and one decoding thread per watched slot turns received frames (VP8, or H.264 where the
-//! system decodes it: `VideoToolbox`, FFmpeg on Linux) into pictures for the interface. Screen
-//! sharing (ADR-0054) captures through each system's own interface and, on Linux with VA-API,
-//! encodes H.264 on the GPU instead.
+//! system decodes it: `VideoToolbox`, FFmpeg on Linux, Media Foundation on Windows) into
+//! pictures for the interface. Screen sharing (ADR-0054) captures through each system's own
+//! interface and, on Linux with VA-API, encodes H.264 on the GPU instead.
 
 mod audio_engine;
 mod audio_format;
@@ -25,6 +25,10 @@ mod camera_linux;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod camera_macos;
+// Media Foundation, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod camera_windows;
 mod clip_decoder;
 mod clip_player;
 mod codec;
@@ -38,6 +42,10 @@ mod h264_encoder_linux;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod h264_ffmpeg;
+// Media Foundation's H.264 decoder, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod h264_media_foundation;
 // VideoToolbox and CoreMedia, reached through `unsafe` calls; each states its invariant.
 #[cfg(any(target_os = "linux", test))]
 mod h264_stream;
@@ -68,7 +76,16 @@ mod screen_capture_x11;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod screen_capture_macos;
+// Windows.Graphics.Capture, Direct3D 11 and GDI, reached through `unsafe` calls; each states its
+// invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod screen_capture_windows;
 mod screen_sound;
+// WASAPI's process loopback, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod screen_sound_windows;
 mod session;
 mod simulcast;
 mod sound_player;
@@ -100,6 +117,10 @@ mod video_receiver;
 mod video_sender;
 mod vp8;
 mod watch_list;
+// COM and Media Foundation start-up, reached through `unsafe` calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_media_foundation;
 
 pub use camera::{
     CameraDescription, CameraError, CameraFeed, Cameras, RunningCapture, SyntheticCameras,
