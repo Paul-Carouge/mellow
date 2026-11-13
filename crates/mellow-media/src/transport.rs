@@ -30,7 +30,7 @@ use crate::screen_sound::OutgoingScreenSoundPacket;
 use crate::session::{ScreenShareEnd, VoiceSessionEvent, VoiceSignalling, VoiceToggles};
 use crate::simulcast::{LAYERS, VideoSourceKind, rid_of};
 use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
-use crate::video_receiver::VideoReceivers;
+use crate::video_receiver::{ReceivedCodec, VideoReceivers};
 use crate::video_sender::{OutgoingVideoFrame, VideoEncoderControl};
 use crate::watch_list::WatchListPacing;
 
@@ -281,9 +281,17 @@ impl PeerConnection {
                 }
             }
             Event::MediaData(data) if self.media_lines.camera_receive.contains(&data.mid) => {
-                video
-                    .receivers
-                    .deliver(data.mid, data.data, data.contiguous);
+                let codec = match data.params.spec().codec {
+                    Codec::Vp8 => Some(ReceivedCodec::Vp8),
+                    Codec::H264 => Some(ReceivedCodec::H264),
+                    _ => None,
+                };
+                // The offer names no other video codec: anything else is not decoded.
+                if let Some(codec) = codec {
+                    video
+                        .receivers
+                        .deliver(data.mid, data.data, codec, data.contiguous);
+                }
             }
             Event::IceConnectionStateChange(IceConnectionState::Disconnected) => {
                 reports.push(PeerReport::IceDisconnected);

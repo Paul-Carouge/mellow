@@ -5,6 +5,7 @@
 //! with the column widths and member sheets in the preferences. Below their breakpoints the
 //! navigator becomes a drawer and the member sheet an overlay. Every length and colour is a token.
 
+mod call_view;
 mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;
@@ -256,6 +257,8 @@ pub struct DuskShell {
     voice: Option<Entity<crate::voice::Voice>>,
     voice_person_popover: Option<voice_panel::VoicePersonPopover>,
     soundboard: soundboard_host::SoundboardHost,
+    /// The call view or the watched screen in the sheet's place, and what had focus before.
+    call_view: Option<(Entity<call_view::CallView>, Option<FocusHandle>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -290,7 +293,10 @@ impl DuskShell {
             cx.observe_global::<PreferencesStore>(|shell, cx| shell.follow_state(&[], cx)),
         ];
         if let Some(voice) = voice.as_ref() {
-            subscriptions.push(cx.observe(voice, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe_in(voice, window, |shell, _, window, cx| {
+                shell.follow_call_view(window, cx);
+                cx.notify();
+            }));
             // A push-to-talk key held while the window goes to the back never comes up here.
             subscriptions.push(cx.observe_window_activation(window, |shell, window, cx| {
                 if !window.is_window_active()
@@ -332,6 +338,7 @@ impl DuskShell {
             voice,
             voice_person_popover: None,
             soundboard: soundboard_host::SoundboardHost::new(cx),
+            call_view: None,
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
@@ -407,6 +414,13 @@ impl DuskShell {
         }
         self.load_members_of_open_server(cx);
         self.show_place_in_conversation(cx);
+        // Another place shows it: the call and the watched screen step aside (the call goes on).
+        if let Some(voice) = self.voice.clone() {
+            voice.update(cx, |voice, cx| {
+                voice.close_call_view(cx);
+                voice.watch_stream(None, cx);
+            });
+        }
         cx.notify();
     }
 
@@ -1056,49 +1070,57 @@ impl Render for DuskShell {
             TOP_BAND_HEIGHT - TITLE_BAR_BAND_HEIGHT
         };
 
-        let cards = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_row()
-            .pt(length(top_padding))
-            .when(!is_full_bleed, |ground| {
-                ground
-                    .pb(inset)
-                    .pl(inset)
-                    .pr(length(trailing_padding))
-                    .gap(inset)
-            })
-            .when(!is_full_bleed, |ground| {
-                ground.child(
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_none()
-                        .child(self.render_navigator(columns.channels, false, window, cx))
-                        .child(self.render_resize_handle(
-                            ResizableColumn::Channels,
-                            columns.channels,
-                            columns.channels_bounds,
-                            window,
-                            cx,
-                        )),
-                )
-            })
-            .child(self.render_conversation_sheet(layout, window, cx))
-            .when_some(side_column.zip(columns.side), |ground, (column, width)| {
-                let sheet = if column == ResizableColumn::Search {
-                    self.message_search.update(cx, |search, cx| {
-                        search.render_panel(true, Some(width), window, cx)
-                    })
-                } else {
-                    self.render_member_sheet(Some(width), window, cx)
-                        .into_any_element()
-                };
-                ground.child(div().relative().flex().flex_none().child(sheet).child(
-                    self.render_resize_handle(column, width, columns.side_bounds, window, cx),
-                ))
-            });
+        // Under a full-screen call view the cards would be drawn hidden, yet stay in the
+        // accessibility tree and the tab order, and re-render with every received picture.
+        let is_call_view_fullscreen = self
+            .call_view
+            .as_ref()
+            .is_some_and(|(view, _)| view.read(cx).is_fullscreen());
+        let cards = (!is_call_view_fullscreen).then(|| {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_row()
+                .pt(length(top_padding))
+                .when(!is_full_bleed, |ground| {
+                    ground
+                        .pb(inset)
+                        .pl(inset)
+                        .pr(length(trailing_padding))
+                        .gap(inset)
+                })
+                .when(!is_full_bleed, |ground| {
+                    ground.child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_none()
+                            .child(self.render_navigator(columns.channels, false, window, cx))
+                            .child(self.render_resize_handle(
+                                ResizableColumn::Channels,
+                                columns.channels,
+                                columns.channels_bounds,
+                                window,
+                                cx,
+                            )),
+                    )
+                })
+                .child(self.render_conversation_sheet(layout, window, cx))
+                .when_some(side_column.zip(columns.side), |ground, (column, width)| {
+                    let sheet = if column == ResizableColumn::Search {
+                        self.message_search.update(cx, |search, cx| {
+                            search.render_panel(true, Some(width), window, cx)
+                        })
+                    } else {
+                        self.render_member_sheet(Some(width), window, cx)
+                            .into_any_element()
+                    };
+                    ground.child(div().relative().flex().flex_none().child(sheet).child(
+                        self.render_resize_handle(column, width, columns.side_bounds, window, cx),
+                    ))
+                })
+        });
 
         let root = div()
             .size_full()
@@ -1214,7 +1236,7 @@ impl Render for DuskShell {
             })
             .child(self.banner.clone())
             .children(notice_bar)
-            .child(cards)
+            .children(cards)
             .when(self.is_navigation_drawer_open, |root| {
                 root.child(self.render_navigation_drawer(window, cx))
             })
@@ -1237,7 +1259,8 @@ impl Render for DuskShell {
             })
             .children(self.render_place_menus(window, cx))
             .children(self.render_voice_person_popover(cx))
-            .children(self.render_soundboard_popover(window, cx));
+            .children(self.render_soundboard_popover(window, cx))
+            .children(self.render_fullscreen_call_view(cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

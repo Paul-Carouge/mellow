@@ -1,6 +1,8 @@
 //! Receiving cameras and screens: one decoding thread per video receive slot in use, fed by the
 //! network thread through a short queue, each handing the newest picture to the interface at
-//! the size its tile shows, converted for drawing. Nothing here runs on the interface's thread.
+//! the size its tile shows, converted for drawing. A slot's frames are VP8 or, where the system
+//! decodes it, H.264 (ADR-0052); a slot given to another sender may change codec, so each frame
+//! names its own. Nothing here runs on the interface's thread.
 
 use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
@@ -12,6 +14,13 @@ use str0m::media::Mid;
 
 use crate::video_frame::{DecodedPixelFormat, DecodedVideoFrame, I420View, fit_within};
 use crate::vp8::Vp8Decoder;
+
+/// The codec of a received frame, from its payload type.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ReceivedCodec {
+    Vp8,
+    H264,
+}
 
 /// Frames waiting for one decoder: a few frames of slack; beyond, the network thread drops
 /// frames and asks for a keyframe rather than queueing seconds of stale video.
@@ -127,7 +136,7 @@ impl VideoFrames {
             width,
             height,
             format,
-            pixels: pixels.into(),
+            pixels,
         };
         let waker = {
             let mut state = self.state();
@@ -144,10 +153,11 @@ impl VideoFrames {
     }
 }
 
-/// A received VP8 frame for a decoding thread.
+/// A received frame for a decoding thread.
 #[derive(Debug)]
 struct IncomingVideoFrame {
     bytes: Arc<[u8]>,
+    codec: ReceivedCodec,
     /// False after a gap: the decoder must wait for a keyframe.
     is_contiguous: bool,
 }
@@ -178,7 +188,13 @@ impl VideoReceivers {
     }
 
     /// Hands a received frame of slot `mid` to its decoding thread, started on first use.
-    pub(crate) fn deliver(&mut self, mid: Mid, bytes: Arc<[u8]>, is_contiguous: bool) {
+    pub(crate) fn deliver(
+        &mut self,
+        mid: Mid,
+        bytes: Arc<[u8]>,
+        codec: ReceivedCodec,
+        is_contiguous: bool,
+    ) {
         if !self.threads.contains_key(&mid) {
             let (sender, receiver) = std::sync::mpsc::sync_channel(DECODE_QUEUE_FRAMES);
             let frames = self.frames.clone();
@@ -208,6 +224,7 @@ impl VideoReceivers {
         };
         let frame = IncomingVideoFrame {
             bytes,
+            codec,
             is_contiguous: is_contiguous && !decoding.has_dropped_a_frame,
         };
         match decoding.frames.try_send(frame) {
@@ -248,37 +265,121 @@ impl Drop for VideoReceivers {
     }
 }
 
+/// The decoder of the codec a slot carries now, started at its first frame in that codec.
+enum SlotDecoder {
+    None,
+    /// No decoder of this codec could start: its frames are skipped, without trying or logging
+    /// again on every frame, until the slot carries another codec.
+    Failed(ReceivedCodec),
+    Vp8(Vp8Decoder),
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    H264(crate::h264::H264Decoder),
+}
+
+impl SlotDecoder {
+    /// Makes this the decoder for `codec`, replacing another codec's (the slot was given to
+    /// another sender). `false` when none could start (or none exists on this platform).
+    fn prepare(&mut self, codec: ReceivedCodec) -> bool {
+        let is_ready = match (&*self, codec) {
+            (Self::Vp8(_), ReceivedCodec::Vp8) => true,
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            (Self::H264(_), ReceivedCodec::H264) => true,
+            (Self::Failed(failed), _) if *failed == codec => return false,
+            _ => false,
+        };
+        if !is_ready {
+            *self = match codec {
+                ReceivedCodec::Vp8 => match Vp8Decoder::new(DECODER_THREADS) {
+                    Ok(decoder) => Self::Vp8(decoder),
+                    Err(error) => {
+                        tracing::warn!(%error, "a VP8 decoder could not start");
+                        Self::Failed(codec)
+                    }
+                },
+                ReceivedCodec::H264 => Self::new_h264(),
+            };
+        }
+        !matches!(self, Self::None | Self::Failed(_))
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    fn new_h264() -> Self {
+        match crate::h264::H264Decoder::new() {
+            Ok(decoder) => Self::H264(decoder),
+            Err(error) => {
+                tracing::warn!(%error, "an H.264 decoder could not start");
+                Self::Failed(ReceivedCodec::H264)
+            }
+        }
+    }
+
+    /// This platform offers no H.264, so the server sends none; a stray frame is dropped.
+    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    fn new_h264() -> Self {
+        Self::Failed(ReceivedCodec::H264)
+    }
+
+    /// Decodes `frame` and hands its picture, if any, to `publish`. `false` when it did not
+    /// decode (a keyframe is needed).
+    fn decode(&mut self, frame: &[u8], publish: impl FnOnce(I420View<'_>)) -> bool {
+        let picture = match self {
+            Self::None | Self::Failed(_) => return true,
+            Self::Vp8(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
+            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            Self::H264(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
+        };
+        match picture {
+            Ok(Some(picture)) => {
+                publish(picture);
+                true
+            }
+            Ok(None) => true,
+            Err(error) => {
+                tracing::debug!(%error, "a received video frame did not decode");
+                false
+            }
+        }
+    }
+}
+
+/// Whether `frame` is a keyframe a decoder of `codec` can start from.
+fn is_keyframe(frame: &[u8], codec: ReceivedCodec) -> bool {
+    match codec {
+        ReceivedCodec::Vp8 => is_vp8_keyframe(frame),
+        ReceivedCodec::H264 => crate::h264::is_h264_keyframe(frame),
+    }
+}
+
 fn decode_until_closed(
     mid: Mid,
     incoming: &Receiver<IncomingVideoFrame>,
     frames: &VideoFrames,
     keyframe_requests: &Sender<Mid>,
 ) {
-    let mut decoder = match Vp8Decoder::new(DECODER_THREADS) {
-        Ok(decoder) => decoder,
-        Err(error) => {
-            tracing::warn!(%error, "a VP8 decoder could not start");
-            return;
-        }
-    };
+    let mut decoder = SlotDecoder::None;
     let mut is_waiting_for_keyframe = true;
+    let mut current_codec = None;
     let request_keyframe = || {
         // The network thread gone means the session is ending.
         let _ = keyframe_requests.send(mid);
     };
+    let mut batch: Vec<IncomingVideoFrame> = Vec::with_capacity(DECODE_QUEUE_FRAMES);
     while let Ok(first) = incoming.recv() {
         // Every queued frame is decoded (each depends on the previous one), but only the newest
         // picture is converted and shown.
-        let mut batch: Vec<IncomingVideoFrame> = vec![first];
+        batch.push(first);
         batch.extend(incoming.try_iter());
         let last_index = batch.len() - 1;
-        for (index, frame) in batch.into_iter().enumerate() {
-            if !frame.is_contiguous {
+        for (index, frame) in batch.drain(..).enumerate() {
+            if !frame.is_contiguous || current_codec != Some(frame.codec) {
                 is_waiting_for_keyframe = true;
-                request_keyframe();
+                current_codec = Some(frame.codec);
+                if !frame.is_contiguous {
+                    request_keyframe();
+                }
             }
             if is_waiting_for_keyframe {
-                if !is_vp8_keyframe(&frame.bytes) {
+                if !is_keyframe(&frame.bytes, frame.codec) {
                     // Asked again while waiting (the network thread allows one a second): an
                     // earlier request may have been lost or made before the connection.
                     request_keyframe();
@@ -286,13 +387,18 @@ fn decode_until_closed(
                 }
                 is_waiting_for_keyframe = false;
             }
-            match decoder.decode(&frame.bytes) {
-                Ok(Some(picture)) if index == last_index => frames.publish(mid, picture),
-                Ok(_) => {}
-                Err(_) => {
-                    is_waiting_for_keyframe = true;
-                    request_keyframe();
+            if !decoder.prepare(frame.codec) {
+                continue;
+            }
+            let should_publish = index == last_index;
+            let is_decoded = decoder.decode(&frame.bytes, |picture| {
+                if should_publish {
+                    frames.publish(mid, picture);
                 }
+            });
+            if !is_decoded {
+                is_waiting_for_keyframe = true;
+                request_keyframe();
             }
         }
     }
@@ -336,6 +442,18 @@ mod tests {
     }
 
     #[test]
+    fn a_codec_whose_decoder_failed_is_not_started_again_until_the_codec_changes() {
+        let mut decoder = SlotDecoder::Failed(ReceivedCodec::H264);
+        assert!(!decoder.prepare(ReceivedCodec::H264));
+        assert!(matches!(decoder, SlotDecoder::Failed(ReceivedCodec::H264)));
+        assert!(decoder.decode(&[0, 0, 1, 0x65], |_| panic!("no picture")));
+        assert!(
+            decoder.prepare(ReceivedCodec::Vp8),
+            "another codec starts its own"
+        );
+    }
+
+    #[test]
     fn a_watched_slot_s_pictures_arrive_at_the_tile_s_size() {
         let frames = VideoFrames::new(DecodedPixelFormat::Bgra);
         let user_id = Snowflake::from_raw(7);
@@ -349,7 +467,7 @@ mod tests {
         let (keyframe_requests, _requested) = mpsc::channel();
         let mut receivers = VideoReceivers::new(frames.clone(), keyframe_requests);
         for frame in camera_frames(3) {
-            receivers.deliver(mid, frame.into(), true);
+            receivers.deliver(mid, frame.into(), ReceivedCodec::Vp8, true);
         }
         was_woken.recv_timeout(Duration::from_secs(10)).unwrap();
         receivers.shut_down();
@@ -365,6 +483,43 @@ mod tests {
         assert_eq!(frames.take_new_frames(), [], "taken once");
     }
 
+    /// A slot whose new sender sends H.264 (a native sharer, ADR-0052) waits for its IDR, then
+    /// shows its pictures, on the platforms that decode it.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_slot_switching_from_vp8_to_h264_shows_the_new_sender_s_pictures() {
+        let frames = VideoFrames::new(DecodedPixelFormat::Bgra);
+        let user_id = Snowflake::from_raw(8);
+        let mid = Mid::from("22");
+        frames.assign_slot(mid, user_id);
+        frames.set_display_sizes(HashMap::from([(user_id, (640, 360))]));
+        let (woken, was_woken) = mpsc::channel();
+        frames.set_waker(move || {
+            let _ = woken.send(());
+        });
+        let (keyframe_requests, _requested) = mpsc::channel();
+        let mut receivers = VideoReceivers::new(frames.clone(), keyframe_requests);
+        receivers.deliver(
+            mid,
+            camera_frames(1)[0].clone().into(),
+            ReceivedCodec::Vp8,
+            true,
+        );
+        was_woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        assert_eq!(frames.take_new_frames()[0].1.width, 320);
+        let h264 = crate::h264::tests::fixture_frames();
+        // A delta frame first: it waits for the IDR instead of failing the decoder.
+        receivers.deliver(mid, h264[1].clone().into(), ReceivedCodec::H264, true);
+        receivers.deliver(mid, h264[0].clone().into(), ReceivedCodec::H264, true);
+        was_woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        receivers.shut_down();
+        let taken = frames.take_new_frames();
+        let (owner, picture) = &taken[0];
+        assert_eq!(*owner, user_id);
+        assert_eq!((picture.width, picture.height), (320, 180));
+        assert_eq!(picture.pixels.len(), 320 * 180 * 4);
+    }
+
     #[test]
     fn a_gap_waits_for_a_keyframe_and_asks_for_one() {
         let frames = VideoFrames::new(DecodedPixelFormat::Nv12);
@@ -372,8 +527,8 @@ mod tests {
         let (keyframe_requests, requested) = mpsc::channel();
         let mut receivers = VideoReceivers::new(frames, keyframe_requests);
         let encoded = camera_frames(3);
-        receivers.deliver(mid, encoded[0].clone().into(), true);
-        receivers.deliver(mid, encoded[2].clone().into(), false);
+        receivers.deliver(mid, encoded[0].clone().into(), ReceivedCodec::Vp8, true);
+        receivers.deliver(mid, encoded[2].clone().into(), ReceivedCodec::Vp8, false);
         assert_eq!(
             requested.recv_timeout(Duration::from_secs(10)).unwrap(),
             mid
