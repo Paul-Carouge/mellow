@@ -24,7 +24,7 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::call_view::{
     CallLayout, CallPerson, CallVideo, MAXIMUM_CALL_TILES, WatchedStreamStatus, arrange_call_tiles,
-    featured_person_of, grid_shape_for, next_speaker, tile_size_of, watched_stream_status,
+    featured_person_of, grid_shape_for, next_speaker, watched_pictures_of, watched_stream_status,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::voice_settings::{
@@ -78,6 +78,11 @@ pub(crate) struct CallView {
     speaker_user_id: Option<Snowflake>,
     /// The featured tile or the watched screen fills the window.
     is_fullscreen: bool,
+    /// The view put the window in full screen itself, so leaving undoes it; a window the user
+    /// had already made full screen stays so.
+    has_made_window_fullscreen: bool,
+    /// The layout full screen replaced, restored when the watched screen it showed ends.
+    layout_before_fullscreen: CallLayout,
     focus: FocusHandle,
     /// The stage's size, measured as it is drawn, for the tiles' sizes.
     stage_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
@@ -148,6 +153,8 @@ impl CallView {
             picked_user_id: None,
             speaker_user_id: None,
             is_fullscreen: false,
+            has_made_window_fullscreen: false,
+            layout_before_fullscreen: CallLayout::Grid,
             focus: cx.focus_handle(),
             stage_bounds: Rc::new(Cell::new(None)),
             shown_cameras: Vec::new(),
@@ -195,14 +202,32 @@ impl CallView {
     /// Full screen: the featured tile or the watched screen fills the window, and the window
     /// the screen.
     pub(crate) fn toggle_fullscreen(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        self.is_fullscreen = !self.is_fullscreen;
         if self.is_fullscreen {
+            if self.leave_fullscreen() && window.is_fullscreen() {
+                window.toggle_fullscreen();
+            }
+        } else {
+            self.is_fullscreen = true;
+            self.layout_before_fullscreen = self.layout;
             self.layout = CallLayout::Speaker;
-        }
-        if window.is_fullscreen() != self.is_fullscreen {
-            window.toggle_fullscreen();
+            self.has_made_window_fullscreen = !window.is_fullscreen();
+            if self.has_made_window_fullscreen {
+                window.toggle_fullscreen();
+            }
         }
         cx.notify();
+    }
+
+    /// Leaves the view's full screen; `true` when the window must leave its own too.
+    fn leave_fullscreen(&mut self) -> bool {
+        self.is_fullscreen = false;
+        std::mem::take(&mut self.has_made_window_fullscreen)
+    }
+
+    /// The view put the window in full screen, so its closing must undo it.
+    #[must_use]
+    pub(crate) fn has_made_window_fullscreen(&self) -> bool {
+        self.has_made_window_fullscreen
     }
 
     /// Esc: leaves full screen first, then closes the watched screen or the call view.
@@ -322,6 +347,18 @@ impl Render for CallView {
             self.watch(Vec::new(), cx);
             self.render_stream(user_id, window, cx)
         } else {
+            if self.timed_stream_user_id.is_some() && self.is_fullscreen {
+                // The watched screen ended or was closed: its full screen ends with it, as the
+                // web's StreamView leaves full screen when it goes away.
+                self.layout = self.layout_before_fullscreen;
+                if self.leave_fullscreen() {
+                    window.defer(cx, |window, _| {
+                        if window.is_fullscreen() {
+                            window.toggle_fullscreen();
+                        }
+                    });
+                }
+            }
             self.cancel_stream_timers();
             self.render_call(window, cx)
         };
@@ -407,17 +444,13 @@ impl CallView {
         let strip_width = COMPONENT_CALL_VIEW_STRIP_TILE_HEIGHT * TILE_ASPECT_RATIO;
         let scale = window.scale_factor();
         // The pictures shown, and how large: as `watchedCamerasOf`, with the drawn sizes.
-        let cameras: Vec<ShownPicture> = tiles
-            .iter()
-            .enumerate()
-            .filter(|(index, person)| {
-                person.video.is_some()
-                    && Some(person.user_id) != own_user_id
-                    && (!is_fullscreen || *index == 0)
-            })
-            .map(|(index, person)| {
-                let is_featured = is_speaker && index == 0;
-                let size = tile_size_of(self.layout, tiles.len(), is_featured);
+        let first_user_id = tiles.first().map(|person| person.user_id);
+        let cameras: Vec<ShownPicture> = watched_pictures_of(&tiles, self.layout, own_user_id)
+            .into_iter()
+            // Full screen shows the featured tile alone.
+            .filter(|picture| !is_fullscreen || Some(picture.user_id) == first_user_id)
+            .map(|picture| {
+                let is_featured = is_speaker && Some(picture.user_id) == first_user_id;
                 let width = if !is_speaker {
                     grid.tile_width
                 } else if is_featured {
@@ -425,7 +458,7 @@ impl CallView {
                 } else {
                     strip_width
                 };
-                shown_picture(person.user_id, size, width, scale)
+                shown_picture(picture.user_id, picture.size, width, scale)
             })
             .collect();
         self.watch(cameras, cx);
@@ -954,8 +987,13 @@ impl CallView {
                             avatar_size,
                         ))
                         .when_some(sentence.filter(|_| !look.is_in_strip), |stage, sentence| {
+                            let is_paused = look.is_paused;
                             stage.child(
                                 with_type(div(), TYPE_BODY_SM)
+                                    .debug_selector(move || {
+                                        let kind = if is_paused { "paused" } else { "sentence" };
+                                        format!("call-{kind}-{}", user_id.raw())
+                                    })
                                     .flex()
                                     .items_center()
                                     .gap(length(SPACE_2XS))
@@ -1144,6 +1182,7 @@ impl CallView {
                         ))
                         .child(
                             with_type(div(), TYPE_BODY)
+                                .debug_selector(|| "stream-sentence".to_owned())
                                 .text_center()
                                 .text_color(color(tokens.component_stream_view_stage_text))
                                 .child(sentence),
@@ -1434,7 +1473,7 @@ impl super::DuskShell {
             }
             (false, true) => {
                 if let Some((view, opener)) = self.call_view.take() {
-                    if view.read(cx).is_fullscreen() && window.is_fullscreen() {
+                    if view.read(cx).has_made_window_fullscreen() && window.is_fullscreen() {
                         window.toggle_fullscreen();
                     }
                     let focus = opener.unwrap_or_else(|| self.root_focus.clone());

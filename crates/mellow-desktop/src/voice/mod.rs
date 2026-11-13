@@ -855,7 +855,7 @@ impl Voice {
 
     /// The engine stopped by itself (it told the server when it had to).
     fn end_with(&mut self, problem: VoiceProblem, cx: &mut Context<Self>) {
-        self.stop_call(false);
+        self.stop_call(false, cx);
         self.problem = Some(problem);
         cx.notify();
     }
@@ -865,12 +865,12 @@ impl Voice {
         if self.call.is_none() {
             return;
         }
-        self.stop_call(true);
+        self.stop_call(true, cx);
         self.play_cue_outside_a_call(VoiceCue::SelfLeave, cx);
         cx.notify();
     }
 
-    fn stop_call(&mut self, should_tell_the_server: bool) {
+    fn stop_call(&mut self, should_tell_the_server: bool, cx: &mut Context<Self>) {
         self.attempt += 1;
         self.is_push_to_talk_pressed = false;
         // Hearing the call's microphone ends with it; the settings' test keeps its own.
@@ -878,7 +878,7 @@ impl Voice {
             self.is_monitoring = false;
         }
         self.announcement = SharedString::default();
-        self.video.end_call();
+        self.video.end_call(cx);
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),
@@ -907,7 +907,7 @@ impl Voice {
     fn follow_gateway(&mut self, signal: &VoiceSignal, cx: &mut Context<Self>) {
         if let VoiceSignal::SessionEnded = signal {
             // Signed out: the gateway is gone, so nothing is sent.
-            self.stop_call(false);
+            self.stop_call(false, cx);
             self.abandoned_start = None;
             self.problem = None;
             cx.notify();

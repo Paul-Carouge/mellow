@@ -1070,49 +1070,57 @@ impl Render for DuskShell {
             TOP_BAND_HEIGHT - TITLE_BAR_BAND_HEIGHT
         };
 
-        let cards = div()
-            .flex_1()
-            .min_h_0()
-            .flex()
-            .flex_row()
-            .pt(length(top_padding))
-            .when(!is_full_bleed, |ground| {
-                ground
-                    .pb(inset)
-                    .pl(inset)
-                    .pr(length(trailing_padding))
-                    .gap(inset)
-            })
-            .when(!is_full_bleed, |ground| {
-                ground.child(
-                    div()
-                        .relative()
-                        .flex()
-                        .flex_none()
-                        .child(self.render_navigator(columns.channels, false, window, cx))
-                        .child(self.render_resize_handle(
-                            ResizableColumn::Channels,
-                            columns.channels,
-                            columns.channels_bounds,
-                            window,
-                            cx,
-                        )),
-                )
-            })
-            .child(self.render_conversation_sheet(layout, window, cx))
-            .when_some(side_column.zip(columns.side), |ground, (column, width)| {
-                let sheet = if column == ResizableColumn::Search {
-                    self.message_search.update(cx, |search, cx| {
-                        search.render_panel(true, Some(width), window, cx)
-                    })
-                } else {
-                    self.render_member_sheet(Some(width), window, cx)
-                        .into_any_element()
-                };
-                ground.child(div().relative().flex().flex_none().child(sheet).child(
-                    self.render_resize_handle(column, width, columns.side_bounds, window, cx),
-                ))
-            });
+        // Under a full-screen call view the cards would be drawn hidden, yet stay in the
+        // accessibility tree and the tab order, and re-render with every received picture.
+        let is_call_view_fullscreen = self
+            .call_view
+            .as_ref()
+            .is_some_and(|(view, _)| view.read(cx).is_fullscreen());
+        let cards = (!is_call_view_fullscreen).then(|| {
+            div()
+                .flex_1()
+                .min_h_0()
+                .flex()
+                .flex_row()
+                .pt(length(top_padding))
+                .when(!is_full_bleed, |ground| {
+                    ground
+                        .pb(inset)
+                        .pl(inset)
+                        .pr(length(trailing_padding))
+                        .gap(inset)
+                })
+                .when(!is_full_bleed, |ground| {
+                    ground.child(
+                        div()
+                            .relative()
+                            .flex()
+                            .flex_none()
+                            .child(self.render_navigator(columns.channels, false, window, cx))
+                            .child(self.render_resize_handle(
+                                ResizableColumn::Channels,
+                                columns.channels,
+                                columns.channels_bounds,
+                                window,
+                                cx,
+                            )),
+                    )
+                })
+                .child(self.render_conversation_sheet(layout, window, cx))
+                .when_some(side_column.zip(columns.side), |ground, (column, width)| {
+                    let sheet = if column == ResizableColumn::Search {
+                        self.message_search.update(cx, |search, cx| {
+                            search.render_panel(true, Some(width), window, cx)
+                        })
+                    } else {
+                        self.render_member_sheet(Some(width), window, cx)
+                            .into_any_element()
+                    };
+                    ground.child(div().relative().flex().flex_none().child(sheet).child(
+                        self.render_resize_handle(column, width, columns.side_bounds, window, cx),
+                    ))
+                })
+        });
 
         let root = div()
             .size_full()
@@ -1228,7 +1236,7 @@ impl Render for DuskShell {
             })
             .child(self.banner.clone())
             .children(notice_bar)
-            .child(cards)
+            .children(cards)
             .when(self.is_navigation_drawer_open, |root| {
                 root.child(self.render_navigation_drawer(window, cx))
             })

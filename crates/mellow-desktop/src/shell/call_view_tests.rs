@@ -204,6 +204,123 @@ fn the_call_view_closes_when_the_call_ends(cx: &mut TestAppContext) {
     assert!(cx.debug_bounds("chat-header").is_some());
 }
 
+fn toggle_fullscreen(view: &Entity<CallView>, cx: &mut VisualTestContext) {
+    cx.update(|window, cx| view.update(cx, |view, cx| view.toggle_fullscreen(window, cx)));
+    cx.run_until_parked();
+}
+
+fn is_window_fullscreen(cx: &mut VisualTestContext) -> bool {
+    cx.update(|window, _| window.is_fullscreen())
+}
+
+#[gpui::test]
+fn full_screen_shows_the_featured_tile_alone_and_escape_leaves_it_before_closing(
+    cx: &mut TestAppContext,
+) {
+    let (shell, voice, cx) = shell_in_a_call(cx);
+    let view = call_view(&shell, cx);
+    view.update(cx, |view, cx| view.toggle_picked(ANA, cx));
+    toggle_fullscreen(&view, cx);
+    assert!(is_window_fullscreen(cx));
+    assert!(cx.debug_bounds("call-tile-1001").is_some());
+    assert!(
+        cx.debug_bounds("call-tile-1002").is_none(),
+        "the strip is hidden"
+    );
+    assert!(
+        cx.debug_bounds("chat-header").is_none(),
+        "nothing of the shell is drawn underneath"
+    );
+    assert_eq!(
+        voice
+            .read_with(cx, |voice, _| voice.watched_cameras_for_tests())
+            .iter()
+            .map(|shown| shown.user_id)
+            .collect::<Vec<_>>(),
+        [ANA]
+    );
+
+    press(cx, "escape");
+    assert!(!view.read_with(cx, |view, _| view.is_fullscreen()));
+    assert!(!is_window_fullscreen(cx));
+    assert!(shell.read_with(cx, |shell, _| shell.call_view.is_some()));
+
+    press(cx, "escape");
+    assert!(shell.read_with(cx, |shell, _| shell.call_view.is_none()));
+}
+
+#[gpui::test]
+fn a_window_already_in_full_screen_stays_so_when_the_view_leaves_it(cx: &mut TestAppContext) {
+    let (shell, _voice, cx) = shell_in_a_call(cx);
+    cx.update(|window, _| window.toggle_fullscreen());
+    let view = call_view(&shell, cx);
+    toggle_fullscreen(&view, cx);
+    toggle_fullscreen(&view, cx);
+    assert!(!view.read_with(cx, |view, _| view.is_fullscreen()));
+    assert!(is_window_fullscreen(cx), "the user's own full screen");
+
+    toggle_fullscreen(&view, cx);
+    press(cx, "escape");
+    press(cx, "escape");
+    assert!(shell.read_with(cx, |shell, _| shell.call_view.is_none()));
+    assert!(is_window_fullscreen(cx));
+}
+
+#[gpui::test]
+fn a_watched_screen_that_goes_away_in_full_screen_leaves_full_screen(cx: &mut TestAppContext) {
+    let (shell, voice, cx) = shell_in_a_call(cx);
+    voice.update(cx, |voice, cx| voice.watch_stream(Some(ZOE), cx));
+    cx.run_until_parked();
+    let view = call_view(&shell, cx);
+    toggle_fullscreen(&view, cx);
+    assert!(is_window_fullscreen(cx));
+
+    voice.update(cx, |voice, cx| voice.watch_stream(None, cx));
+    cx.run_until_parked();
+    assert!(!view.read_with(cx, |view, _| view.is_fullscreen()));
+    assert!(!is_window_fullscreen(cx));
+    assert_eq!(
+        view.read_with(cx, |view, _| view.layout()),
+        CallLayout::Grid,
+        "the layout full screen forced is undone"
+    );
+    assert!(
+        cx.debug_bounds("chat-header").is_none(),
+        "the call view stays"
+    );
+}
+
+#[gpui::test]
+fn undecodable_and_paused_pictures_say_so(cx: &mut TestAppContext) {
+    let (_shell, voice, cx) = shell_in_a_call(cx);
+    // Zoé shares in a codec this app does not decode; Ana's camera plays.
+    assert!(cx.debug_bounds("call-sentence-1002").is_some());
+    assert!(cx.debug_bounds("call-sentence-1001").is_none());
+    assert!(cx.debug_bounds("call-paused-1001").is_none());
+
+    voice.update(cx, |voice, cx| {
+        voice.note_video_paused_for_tests(ANA, true, cx);
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("call-paused-1001").is_some());
+
+    voice.update(cx, |voice, cx| voice.watch_stream(Some(ZOE), cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("stream-sentence").is_some());
+}
+
+#[gpui::test]
+fn the_last_pictures_go_when_the_call_ends(cx: &mut TestAppContext) {
+    let (_shell, voice, cx) = shell_in_a_call(cx);
+    let pictures = voice.read_with(cx, |voice, _| voice.video_pictures());
+    pictures.update(cx, |pictures, cx| {
+        pictures.show(vec![(ANA, synthetic_frame(64, 36))], cx);
+    });
+    voice.update(cx, Voice::leave);
+    cx.run_until_parked();
+    assert!(pictures.read_with(cx, |pictures, _| pictures.picture(ANA).is_none()));
+}
+
 #[test]
 fn people_are_listed_in_join_order_with_you_added_before_your_state_comes_back() {
     let states = [

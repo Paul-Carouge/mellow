@@ -63,13 +63,16 @@ impl CallVideo {
         self.apply(Some(engine), cx);
     }
 
-    /// The call ended: nothing is shown or watched any more.
-    pub(super) fn end_call(&mut self) {
+    /// The call ended: nothing is shown or watched any more, and its last pictures leave memory
+    /// and the atlas (a next call would otherwise show them frozen until its engine starts).
+    pub(super) fn end_call(&mut self, cx: &mut App) {
         self.is_call_view_open = false;
         self.watched_stream = None;
         self.cameras.clear();
         self.paused_user_ids.clear();
         self.pump = None;
+        self.pictures
+            .update(cx, |pictures, cx| pictures.keep_only(|_| false, cx));
     }
 
     pub(super) fn note_paused(&mut self, user_id: Snowflake, is_paused: bool) {
@@ -311,5 +314,48 @@ impl Voice {
     /// The cameras the call view asks for, with their sizes.
     pub(crate) fn watched_cameras_for_tests(&self) -> Vec<ShownPicture> {
         self.video.cameras.clone()
+    }
+
+    /// As the engine's `VideoPaused` event.
+    pub(crate) fn note_video_paused_for_tests(
+        &mut self,
+        user_id: Snowflake,
+        is_paused: bool,
+        cx: &mut Context<Self>,
+    ) {
+        self.video.note_paused(user_id, is_paused);
+        cx.notify();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::preferences::PreferencesStore;
+
+    #[gpui::test]
+    fn a_new_engine_starts_with_the_saved_screen_sound_volumes(cx: &mut gpui::TestAppContext) {
+        let ana = Snowflake::from_raw(1);
+        let quieter = PersonVoiceSetting {
+            volume_percent: 40,
+            is_locally_muted: true,
+        };
+        cx.update(|cx| {
+            cx.set_global(PreferencesStore::default());
+            change_preferences(cx, move |preferences| {
+                preferences.set_stream_person(ana, quieter);
+            });
+        });
+        let store = InMemoryPersonVoiceSettings::default();
+        cx.update(|cx| seed_stream_sound_settings(&store, cx));
+        assert_eq!(
+            store.person_setting(PersonSoundSource::ScreenSound, ana),
+            person_setting_of(quieter)
+        );
+        assert_eq!(
+            store.person_setting(PersonSoundSource::Voice, ana),
+            mellow_media::PersonVoiceSetting::default(),
+            "the voice's own setting is apart"
+        );
     }
 }

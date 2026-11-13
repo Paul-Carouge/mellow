@@ -1,7 +1,9 @@
 //! Received pictures on screen (ADR-0051, "Receiving video"): the engine's decoding threads hand
 //! each watched person's newest picture, already scaled to its tile and converted to BGRA, to
-//! [`VideoPictures`], an entity only the call view observes, so a picture never redraws the rest
-//! of the shell. [`video_view`] draws one.
+//! [`VideoPictures`], an entity only the call view reads. GPUI marks a notified view's ancestors
+//! dirty too, so each new picture also re-renders the shell around the call view (its children
+//! are cheap element trees; the call view in full screen draws the overlay alone).
+//! [`video_view`] draws one.
 //!
 //! Drawing: each picture becomes a GPUI `RenderImage` around the decoding thread's own buffer
 //! (no copy on the UI thread), uploaded once to the window's atlas; the previous picture of that
@@ -88,7 +90,7 @@ impl VideoPictures {
                 continue;
             };
             if let Some(previous) = self.pictures.insert(user_id, picture) {
-                cx.drop_image(previous.image, None);
+                free_atlas_tiles(previous.image, cx);
             }
         }
         cx.notify();
@@ -108,11 +110,18 @@ impl VideoPictures {
         }
         for user_id in gone {
             if let Some(picture) = self.pictures.remove(&user_id) {
-                cx.drop_image(picture.image, None);
+                free_atlas_tiles(picture.image, cx);
             }
         }
         cx.notify();
     }
+}
+
+/// Frees `image`'s tiles in every window's atlas. Deferred: the window whose event handler is
+/// running (closing the call view, watching a stream) is out of the app's window list until the
+/// handler returns, and `drop_image` would miss it, leaking the texture for the window's life.
+fn free_atlas_tiles(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
 }
 
 /// Brings the engine's pictures to `pictures` as they are decoded: the decoding threads wake
