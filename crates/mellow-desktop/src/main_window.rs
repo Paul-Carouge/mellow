@@ -6,6 +6,7 @@ use gpui::{
     Subscription, Window, div,
 };
 
+use crate::components::Tooltip;
 use crate::notifier::{end_notifications, notifier_of_session};
 use crate::session::{Session, SessionPhase};
 use crate::shell::DuskShell;
@@ -100,7 +101,9 @@ impl Render for MainWindow {
             .font_family(SANS_FONT_FAMILY)
             .bg(color(tokens.component_auth_card_backdrop))
             // Lets message text be selected and copied (gpui-base's window text selection).
-            .child(gpui_base::TextSelectionLayer);
+            .child(gpui_base::TextSelectionLayer)
+            // Hides tooltips on a press or a keystroke (DESIGN.md §6.34).
+            .child(Tooltip::dismissal_layer());
         if let Some(sign_in_screen) = &self.sign_in_screen {
             return root.child(sign_in_screen.clone());
         }
