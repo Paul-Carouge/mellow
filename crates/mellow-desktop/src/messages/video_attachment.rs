@@ -10,8 +10,8 @@
 
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
-    RenderOnce, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div,
-    point, prelude::FluentBuilder as _, px,
+    RenderOnce, Role, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred,
+    div, point, prelude::FluentBuilder as _, px,
 };
 use mellow_protocol::Attachment;
 
@@ -22,7 +22,10 @@ use crate::attachment_audio::{
     keep_player_while_shown, toggle_attachment_audio,
 };
 use crate::attachment_download::download_control;
-use crate::components::{IconButton, child_id, icon, remembered_focus_handle};
+use crate::components::{
+    FocusNextControl, FocusPreviousControl, IconButton, child_id, focus_next_inside,
+    focus_previous_inside, icon, remembered_focus_handle,
+};
 use crate::i18n;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -92,6 +95,14 @@ impl RenderOnce for VideoAttachment {
         let is_enlarged = *enlarged.read(cx);
         let enlarge_focus = remembered_focus_handle(&child_id(&id, "enlarge"), window, cx);
         let close_focus = remembered_focus_handle(&child_id(&id, "close"), window, cx);
+        // The enlarged view's own container, not a stop itself: Tab and Shift+Tab go round its
+        // controls as in every modal layer, never to the conversation hidden behind.
+        let enlarged_view_focus = window
+            .use_keyed_state(child_id(&id, "enlarged-focus"), cx, |_, cx| {
+                cx.focus_handle()
+            })
+            .read(cx)
+            .clone();
 
         let stage = |stage_id: ElementId, cx: &App| {
             let toggled = attachment.clone();
@@ -154,6 +165,8 @@ impl RenderOnce for VideoAttachment {
                 }
             };
             let close_on_escape = close.clone();
+            let (next_container, previous_container) =
+                (enlarged_view_focus.clone(), enlarged_view_focus.clone());
             let controls = div()
                 .flex()
                 .items_center()
@@ -178,6 +191,16 @@ impl RenderOnce for VideoAttachment {
                 anchored().position(point(px(0.0), px(0.0))).child(
                     div()
                         .id(child_id(&id, "enlarged-view"))
+                        .role(Role::Dialog)
+                        .aria_label(messages.video_player(&name))
+                        .track_focus(&enlarged_view_focus)
+                        .tab_group()
+                        .on_action(move |_: &FocusNextControl, window, cx| {
+                            focus_next_inside(&next_container, window, cx);
+                        })
+                        .on_action(move |_: &FocusPreviousControl, window, cx| {
+                            focus_previous_inside(&previous_container, window, cx);
+                        })
                         .occlude()
                         .w(viewport.width)
                         .h(viewport.height)
