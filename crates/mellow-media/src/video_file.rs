@@ -14,7 +14,6 @@
 //! interface takes only the newest.
 
 use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
-use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use crate::clip_decoder::{ClipDecoder, ClipError};
@@ -287,25 +286,33 @@ impl Shared {
         self.wake_interface();
     }
 
-    /// Waits up to `timeout` or until the interface changes something; whether to stop.
-    fn wait(&self, timeout: Duration) -> bool {
+    /// Waits up to `timeout` or until the interface changes something; whether to stop. A
+    /// paused loop's clock stands still, so it waits for the interface alone: tens of paused
+    /// GIFs (reduced motion) would otherwise wake the CPU every poll period.
+    fn wait(&self, timeout: Duration, is_loop: bool) -> bool {
         let state = self.lock();
         if state.is_stopping {
             return true;
         }
-        let (state, _) = self
-            .changed
-            .wait_timeout(state, timeout)
-            .unwrap_or_else(PoisonError::into_inner);
+        let state = if is_loop && !state.is_loop_playing {
+            self.changed
+                .wait(state)
+                .unwrap_or_else(PoisonError::into_inner)
+        } else {
+            self.changed
+                .wait_timeout(state, timeout)
+                .unwrap_or_else(PoisonError::into_inner)
+                .0
+        };
         state.is_stopping
     }
 }
 
 /// One video's pictures, decoded on their own thread from a whole file in memory. Dropping it
-/// stops the thread.
+/// stops the thread after its current step, without waiting for it: it is dropped on the
+/// interface thread, and one step can be a whole file opened or a 4K picture decoded.
 pub struct VideoStream {
     shared: Arc<Shared>,
-    thread: Option<JoinHandle<()>>,
 }
 
 impl std::fmt::Debug for VideoStream {
@@ -345,24 +352,29 @@ impl VideoStream {
         let thread_shared = Arc::clone(&shared);
         let container = video_container(&bytes, content_type);
         let is_played = plays_video_type(content_type);
-        let thread = std::thread::Builder::new()
+        // Detached: the stream never joins it (see `VideoStream`), so it reports its own panic.
+        std::thread::Builder::new()
             .name("mellow-video-file".into())
             .spawn(move || {
-                let opened = container
-                    .filter(|_| is_played)
-                    .ok_or(ClipError::Unsupported)
-                    .and_then(|container| without_panics(|| open_video_track(bytes, container)));
-                match opened {
-                    Ok(decoder) => run(decoder, timing, &thread_shared),
-                    Err(error) => {
-                        thread_shared.set_phase(VideoStreamPhase::Failed(error), None);
+                let decoding = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    let opened = container
+                        .filter(|_| is_played)
+                        .ok_or(ClipError::Unsupported)
+                        .and_then(|container| {
+                            without_panics(|| open_video_track(bytes, container))
+                        });
+                    match opened {
+                        Ok(decoder) => run(decoder, timing, &thread_shared),
+                        Err(error) => {
+                            thread_shared.set_phase(VideoStreamPhase::Failed(error), None);
+                        }
                     }
+                }));
+                if decoding.is_err() {
+                    tracing::error!("a video's decoding thread panicked");
                 }
             })?;
-        Ok(Self {
-            shared,
-            thread: Some(thread),
-        })
+        Ok(Self { shared })
     }
 
     /// Called from the decoding thread after each new picture or phase.
@@ -396,11 +408,6 @@ impl Drop for VideoStream {
     fn drop(&mut self) {
         self.shared.lock().is_stopping = true;
         self.shared.changed.notify_all();
-        if let Some(thread) = self.thread.take()
-            && thread.join().is_err()
-        {
-            tracing::error!("a video's decoding thread panicked");
-        }
     }
 }
 
@@ -459,6 +466,8 @@ struct Schedule {
     shown: Option<Duration>,
     /// The position of the last seek, until the pictures caught up with it.
     sought: Option<Duration>,
+    /// When a picture last went to the interface.
+    published: Option<Instant>,
 }
 
 impl Schedule {
@@ -487,6 +496,21 @@ impl Schedule {
 
     fn took(&mut self, time: Duration) {
         self.shown = Some(time);
+        if self.sought.is_some_and(|sought| time >= sought) {
+            self.sought = None;
+        }
+    }
+
+    /// Whether a picture just taken goes to the interface now rather than at the next wait: a
+    /// decoder slower than the clock takes picture after picture and never waits, and would
+    /// otherwise leave one picture on screen under the sound.
+    fn is_publish_due(&self, now: Instant) -> bool {
+        self.published
+            .is_none_or(|published| now.saturating_duration_since(published) >= POLL_PERIOD)
+    }
+
+    fn published(&mut self, now: Instant) {
+        self.published = Some(now);
     }
 
     fn waited(&mut self) {
@@ -558,16 +582,24 @@ fn run(mut decoder: Box<dyn VideoTrackDecoder>, timing: VideoTiming, shared: &Sh
             Step::Take => {
                 if let Some(picture) = pending.take() {
                     schedule.took(picture.time);
-                    taken = Some(picture.frame);
+                    let now = Instant::now();
+                    if schedule.is_publish_due(now) {
+                        schedule.published(now);
+                        shared.publish(picture.frame);
+                        taken = None;
+                    } else {
+                        taken = Some(picture.frame);
+                    }
                 }
                 None
             }
             Step::Wait(timeout) => {
                 schedule.waited();
                 if let Some(frame) = taken.take() {
+                    schedule.published(Instant::now());
                     shared.publish(frame);
                 }
-                if shared.wait(timeout) {
+                if shared.wait(timeout, matches!(clock, Clock::Loop(_))) {
                     return;
                 }
                 None
@@ -778,6 +810,43 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_decoder_slower_than_the_clock_still_shows_pictures_and_jumps_ahead() {
+        let start = Instant::now();
+        let mut schedule = Schedule::default();
+        schedule.took(millis(0));
+        schedule.published(start);
+        // Every pending picture is already late: no wait ever comes.
+        assert_eq!(
+            schedule.step(millis(100), Some(millis(40)), false),
+            Step::Take
+        );
+        schedule.took(millis(40));
+        assert!(!schedule.is_publish_due(start + millis(5)));
+        assert!(schedule.is_publish_due(start + POLL_PERIOD));
+        assert_eq!(
+            schedule.step(millis(1_500), Some(millis(80)), false),
+            Step::Seek(millis(1_500))
+        );
+        schedule.sought(millis(1_500));
+        // From the keyframe before up to the target: no jump meanwhile.
+        assert_eq!(
+            schedule.step(millis(1_600), Some(millis(1_000)), false),
+            Step::Take
+        );
+        schedule.took(millis(1_000));
+        assert_eq!(
+            schedule.step(millis(2_700), Some(millis(1_500)), false),
+            Step::Take
+        );
+        schedule.took(millis(1_500));
+        // Caught up with the target without ever waiting, and still behind: it jumps again.
+        assert_eq!(
+            schedule.step(millis(2_800), Some(millis(1_533)), false),
+            Step::Seek(millis(2_800))
+        );
+    }
+
+    #[test]
     fn a_loop_wraps_at_its_length() {
         assert_eq!(looped(millis(2_500), Some(millis(1_000))), millis(500));
         assert_eq!(looped(millis(2_500), None), millis(2_500));
@@ -948,6 +1017,33 @@ pub(crate) mod tests {
         assert!(red > blue, "red on the left once upright");
         let [blue, red] = pixel(usize::try_from(picture.width).unwrap() - 10);
         assert!(blue > red, "blue on the right");
+    }
+
+    /// 4800 × 4800 coded pictures whose header shows them 75 × 4800 (a sample aspect of 1:64):
+    /// the limit holds on the coded size, not the shown one.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[test]
+    fn a_picture_coded_over_the_limit_is_refused() {
+        const HUGE: &[u8] =
+            include_bytes!("../tests/fixtures/video-h264-4800x4800-shown-75x4800.mp4");
+        let stream = VideoStream::start(
+            Arc::from(HUGE),
+            "video/mp4",
+            VideoTiming::Loop { is_playing: false },
+        )
+        .unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while stream.status().phase == VideoStreamPhase::Opening {
+            assert!(Instant::now() < deadline);
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        // Refused while probing (damaged to FFmpeg) or once opened (unsupported).
+        assert!(
+            matches!(stream.status().phase, VideoStreamPhase::Failed(_)),
+            "{:?}",
+            stream.status()
+        );
+        assert!(stream.take_new_picture().is_none());
     }
 
     #[cfg(target_os = "linux")]

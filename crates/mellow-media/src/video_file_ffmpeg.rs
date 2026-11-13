@@ -37,6 +37,9 @@ const BGRA_BYTES_PER_PIXEL: usize = 4;
 /// From 720 lines up, a stream that does not say its colours is taken as HD (BT.709), as
 /// players do; below, as BT.601.
 const HIGH_DEFINITION_LINES: c_int = 720;
+/// The only decoders a received file reaches (ADR-0051's amendment), by FFmpeg's names: a
+/// crafted file never routes its bytes to one of the hundreds of others a distribution builds.
+const ALLOWED_DECODERS: &CStr = c"h264,hevc,vp8,vp9,libdav1d,av1,aac,opus,vorbis";
 const MICROSECONDS: ff::AVRational = ff::AVRational {
     num: 1,
     den: 1_000_000,
@@ -90,6 +93,15 @@ unsafe extern "C" fn seek_input(opaque: *mut c_void, offset: i64, whence: c_int)
     }
 }
 
+/// Whether `name` is one of [`ALLOWED_DECODERS`]: the format's whitelist covers only the
+/// decoders of `avformat_find_stream_info`, not the one opened here.
+fn is_allowed_decoder(name: &CStr) -> bool {
+    ALLOWED_DECODERS
+        .to_bytes()
+        .split(|byte| *byte == b',')
+        .any(|allowed| allowed == name.to_bytes())
+}
+
 /// One demuxer over the file in memory.
 struct Demuxer {
     format: *mut ff::AVFormatContext,
@@ -135,6 +147,11 @@ impl Demuxer {
             }
             (*demuxer.format).pb = io;
             (*demuxer.format).flags |= ff::AVFMT_FLAG_CUSTOM_IO as c_int;
+            // Freed with the context; `avformat_find_stream_info` hands it to its decoders.
+            (*demuxer.format).codec_whitelist = ff::av_strdup(ALLOWED_DECODERS.as_ptr());
+            if (*demuxer.format).codec_whitelist.is_null() {
+                return Err(ClipError::Corrupt);
+            }
             // Only the demuxer of the container the instance sniffed, never a guess.
             let input_format = ff::av_find_input_format(demuxer_name.as_ptr());
             if input_format.is_null() {
@@ -150,7 +167,23 @@ impl Demuxer {
             {
                 return Err(ClipError::Corrupt);
             }
-            if ff::avformat_find_stream_info(demuxer.format, ptr::null_mut()) < 0 {
+            // Probing decodes a few frames at the size the stream declares: the pixel limit
+            // applies there too, before any of them is allocated.
+            let stream_count = usize::try_from((*demuxer.format).nb_streams).unwrap_or(0);
+            let mut options: Vec<*mut ff::AVDictionary> = vec![ptr::null_mut(); stream_count];
+            for stream_options in &mut options {
+                ff::av_dict_set_int(
+                    stream_options,
+                    c"max_pixels".as_ptr(),
+                    i64::try_from(MAXIMUM_SOURCE_PIXELS).unwrap_or(i64::MAX),
+                    0,
+                );
+            }
+            let probed = ff::avformat_find_stream_info(demuxer.format, options.as_mut_ptr());
+            for stream_options in &mut options {
+                ff::av_dict_free(stream_options);
+            }
+            if probed < 0 {
                 return Err(ClipError::Corrupt);
             }
             Ok(demuxer)
@@ -164,7 +197,7 @@ impl Demuxer {
             let mut codec: *const ff::AVCodec = ptr::null();
             let index = ff::av_find_best_stream(self.format, kind, -1, -1, &raw mut codec, 0);
             let stream_index = usize::try_from(index).map_err(|_| ClipError::Unsupported)?;
-            if codec.is_null() {
+            if codec.is_null() || !is_allowed_decoder(CStr::from_ptr((*codec).name)) {
                 return Err(ClipError::Unsupported);
             }
             let stream_count = usize::try_from((*self.format).nb_streams).unwrap_or(0);
@@ -532,13 +565,15 @@ pub(crate) fn open_sound_track(
     container: VideoContainer,
 ) -> Result<SoundTrack, ClipError> {
     let demuxer = Demuxer::open(bytes, container)?;
-    match demuxer.open_stream(ff::AVMEDIA_TYPE_AUDIO) {
-        Ok(stream) => Ok(SoundTrack::Sound(Box::new(FfmpegSound::new(
-            demuxer, stream,
-        )?))),
-        Err(ClipError::Unsupported) => Ok(SoundTrack::Silent {
-            duration: demuxer.duration(),
-        }),
+    let duration = demuxer.duration();
+    // A sound this FFmpeg or Mellow cannot play (surround beyond 7.1, an odd rate) leaves the
+    // pictures playing over silence, as on macOS.
+    let sound = demuxer
+        .open_stream(ff::AVMEDIA_TYPE_AUDIO)
+        .and_then(|stream| FfmpegSound::new(demuxer, stream));
+    match sound {
+        Ok(sound) => Ok(SoundTrack::Sound(Box::new(sound))),
+        Err(ClipError::Unsupported) => Ok(SoundTrack::Silent { duration }),
         Err(error) => Err(error),
     }
 }
@@ -729,6 +764,13 @@ mod tests {
         // Red above once turned back: the left column of the upright picture.
         let left = &picture.pixels[(640 * 720 + 10) * 4..][..4];
         assert!(left[2] > left[0], "{left:?}");
+    }
+
+    #[test]
+    fn only_the_named_decoders_are_allowed() {
+        assert!(is_allowed_decoder(c"h264") && is_allowed_decoder(c"vorbis"));
+        assert!(!is_allowed_decoder(c"h26") && !is_allowed_decoder(c"cinepak"));
+        assert!(!is_allowed_decoder(c""));
     }
 
     #[test]

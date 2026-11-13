@@ -16,10 +16,13 @@ use std::time::Duration;
 use objc2::rc::Retained;
 use objc2::runtime::AnyObject;
 use objc2_av_foundation::{
-    AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetTrack, AVMediaTypeVideo,
-    AVURLAsset,
+    AVAssetReader, AVAssetReaderStatus, AVAssetReaderTrackOutput, AVAssetReferenceRestrictions,
+    AVAssetTrack, AVMediaTypeVideo, AVURLAsset, AVURLAssetReferenceRestrictionsKey,
 };
-use objc2_core_media::{CMTime, CMTimeRange, kCMTimePositiveInfinity};
+use objc2_core_media::{
+    CMFormatDescription, CMTime, CMTimeRange, CMVideoFormatDescriptionGetDimensions,
+    kCMTimePositiveInfinity,
+};
 use objc2_core_video::{
     CVPixelBufferGetBaseAddress, CVPixelBufferGetBytesPerRow, CVPixelBufferGetHeight,
     CVPixelBufferGetPixelFormatType, CVPixelBufferGetWidth, CVPixelBufferLockBaseAddress,
@@ -111,8 +114,16 @@ impl AssetVideoTrack {
         drop(bytes);
         let path = NSString::from_str(&file.0.to_string_lossy());
         let url = NSURL::fileURLWithPath(&path);
-        // SAFETY: a file URL and no options.
-        let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) };
+        // Only media data inside the copy: a received movie's references to other local files
+        // (other copies in the temporary directory, devices) are never followed.
+        let restrictions =
+            NSNumber::numberWithUnsignedInteger(AVAssetReferenceRestrictions::ForbidAll.0);
+        // SAFETY: a static `AVFoundation` key, set for the process.
+        let restrictions_key = unsafe { AVURLAssetReferenceRestrictionsKey };
+        let restrictions_value: &AnyObject = &restrictions;
+        let options = NSDictionary::from_slices(&[restrictions_key], &[restrictions_value]);
+        // SAFETY: a file URL and the reference restrictions option, an `NSNumber` as documented.
+        let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, Some(&options)) };
         // SAFETY: a static `AVFoundation` constant, set for the process.
         let media_type = unsafe { AVMediaTypeVideo }.ok_or(ClipError::Unsupported)?;
         // The synchronous accessor is fine on the decoding thread; it reads the file's header.
@@ -128,7 +139,7 @@ impl AssetVideoTrack {
             && natural_size.height >= 1.0
             && natural_size.width * natural_size.height
                 <= f64::from(u32::try_from(MAXIMUM_SOURCE_PIXELS).unwrap_or(u32::MAX));
-        if !is_within_limit {
+        if !is_within_limit || !are_coded_sizes_within_limit(&track) {
             return Err(ClipError::Unsupported);
         }
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
@@ -156,6 +167,26 @@ impl AssetVideoTrack {
             _file: file,
         })
     }
+}
+
+/// Whether every size the track's pictures are coded at is within [`MAXIMUM_SOURCE_PIXELS`]:
+/// the decoder allocates the coded size, which a header's natural size (scaled by its pixel
+/// aspect) can understate.
+fn are_coded_sizes_within_limit(track: &AVAssetTrack) -> bool {
+    // SAFETY: a valid track; its format descriptions are `CMFormatDescription`s.
+    let descriptions = unsafe { track.formatDescriptions() };
+    !descriptions.is_empty()
+        && descriptions.iter().all(|description| {
+            // SAFETY: a CoreMedia format description, toll-free bridged to an object, of a
+            // video track.
+            let description = unsafe {
+                &*std::ptr::from_ref::<AnyObject>(&description).cast::<CMFormatDescription>()
+            };
+            // SAFETY: a video format description.
+            let size = unsafe { CMVideoFormatDescriptionGetDimensions(description) };
+            let pixels = i64::from(size.width) * i64::from(size.height);
+            pixels > 0 && u64::try_from(pixels).is_ok_and(|pixels| pixels <= MAXIMUM_SOURCE_PIXELS)
+        })
 }
 
 /// A time in seconds as a duration, when it is a real, non-negative number.
