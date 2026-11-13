@@ -48,6 +48,7 @@ const VOICE_PEOPLE_KEY: &str = "voice-people";
 const STREAM_PEOPLE_KEY: &str = "stream-people";
 const SCREEN_SHARE_QUALITY_KEY: &str = "screen-share-quality";
 const SCREEN_SHARE_SOUND_OFF_KEY: &str = "screen-share-sound-off";
+const AUTOMATIC_UPDATES_OFF_KEY: &str = "automatic-updates-off";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -180,6 +181,8 @@ pub struct Preferences {
     pub screen_share_quality: ScreenShareQuality,
     /// Screens are shared without their sound.
     pub is_screen_share_sound_off: bool,
+    /// The app does not look for updates by itself (Settings, About; ADR-0057).
+    pub is_automatic_update_off: bool,
 }
 
 impl Preferences {
@@ -423,6 +426,7 @@ impl Preferences {
                 SCREEN_SHARE_SOUND_OFF_KEY => {
                     preferences.is_screen_share_sound_off = value == "true";
                 }
+                AUTOMATIC_UPDATES_OFF_KEY => preferences.is_automatic_update_off = value == "true",
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 // The web's JSON, validated field by field as the web reads it.
@@ -519,6 +523,9 @@ impl Preferences {
         }
         if self.is_screen_share_sound_off {
             let _ = writeln!(text, "{SCREEN_SHARE_SOUND_OFF_KEY}=true");
+        }
+        if self.is_automatic_update_off {
+            let _ = writeln!(text, "{AUTOMATIC_UPDATES_OFF_KEY}=true");
         }
         if let Some(theme) = self.theme.as_file_text() {
             let _ = writeln!(text, "{THEME_KEY}={theme}");
@@ -672,6 +679,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     stream_people: Vec::new(),
     screen_share_quality: ScreenShareQuality::High,
     is_screen_share_sound_off: false,
+    is_automatic_update_off: false,
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -755,6 +763,7 @@ mod tests {
         preferences.is_media_muted = true;
         preferences.screen_share_quality = ScreenShareQuality::Highest;
         preferences.is_screen_share_sound_off = true;
+        preferences.is_automatic_update_off = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
 

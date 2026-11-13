@@ -141,7 +141,7 @@ impl UserSettings {
                 shown_page(section, page, Self::navigation, cx)
             }
             UserSettingsSection::About => {
-                let page = cx.new(|_| AboutPage);
+                let page = cx.new(AboutPage::new);
                 shown_page(section, page, Self::navigation, cx)
             }
         })

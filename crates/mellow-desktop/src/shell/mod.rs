@@ -310,6 +310,10 @@ impl DuskShell {
                 }
             }));
         }
+        // The user card's "Restart to update" button (ADR-0057).
+        if let Some(self_update) = crate::self_update::self_update(cx) {
+            subscriptions.push(cx.observe(&self_update, |_, _, cx| cx.notify()));
+        }
         let root_focus = cx.focus_handle();
         window.focus(&root_focus, cx);
         let mut shell = Self {

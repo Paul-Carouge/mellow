@@ -46,6 +46,8 @@ keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 # Its sound player plays the web's notification chime (the voice engine comes with step 7).
 mellow-media.workspace = true
+# The release check, download and signature verification the server's `update` uses (ADR-0057).
+mellow-update.workspace = true
 mellow-protocol.workspace = true
 moxcms.workspace = true
 rav1d.workspace = true
@@ -91,6 +93,8 @@ gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features =
 aws-lc-rs.workspace = true
 # The sign-in tests run a real in-process server, as the client core's do.
 mellow-server = { path = "../mellow-server" }
+# Its local test release host, for the self-update tests.
+mellow-update = { workspace = true, features = ["test-release-host"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true

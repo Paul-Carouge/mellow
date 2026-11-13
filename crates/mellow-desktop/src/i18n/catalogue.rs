@@ -14759,6 +14759,181 @@ impl DesktopStrings {
         }
     }
 
+    pub fn app_version(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Version {version}"),
+            Language::French => format!("Version {version}"),
+        }
+    }
+
+    pub fn updates(self) -> &'static str {
+        match self.language {
+            Language::English => "Updates",
+            Language::French => "Mises à jour",
+        }
+    }
+
+    pub fn automatic_updates(self) -> &'static str {
+        match self.language {
+            Language::English => "Automatic updates",
+            Language::French => "Mises à jour automatiques",
+        }
+    }
+
+    pub fn automatic_updates_description(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow looks for a new version about once a day, downloads it and checks its signature. It installs when you restart or quit Mellow, never during a call.",
+            Language::French => "Mellow cherche une nouvelle version environ une fois par jour, la télécharge et vérifie sa signature. Elle s’installe quand tu redémarres ou quittes Mellow, jamais pendant un appel.",
+        }
+    }
+
+    pub fn check_for_updates(self) -> &'static str {
+        match self.language {
+            Language::English => "Check for updates",
+            Language::French => "Rechercher des mises à jour",
+        }
+    }
+
+    pub fn update_checking(self) -> &'static str {
+        match self.language {
+            Language::English => "Looking for a new version…",
+            Language::French => "Recherche d’une nouvelle version…",
+        }
+    }
+
+    pub fn update_up_to_date(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow is up to date.",
+            Language::French => "Mellow est à jour.",
+        }
+    }
+
+    pub fn update_downloading(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Downloading Mellow {version}…"),
+            Language::French => format!("Téléchargement de Mellow {version}…"),
+        }
+    }
+
+    pub fn update_ready(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Mellow {version} is ready. It installs when you restart or quit Mellow."),
+            Language::French => format!("Mellow {version} est prêt. Il s’installe quand tu redémarres ou quittes Mellow."),
+        }
+    }
+
+    pub fn restart_to_update(self) -> &'static str {
+        match self.language {
+            Language::English => "Restart to update",
+            Language::French => "Redémarrer pour mettre à jour",
+        }
+    }
+
+    pub fn restart_to_update_to(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Restart to update to Mellow {version}"),
+            Language::French => format!("Redémarrer pour passer à Mellow {version}"),
+        }
+    }
+
+    pub fn update_after_call(self) -> &'static str {
+        match self.language {
+            Language::English => "Leave the call to restart and update.",
+            Language::French => "Quitte l’appel pour redémarrer et mettre à jour.",
+        }
+    }
+
+    pub fn update_installing(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Installing Mellow {version}…"),
+            Language::French => format!("Installation de Mellow {version}…"),
+        }
+    }
+
+    pub fn update_not_packaged(self) -> &'static str {
+        match self.language {
+            Language::English => "This copy of Mellow wasn't installed from a release package, so it can't update itself.",
+            Language::French => "Cette copie de Mellow n’a pas été installée depuis un paquet de version, elle ne peut donc pas se mettre à jour.",
+        }
+    }
+
+    pub fn update_package_manager(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow was installed by your package manager: update it there.",
+            Language::French => "Mellow a été installé par ton gestionnaire de paquets\u{a0}: mets-le à jour depuis celui-ci.",
+        }
+    }
+
+    pub fn update_installed_elsewhere(self) -> &'static str {
+        match self.language {
+            Language::English => "This copy of Mellow isn't where its install script puts it (~/.local/bin), so it can't update itself. Install the latest package with its install.sh.",
+            Language::French => "Cette copie de Mellow n’est pas là où son script d’installation la met (~/.local/bin), elle ne peut donc pas se mettre à jour. Installe le dernier paquet avec son install.sh.",
+        }
+    }
+
+    pub fn update_not_writable(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow can't write to the folder it's installed in, so it can't update itself.",
+            Language::French => "Mellow ne peut pas écrire dans le dossier où il est installé, il ne peut donc pas se mettre à jour.",
+        }
+    }
+
+    pub fn update_unsupported_system(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow can't update itself on this system yet. Download new versions from its releases on GitHub.",
+            Language::French => "Mellow ne peut pas encore se mettre à jour sur ce système. Télécharge les nouvelles versions depuis ses publications sur GitHub.",
+        }
+    }
+
+    pub fn update_no_ffmpeg(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow found none of the FFmpeg versions its packages are built for (6 to 9). Install your distribution's FFmpeg libraries, then check again.",
+            Language::French => "Mellow n’a trouvé aucune des versions de FFmpeg pour lesquelles ses paquets sont construits (6 à 9). Installe les bibliothèques FFmpeg de ta distribution, puis vérifie à nouveau.",
+        }
+    }
+
+    pub fn update_network(self) -> &'static str {
+        match self.language {
+            Language::English => "Couldn't download the update. Mellow will try again later.",
+            Language::French => "Impossible de télécharger la mise à jour. Mellow réessaiera plus tard.",
+        }
+    }
+
+    pub fn update_no_package(self) -> &'static str {
+        match self.language {
+            Language::English => "The new version has no package for this system yet.",
+            Language::French => "La nouvelle version n’a pas encore de paquet pour ce système.",
+        }
+    }
+
+    pub fn update_bad_signature(self) -> &'static str {
+        match self.language {
+            Language::English => "The downloaded update isn't signed by Mellow, so it was thrown away.",
+            Language::French => "La mise à jour téléchargée n’est pas signée par Mellow, elle a donc été supprimée.",
+        }
+    }
+
+    pub fn update_bad_package(self) -> &'static str {
+        match self.language {
+            Language::English => "The downloaded update isn't laid out as expected, so it was thrown away.",
+            Language::French => "La mise à jour téléchargée n’a pas la forme attendue, elle a donc été supprimée.",
+        }
+    }
+
+    pub fn update_wrong_certificate(self) -> &'static str {
+        match self.language {
+            Language::English => "The downloaded app isn't signed with the same certificate as this one, so it was thrown away.",
+            Language::French => "L’app téléchargée n’est pas signée avec le même certificat que celle-ci, elle a donc été supprimée.",
+        }
+    }
+
+    pub fn update_install_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "The update couldn't be installed. This version stays in place.",
+            Language::French => "La mise à jour n’a pas pu être installée. Cette version reste en place.",
+        }
+    }
+
     pub fn codes_saved(self) -> &'static str {
         match self.language {
             Language::English => "Recovery codes saved.",
