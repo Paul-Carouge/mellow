@@ -15,8 +15,8 @@ use pw::{core::CoreRc, main_loop::MainLoopRc, registry::RegistryRc, stream::Stre
 use tracing::{error, info, warn};
 use vesper_core::{DmaBufPlane, ReleaseGuard, VideoFrame, next_pool_generation};
 
-use crate::Error;
 use crate::format;
+use crate::{Error, FrameMemory, MemoryFrame, ScreenFrame};
 
 /// A `pw_buffer` pointer sent back to the PipeWire thread.
 pub struct BufferPtr(pub *mut pw_buffer);
@@ -179,6 +179,7 @@ struct Negotiated {
 
 struct State<F> {
     on_frame: F,
+    memory: FrameMemory,
     /// Our `EnumFormat` offer, reused when fixating a modifier.
     offer: Vec<Vec<u8>>,
     max_fps: u32,
@@ -190,7 +191,7 @@ struct State<F> {
     ended: bool,
 }
 
-impl<F: FnMut(Result<VideoFrame, Error>)> State<F> {
+impl<F: FnMut(Result<ScreenFrame<'_>, Error>)> State<F> {
     /// Tells the caller the capture ended (once) and stops the loop.
     fn end(&mut self, reason: String) {
         if !self.ended {
@@ -209,7 +210,7 @@ fn update_params(stream: &pw::stream::Stream, pods: &[Vec<u8>]) {
     }
 }
 
-fn on_format<F: FnMut(Result<VideoFrame, Error>)>(
+fn on_format<F: FnMut(Result<ScreenFrame<'_>, Error>)>(
     stream: &pw::stream::Stream,
     state: &mut State<F>,
     pod: &Pod,
@@ -248,7 +249,28 @@ fn on_format<F: FnMut(Result<VideoFrame, Error>)>(
         warn!("ignoring a fixated format without size: {info:?}");
         return;
     };
-    let Some(&modifier) = info.modifiers.first() else {
+    let modifier = info.modifiers.first().copied();
+    if state.memory == FrameMemory::Shared {
+        info!(
+            "negotiated shared memory {}x{} {spa_format:?}",
+            size.width, size.height
+        );
+        state.format = Some(Negotiated {
+            width: size.width,
+            height: size.height,
+            fourcc,
+            modifier: modifier.unwrap_or(0),
+        });
+        update_params(
+            stream,
+            &[
+                format::buffers_param(FrameMemory::Shared),
+                format::header_meta_param(),
+            ],
+        );
+        return;
+    }
+    let Some(modifier) = modifier else {
         return state.end(format!(
             "DMA-BUF negotiation failed: the server picked {spa_format:?} without a \
              modifier, and the encoder only imports DMA-BUF"
@@ -266,7 +288,10 @@ fn on_format<F: FnMut(Result<VideoFrame, Error>)>(
     });
     update_params(
         stream,
-        &[format::buffers_param(), format::header_meta_param()],
+        &[
+            format::buffers_param(FrameMemory::DmaBuf),
+            format::header_meta_param(),
+        ],
     );
 }
 
@@ -338,19 +363,92 @@ unsafe fn build_frame<F>(buffer: *mut pw_buffer, state: &State<F>) -> Option<Vid
     })
 }
 
+/// Hands a shared-memory buffer's picture to `on_frame`, borrowed for the
+/// call only; returns whether it carried one. The caller requeues the buffer.
+///
+/// # Safety
+/// `buffer` must be a buffer dequeued from a stream connected with
+/// `MAP_BUFFERS`, and not yet requeued.
+unsafe fn deliver_memory_frame<F: FnMut(Result<ScreenFrame<'_>, Error>)>(
+    buffer: *mut pw_buffer,
+    state: &mut State<F>,
+) -> bool {
+    let Some(format) = state.format.as_ref() else {
+        return false;
+    };
+    // SAFETY: per the contract, `buffer` and its spa_buffer are valid.
+    let spa_buf = unsafe { (*buffer).buffer };
+    if spa_buf.is_null() || unsafe { (*spa_buf).n_datas == 0 } {
+        return false;
+    }
+    // SAFETY: `n_datas` is at least 1, so `datas` points at a valid entry.
+    let data = unsafe { &*(*spa_buf).datas };
+    let header = unsafe {
+        spa_sys::spa_buffer_find_meta_data(
+            spa_buf,
+            spa_sys::SPA_META_Header,
+            size_of::<spa_sys::spa_meta_header>(),
+        ) as *const spa_sys::spa_meta_header
+    };
+    let header = unsafe { header.as_ref() };
+    if header.is_some_and(|h| h.flags & spa_sys::SPA_META_HEADER_FLAG_CORRUPTED != 0) {
+        return false;
+    }
+    // SAFETY: the chunk pointer is valid while the buffer is dequeued.
+    let Some(chunk) = (unsafe { data.chunk.as_ref() }) else {
+        return false;
+    };
+    if data.data.is_null()
+        || chunk.size == 0
+        || chunk.flags & spa_sys::SPA_CHUNK_FLAG_CORRUPTED as i32 != 0
+        || (data.type_ != spa_sys::SPA_DATA_MemFd && data.type_ != spa_sys::SPA_DATA_MemPtr)
+    {
+        return false;
+    }
+    let (offset, size, stride) = (chunk.offset as usize, chunk.size as usize, chunk.stride);
+    let rows = format.height as usize;
+    let row_bytes = format.width as usize * 4;
+    // Never read past what PipeWire mapped.
+    if stride < 0
+        || (stride as usize) < row_bytes
+        || offset.saturating_add(size) > data.maxsize as usize
+        || (stride as usize).saturating_mul(rows.saturating_sub(1)) + row_bytes > size
+    {
+        warn!("skipping a shared-memory buffer smaller than its picture");
+        return false;
+    }
+    // SAFETY: PipeWire mapped `maxsize` bytes at `data` (MAP_BUFFERS), and
+    // `offset + size` fits in them (checked above).
+    let pixels = unsafe { std::slice::from_raw_parts(data.data.cast::<u8>().add(offset), size) };
+    (state.on_frame)(Ok(ScreenFrame::Memory(MemoryFrame {
+        width: format.width,
+        height: format.height,
+        stride: stride as u32,
+        fourcc: format.fourcc,
+        pixels,
+        pts: format::frame_pts(header.map(|h| h.pts)),
+    })));
+    true
+}
+
 /// Connects to the portal's PipeWire remote and streams `node_id`, at most
 /// `max_fps` frames per second, until a `Msg::Stop` arrives. Reports setup
 /// success on `ready` before streaming.
+#[allow(
+    clippy::too_many_arguments,
+    reason = "the thread's entry point takes everything the stream needs, once"
+)]
 pub fn run<F>(
     fd: OwnedFd,
     node_id: u32,
     max_fps: u32,
+    memory: FrameMemory,
     on_frame: F,
     tx: pw::channel::Sender<Msg>,
     rx: pw::channel::Receiver<Msg>,
     ready: std::sync::mpsc::Sender<Result<(), Error>>,
 ) where
-    F: FnMut(Result<VideoFrame, Error>) + 'static,
+    F: FnMut(Result<ScreenFrame<'_>, Error>) + 'static,
 {
     pw::init();
     let mainloop = match MainLoopRc::new(None) {
@@ -394,11 +492,21 @@ pub fn run<F>(
                 .into_iter()
                 .filter(|(f, _)| format::spa_to_drm(*f).is_some())
                 .collect();
-            let offer: Vec<_> = supported
-                .iter()
-                .filter(|(_, mods)| !mods.is_empty())
-                .map(|(f, mods)| format::enum_format(*f, mods, max_fps))
-                .collect();
+            let offer: Vec<_> = match memory {
+                FrameMemory::DmaBuf => supported
+                    .iter()
+                    .filter(|(_, mods)| !mods.is_empty())
+                    .map(|(f, mods)| format::enum_format(*f, mods, max_fps))
+                    .collect(),
+                // Every compositor offers its formats in shared memory too.
+                FrameMemory::Shared => supported
+                    .iter()
+                    .map(|(f, _)| format::enum_format(*f, &[], max_fps))
+                    .collect(),
+            };
+            if offer.is_empty() && memory == FrameMemory::Shared {
+                return Err("screencast node offers no 8-bit RGB format".into());
+            }
             if offer.is_empty() {
                 return Err(
                     "screencast node offers no RGB DMA-BUF format with modifiers \
@@ -419,6 +527,7 @@ pub fn run<F>(
         )?;
         let state = State {
             on_frame,
+            memory,
             offer: offer.clone(),
             max_fps,
             format: None,
@@ -474,19 +583,32 @@ pub fn run<F>(
                 if newest.is_null() {
                     return;
                 }
+                if state.memory == FrameMemory::Shared {
+                    // SAFETY: `newest` is dequeued and not requeued; the
+                    // stream maps its buffers in this mode.
+                    unsafe { deliver_memory_frame(newest, state) };
+                    unsafe { stream.queue_raw_buffer(newest) };
+                    return;
+                }
                 // SAFETY: `newest` is dequeued and not requeued.
                 match unsafe { build_frame(newest, state) } {
                     // The buffer goes back from the frame's ReleaseGuard.
-                    Some(frame) => (state.on_frame)(Ok(frame)),
+                    Some(frame) => (state.on_frame)(Ok(ScreenFrame::DmaBuf(frame))),
                     None => unsafe { stream.queue_raw_buffer(newest) },
                 }
             })
             .register()?;
         let mut pods: Vec<&Pod> = offer.iter().filter_map(|b| Pod::from_bytes(b)).collect();
+        let flags = match memory {
+            FrameMemory::DmaBuf => pw::stream::StreamFlags::AUTOCONNECT,
+            FrameMemory::Shared => {
+                pw::stream::StreamFlags::AUTOCONNECT | pw::stream::StreamFlags::MAP_BUFFERS
+            }
+        };
         stream.connect(
             pw::spa::utils::Direction::Input,
             Some(node_id),
-            pw::stream::StreamFlags::AUTOCONNECT,
+            flags,
             &mut pods,
         )?;
         let _ = stream_slot.set(stream.clone());

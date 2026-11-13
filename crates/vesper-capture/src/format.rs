@@ -126,9 +126,9 @@ pub(crate) fn serialize(obj: Object) -> Vec<u8> {
         .into_inner()
 }
 
-/// Builds a DMA-BUF `EnumFormat` pod. One modifier is a fixated choice;
-/// several let the server pick. `modifiers` must not be empty. `max_fps`
-/// caps `maxFramerate`, so the compositor sends no more frames than that.
+/// Builds an `EnumFormat` pod. One modifier is a fixated choice; several
+/// let the server pick; none asks for shared memory. `max_fps` caps
+/// `maxFramerate`, so the compositor sends no more frames than that.
 pub fn enum_format(format: VideoFormat, modifiers: &[u64], max_fps: u32) -> Vec<u8> {
     let max_fps = Fraction {
         num: max_fps.max(1),
@@ -184,7 +184,8 @@ pub fn enum_format(format: VideoFormat, modifiers: &[u64], max_fps: u32) -> Vec<
         ),
     ];
     match modifiers {
-        [] => unreachable!("DMA-BUF formats always carry modifiers"),
+        // Shared memory: a format without a modifier.
+        [] => {}
         [m] => properties.push(Property {
             key: sys::SPA_FORMAT_VIDEO_modifier,
             flags: PropertyFlags::MANDATORY,
@@ -220,8 +221,12 @@ fn range_choice<T: pipewire::spa::pod::CanonicalFixedSizedPod>(
     )
 }
 
-/// The `Buffers` param: DMA-BUF only.
-pub fn buffers_param() -> Vec<u8> {
+/// The `Buffers` param: DMA-BUF only, or memory PipeWire maps for us.
+pub fn buffers_param(memory: crate::FrameMemory) -> Vec<u8> {
+    let data_types = match memory {
+        crate::FrameMemory::DmaBuf => 1 << sys::SPA_DATA_DmaBuf,
+        crate::FrameMemory::Shared => (1 << sys::SPA_DATA_MemFd) | (1 << sys::SPA_DATA_MemPtr),
+    };
     serialize(Object {
         type_: sys::SPA_TYPE_OBJECT_ParamBuffers,
         id: sys::SPA_PARAM_Buffers,
@@ -230,7 +235,7 @@ pub fn buffers_param() -> Vec<u8> {
             Value::Choice(ChoiceValue::Int(Choice(
                 ChoiceFlags::empty(),
                 ChoiceEnum::Flags {
-                    default: 1 << sys::SPA_DATA_DmaBuf,
+                    default: data_types,
                     flags: vec![],
                 },
             ))),
@@ -333,6 +338,13 @@ mod tests {
         let fixed = parse_format(&enum_format(VideoFormat::BGRA, &[MOD_LINEAR], 60)).unwrap();
         assert_eq!(fixed.modifiers, vec![MOD_LINEAR]);
         assert!(!fixed.dont_fixate);
+    }
+
+    #[test]
+    fn a_shared_memory_format_carries_no_modifier() {
+        let info = parse_format(&enum_format(VideoFormat::BGRx, &[], 30)).unwrap();
+        assert_eq!(info.formats, [VideoFormat::BGRx]);
+        assert!(info.modifiers.is_empty() && !info.dont_fixate);
     }
 
     #[test]

@@ -74,6 +74,55 @@ pub struct SourceInfo {
     pub size: Option<(i32, i32)>,
 }
 
+/// Where a capture's pictures live.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FrameMemory {
+    /// GPU buffers ([`VideoFrame`]), for a GPU encoder.
+    DmaBuf,
+    /// Shared memory PipeWire maps into the process ([`MemoryFrame`]), for
+    /// a CPU encoder.
+    Shared,
+}
+
+/// A shared-memory picture, lent to the frame callback for the call only:
+/// copy what is needed before returning (the buffer goes back to the
+/// compositor right after).
+#[derive(Debug)]
+pub struct MemoryFrame<'a> {
+    pub width: u32,
+    pub height: u32,
+    /// Bytes from one row to the next (at least `width * 4`).
+    pub stride: u32,
+    /// DRM fourcc of the 8-bit RGB layout, e.g. `XR24` (`BGRx` in memory).
+    pub fourcc: u32,
+    /// `stride * (height - 1) + width * 4` bytes at least.
+    pub pixels: &'a [u8],
+    /// `CLOCK_MONOTONIC` presentation time.
+    pub pts: std::time::Duration,
+}
+
+/// A picture of a [`Capture::start_with_options`] capture.
+#[derive(Debug)]
+pub enum ScreenFrame<'a> {
+    DmaBuf(VideoFrame),
+    Memory(MemoryFrame<'a>),
+}
+
+/// How [`Capture::start_with_options`] asks the portal and PipeWire.
+#[derive(Debug, Clone)]
+pub struct StartOptions {
+    /// What the portal's picker offers.
+    pub sources: BitFlags<SourceType>,
+    /// Skips the picker while still valid.
+    pub restore_token: Option<String>,
+    /// Whether the portal may hand back a token restoring this source
+    /// later (until revoked); otherwise the picker shows each time.
+    pub persist: bool,
+    pub memory: FrameMemory,
+    /// At most this many frames per second (the compositor may send fewer).
+    pub max_fps: u32,
+}
+
 /// A running screen capture. Dropping it stops the capture.
 pub struct Capture {
     restore_token: Option<String>,
@@ -114,6 +163,48 @@ impl Capture {
         Self::start_with(sources, restore_token, cancel, max_fps, on_frame)
     }
 
+    /// [`Capture::start`] with every choice spelt out: which sources the
+    /// picker offers, whether the source may be restored later, and whether
+    /// pictures come as DMA-BUFs or in shared memory. `on_frame` runs on the
+    /// PipeWire thread, as for [`Capture::start`]; a [`ScreenFrame::Memory`]
+    /// is lent for the call only.
+    ///
+    /// # Errors
+    /// When the portal or PipeWire fails, or the user cancels.
+    pub fn start_with_options(
+        options: &StartOptions,
+        cancel: &Cancel,
+        on_frame: impl FnMut(Result<ScreenFrame<'_>>) + Send + 'static,
+    ) -> Result<Self> {
+        let restore_token = options.restore_token.as_deref();
+        let shown = restore_token.is_none().then(PickerShown::new);
+        let persist = if options.persist {
+            PersistMode::ExplicitlyRevoked
+        } else {
+            PersistMode::DoNot
+        };
+        let (session, node_id, fd, restore_token, source) =
+            block_on(open_portal(options.sources, restore_token, persist, cancel))?;
+        drop(shown);
+        let (control, rx) = ::pipewire::channel::channel();
+        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
+        let tx = control.clone();
+        let (max_fps, memory) = (options.max_fps, options.memory);
+        let thread = std::thread::Builder::new()
+            .name("vesper-pipewire".into())
+            .spawn(move || pw::run(fd, node_id, max_fps, memory, on_frame, tx, rx, ready_tx))?;
+        let capture = Self {
+            restore_token,
+            source,
+            session: Some(session),
+            control,
+            thread: Some(thread),
+        };
+        // On error, dropping `capture` joins the thread and closes the session.
+        ready_rx.recv().map_err(|_| "pipewire thread died")??;
+        Ok(capture)
+    }
+
     /// [`Capture::start`], offering windows only (a game's window). `cancel`
     /// ends the wait for the portal, closing its picker.
     ///
@@ -134,28 +225,21 @@ impl Capture {
         restore_token: Option<&str>,
         cancel: &Cancel,
         max_fps: u32,
-        on_frame: impl FnMut(Result<VideoFrame>) + Send + 'static,
+        mut on_frame: impl FnMut(Result<VideoFrame>) + Send + 'static,
     ) -> Result<Self> {
-        let shown = restore_token.is_none().then(PickerShown::new);
-        let (session, node_id, fd, restore_token, source) =
-            block_on(open_portal(sources, restore_token, cancel))?;
-        drop(shown);
-        let (control, rx) = ::pipewire::channel::channel();
-        let (ready_tx, ready_rx) = std::sync::mpsc::channel();
-        let tx = control.clone();
-        let thread = std::thread::Builder::new()
-            .name("vesper-pipewire".into())
-            .spawn(move || pw::run(fd, node_id, max_fps, on_frame, tx, rx, ready_tx))?;
-        let capture = Self {
-            restore_token,
-            source,
-            session: Some(session),
-            control,
-            thread: Some(thread),
+        let options = StartOptions {
+            sources,
+            restore_token: restore_token.map(str::to_owned),
+            persist: true,
+            memory: FrameMemory::DmaBuf,
+            max_fps,
         };
-        // On error, dropping `capture` joins the thread and closes the session.
-        ready_rx.recv().map_err(|_| "pipewire thread died")??;
-        Ok(capture)
+        Self::start_with_options(&options, cancel, move |frame| match frame {
+            Ok(ScreenFrame::DmaBuf(frame)) => on_frame(Ok(frame)),
+            // Never sent in DMA-BUF mode.
+            Ok(ScreenFrame::Memory(_)) => {}
+            Err(error) => on_frame(Err(error)),
+        })
     }
 
     /// Token that skips the picker next time (persist mode: until revoked).
@@ -200,7 +284,12 @@ impl Drop for Capture {
 pub fn pick(cancel: &Cancel) -> Result<(Option<String>, SourceInfo)> {
     let sources = SourceType::Monitor | SourceType::Window;
     let shown = PickerShown::new();
-    let (session, _, _, restore_token, source) = block_on(open_portal(sources, None, cancel))?;
+    let (session, _, _, restore_token, source) = block_on(open_portal(
+        sources,
+        None,
+        PersistMode::ExplicitlyRevoked,
+        cancel,
+    ))?;
     drop(shown);
     close(session);
     Ok((restore_token, source))
@@ -350,6 +439,7 @@ fn request_path(sender: &str, token: &str) -> Option<String> {
 async fn open_portal(
     sources: BitFlags<SourceType>,
     restore_token: Option<&str>,
+    persist: PersistMode,
     cancel: &Cancel,
 ) -> Result<Opened> {
     let proxy = Screencast::new().await?;
@@ -374,7 +464,7 @@ async fn open_portal(
         .set_cursor_mode(cursor)
         .set_sources(sources)
         .set_multiple(false)
-        .set_persist_mode(PersistMode::ExplicitlyRevoked)
+        .set_persist_mode(persist)
         .set_restore_token(restore_token);
     let start = StartCastOptions::default();
     // The requests' paths, to close the one a cancel leaves open.
