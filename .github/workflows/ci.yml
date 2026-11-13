@@ -30,7 +30,8 @@ env:
   # Global push-to-talk adds none (ADR-0053): global-hotkey's X11 grab speaks the protocol in pure
   # Rust (x11rb) and the Wayland portal goes through zbus.
   DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libpipewire-0.3-dev libclang-dev
-  # Vesper's Linux capture and encoder (ADR-0051): PipeWire, VA-API and FFmpeg's headers and
+  # Vesper's Linux capture and encoder (ADR-0051), linked by the desktop's screen sharing
+  # (ADR-0054, whose X11 capture adds none: x11rb is pure Rust): PipeWire, VA-API and FFmpeg's headers and
   # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
   # only libavcodec, libavfilter and libavutil, but rusty_ffmpeg's build script probes all seven.
   VESPER_BUILD_PACKAGES: libpipewire-0.3-dev libva-dev libclang-dev libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev

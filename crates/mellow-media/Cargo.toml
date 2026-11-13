@@ -34,6 +34,15 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
+# Screen sharing (ADR-0054): the ScreenCast portal and PipeWire, VA-API H.264 and PipeWire sound
+# through Vesper's crates; X11 sessions through x11rb (already in the tree through GPUI), with
+# MIT-SHM's System V segment through libc.
+libc.workspace = true
+vesper-audio.workspace = true
+vesper-capture.workspace = true
+vesper-core.workspace = true
+vesper-encode.workspace = true
+x11rb = { version = "0.13.2", default-features = false, features = ["randr", "shm"] }
 
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]

@@ -5035,6 +5035,7 @@ dependencies = [
  "cpal",
  "dispatch2",
  "futures-util",
+ "libc",
  "mellow-client-core",
  "mellow-protocol",
  "mellow-server",
@@ -5060,6 +5061,11 @@ dependencies = [
  "tokio",
  "tokio-tungstenite 0.30.0",
  "tracing",
+ "vesper-audio",
+ "vesper-capture",
+ "vesper-core",
+ "vesper-encode",
+ "x11rb",
  "yuv",
 ]
 

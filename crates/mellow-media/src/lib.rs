@@ -26,6 +26,8 @@ mod codec;
 mod connection;
 mod devices;
 mod enhancement;
+#[cfg(target_os = "linux")]
+mod h264_encoder_linux;
 #[cfg(any(target_os = "linux", test))]
 mod h264_stream;
 mod input_gate;
@@ -39,6 +41,15 @@ mod playback;
 mod processing;
 mod resampling;
 mod screen_capture;
+#[cfg(target_os = "linux")]
+mod screen_capture_linux;
+#[cfg(target_os = "linux")]
+mod screen_capture_wayland;
+// MIT-SHM's shared segment is System V memory reached through `libc`; each block states its
+// invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod screen_capture_x11;
 // ScreenCaptureKit is reached only through `unsafe` Objective-C calls; each states its invariant.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]

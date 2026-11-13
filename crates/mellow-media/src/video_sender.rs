@@ -295,6 +295,11 @@ impl VideoEncoderControl {
         }
     }
 
+    #[cfg(all(test, target_os = "linux"))]
+    pub(crate) fn take_waiting_picture_for_tests(&self) -> Option<CapturedFrame> {
+        self.inbox().picture.take().map(|(picture, _)| picture)
+    }
+
     /// Keeps `bytes` for capture's next picture, unless some are kept already.
     fn recycle(&self, bytes: Vec<u8>) {
         let mut inbox = self.inbox();

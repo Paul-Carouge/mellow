@@ -337,6 +337,11 @@ impl Drop for ScreenShare {
     }
 }
 
+// Windows has no capture yet (ADR-0054).
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", test)),
+    allow(dead_code)
+)]
 /// Copies 8-bit RGB rows into a packed BGRA picture (`bytes` is reused), swapping red and blue
 /// when `is_red_first`. `None` when `pixels` is shorter than the rows it claims.
 pub(crate) fn pack_bgra_rows(
