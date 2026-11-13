@@ -407,7 +407,7 @@ impl Render for ComponentGallery {
                     .child(
                         IconButton::new("icon-disabled", IconName::PushPin, "Pin").disabled(true),
                     )
-                    .child(Tooltip::view("A tooltip, as it floats".into(), cx)),
+                    .child(Tooltip::specimen_view("A tooltip, as it floats".into(), cx)),
             );
 
         let switches = section("Switch, slider, choice", cx)
