@@ -75,7 +75,7 @@ use mellow_media::{
     SystemAudioDevices, VoiceCue, VoicePhase, VoiceSession, VoiceSessionEvent, VoiceSessionOptions,
     VoiceToggles,
 };
-use mellow_protocol::Snowflake;
+use mellow_protocol::{ClientFrame, Snowflake};
 
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
 use crate::session::{Session, StateChanged, VoiceSignal};
@@ -237,6 +237,38 @@ pub fn change_voice_settings(cx: &mut App, change: impl FnOnce(&mut VoiceSetting
     change_preferences(cx, move |preferences| {
         change(&mut preferences.voice_settings);
     });
+}
+
+/// How long quitting waits for the gateway to take `voice_leave`: the server would otherwise keep
+/// the person in the channel until its media timeout. A local socket takes it at once; this only
+/// bounds a stalled connection.
+const LEAVE_ON_QUIT_TIMEOUT: Duration = Duration::from_millis(500);
+/// How often the quit looks at the gateway's queue while it waits.
+const LEAVE_ON_QUIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// Leaves the call when the app quits, however it quits (the menu, the tray, Cmd+Q, the Dock, a
+/// logout): `voice_leave` goes out before the session ends the connection. Registered before
+/// `Session::end_connection_when_the_app_quits`, since quit handlers run in that order.
+pub fn leave_the_call_when_the_app_quits(cx: &mut App) {
+    cx.on_app_quit(|cx| {
+        let gateway = voice(cx).and_then(|voice| voice.update(cx, Voice::leave_before_quitting));
+        if let Some(gateway) = gateway {
+            let taken = spawn_on_network_runtime(cx, async move {
+                while !gateway.has_no_frame_waiting() {
+                    tokio::time::sleep(LEAVE_ON_QUIT_POLL_INTERVAL).await;
+                }
+            });
+            if cx
+                .foreground_executor()
+                .block_with_timeout(LEAVE_ON_QUIT_TIMEOUT, taken)
+                .is_err()
+            {
+                tracing::warn!("could not leave the call before exiting");
+            }
+        }
+        std::future::ready(())
+    })
+    .detach();
 }
 
 /// The message chime: through the call when there is one (the echo canceller hears it), else
@@ -902,6 +934,21 @@ impl Voice {
         self.stop_call(true, cx);
         self.play_cue_outside_a_call(VoiceCue::SelfLeave, cx);
         cx.notify();
+    }
+
+    /// The app quits: `voice_leave` is queued on the gateway now, since the engine's own thread
+    /// would send it after the exit cut it short, and the engine stops without a cue. Returns the
+    /// gateway that took it, to wait until it goes out.
+    pub fn leave_before_quitting(&mut self, cx: &mut Context<Self>) -> Option<GatewayHandle> {
+        self.call.as_ref()?;
+        let gateway = self
+            .session
+            .read(cx)
+            .gateway_handle()
+            .filter(|gateway| gateway.send(ClientFrame::VoiceLeave));
+        self.stop_call(false, cx);
+        cx.notify();
+        gateway
     }
 
     fn stop_call(&mut self, should_tell_the_server: bool, cx: &mut Context<Self>) {
