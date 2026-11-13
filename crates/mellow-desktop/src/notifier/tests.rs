@@ -1,6 +1,6 @@
 use gpui::{
-    AppContext as _, Entity, SystemNotificationResponse, TestAppContext, VisualTestContext,
-    WindowAppearance, px, size,
+    Entity, SystemNotificationResponse, TestAppContext, VisualTestContext, WindowAppearance, px,
+    size,
 };
 use mellow_client_core::GatewayUpdate;
 use mellow_protocol::{GatewayEvent, Message};
@@ -68,7 +68,11 @@ fn open_notifier(
     let notifier_session = session.clone();
     let notifier_shell = shell.clone();
     let notifier = cx.update(|window, cx| {
-        cx.new(|cx| Notifier::new(notifier_session, &notifier_shell, window, cx))
+        let notifier = cx.new(|cx| Notifier::new(notifier_session, cx));
+        notifier.update(cx, |notifier, cx| {
+            notifier.show_in(&notifier_shell, window, cx);
+        });
+        notifier
     });
     cx.run_until_parked();
     (session, shell, notifier, cx)
@@ -134,6 +138,44 @@ fn a_message_in_the_background_notifies_and_its_click_opens_the_conversation(
         cx.delivered_system_notifications().is_empty(),
         "seen, it goes"
     );
+}
+
+#[gpui::test]
+fn with_its_window_closed_mellow_still_notifies(cx: &mut TestAppContext) {
+    cx.update(|cx| {
+        cx.set_global(ActiveStrings(&ENGLISH));
+        cx.set_app_identity("org.mellow.test", "Mellow");
+        change_preferences(cx, |preferences| {
+            let settings = NotificationSettings {
+                are_desktop_notifications_enabled: true,
+                is_sound_enabled: false,
+                ..NotificationSettings::default()
+            };
+            preferences.set_notification_settings(ME, settings);
+        });
+    });
+    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+    session.update(cx, |session, _| *session.state_mut() = sample_state());
+    // The app's notifier, as `follow_session_for_notifications` makes it: no window shows it.
+    let notifier = cx.update(|cx| notifier_of_session(&session, cx));
+    session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(
+            vec![GatewayUpdate::Event(GatewayEvent::MessageCreate(message(
+                10_001,
+                CONVERSATION_ANA,
+                ANA,
+                "tea?",
+            )))],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.shown_system_notifications().len(), 1);
+
+    // Signed out, it ends; the next session gets a new one.
+    cx.update(end_notifications);
+    let next = cx.update(|cx| notifier_of_session(&session, cx));
+    assert_ne!(next.entity_id(), notifier.entity_id());
 }
 
 #[gpui::test]
@@ -211,7 +253,7 @@ fn reading_the_open_conversation_or_signing_out_clears_what_was_shown(cx: &mut T
     receive(&session, mention, cx);
     assert_eq!(cx.delivered_system_notifications().len(), 1);
     assert_ne!(cx.window_title().as_deref(), Some("Mellow"));
-    cx.update(|window, cx| notifier.update(cx, |notifier, cx| notifier.end(window, cx)));
+    notifier.update(cx, Notifier::end);
     cx.run_until_parked();
     assert_eq!(cx.delivered_system_notifications(), []);
     assert_eq!(cx.window_title().as_deref(), Some("Mellow"));
