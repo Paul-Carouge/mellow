@@ -77,6 +77,15 @@ mod soundboard;
 mod sounds;
 mod transport;
 mod uplink;
+mod video_file;
+// FFmpeg's C API, reached through `unsafe` calls; each states its invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod video_file_ffmpeg;
+// AVFoundation, reached through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod video_file_macos;
 mod video_frame;
 mod video_receiver;
 mod video_sender;
@@ -88,7 +97,7 @@ pub use camera::{
     SystemCameras,
 };
 pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
-pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
+pub use clip_player::{ClipClock, ClipPhase, ClipPlayer, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
@@ -134,6 +143,11 @@ pub use soundboard::{
 };
 pub use sounds::{
     LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue, render_notification_chime,
+};
+pub use video_file::{
+    MAXIMUM_SHOWN_VIDEO_SIZE, PLAYABLE_ATTACHMENT_VIDEO_TYPES, VideoClock, VideoContainer,
+    VideoStream, VideoStreamPhase, VideoStreamStatus, VideoTiming, plays_video_type,
+    video_container,
 };
 pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
 pub use video_receiver::VideoFrames;
