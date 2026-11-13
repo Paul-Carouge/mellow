@@ -694,6 +694,7 @@ pub(crate) fn quarter_turns_from_counterclockwise_degrees(degrees: f64) -> u8 {
 
 #[cfg(test)]
 pub(crate) mod tests {
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     use std::sync::atomic::{AtomicU64, Ordering};
 
     use super::*;
@@ -702,6 +703,7 @@ pub(crate) mod tests {
     pub(crate) const MP4_WITH_SOUND: &[u8] =
         include_bytes!("../tests/fixtures/video-h264-aac-160x90.mp4");
     /// The same pictures without sound.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) const MP4_SILENT: &[u8] =
         include_bytes!("../tests/fixtures/video-h264-silent-160x90.mp4");
     /// The same pictures in VP9, Opus sound.
@@ -908,6 +910,7 @@ pub(crate) mod tests {
     }
 
     /// A clock the test moves by hand, in milliseconds.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) struct ManualClock(pub(crate) Arc<AtomicU64>);
 
     impl VideoClock for ManualClock {
@@ -917,6 +920,7 @@ pub(crate) mod tests {
     }
 
     /// Whether a BGRA picture is mostly red, else mostly blue.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn is_red(frame: &DecodedVideoFrame) -> bool {
         let pixel = &frame.pixels[frame.pixels.len() / 2..][..4];
         pixel[2] > pixel[0]
@@ -924,6 +928,7 @@ pub(crate) mod tests {
 
     /// Waits for the stream to show a picture that `wanted` accepts; the deadline only guards
     /// against a hang.
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) fn wait_for_picture(
         stream: &VideoStream,
         wanted: impl Fn(&DecodedVideoFrame) -> bool,
