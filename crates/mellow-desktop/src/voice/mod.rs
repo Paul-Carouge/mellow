@@ -36,6 +36,7 @@
 mod camera;
 pub mod global_push_to_talk;
 pub mod media_settings;
+pub mod screen_share;
 mod soundboard;
 mod video;
 pub mod video_view;
@@ -169,6 +170,8 @@ pub struct Voice {
     camera: camera::CameraState,
     /// Others' cameras and screens: the call view, the watched screen, their pictures.
     video: video::CallVideo,
+    /// Your own shared screen.
+    screen: screen_share::ScreenSharing,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -422,6 +425,7 @@ impl Voice {
             attempt: 0,
             camera: camera::CameraState::new(system_cameras()),
             video: video::CallVideo::new(cx),
+            screen: screen_share::ScreenSharing::system(),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -646,6 +650,8 @@ impl Voice {
             if self.camera_phase() != CameraPhase::Off {
                 self.stop_camera(cx);
             }
+            self.stop_screen_share(cx);
+            self.close_screen_picker(cx);
             if let Some(call) = self.call.as_mut() {
                 // Connected: move there. Still starting: the start is retargeted, and the
                 // engine moves when it is claimed.
@@ -869,14 +875,15 @@ impl Voice {
                 };
                 self.end_with(problem, cx);
             }
+            // Each of the camera and the screen checks the refusal is its own.
             VoiceSessionEvent::VideoRefused(_) | VoiceSessionEvent::VideoStoppedByServer => {
                 self.note_video_stopped_by_server(event, cx);
+                self.follow_screen_share_event(event, cx);
             }
+            VoiceSessionEvent::ScreenShareEnded(_) => self.follow_screen_share_event(event, cx),
             VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
                 self.video.note_paused(*user_id, *is_paused);
             }
-            // The screen share's interface comes with the screen-sharing track (M3 step 8).
-            VoiceSessionEvent::ScreenShareEnded(_) => {}
         }
     }
 
@@ -907,6 +914,7 @@ impl Voice {
         self.announcement = SharedString::default();
         self.camera.end_with_call();
         self.video.end_call(cx);
+        self.screen.end_call(cx);
         self.set_own_camera_tile_shown(false);
         match self.call.take() {
             Some(Call {
@@ -1407,3 +1415,6 @@ pub struct DeviceNotices {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod screen_share_tests;

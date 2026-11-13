@@ -545,6 +545,11 @@ pub struct ThemeTokens {
     pub component_roles_swatch_check: u32,
     pub component_roles_swatch_check_plate: u32,
     pub component_roles_swatch_ring: u32,
+    pub component_screen_picker_card_background_hover: u32,
+    pub component_screen_picker_card_hint_text: u32,
+    pub component_screen_picker_card_text: u32,
+    pub component_screen_picker_thumbnail_background: u32,
+    pub component_screen_picker_thumbnail_icon: u32,
     pub component_screen_sound_help_command_background: u32,
     pub component_screen_sound_help_command_border: u32,
     pub component_screen_sound_help_command_text: u32,
@@ -1213,6 +1218,11 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_roles_swatch_check: 0xF8F4_F8FF,
     component_roles_swatch_check_plate: 0x2E27_2FFF,
     component_roles_swatch_ring: 0xF8F4_F8FF,
+    component_screen_picker_card_background_hover: 0x221B_23FF,
+    component_screen_picker_card_hint_text: 0xA99F_AAFF,
+    component_screen_picker_card_text: 0xF8F4_F8FF,
+    component_screen_picker_thumbnail_background: 0x110B_11FF,
+    component_screen_picker_thumbnail_icon: 0xA99F_AAFF,
     component_screen_sound_help_command_background: 0x1A14_1AFF,
     component_screen_sound_help_command_border: 0x3C35_3EFF,
     component_screen_sound_help_command_text: 0xD6D0_D7FF,
@@ -1881,6 +1891,11 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_roles_swatch_check: 0x221B_23FF,
     component_roles_swatch_check_plate: 0xFFFF_FFFF,
     component_roles_swatch_ring: 0x221B_23FF,
+    component_screen_picker_card_background_hover: 0xECE6_EDFF,
+    component_screen_picker_card_hint_text: 0x695F_6BFF,
+    component_screen_picker_card_text: 0x221B_23FF,
+    component_screen_picker_thumbnail_background: 0x110B_11FF,
+    component_screen_picker_thumbnail_icon: 0x695F_6BFF,
     component_screen_sound_help_command_background: 0xF8F4_F8FF,
     component_screen_sound_help_command_border: 0xE3DD_E4FF,
     component_screen_sound_help_command_text: 0x392F_3AFF,
@@ -2573,6 +2588,14 @@ pub const COMPONENT_ROLES_SWATCH_RADIUS: f32 = 8.0;
 pub const COMPONENT_ROLES_SWATCH_RING_OFFSET: f32 = 2.0;
 pub const COMPONENT_ROLES_SWATCH_RING_WIDTH: f32 = 2.0;
 pub const COMPONENT_ROLES_SWATCH_SIZE: f32 = 32.0;
+pub const COMPONENT_SCREEN_PICKER_CARD_PADDING: f32 = 4.0;
+pub const COMPONENT_SCREEN_PICKER_CARD_RADIUS: f32 = 12.0;
+pub const COMPONENT_SCREEN_PICKER_CARD_WIDTH: f32 = 176.0;
+pub const COMPONENT_SCREEN_PICKER_GAP: f32 = 8.0;
+pub const COMPONENT_SCREEN_PICKER_LIST_MAX_HEIGHT: f32 = 420.0;
+pub const COMPONENT_SCREEN_PICKER_THUMBNAIL_HEIGHT: f32 = 99.0;
+pub const COMPONENT_SCREEN_PICKER_THUMBNAIL_ICON_SIZE: f32 = 24.0;
+pub const COMPONENT_SCREEN_PICKER_THUMBNAIL_RADIUS: f32 = 8.0;
 pub const COMPONENT_SCREEN_SOUND_HELP_COMMAND_PADDING: f32 = 8.0;
 pub const COMPONENT_SCREEN_SOUND_HELP_COMMAND_RADIUS: f32 = 8.0;
 pub const COMPONENT_SEARCH_FACET_HEIGHT: f32 = 28.0;

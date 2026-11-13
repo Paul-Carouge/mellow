@@ -20,6 +20,7 @@ use mellow_client_core::shared_logic::voice_settings::{
 use mellow_protocol::{Snowflake, VoiceDisconnectReason, VoiceJoinRefusal};
 
 use super::DuskShell;
+use super::screen_share_host::screen_share_problem_sentence;
 use crate::components::{
     Button, ButtonVariant, IconButton, IconButtonTone, RangeBounds, RangeField, Switch, Tooltip,
     child_id, focus_ring, icon, is_focus_visible, polite_live_region, remembered_focus_handle,
@@ -283,6 +284,11 @@ impl DuskShell {
             })
             .unwrap_or_default();
         let devices = device_sentences(voice, strings).join(" ");
+        // A problem says why the share is off; otherwise its last start, end or cancel.
+        let screen_share: SharedString = voice.screen_share_problem().map_or_else(
+            || voice.screen_share_announcement(),
+            |problem| screen_share_problem_sentence(strings, problem).into(),
+        );
         // The Linux status comes after the compositor's dialog: heard once it is known.
         let global_push_to_talk =
             global_push_to_talk_sentence(strings, voice.global_push_to_talk_status())
@@ -307,6 +313,10 @@ impl DuskShell {
                     "voice-global-push-to-talk-announcement",
                     global_push_to_talk.into(),
                 ))
+                .child(polite_live_region(
+                    "voice-screen-share-announcement",
+                    screen_share,
+                ))
                 .into_any_element(),
         )
     }
@@ -319,6 +329,7 @@ impl DuskShell {
         cx: &mut Context<Self>,
     ) -> Option<AnyElement> {
         let voice_entity = self.voice.clone()?;
+        let screen_share_section = self.render_screen_share_section(&voice_entity, window, cx);
         let voice = voice_entity.read(cx);
         let global_push_to_talk_status = voice.global_push_to_talk_status().clone();
         let strings = strings(cx);
@@ -499,6 +510,7 @@ impl DuskShell {
             let microphone_ink = color(tokens.component_voice_panel_microphone_problem_text);
             return Some(
                 card.child(row)
+                    .children(screen_share_section)
                     .when_some(push_to_talk, |card, (is_missing_key, sentence)| {
                         card.child(hint_line(
                             is_missing_key.then_some(IconName::WarningCircle),

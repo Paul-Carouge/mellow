@@ -38,13 +38,25 @@ impl VideoPicture {
         if frame.format != DecodedPixelFormat::Bgra {
             return None;
         }
+        Self::from_bgra(frame.width, frame.height, frame.pixels)
+    }
+
+    /// Wraps packed BGRA rows (a screen's thumbnail); `None` for a size `pixels` does not match.
+    #[must_use]
+    pub fn from_bgra(width: u32, height: u32, pixels: Vec<u8>) -> Option<Self> {
         // GPUI's images hold BGRA in an RGBA buffer type: the bytes go in as they are.
-        let pixels = RgbaImage::from_raw(frame.width, frame.height, frame.pixels)?;
+        let pixels = RgbaImage::from_raw(width, height, pixels)?;
         Some(Self {
             image: Arc::new(RenderImage::new(vec![Frame::new(pixels)])),
-            width: frame.width,
-            height: frame.height,
+            width,
+            height,
         })
+    }
+
+    /// Frees its tiles in the windows' atlases: a picture no longer drawn (a closed picker's
+    /// thumbnail) would otherwise keep its texture for the window's life.
+    pub fn free(self, cx: &mut App) {
+        free_atlas_tiles(self.image, cx);
     }
 
     /// The image itself, for a view that frees its atlas slot on its own (the settings preview).

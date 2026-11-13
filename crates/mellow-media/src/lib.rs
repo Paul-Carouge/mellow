@@ -122,8 +122,8 @@ pub use screen_capture::{
 pub use screen_sound::ScreenSoundInput;
 pub use session::{
     AudioDirection, GOOD_ROUND_TRIP, LatencyQuality, MEDIUM_ROUND_TRIP, ScreenShareEnd,
-    VoiceSession, VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions, VoiceSignalling,
-    VoiceToggles, WatchedVideo, is_voice_session_event, latency_quality,
+    ScreenShareStarter, VoiceSession, VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions,
+    VoiceSignalling, VoiceToggles, WatchedVideo, is_voice_session_event, latency_quality,
 };
 pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;

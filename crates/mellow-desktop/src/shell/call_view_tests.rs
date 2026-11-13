@@ -356,11 +356,17 @@ fn your_tile_shows_your_camera_never_your_shared_screen(cx: &mut TestAppContext)
 }
 
 #[gpui::test]
-fn the_camera_control_is_hidden_while_the_camera_cannot_be_turned_on(cx: &mut TestAppContext) {
-    // A call still connecting: the camera cannot be turned on yet, and it is off.
-    let (_shell, _voice, cx) = shell_in_a_call(cx);
+fn the_camera_and_share_controls_follow_what_can_start(cx: &mut TestAppContext) {
+    // A call without its engine yet: the camera cannot open; a share follows the system's picker
+    // (none on Windows), as the voice panel's share row does.
+    let (_shell, voice, cx) = shell_in_a_call(cx);
     assert!(cx.debug_bounds("call-control-microphone").is_some());
     assert!(cx.debug_bounds("call-control-camera").is_none());
+    let can_share_screen = voice.read_with(cx, |voice, _| voice.can_share_screen());
+    assert_eq!(
+        cx.debug_bounds("call-control-screen-share").is_some(),
+        can_share_screen
+    );
 }
 
 #[test]

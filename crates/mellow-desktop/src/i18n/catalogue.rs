@@ -14931,6 +14931,238 @@ impl DesktopStrings {
         }
     }
 
+    pub fn screen_picker_loading(self) -> &'static str {
+        match self.language {
+            Language::English => "Looking for your screens and windows…",
+            Language::French => "Recherche de tes écrans et fenêtres…",
+        }
+    }
+
+    pub fn screen_picker_empty(self) -> &'static str {
+        match self.language {
+            Language::English => "No screen or window to share was found.",
+            Language::French => "Aucun écran ni aucune fenêtre à partager.",
+        }
+    }
+
+    pub fn screen_picker_screens(self) -> &'static str {
+        match self.language {
+            Language::English => "Screens",
+            Language::French => "Écrans",
+        }
+    }
+
+    pub fn screen_picker_windows(self) -> &'static str {
+        match self.language {
+            Language::English => "Windows",
+            Language::French => "Fenêtres",
+        }
+    }
+
+    pub fn screen_picker_screen_name(self, number: i64) -> String {
+        let number = number as f64;
+        match self.language {
+            Language::English => format!("Screen {}", super::format_number_like_javascript(number)),
+            Language::French => format!("Écran {}", super::format_number_like_javascript(number)),
+        }
+    }
+
+    pub fn screen_picker_share_source(self, source: &str) -> String {
+        match self.language {
+            Language::English => format!("Share {source}"),
+            Language::French => format!("Partager {source}"),
+        }
+    }
+
+    pub fn screen_picker_with_sound(self, quality: &str) -> String {
+        match self.language {
+            Language::English => format!("{quality}, with its sound. Change them in the share options."),
+            Language::French => format!("{quality}, avec le son. Modifiable dans les options du partage."),
+        }
+    }
+
+    pub fn screen_picker_without_sound(self, quality: &str) -> String {
+        match self.language {
+            Language::English => format!("{quality}, without sound. Change them in the share options."),
+            Language::French => format!("{quality}, sans le son. Modifiable dans les options du partage."),
+        }
+    }
+
+    pub fn screen_share_waiting_for_system(self) -> &'static str {
+        match self.language {
+            Language::English => "Choose what to share in your desktop's dialog…",
+            Language::French => "Choisis quoi partager dans la fenêtre de ton bureau…",
+        }
+    }
+
+    pub fn screen_share_starting(self) -> &'static str {
+        match self.language {
+            Language::English => "Starting your screen share…",
+            Language::French => "Démarrage du partage d’écran…",
+        }
+    }
+
+    pub fn screen_share_switch_source(self) -> &'static str {
+        match self.language {
+            Language::English => "Share something else",
+            Language::French => "Partager autre chose",
+        }
+    }
+
+    pub fn screen_share_permission_denied(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow isn't allowed to record your screen. Allow it in System Settings, Privacy & Security, Screen & System Audio Recording, then share again.",
+            Language::French => "Mellow n’a pas le droit d’enregistrer ton écran. Autorise-le dans Réglages Système, Confidentialité et sécurité, Enregistrement de l’écran et de l’audio système, puis partage à nouveau.",
+        }
+    }
+
+    pub fn open_system_settings(self) -> &'static str {
+        match self.language {
+            Language::English => "Open System Settings",
+            Language::French => "Ouvrir les Réglages Système",
+        }
+    }
+
+    pub fn screen_share_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "Your system doesn't let Mellow share the screen. On Linux, install your desktop's xdg-desktop-portal, then share again.",
+            Language::French => "Ton système ne permet pas à Mellow de partager l’écran. Sous Linux, installe le xdg-desktop-portal de ton bureau, puis partage à nouveau.",
+        }
+    }
+
+    pub fn screen_share_source_gone(self) -> &'static str {
+        match self.language {
+            Language::English => "That screen or window is gone. Choose another one.",
+            Language::French => "Cet écran ou cette fenêtre n’existe plus. Choisis-en un autre.",
+        }
+    }
+
+    pub fn screen_share_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Your screen share couldn't start. Share again, or choose another screen or window.",
+            Language::French => "Ton partage d’écran n’a pas pu démarrer. Partage à nouveau, ou choisis un autre écran ou une autre fenêtre.",
+        }
+    }
+
+    pub fn screen_share_capture_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Your screen share stopped: capturing the screen failed.",
+            Language::French => "Ton partage d’écran s’est arrêté\u{a0}: la capture de l’écran a échoué.",
+        }
+    }
+
+    pub fn screen_share_source_closed(self) -> &'static str {
+        match self.language {
+            Language::English => "Your screen share ended.",
+            Language::French => "Ton partage d’écran est terminé.",
+        }
+    }
+
+    pub fn screen_share_software_encoding(self) -> &'static str {
+        match self.language {
+            Language::English => "Encoded by your processor: no hardware H.264 encoder (VA-API) was found.",
+            Language::French => "Encodé par ton processeur\u{a0}: aucun encodeur H.264 matériel (VA-API) n’a été trouvé.",
+        }
+    }
+
+    pub fn screen_share_sound(self) -> &'static str {
+        match self.language {
+            Language::English => "Share its sound",
+            Language::French => "Partager son son",
+        }
+    }
+
+    pub fn screen_share_sound_next_share(self) -> &'static str {
+        match self.language {
+            Language::English => "From your next share",
+            Language::French => "À partir du prochain partage",
+        }
+    }
+
+    pub fn screen_share_sound_of(self, application: &str) -> String {
+        match self.language {
+            Language::English => format!("Sound of {application}"),
+            Language::French => format!("Son de {application}"),
+        }
+    }
+
+    pub fn screen_share_sound_of_hint(self) -> &'static str {
+        match self.language {
+            Language::English => "Instead of the window's own sound",
+            Language::French => "À la place du son de la fenêtre",
+        }
+    }
+
+    pub fn screen_share_sound_of_application(self, application: &str) -> String {
+        match self.language {
+            Language::English => format!("Sound: {application}"),
+            Language::French => format!("Son\u{a0}: {application}"),
+        }
+    }
+
+    pub fn screen_share_no_sound_on_wayland(self) -> &'static str {
+        match self.language {
+            Language::English => "No sound: your desktop doesn't say which app a window belongs to. Choose an app in the share options.",
+            Language::French => "Pas de son\u{a0}: ton bureau ne dit pas à quelle app appartient une fenêtre. Choisis une app dans les options du partage.",
+        }
+    }
+
+    pub fn screen_share_no_sound_on_this_system(self) -> &'static str {
+        match self.language {
+            Language::English => "No sound: this system can't capture a share's sound.",
+            Language::French => "Pas de son\u{a0}: ce système ne peut pas capturer le son d’un partage.",
+        }
+    }
+
+    pub fn screen_sound_help_open(self) -> &'static str {
+        match self.language {
+            Language::English => "About the share's sound",
+            Language::French => "À propos du son du partage",
+        }
+    }
+
+    pub fn screen_sound_help_title(self) -> &'static str {
+        match self.language {
+            Language::English => "Your share's sound",
+            Language::French => "Le son de ton partage",
+        }
+    }
+
+    pub fn screen_sound_help_screen(self) -> &'static str {
+        match self.language {
+            Language::English => "A whole screen sends everything your computer plays, except Mellow's own sounds: the call's voices never come back to the others.",
+            Language::French => "Un écran entier envoie tout ce que joue ton ordinateur, sauf les sons de Mellow\u{a0}: les voix de l’appel ne reviennent jamais aux autres.",
+        }
+    }
+
+    pub fn screen_sound_help_window(self) -> &'static str {
+        match self.language {
+            Language::English => "A window sends the sound of its app only.",
+            Language::French => "Une fenêtre n’envoie que le son de son app.",
+        }
+    }
+
+    pub fn screen_sound_help_wayland(self) -> &'static str {
+        match self.language {
+            Language::English => "On Wayland, your desktop doesn't say which app a shared window belongs to: choose the app to send in the share options, under Sound.",
+            Language::French => "Sous Wayland, ton bureau ne dit pas à quelle app appartient une fenêtre partagée\u{a0}: choisis l’app à envoyer dans les options du partage, sous Son.",
+        }
+    }
+
+    pub fn screen_sound_help_macos(self) -> &'static str {
+        match self.language {
+            Language::English => "Sharing sound needs macOS 13 or later.",
+            Language::French => "Partager le son demande macOS 13 ou plus récent.",
+        }
+    }
+
+    pub fn screen_sound_help_off(self) -> &'static str {
+        match self.language {
+            Language::English => "Untick “Share its sound” in the share options to send the picture alone.",
+            Language::French => "Décoche «\u{a0}Partager son son\u{a0}» dans les options du partage pour n’envoyer que l’image.",
+        }
+    }
+
     pub fn camera_failed(self) -> &'static str {
         match self.language {
             Language::English => "Mellow couldn't start your camera. Turn it on again, or choose another camera in the Voice settings.",
