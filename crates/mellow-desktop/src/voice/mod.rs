@@ -907,6 +907,7 @@ impl Voice {
         self.announcement = SharedString::default();
         self.camera.end_with_call();
         self.video.end_call(cx);
+        self.set_own_camera_tile_shown(false);
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),

@@ -326,6 +326,42 @@ mod in_a_call {
         runtime.block_on(instance.stop());
     }
 
+    /// Whether your tile has a picture of your camera; moves the test clock past one of the
+    /// tile's frame periods first, so its pump runs.
+    fn is_own_camera_shown(voice: &Entity<Voice>, cx: &mut TestAppContext) -> bool {
+        cx.executor().advance_clock(Duration::from_millis(50));
+        voice.read_with(cx, |voice, cx| {
+            voice.video_pictures().read(cx).own_camera().is_some()
+        })
+    }
+
+    #[gpui::test]
+    fn your_tile_shows_your_camera_while_the_call_view_is_open(cx: &mut TestAppContext) {
+        let runtime: Runtime = build_network_runtime().unwrap();
+        let instance = runtime.block_on(RunningInstance::start());
+        let (session, voice, _) = camera_on_in_a_call(&runtime, &instance, synthetic_cameras(), cx);
+
+        voice.update(cx, Voice::open_call_view);
+        wait_until(cx, "your camera in your tile", |cx| {
+            is_own_camera_shown(&voice, cx)
+        });
+        voice.update(cx, Voice::toggle_camera);
+        wait_until(
+            cx,
+            "your tile without a picture once the camera is off",
+            |cx| !is_own_camera_shown(&voice, cx),
+        );
+
+        voice.update(cx, Voice::toggle_camera);
+        wait_until(cx, "your camera back in your tile", |cx| {
+            is_own_camera_shown(&voice, cx)
+        });
+        voice.update(cx, Voice::close_call_view);
+        assert!(!is_own_camera_shown(&voice, cx));
+
+        end(&runtime, instance, session, voice, cx);
+    }
+
     #[gpui::test]
     fn the_camera_stays_behind_when_moving_to_another_channel(cx: &mut TestAppContext) {
         let runtime: Runtime = build_network_runtime().unwrap();
