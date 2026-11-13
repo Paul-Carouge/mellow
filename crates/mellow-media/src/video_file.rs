@@ -913,6 +913,7 @@ pub(crate) mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     pub(crate) struct ManualClock(pub(crate) Arc<AtomicU64>);
 
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     impl VideoClock for ManualClock {
         fn position(&self) -> Duration {
             Duration::from_millis(self.0.load(Ordering::Relaxed))
