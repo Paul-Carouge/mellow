@@ -22,6 +22,7 @@ mod server_rail;
 mod settings_screens;
 mod soundboard_host;
 mod user_card;
+mod voice_camera;
 mod voice_panel;
 
 use std::cell::Cell;

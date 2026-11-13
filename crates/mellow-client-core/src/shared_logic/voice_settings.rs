@@ -132,6 +132,8 @@ pub struct VoiceSettings {
     pub equalizer_decibels: EqualizerDecibels,
     /// Soundboard and join sounds, on top of the output volume; 0 silences them.
     pub soundboard_volume_percent: u32,
+    /// `None`: the system's default camera (the web keeps it apart, under `mellow.camera-device`).
+    pub camera_device_id: Option<String>,
 }
 
 pub const MINIMUM_VOLUME_PERCENT: u32 = 0;
@@ -171,6 +173,7 @@ impl VoiceSettings {
         },
         // Uploads are often mastered louder than speech: a little under full.
         soundboard_volume_percent: 70,
+        camera_device_id: None,
     };
 
     /// A preset fills the three sliders.
@@ -361,6 +364,7 @@ pub fn parse_voice_settings(stored: &Value) -> VoiceSettings {
             MAXIMUM_SOUNDBOARD_VOLUME_PERCENT,
             defaults.soundboard_volume_percent,
         ),
+        camera_device_id: stored_text(fields.get("cameraDeviceId")),
     }
 }
 
@@ -396,6 +400,7 @@ pub fn voice_settings_to_json(settings: &VoiceSettings) -> Value {
             "treble": settings.equalizer_decibels.treble,
         },
         "soundboardVolumePercent": settings.soundboard_volume_percent,
+        "cameraDeviceId": settings.camera_device_id,
     })
 }
 
@@ -759,6 +764,7 @@ mod tests {
         let stored = json!({
             "inputDeviceId": 42,
             "outputDeviceId": "headset",
+            "cameraDeviceId": "",
             "inputVolumePercent": 999,
             "outputVolumePercent": -5,
             "inputMode": "always",
@@ -856,6 +862,7 @@ mod tests {
                 label: "V".into(),
             }),
             noise_suppression: NoiseSuppression::Standard,
+            camera_device_id: Some("v4l2_input.pci-0000_00_14.0-usb-0_1_1.0".into()),
             ..VoiceSettings::DEFAULT.with_equalizer_band(EqualizerBand::Bass, -4)
         };
         assert_eq!(

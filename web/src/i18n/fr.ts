@@ -2360,5 +2360,9 @@ export const fr: Catalogue = {
       "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique.",
     voicePushToTalkOtherAppsNote: `Pendant un appel, elle marche aussi dans les autres applis si ton système le permet${NO_BREAK_SPACE}; le panneau vocal te le dit.`,
     voiceTestNoMicrophone: "Aucun micro trouvé. Branches-en un, puis relance le test.",
+    cameraFailed: "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
+    cameraDeniedMacos: "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
+    cameraDeniedLinux: "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+    openCameraSettings: "Ouvrir les Réglages Système",
   },
 };

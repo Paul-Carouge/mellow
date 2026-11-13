@@ -30,10 +30,18 @@
 //! - **Soundboard** (`soundboard.rs`): [`Voice::play_soundboard_sound`] sends the reader's
 //!   sounds, [`Voice::soundboard_block`] says why it cannot; played sounds, join sounds and
 //!   previews play here.
+//! - **Camera** (`camera.rs`): [`Voice::toggle_camera`] for the panel, the settings' preview,
+//!   and the chosen camera (`VoiceSettings::camera_device_id`) applied live.
 
+mod camera;
 pub mod global_push_to_talk;
 pub mod media_settings;
 mod soundboard;
+
+pub use camera::{
+    CameraBlock, CameraPhase, CameraProblem, CamerasFactory, open_camera_system_settings,
+    system_cameras,
+};
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -154,6 +162,7 @@ pub struct Voice {
     is_recording_push_to_talk_key: bool,
     /// Bumped by each join: a start that finishes after a leave or another join is stopped.
     attempt: u64,
+    camera: camera::CameraState,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -389,6 +398,7 @@ impl Voice {
             is_monitoring: false,
             is_recording_push_to_talk_key: false,
             attempt: 0,
+            camera: camera::CameraState::new(system_cameras()),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -741,6 +751,8 @@ impl Voice {
         // The meter now reads the call's microphone: the test's is let go.
         self.microphone_test = None;
         self.apply_settings(cx);
+        // The camera button needs to know whether there is a camera.
+        self.refresh_cameras(cx);
         cx.notify();
         None
     }
@@ -834,10 +846,11 @@ impl Voice {
                 };
                 self.end_with(problem, cx);
             }
+            VoiceSessionEvent::VideoRefused(_) | VoiceSessionEvent::VideoStoppedByServer => {
+                self.note_video_stopped_by_server(event, cx);
+            }
             // Cameras and screens come with the call view (M3 step 8).
-            VoiceSessionEvent::VideoRefused(_)
-            | VoiceSessionEvent::VideoStoppedByServer
-            | VoiceSessionEvent::VideoPaused { .. } => {}
+            VoiceSessionEvent::VideoPaused { .. } => {}
         }
     }
 
@@ -866,6 +879,7 @@ impl Voice {
             self.is_monitoring = false;
         }
         self.announcement = SharedString::default();
+        self.camera.end_with_call();
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),
@@ -1258,6 +1272,9 @@ impl Voice {
             || next.push_to_talk_key != previous.push_to_talk_key;
         if mode_changed {
             self.release_push_to_talk(cx);
+        }
+        if next.camera_device_id != previous.camera_device_id {
+            self.follow_camera_device(cx);
         }
         if let Some(test) = self.microphone_test.as_ref() {
             if next.input_device_id != previous.input_device_id {
