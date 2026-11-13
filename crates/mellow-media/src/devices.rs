@@ -610,7 +610,7 @@ pub(crate) fn has_failed(flag: &AtomicBool) -> bool {
 mod tests {
     use cpal::DeviceDirection::{Duplex, Input, Output};
 
-    use super::is_listed_device;
+    use super::{AudioDevices as _, DeviceListing, SystemAudioDevices, is_listed_device};
 
     #[test]
     fn pipewire_lists_its_sources_as_microphones_and_its_sinks_as_outputs() {
@@ -711,5 +711,25 @@ mod tests {
             Duplex,
             false
         ));
+    }
+
+    /// Runs the system's own listing (WASAPI on the Windows CI runner, which has no sound card and
+    /// may have no audio service): whatever it finds, it answers without panicking, every id parses
+    /// back as a `cpal::DeviceId`, and at most one entry is the default. The runner most likely
+    /// lists no device, so there this mostly proves the listing does not panic.
+    #[test]
+    fn the_system_listing_answers_with_well_formed_entries() {
+        fn check(listing: DeviceListing) {
+            let Ok(devices) = listing else {
+                return;
+            };
+            assert!(devices.iter().filter(|device| device.is_default).count() <= 1);
+            for device in &devices {
+                assert!(device.id.parse::<cpal::DeviceId>().is_ok(), "{}", device.id);
+            }
+        }
+        let (inputs, outputs) = SystemAudioDevices.input_and_output_devices();
+        check(inputs);
+        check(outputs);
     }
 }

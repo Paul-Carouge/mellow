@@ -70,12 +70,16 @@ sha2.workspace = true
 [dev-dependencies]
 anyhow.workspace = true
 futures-util.workspace = true
-# Integration tests run a real in-process server; the engine never depends on it otherwise.
-mellow-server = { path = "../mellow-server" }
 serde_json.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["macros", "rt-multi-thread", "sync", "time"] }
 tokio-tungstenite.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+# Integration tests run a real in-process server; the engine never depends on it otherwise.
+# Not on Windows: the server refuses to run there (ADR-0006) and the tests that start one are
+# compiled out, so building it (and its vendored OpenSSL) would be wasted.
+mellow-server = { path = "../mellow-server" }
 
 [lints]
 workspace = true

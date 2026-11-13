@@ -8,6 +8,7 @@
 #![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
 
 pub mod attachment_audio;
+pub mod background;
 pub mod column_widths;
 pub mod components;
 pub mod composer;
@@ -34,6 +35,7 @@ pub mod shell;
 mod shell_fixtures;
 pub mod sign_in_form;
 pub mod sign_in_screen;
+pub mod single_instance;
 pub mod soundboard;
 pub mod strings_pending_i18n;
 pub mod theme;
@@ -45,8 +47,8 @@ use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, actions};
 use tokio::runtime::Handle;
 
-use crate::main_window::MainWindow;
 use crate::session::Session;
+use crate::single_instance::ShowRequests;
 use crate::window_chrome::WINDOW_TITLE;
 
 actions!(mellow, [Quit]);
@@ -66,11 +68,16 @@ fn set_app_menus(cx: &mut App) {
     cx.set_menus([Menu::new(WINDOW_TITLE).items([MenuItem::action(quit_label, Quit)])]);
 }
 
-/// Sets the app up and opens the main window; called once from GPUI's `run`.
+/// Sets the app up and opens the main window; called once from GPUI's `run`. `show_requests` are
+/// later launches asking to see the window (`None` when the single instance could not be set up).
 ///
 /// # Errors
 /// When the embedded fonts cannot be registered or the window cannot open.
-pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
+pub fn start(
+    network_runtime: Handle,
+    show_requests: Option<ShowRequests>,
+    cx: &mut App,
+) -> Result<()> {
     // Its behaviour (text input, overlays, focus) is what Mellow takes from it; it also reads the
     // OS reduced-motion setting into `App::reduce_motion`, but follows it live on Linux only.
     gpui_component::init(cx);
@@ -84,7 +91,10 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     // Before any notification: Linux names the app with it, Windows groups its toasts by it.
     cx.set_app_identity(APP_IDENTIFIER, WINDOW_TITLE);
     let session = cx.new(Session::new_restoring_stored_session);
+    // Before the session's own: quit handlers run in order, and the call is left on its gateway.
+    voice::leave_the_call_when_the_app_quits(cx);
     Session::end_connection_when_the_app_quits(&session, cx);
+    notifier::follow_session_for_notifications(&session, cx);
     let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
     voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
 
@@ -93,15 +103,9 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
     i18n::use_system_language(cx);
     set_app_menus(cx);
     dock_and_tray::install_menu_bar_item(cx);
-    // One window for now: closing it ends the app, on macOS too.
-    cx.on_window_closed(|cx, _| {
-        if cx.windows().is_empty() {
-            cx.quit();
-        }
-    })
-    .detach();
 
     if let Some(forced_appearance) = components::gallery::gallery_requested() {
+        cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.open_window(
             components::gallery::gallery_window_options(cx),
             |window, cx| components::gallery::open_gallery(forced_appearance, window, cx),
@@ -122,19 +126,13 @@ pub fn start(network_runtime: Handle, cx: &mut App) -> Result<()> {
         }
     })
     .detach();
-    cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
-        theme::follow_window_appearance(window, cx);
-        cx.new(|cx| {
-            // macOS and Windows post no reduced-motion change gpui-base can follow, so the
-            // setting is read again whenever the window comes back to the front.
-            cx.observe_window_activation(window, |_, _, cx| {
-                gpui_base::apply_system_reduce_motion(cx);
-            })
-            .detach();
-            MainWindow::new(session, window, cx)
+    if let Some(mut show_requests) = show_requests {
+        cx.spawn(async move |cx| {
+            while show_requests.next().await.is_some() {
+                cx.update(background::show_main_window);
+            }
         })
-    })
-    .context("cannot open the main window")?;
-    cx.activate(true);
-    Ok(())
+        .detach();
+    }
+    background::open_main_window_and_stay_in_background(session, cx)
 }

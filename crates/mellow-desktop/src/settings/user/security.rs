@@ -996,11 +996,11 @@ impl Render for SecurityPage {
     }
 }
 
-#[cfg(test)]
+// The one test reads Unix permission bits; Windows has none to check.
+#[cfg(all(test, unix))]
 mod tests {
     use super::*;
 
-    #[cfg(unix)]
     #[test]
     fn the_recovery_codes_file_is_readable_by_its_owner_only() {
         use std::os::unix::fs::PermissionsExt as _;

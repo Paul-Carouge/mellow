@@ -25,8 +25,8 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyWindowHandle, App, Context, Entity, SharedString, Subscription, SystemNotification, Task,
-    WeakEntity, Window,
+    AnyWindowHandle, App, AppContext as _, Context, Entity, Global, SharedString, Subscription,
+    SystemNotification, Task, WeakEntity, Window,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::notification_settings::{
@@ -45,7 +45,7 @@ use crate::dock_and_tray;
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
-use crate::session::{IncomingMessage, Session, StateChanged, now_unix_milliseconds};
+use crate::session::{IncomingMessage, Session, SessionPhase, StateChanged, now_unix_milliseconds};
 use crate::shell::DuskShell;
 use crate::window_chrome::WINDOW_TITLE;
 
@@ -71,11 +71,61 @@ pub fn notification_settings_of(user_id: Snowflake, cx: &App) -> NotificationSet
     })
 }
 
-/// Lives as long as the signed-in shell; [`Notifier::end`] clears what it showed.
+/// The notifier of the signed-in session, kept by the app rather than the window: closing the
+/// window leaves Mellow running in the background, still notifying.
+struct AppNotifier(Option<Entity<Notifier>>);
+
+impl Global for AppNotifier {}
+
+/// The signed-in session's notifier, made at the first need.
+pub fn notifier_of_session(session: &Entity<Session>, cx: &mut App) -> Entity<Notifier> {
+    if let Some(notifier) = cx
+        .try_global::<AppNotifier>()
+        .and_then(|app_notifier| app_notifier.0.clone())
+    {
+        return notifier;
+    }
+    let notifier = cx.new(|cx| Notifier::new(session.clone(), cx));
+    cx.set_global(AppNotifier(Some(notifier.clone())));
+    notifier
+}
+
+/// Signed out: the notifier ends and goes; the next session gets a new one.
+pub fn end_notifications(cx: &mut App) {
+    let notifier = cx
+        .try_global::<AppNotifier>()
+        .and_then(|app_notifier| app_notifier.0.clone());
+    if let Some(notifier) = notifier {
+        cx.set_global(AppNotifier(None));
+        notifier.update(cx, Notifier::end);
+    }
+}
+
+/// Starts notifying with each signed-in session and ends at sign-out, whether or not the window
+/// is open (a session restored or revoked while Mellow runs in the background).
+pub fn follow_session_for_notifications(session: &Entity<Session>, cx: &mut App) {
+    cx.observe(session, |session, cx| match session.read(cx).phase() {
+        SessionPhase::SignedIn => {
+            notifier_of_session(&session, cx);
+        }
+        SessionPhase::SignedOut => end_notifications(cx),
+        SessionPhase::RestoringStoredSession => {}
+    })
+    .detach();
+}
+
+/// The main window the notifier shows its count in, while it is open.
+struct ShownWindow {
+    window: AnyWindowHandle,
+    shell: WeakEntity<DuskShell>,
+    _subscriptions: [Subscription; 3],
+}
+
+/// Lives as long as the signed-in session; [`Notifier::end`] clears what it showed.
 pub struct Notifier {
     session: Entity<Session>,
-    shell: WeakEntity<DuskShell>,
-    window: AnyWindowHandle,
+    /// `None` while Mellow runs in the background, its window closed.
+    shown_window: Option<ShownWindow>,
     /// Notifications shown per channel since the reader last looked at it.
     alert_count_by_channel: HashMap<Snowflake, u32>,
     last_sound_at: Option<Instant>,
@@ -100,63 +150,54 @@ impl std::fmt::Debug for Notifier {
 }
 
 impl Notifier {
-    pub fn new(
-        session: Entity<Session>,
-        shell: &Entity<DuskShell>,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
+    pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let subscriptions = vec![
-            cx.subscribe_in(
-                &session,
-                window,
-                |notifier, _, IncomingMessage(message), window, cx| {
-                    notifier.alert_about(message, window, cx);
-                },
-            ),
-            cx.subscribe_in(
-                &session,
-                window,
-                |notifier, _, _: &StateChanged, window, cx| {
-                    notifier.show_attention_count(window, cx);
-                    // The account is known from the first `Ready` on.
-                    let user_id = notifier
-                        .session
-                        .read(cx)
-                        .state()
-                        .current_user()
-                        .map(|user| user.id);
-                    if user_id != notifier.mute_clock_user_id {
-                        notifier.mute_clock_user_id = user_id;
-                        notifier.wake_at_next_mute_end(window, cx);
-                    }
-                },
-            ),
+            cx.subscribe(&session, |notifier, _, IncomingMessage(message), cx| {
+                notifier.alert_about(message, cx);
+            }),
+            cx.subscribe(&session, |notifier, _, _: &StateChanged, cx| {
+                notifier.show_attention_count(cx);
+                // The account is known from the first `Ready` on.
+                let user_id = notifier
+                    .session
+                    .read(cx)
+                    .state()
+                    .current_user()
+                    .map(|user| user.id);
+                if user_id != notifier.mute_clock_user_id {
+                    notifier.mute_clock_user_id = user_id;
+                    notifier.wake_at_next_mute_end(cx);
+                }
+            }),
             // A mute or a choice changed.
-            cx.observe_global_in::<PreferencesStore>(window, |notifier, window, cx| {
-                notifier.show_attention_count(window, cx);
-                notifier.wake_at_next_mute_end(window, cx);
+            cx.observe_global::<PreferencesStore>(|notifier, cx| {
+                notifier.show_attention_count(cx);
+                notifier.wake_at_next_mute_end(cx);
             }),
-            cx.observe_in(shell, window, |notifier, _, window, cx| {
-                notifier.note_open_channel_seen(window, cx);
-            }),
-            cx.observe_window_activation(window, Self::note_open_channel_seen),
-            // Timers stand still while the Mac sleeps: a mute that ended meanwhile goes now.
-            cx.observe_window_activation(window, Self::wake_at_next_mute_end),
         ];
         let notifier = cx.entity().downgrade();
         cx.on_system_notification_response(move |response, cx| {
             let Some(channel_id) = channel_of_tag(&response.tag) else {
                 return;
             };
-            if let Some(notifier) = notifier.upgrade() {
-                notifier.update(cx, |notifier, cx| notifier.open_channel(channel_id, cx));
+            let Some(notifier) = notifier.upgrade() else {
+                return;
+            };
+            // A notification left from an account signed out since (Linux keeps them) opens
+            // nothing.
+            if place_of(notifier.read(cx).session.read(cx).state(), channel_id).is_none() {
+                return;
             }
+            // Clicked while Mellow runs in the background: its window opens first, outside the
+            // notifier's update, since the new window shows the notifier its shell.
+            if !notifier.read(cx).is_window_shown() {
+                crate::background::show_main_window(cx);
+            }
+            notifier.update(cx, |notifier, cx| notifier.open_channel(channel_id, cx));
         });
         let mut notifier = Self {
             session,
-            shell: shell.downgrade(),
-            window: window.window_handle(),
+            shown_window: None,
             alert_count_by_channel: HashMap::new(),
             last_sound_at: None,
             notifications_shown_while_away: 0,
@@ -165,25 +206,86 @@ impl Notifier {
             mute_clock_user_id: None,
             _subscriptions: subscriptions,
         };
-        notifier.show_attention_count(window, cx);
-        notifier.wake_at_next_mute_end(window, cx);
+        notifier.show_attention_count(cx);
+        notifier.wake_at_next_mute_end(cx);
         notifier
+    }
+
+    /// The main window opened (at launch, or again from the background): the count shows in its
+    /// title, and what the reader looks at in its shell clears notifications.
+    pub fn show_in(
+        &mut self,
+        shell: &Entity<DuskShell>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let subscriptions = [
+            cx.observe_in(shell, window, |notifier, _, window, cx| {
+                notifier.note_open_channel_seen(window, cx);
+            }),
+            cx.observe_window_activation(window, Self::note_open_channel_seen),
+            // Timers stand still while the Mac sleeps: a mute that ended meanwhile goes now.
+            cx.observe_window_activation(window, |notifier, _, cx| {
+                notifier.wake_at_next_mute_end(cx);
+            }),
+        ];
+        self.shown_window = Some(ShownWindow {
+            window: window.window_handle(),
+            shell: shell.downgrade(),
+            _subscriptions: subscriptions,
+        });
+        window.set_window_title(&window_title(self.shown_attention_count, WINDOW_TITLE));
+    }
+
+    /// Whether the window it showed in is still open (its shell goes with it).
+    fn is_window_shown(&self) -> bool {
+        self.open_shell().is_some()
+    }
+
+    fn open_shell(&self) -> Option<Entity<DuskShell>> {
+        self.shown_window.as_ref()?.shell.upgrade()
+    }
+
+    /// Whether the window is open and in front; closed, Mellow runs in the background.
+    fn has_window_focus(&self, cx: &mut App) -> bool {
+        self.shown_window.as_ref().is_some_and(|shown| {
+            shown
+                .window
+                .update(cx, |_, window, _| window.is_window_active())
+                .unwrap_or(false)
+        })
+    }
+
+    fn set_window_title(&self, title: &str, cx: &mut App) {
+        if let Some(shown) = &self.shown_window {
+            // Fails only while the window is closing, or while it is being updated (it then
+            // sets its own title).
+            let _ = shown
+                .window
+                .update(cx, |_, window, _| window.set_window_title(title));
+        }
     }
 
     /// Signed out: its notifications go (not on Linux, see the module doc), and the title and
     /// badges are cleared.
-    pub fn end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub fn end(&mut self, cx: &mut Context<Self>) {
         for channel_id in self.alert_count_by_channel.keys() {
             cx.dismiss_system_notification(&notification_tag(*channel_id));
         }
         self.alert_count_by_channel.clear();
         self.notifications_shown_while_away = 0;
         self.shown_attention_count = 0;
-        window.set_window_title(WINDOW_TITLE);
+        self.set_window_title(WINDOW_TITLE, cx);
         dock_and_tray::show_attention_count(0, cx);
     }
 
-    fn alert_about(&mut self, message: &Message, window: &mut Window, cx: &mut Context<Self>) {
+    fn alert_about(&mut self, message: &Message, cx: &mut Context<Self>) {
+        // GPUI cannot tell a hidden window from one behind others; a closed one is not visible.
+        let is_window_visible = self.is_window_shown();
+        let has_window_focus = self.has_window_focus(cx);
+        let open_channel_id = self
+            .open_shell()
+            .and_then(|shell| shell.read(cx).navigation().selected_channel_id());
         let state = self.session.read(cx).state();
         let Some(user) = state.current_user() else {
             return;
@@ -209,16 +311,11 @@ impl Notifier {
         if !should_alert {
             return;
         }
-        let open_channel_id = self
-            .shell
-            .upgrade()
-            .and_then(|shell| shell.read(cx).navigation().selected_channel_id());
         let delivery = alert_delivery_for(
             message.channel_id,
             ReaderAttention {
-                // GPUI cannot tell a hidden window from one behind others; neither is active.
-                is_window_visible: true,
-                has_window_focus: window.is_window_active(),
+                is_window_visible,
+                has_window_focus,
                 open_channel_id,
             },
         );
@@ -274,13 +371,13 @@ impl Notifier {
 
     /// A notification was clicked: the window comes to the front at its channel.
     fn open_channel(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
-        // A notification left from an account signed out since (Linux keeps them) opens nothing.
-        if place_of(self.session.read(cx).state(), channel_id).is_none() {
+        let Some(shown) = &self.shown_window else {
+            tracing::debug!("no window to show the notification's channel in");
             return;
-        }
+        };
         cx.activate(true);
-        let shell = self.shell.clone();
-        let opened = self.window.update(cx, |_, window, cx| {
+        let shell = shown.shell.clone();
+        let opened = shown.window.update(cx, |_, window, cx| {
             window.activate_window();
             shell.update(cx, |shell, cx| shell.open_channel(channel_id, window, cx))
         });
@@ -296,8 +393,7 @@ impl Notifier {
         }
         self.notifications_shown_while_away = 0;
         let Some(channel_id) = self
-            .shell
-            .upgrade()
+            .open_shell()
             .and_then(|shell| shell.read(cx).navigation().selected_channel_id())
         else {
             return;
@@ -310,7 +406,7 @@ impl Notifier {
     /// Ends mutes on time, as the web's `refreshClock`: one timer at the earliest end drops the
     /// mutes that ended from the preferences, so the rows, the rail, the count and the badge
     /// follow, and the next end is waited for then. Nothing polls.
-    fn wake_at_next_mute_end(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    fn wake_at_next_mute_end(&mut self, cx: &mut Context<Self>) {
         let Some(user_id) = self
             .session
             .read(cx)
@@ -343,18 +439,18 @@ impl Notifier {
             return;
         }
         let wait = mute_end_wait(end, now);
-        let timer = cx.spawn_in(window, async move |notifier, cx| {
+        let timer = cx.spawn(async move |notifier, cx| {
             cx.background_executor().timer(wait).await;
-            let _ = notifier.update_in(cx, |notifier, window, cx| {
+            let _ = notifier.update(cx, |notifier, cx| {
                 notifier.mute_end_timer = None;
-                notifier.wake_at_next_mute_end(window, cx);
+                notifier.wake_at_next_mute_end(cx);
             });
         });
         self.mute_end_timer = Some((end, timer));
     }
 
-    /// "(3) Mellow" in the title, and the count on the Dock and in the menu bar.
-    fn show_attention_count(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    /// "(3) Mellow" in the title, and the count on the Dock and in the menu bar or tray.
+    fn show_attention_count(&mut self, cx: &mut Context<Self>) {
         let state = self.session.read(cx).state();
         let count = state.current_user().map_or(0, |user| {
             let settings = notification_settings_of(user.id, cx);
@@ -364,7 +460,7 @@ impl Notifier {
             return;
         }
         self.shown_attention_count = count;
-        window.set_window_title(&window_title(count, WINDOW_TITLE));
+        self.set_window_title(&window_title(count, WINDOW_TITLE), cx);
         dock_and_tray::show_attention_count(count, cx);
     }
 }

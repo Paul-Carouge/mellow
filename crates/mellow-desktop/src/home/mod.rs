@@ -173,7 +173,8 @@ impl Home {
         &self.friends_pane
     }
 
-    #[cfg(test)]
+    // Only the tests against a real server read it; the server refuses Windows (ADR-0006).
+    #[cfg(all(test, not(windows)))]
     pub(crate) fn picker(&self) -> Option<&Entity<PeoplePicker>> {
         self.picker.as_ref().map(|(picker, _)| picker)
     }
