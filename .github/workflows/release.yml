@@ -1,9 +1,18 @@
 name: Release
 
-# Builds, signs and publishes a release for a pushed tag `vX.Y.Z` (ADR-0016).
+# Builds, signs and publishes a release for a pushed tag `vX.Y.Z` (ADR-0016): the server, and the
+# desktop app's packages (ADR-0055).
 on:
   push:
     tags: ["v*"]
+  # A dry run of every build and package, without the release environment or publishing, on the
+  # pull requests that change how they are made.
+  pull_request:
+    paths:
+      - .github/workflows/release.yml
+      - .github/release-version.sh
+      - crates/mellow-desktop/packaging/**
+      - xtask/src/desktop_package.rs
 
 permissions:
   contents: read
@@ -17,6 +26,19 @@ env:
   # The server's AVIF encoder (rav1e) assembles its x86-64 code with nasm (ADR-0033); libopus,
   # linked into the server for audio attachments, is built from source by cmake (ADR-0045).
   SERVER_BUILD_PACKAGES: nasm cmake
+  # What the desktop app builds against on Debian and Ubuntu, as ci.yml's SERVER_, DESKTOP_ and
+  # VESPER_BUILD_PACKAGES: nasm for libvpx and rav1d, ALSA, GPUI's windowing and fonts, PipeWire,
+  # VA-API, FFmpeg, libclang and cmake for libopus (ADR-0051, ADR-0054); plus the validators of
+  # the desktop entry and the AppStream metainfo.
+  DESKTOP_APT_PACKAGES: >-
+    build-essential ca-certificates cmake curl git nasm pkg-config libasound2-dev libxkbcommon-dev
+    libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev
+    libfreetype-dev libpipewire-0.3-dev libclang-dev libva-dev libavcodec-dev libavdevice-dev
+    libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
+    desktop-file-utils appstream
+  DESKTOP_PACMAN_PACKAGES: >-
+    git cmake curl nasm pkgconf alsa-lib libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader libx11
+    libxcb fontconfig freetype2 pipewire clang libva ffmpeg desktop-file-utils appstream
 
 jobs:
   # The web client is built apart from the native binaries, without install scripts: npm code
@@ -50,8 +72,6 @@ jobs:
           # Ubuntu 22.04 (glibc 2.35): binaries linked on a newer glibc refuse to start on Debian 12.
           - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04, extension: "" }
           - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm, extension: "" }
-          # Releases carry the server only (ADR-0036): native clients and the macOS and Windows
-          # targets come back with the native client.
     runs-on: ${{ matrix.os }}
     # No build cache on purpose: a tag run may restore caches written by any run on main, and
     # whatever they contain would be signed.
@@ -61,14 +81,7 @@ jobs:
           persist-credentials: false
           fetch-depth: 0
       - name: The tag is a released version of main
-        shell: bash
-        run: |
-          version="$(sed -n 's/^version = "\([^"]*\)".*/\1/p' Cargo.toml | head -n 1)"
-          # Plain X.Y.Z only: no pre-release may become the "latest" release that updaters install.
-          [[ "${version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "version '${version}' is not X.Y.Z"; exit 1; }
-          test "v${version}" = "${GITHUB_REF_NAME}" || { echo "tag ${GITHUB_REF_NAME} != v${version}"; exit 1; }
-          git merge-base --is-ancestor "${GITHUB_SHA}" origin/main || { echo "${GITHUB_SHA} is not on main"; exit 1; }
-          echo "MELLOW_VERSION=${version}" >> "$GITHUB_ENV"
+        run: .github/release-version.sh
       - name: Install Linux build dependencies
         if: runner.os == 'Linux'
         run: |
@@ -94,9 +107,200 @@ jobs:
           # Long enough for the approval of the publish job.
           retention-days: 7
 
+  # One Linux package per FFmpeg major version (ADR-0055): the app links the system's FFmpeg,
+  # whose libraries change their file names with each major version. Each is built in the oldest
+  # maintained distribution shipping that version, so its glibc is the oldest the others have.
+  desktop-linux:
+    name: Desktop package (Linux, FFmpeg ${{ matrix.ffmpeg }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          # Ubuntu 24.04 and its derivatives (glibc 2.39).
+          - { ffmpeg: "6", packager: apt, image: "ubuntu:24.04@sha256:2198e4c65076e9cb0b3d695219df667c0e3b0072da64ca3c2648aca17dcecaf5" }
+          # Debian 13, Fedora 42 and 43, Ubuntu 25.04 and 25.10 (glibc 2.41).
+          - { ffmpeg: "7", packager: apt, image: "debian:13@sha256:9c6e381421d0f48d1b8133e573f33c185ee16cbf505eda9c4a8a4791b25ea8a6" }
+          # Ubuntu 26.04, Fedora 44.
+          - { ffmpeg: "8", packager: apt, image: "ubuntu:26.04@sha256:065aa8626841f16057b78b027b464cd59c4fac36c204c72dcbf48d66f5fa8a96" }
+          # Arch Linux, CachyOS and the other rolling distributions: built on the day's Arch.
+          - { ffmpeg: "9", packager: pacman, image: "archlinux:base-devel@sha256:fa2d4ce3310ddd90a4208e5168be8ad367da5129af1245f38fd2d803bcbe3239" }
+    runs-on: ubuntu-24.04
+    container: ${{ matrix.image }}
+    env:
+      PACKAGE_TARGET: x86_64-unknown-linux-gnu
+    steps:
+      # Before the checkout, which needs git for the history the version check reads.
+      - name: Install the build dependencies
+        run: |
+          # shellcheck disable=SC2086 # the package lists are split into words on purpose
+          if [ "${{ matrix.packager }}" = apt ]; then
+            apt-get update
+            DEBIAN_FRONTEND=noninteractive apt-get install --yes --no-install-recommends ${DESKTOP_APT_PACKAGES}
+          else
+            pacman -Syu --noconfirm --needed ${DESKTOP_PACMAN_PACKAGES}
+          fi
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: Install Rust (the version rust-toolchain.toml pins)
+        shell: bash
+        run: |
+          curl --proto '=https' --tlsv1.2 --fail --silent --show-error https://sh.rustup.rs \
+            | sh -s -- -y --profile minimal --default-toolchain none
+          echo "${HOME}/.cargo/bin" >> "${GITHUB_PATH}"
+      - name: The tag is a released version of main
+        shell: bash
+        run: |
+          git config --global --add safe.directory "${GITHUB_WORKSPACE}"
+          .github/release-version.sh
+      - name: The container ships FFmpeg ${{ matrix.ffmpeg }}
+        shell: bash
+        run: |
+          header="$(pkg-config --variable=includedir libavutil)/libavutil/ffversion.h"
+          major="$(sed -n 's/^#define FFMPEG_VERSION "n\{0,1\}\([0-9]*\)\..*/\1/p' "${header}")"
+          test "${major}" = "${{ matrix.ffmpeg }}" || { echo "FFmpeg ${major} instead of ${{ matrix.ffmpeg }}"; exit 1; }
+      - run: cargo build --release --locked -p mellow-desktop
+      - name: The binary needs only system libraries, FFmpeg's among them
+        shell: bash
+        run: |
+          strip target/release/mellow
+          ldd target/release/mellow | tee linked-libraries.txt
+          if grep 'not found' linked-libraries.txt; then exit 1; fi
+          grep --quiet 'libavcodec\.so\.' linked-libraries.txt
+      - name: Lay out, check and archive the package
+        shell: bash
+        run: |
+          name="mellow-desktop-${MELLOW_VERSION}-${PACKAGE_TARGET}-ffmpeg${{ matrix.ffmpeg }}"
+          cargo xtask linux-package --binary target/release/mellow --output "package/${name}"
+          desktop-file-validate "package/${name}/share/applications/mellow.desktop"
+          appstreamcli validate --no-net "package/${name}/share/metainfo/mellow.metainfo.xml"
+          # The installer, into a throwaway home, then out again.
+          trial_home="$(mktemp -d)"
+          HOME="${trial_home}" XDG_DATA_HOME='' "package/${name}/install.sh"
+          test -x "${trial_home}/.local/bin/mellow"
+          grep --quiet "^Exec=${trial_home}/.local/bin/mellow\$" "${trial_home}/.local/share/applications/mellow.desktop"
+          HOME="${trial_home}" XDG_DATA_HOME='' "package/${name}/install.sh" --uninstall
+          test ! -e "${trial_home}/.local/bin/mellow"
+          mkdir dist
+          tar --create --gzip --owner=0 --group=0 --numeric-owner --directory package \
+            --file "dist/${name}.tar.gz" "${name}"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-desktop-linux-ffmpeg${{ matrix.ffmpeg }}
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
+  # Each architecture on its own Mac, joined into one universal app below (ADR-0055).
+  desktop-macos-build:
+    name: Desktop binary (${{ matrix.target }})
+    strategy:
+      fail-fast: true
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-15 }
+          - { target: x86_64-apple-darwin, os: macos-15-intel }
+    runs-on: ${{ matrix.os }}
+    env:
+      # Info.plist's LSMinimumSystemVersion.
+      MACOSX_DEPLOYMENT_TARGET: "11.0"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tag is a released version of main
+        run: .github/release-version.sh
+      # libvpx and rav1d assemble their x86-64 code with nasm.
+      - if: matrix.target == 'x86_64-apple-darwin'
+        run: brew install nasm
+      # Metal shaders compiled at build time, not at every start (ADR-0051).
+      - run: cargo build --release --locked -p mellow-desktop --no-default-features
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-binary-${{ matrix.target }}
+          path: target/release/mellow
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-macos-app:
+    name: Desktop app bundle (macOS, universal)
+    needs: desktop-macos-build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          pattern: desktop-binary-*
+          path: binaries
+      - name: Join both architectures and lay out Mellow.app
+        run: |
+          lipo -create -output mellow-universal \
+            binaries/desktop-binary-aarch64-apple-darwin/mellow binaries/desktop-binary-x86_64-apple-darwin/mellow
+          lipo mellow-universal -verify_arch arm64 x86_64
+          strip -x mellow-universal
+          mkdir bundle
+          cargo xtask macos-app --binary mellow-universal --output bundle
+      # Pull requests try the release's signing with a throwaway identity, without any secret.
+      - name: Sign with a throwaway identity (dry run)
+        if: github.ref_type != 'tag'
+        run: |
+          crates/mellow-desktop/packaging/macos/make-signing-certificate.sh "${RUNNER_TEMP}/throwaway"
+          MACOS_SIGNING_CERTIFICATE="$(cat "${RUNNER_TEMP}/throwaway/identity.p12.base64")" \
+          MACOS_SIGNING_CERTIFICATE_PASSWORD="$(cat "${RUNNER_TEMP}/throwaway/password.txt")" \
+            crates/mellow-desktop/packaging/macos/sign-app.sh bundle/Mellow.app \
+              crates/mellow-desktop/packaging/macos/entitlements.plist
+          rm -rf "${RUNNER_TEMP}/throwaway"
+      # A tar keeps the bundle's modes, which artifacts drop.
+      - run: tar -cf Mellow.app.tar -C bundle Mellow.app
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: desktop-macos-app
+          path: Mellow.app.tar
+          if-no-files-found: error
+          retention-days: 7
+
+  desktop-macos-sign:
+    name: Sign the macOS app
+    needs: desktop-macos-app
+    if: github.ref_type == 'tag'
+    runs-on: macos-15
+    # Waits for the maintainer's approval; the code-signing identity exists only in this
+    # environment, and nothing built here runs while it is present.
+    environment: release
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: desktop-macos-app
+      - name: Sign with the stable identity and zip
+        env:
+          MACOS_SIGNING_CERTIFICATE: ${{ secrets.MACOS_SIGNING_CERTIFICATE }}
+          MACOS_SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.MACOS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          mkdir bundle dist
+          tar -xf Mellow.app.tar -C bundle
+          crates/mellow-desktop/packaging/macos/sign-app.sh bundle/Mellow.app \
+            crates/mellow-desktop/packaging/macos/entitlements.plist
+          # ditto keeps the signature, the modes and the bundle's layout.
+          ditto -c -k --keepParent bundle/Mellow.app \
+            "dist/mellow-desktop-${GITHUB_REF_NAME#v}-universal-apple-darwin.zip"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-desktop-macos
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Sign and publish
-    needs: build
+    needs: [build, desktop-linux, desktop-macos-sign]
+    if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     # Waits for the maintainer's approval; the signing key exists only in this environment.
     environment: release
@@ -117,6 +321,10 @@ jobs:
           for target in x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu; do
             expected+="mellow-server-${version}-${target}"$'\n'
           done
+          for ffmpeg in 6 7 8 9; do
+            expected+="mellow-desktop-${version}-x86_64-unknown-linux-gnu-ffmpeg${ffmpeg}.tar.gz"$'\n'
+          done
+          expected+="mellow-desktop-${version}-universal-apple-darwin.zip"$'\n'
           diff <(printf '%s' "${expected}" | sort) <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
       - name: Sign every asset and the digests
         env:
