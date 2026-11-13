@@ -113,6 +113,10 @@ jobs:
     # start libvpx's `#!/bin/bash` scripts with WSL's bash) and assembled by yasm; nasm assembles
     # rav1d and aws-lc; libopus is built by cmake (on the runner).
     runs-on: windows-latest
+    env:
+      # The tests' in-process server vendors OpenSSL for SQLCipher, whose Configure needs a Windows
+      # perl: MSYS2's, first in PATH for libvpx, writes Unix paths. Strawberry Perl is on the runner.
+      OPENSSL_SRC_PERL: C:\Strawberry\perl\bin\perl.exe
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
