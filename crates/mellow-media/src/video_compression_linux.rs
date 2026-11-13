@@ -208,6 +208,7 @@ unsafe fn quarter_turns_clockwise(parameters: *const ff::AVCodecParameters) -> u
         )
     };
     // SAFETY: checked for null and for the matrix's size before it is read.
+    #[allow(clippy::cast_ptr_alignment)] // Side data comes from `av_malloc`, aligned for any type.
     let angle = unsafe {
         if side_data.is_null() || (*side_data).size < DISPLAY_MATRIX_BYTES {
             return 0;
@@ -618,23 +619,20 @@ unsafe fn add_output_stream(
             ff::avformat_new_stream(output, ptr::null()),
             "an output stream",
         )?;
-        match &transcoder {
-            Some(transcoder) => {
-                check(
-                    ff::avcodec_parameters_from_context((*stream).codecpar, transcoder.encoder),
-                    "the encoder's parameters",
-                )?;
-                (*stream).time_base = (*transcoder.encoder).time_base;
-            }
-            None => {
-                check(
-                    ff::avcodec_parameters_copy((*stream).codecpar, (*input_stream).codecpar),
-                    "copy the stream's parameters",
-                )?;
-                // The source container's tag may not exist in MP4: the muxer picks its own.
-                (*(*stream).codecpar).codec_tag = 0;
-                (*stream).time_base = (*input_stream).time_base;
-            }
+        if let Some(transcoder) = &transcoder {
+            check(
+                ff::avcodec_parameters_from_context((*stream).codecpar, transcoder.encoder),
+                "the encoder's parameters",
+            )?;
+            (*stream).time_base = (*transcoder.encoder).time_base;
+        } else {
+            check(
+                ff::avcodec_parameters_copy((*stream).codecpar, (*input_stream).codecpar),
+                "copy the stream's parameters",
+            )?;
+            // The source container's tag may not exist in MP4: the muxer picks its own.
+            (*(*stream).codecpar).codec_tag = 0;
+            (*stream).time_base = (*input_stream).time_base;
         }
         Ok(StreamWork {
             input_index,
