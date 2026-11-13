@@ -14782,8 +14782,8 @@ impl DesktopStrings {
 
     pub fn screen_undecodable(self) -> &'static str {
         match self.language {
-            Language::English => "This app can't play this screen's picture (H.264) on this computer. Watch it from a browser.",
-            Language::French => "Cette app ne sait pas lire l’image de cet écran (H.264) sur cet ordinateur. Regarde-le depuis un navigateur.",
+            Language::English => "This app can't play this screen's picture on this computer. Watch it from a browser.",
+            Language::French => "Cette app ne sait pas lire l’image de cet écran sur cet ordinateur. Regarde-le depuis un navigateur.",
         }
     }
 

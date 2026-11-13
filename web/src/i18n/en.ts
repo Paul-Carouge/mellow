@@ -2384,7 +2384,7 @@ export const en = {
     codesSaveFailed: "Couldn't save the file. Copy the codes instead.",
     /** The call view, where the web's sentences name the browser (ADR-0052): this app does not decode the sender's codec. */
     callUndecodable: "Picture not supported by this app",
-    screenUndecodable: "This app can't play this screen's picture (H.264) on this computer. Watch it from a browser.",
+    screenUndecodable: "This app can't play this screen's picture on this computer. Watch it from a browser.",
     /** The voice panel, when the app's voice engine could not start (no sound device thread, no address for the instance). */
     voiceCouldNotStartTitle: "Voice couldn't start",
     voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
