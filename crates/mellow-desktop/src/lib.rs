@@ -29,6 +29,7 @@ pub mod navigation;
 pub mod notifier;
 pub mod pictures;
 pub mod preferences;
+pub mod self_update;
 pub mod session;
 pub mod session_store;
 pub mod settings;
@@ -99,6 +100,7 @@ pub fn start(
     notifier::follow_session_for_notifications(&session, cx);
     let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
     voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
+    self_update::install_self_update(cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
