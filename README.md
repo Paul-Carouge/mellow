@@ -50,6 +50,8 @@ Packages are made by the release workflow ([ADR-0055](docs/adr/0055-desktop-rele
 
 Without FFmpeg's H.264 decoder or a VA-API H.264 encoder, calls fall back to VP8 by themselves; the FFmpeg libraries themselves are required. Your session token goes to the Secret Service (GNOME Keyring or KWallet).
 
+**Updates** ([ADR-0057](docs/adr/0057-desktop-self-update.md)): an app installed from these packages looks for a new release about once a day, checks its signature (and on macOS its certificate), and installs it when you click "Restart to update" or quit, never during a call; Settings → About has the switch and "Check for updates". On Linux it takes the package for the FFmpeg your system has. A copy from a package manager or built from source does not update itself.
+
 Building the packages locally: `cargo build --release -p mellow-desktop`, then `cargo xtask macos-app` (makes `target/release/Mellow.app`, signed ad hoc) or `cargo xtask linux-package --binary target/release/mellow --output <new directory>`.
 
 ## Run a development instance

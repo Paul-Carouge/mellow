@@ -46,6 +46,8 @@ keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 # Its sound player plays the web's notification chime (the voice engine comes with step 7).
 mellow-media.workspace = true
+# The release check, download and signature verification the server's `update` uses (ADR-0057).
+mellow-update.workspace = true
 mellow-protocol.workspace = true
 moxcms.workspace = true
 rav1d.workspace = true
@@ -87,7 +89,8 @@ rav1d = { workspace = true, features = ["asm"] }
 # The Dock badge and the menu bar item, which GPUI has no API for; the same versions GPUI's macOS
 # platform already builds, so nothing new is built or audited.
 [target.'cfg(target_os = "macos")'.dependencies]
-# The quarantine mark on saved attachments (`setxattr`); already in the tree.
+# `renamex_np` swaps a self-update's app bundle in atomically, and `setxattr` sets the quarantine
+# mark on saved attachments; already in the tree.
 libc.workspace = true
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
@@ -99,6 +102,8 @@ gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] 
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
 # Authenticator codes for the two-factor test; already built for the server.
 aws-lc-rs.workspace = true
+# Its local test release host, for the self-update tests.
+mellow-update = { workspace = true, features = ["test-release-host"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true

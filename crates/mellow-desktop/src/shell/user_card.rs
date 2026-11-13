@@ -211,6 +211,7 @@ impl DuskShell {
                 }),
         )
         .children(self.render_voice_toggles(window, cx))
+        .children(update_button(cx))
         .child(
             IconButton::new(
                 "user-settings-button",
@@ -331,6 +332,40 @@ impl DuskShell {
         }));
         cx.notify();
     }
+}
+
+/// A discreet "Restart to update" beside the settings gear once an update is ready (ADR-0057);
+/// during a call it stays, disabled, and says why.
+fn update_button(cx: &App) -> Option<IconButton> {
+    let self_update = crate::self_update::self_update(cx)?;
+    let status = self_update.read(cx).status();
+    let crate::self_update::UpdateStatus::Ready(version) = status else {
+        return None;
+    };
+    let words = strings(cx).desktop();
+    let is_in_call = crate::self_update::is_in_call(cx);
+    let label = if is_in_call {
+        words.update_after_call().to_owned()
+    } else {
+        words.restart_to_update_to(&version.to_string())
+    };
+    Some(
+        IconButton::new(
+            "user-card-restart-to-update",
+            IconName::DownloadSimple,
+            label,
+        )
+        .sizes(
+            COMPONENT_USER_PANEL_BUTTON_SIZE,
+            COMPONENT_USER_PANEL_BUTTON_ICON_SIZE,
+        )
+        .disabled(!crate::self_update::can_restart_to_update(
+            status, is_in_call,
+        ))
+        .on_click(move |_, cx| {
+            self_update.update(cx, crate::self_update::SelfUpdate::restart_to_update);
+        }),
+    )
 }
 
 /// One menu choice per status the user can pick, the current one checked.

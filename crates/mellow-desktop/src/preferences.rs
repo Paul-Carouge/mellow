@@ -48,6 +48,7 @@ const VOICE_PEOPLE_KEY: &str = "voice-people";
 const STREAM_PEOPLE_KEY: &str = "stream-people";
 const SCREEN_SHARE_QUALITY_KEY: &str = "screen-share-quality";
 const SCREEN_SHARE_SOUND_OFF_KEY: &str = "screen-share-sound-off";
+const AUTOMATIC_UPDATES_OFF_KEY: &str = "automatic-updates-off";
 const CLOSE_QUITS_KEY: &str = "close-quits";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
@@ -139,6 +140,8 @@ impl LanguageChoice {
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
+// Independent on/off settings, each its own line in the file; no state machine hides in them.
+#[allow(clippy::struct_excessive_bools)]
 pub struct Preferences {
     /// The instance of the last sign-in, offered again on the instance address screen.
     pub last_instance_address: Option<InstanceAddress>,
@@ -181,6 +184,8 @@ pub struct Preferences {
     pub screen_share_quality: ScreenShareQuality,
     /// Screens are shared without their sound.
     pub is_screen_share_sound_off: bool,
+    /// The app does not look for updates by itself (Settings, About; ADR-0057).
+    pub is_automatic_update_off: bool,
     /// The window's close button quits Mellow instead of leaving it running in the background
     /// (Discord's "Minimise to tray" turned off).
     pub does_closing_the_window_quit: bool,
@@ -427,6 +432,7 @@ impl Preferences {
                 SCREEN_SHARE_SOUND_OFF_KEY => {
                     preferences.is_screen_share_sound_off = value == "true";
                 }
+                AUTOMATIC_UPDATES_OFF_KEY => preferences.is_automatic_update_off = value == "true",
                 CLOSE_QUITS_KEY => preferences.does_closing_the_window_quit = value == "true",
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
@@ -524,6 +530,9 @@ impl Preferences {
         }
         if self.is_screen_share_sound_off {
             let _ = writeln!(text, "{SCREEN_SHARE_SOUND_OFF_KEY}=true");
+        }
+        if self.is_automatic_update_off {
+            let _ = writeln!(text, "{AUTOMATIC_UPDATES_OFF_KEY}=true");
         }
         if self.does_closing_the_window_quit {
             let _ = writeln!(text, "{CLOSE_QUITS_KEY}=true");
@@ -680,6 +689,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     stream_people: Vec::new(),
     screen_share_quality: ScreenShareQuality::High,
     is_screen_share_sound_off: false,
+    is_automatic_update_off: false,
     does_closing_the_window_quit: false,
 };
 
@@ -764,6 +774,7 @@ mod tests {
         preferences.is_media_muted = true;
         preferences.screen_share_quality = ScreenShareQuality::Highest;
         preferences.is_screen_share_sound_off = true;
+        preferences.is_automatic_update_off = true;
         preferences.does_closing_the_window_quit = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
