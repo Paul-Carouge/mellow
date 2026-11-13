@@ -40,23 +40,25 @@ use windows::Win32::System::WinRT::Direct3D11::{
 };
 use windows::Win32::System::WinRT::Graphics::Capture::IGraphicsCaptureItemInterop;
 use windows::Win32::UI::WindowsAndMessaging::{
-    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClientRect, GetWindow, GetWindowLongW,
-    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsIconic, IsWindow,
-    IsWindowVisible, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE, WS_EX_TOOLWINDOW,
+    EnumWindows, GW_OWNER, GWL_EXSTYLE, GetClientRect, GetShellWindow, GetWindow, GetWindowLongW,
+    GetWindowTextLengthW, GetWindowTextW, GetWindowThreadProcessId, IsHungAppWindow, IsIconic,
+    IsWindow, IsWindowVisible, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE, WDA_NONE,
+    WS_EX_TOOLWINDOW,
 };
 use windows::core::{BOOL, IInspectable, Interface};
 
 use crate::screen_capture::{
     RunningScreenCapture, ScreenCaptureError, ScreenChoice, ScreenPicker, ScreenShareContext,
     ScreenSourceDescription, ScreenSourceKind, ScreenSources, ShareSound, ShareSoundState,
-    SoundApplication, SystemScreenSources, THUMBNAIL_LONGEST_SIDE, pack_bgra_rows,
+    SystemScreenSources, THUMBNAIL_LONGEST_SIDE, pack_bgra_rows,
 };
 use crate::screen_sound_windows::{
-    RunningShareSound, loopback_target, own_process_id, process_name, start_share_sound,
+    RunningShareSound, loopback_target, own_ancestor_processes, own_process_id, process_name,
+    start_share_sound,
 };
 use crate::session::ScreenShareEnd;
 use crate::simulcast::FRAMES_PER_SECOND;
-use crate::video_frame::CapturedFrame;
+use crate::video_frame::{CapturedFrame, fit_within};
 use crate::video_sender::VideoInput;
 use crate::windows_media_foundation::{ensure_com, size_as_u32};
 
@@ -68,6 +70,9 @@ const PRINT_FULL_CONTENT: PRINT_WINDOW_FLAGS = PRINT_WINDOW_FLAGS(2);
 const FRAME_POOL_BUFFERS: i32 = 2;
 /// How long the capture may take to start delivering before the share starts anyway.
 const START_TIMEOUT: Duration = Duration::from_secs(5);
+/// How long after a Mellow window is excluded from a display share its pictures are held back:
+/// DWM applies the exclusion at a later composition, a few refreshes at most.
+const EXCLUSION_SETTLE_TIME: Duration = Duration::from_millis(100);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Source {
@@ -165,18 +170,18 @@ fn window_process(window: HWND) -> u32 {
     process
 }
 
-/// Every top-level window, in Z order (front first).
-fn top_level_windows() -> Vec<HWND> {
+/// Every top-level window, in Z order (front first), into `found` (cleared, reused).
+fn list_top_level_windows(found: &mut Vec<HWND>) {
     unsafe extern "system" fn collect(window: HWND, found: LPARAM) -> BOOL {
-        // SAFETY: `found` is the vector `top_level_windows` passes, alive for the enumeration.
+        // SAFETY: `found` is the vector `list_top_level_windows` passes, alive for the
+        // enumeration.
         let found = unsafe { &mut *(found.0 as *mut Vec<HWND>) };
         found.push(window);
         BOOL::from(true)
     }
-    let mut found: Vec<HWND> = Vec::new();
+    found.clear();
     // SAFETY: the callback only pushes into `found`, which outlives the call.
-    let _ = unsafe { EnumWindows(Some(collect), LPARAM((&raw mut found) as isize)) };
-    found
+    let _ = unsafe { EnumWindows(Some(collect), LPARAM(std::ptr::from_mut(found) as isize)) };
 }
 
 fn window_title(window: HWND) -> String {
@@ -193,29 +198,13 @@ fn client_size(window: HWND) -> Option<(u32, u32)> {
     let mut area = RECT::default();
     // SAFETY: a plain query writing one rectangle.
     unsafe { GetClientRect(window, &raw mut area) }.ok()?;
-    let width = u32::try_from(area.right - area.left).ok()?;
-    let height = u32::try_from(area.bottom - area.top).ok()?;
-    (width > 0 && height > 0).then_some((width, height))
+    rect_size(area)
 }
 
 fn rect_size(area: RECT) -> Option<(u32, u32)> {
     let width = u32::try_from(area.right - area.left).ok()?;
     let height = u32::try_from(area.bottom - area.top).ok()?;
     (width > 0 && height > 0).then_some((width, height))
-}
-
-/// `(width, height)` shrunk so the longest side is at most the thumbnail's.
-fn thumbnail_size(width: u32, height: u32) -> (u32, u32) {
-    let longest = width.max(height);
-    if longest <= THUMBNAIL_LONGEST_SIDE {
-        return (width.max(1), height.max(1));
-    }
-    let shrink = |length: u32| {
-        u32::try_from(u64::from(length) * u64::from(THUMBNAIL_LONGEST_SIDE) / u64::from(longest))
-            .unwrap_or(1)
-            .max(1)
-    };
-    (shrink(width), shrink(height))
 }
 
 /// A memory context drawing into a bitmap; both freed, in order, when dropped.
@@ -262,7 +251,10 @@ impl GdiPicture {
 /// The `area` of `source` shrunk into a thumbnail, as opaque BGRA.
 fn shrink_into_thumbnail(source: HDC, area: RECT) -> Option<CapturedFrame> {
     let (width, height) = rect_size(area)?;
-    let (thumbnail_width, thumbnail_height) = thumbnail_size(width, height);
+    let (thumbnail_width, thumbnail_height) = fit_within(
+        (width, height),
+        (THUMBNAIL_LONGEST_SIDE, THUMBNAIL_LONGEST_SIDE),
+    );
     let thumbnail_width_pixels = i32::try_from(thumbnail_width).ok()?;
     let thumbnail_height_pixels = i32::try_from(thumbnail_height).ok()?;
     let info = BITMAPINFO {
@@ -386,15 +378,19 @@ fn list_sources(with_thumbnails: bool) -> Vec<ScreenSourceDescription> {
             })
         })
         .collect();
-    for window in top_level_windows() {
+    let mut windows = Vec::new();
+    list_top_level_windows(&mut windows);
+    for window in windows {
         if !is_shareable_window(window, own_process) {
             continue;
         }
         let Some((width, height)) = client_size(window) else {
             continue;
         };
-        // SAFETY: a plain query; a minimised window paints nothing.
-        let is_minimised = unsafe { IsIconic(window) }.as_bool();
+        // SAFETY: plain queries. A minimised window paints nothing; a hung one would block
+        // `PrintWindow` for good (WebRTC skips them too).
+        let can_paint =
+            unsafe { !IsIconic(window).as_bool() && !IsHungAppWindow(window).as_bool() };
         sources.push(ScreenSourceDescription {
             id: source_id(Source::Window(window)),
             kind: ScreenSourceKind::Window,
@@ -402,7 +398,7 @@ fn list_sources(with_thumbnails: bool) -> Vec<ScreenSourceDescription> {
             application_name: process_name(window_process(window)),
             width,
             height,
-            thumbnail: (with_thumbnails && !is_minimised)
+            thumbnail: (with_thumbnails && can_paint)
                 .then(|| window_thumbnail(window))
                 .flatten(),
         });
@@ -410,29 +406,65 @@ fn list_sources(with_thumbnails: bool) -> Vec<ScreenSourceDescription> {
     sources
 }
 
-/// Excludes Mellow's top-level windows from every capture (Windows 10 2004 and later) while a
-/// display is shared, remembering which, so the picker or a new window never shows in it.
-fn exclude_own_windows(own_process: u32, excluded: &mut Vec<HWND>) {
-    // SAFETY: plain queries.
-    excluded.retain(|window| unsafe { IsWindow(Some(*window)) }.as_bool());
-    for window in top_level_windows() {
-        if window_process(window) != own_process || excluded.contains(&window) {
-            continue;
+/// Mellow's top-level windows kept out of a display share (`WDA_EXCLUDEFROMCAPTURE`, Windows 10
+/// 2004 and later), so the picker or a new window never shows in it; given back when dropped.
+struct OwnWindowsExclusion {
+    own_process: u32,
+    excluded: Vec<HWND>,
+    /// Reused for each picture's window enumeration.
+    listed: Vec<HWND>,
+    /// Pictures before this may have been composed before the last exclusion took effect.
+    held_back_until: Instant,
+}
+
+impl OwnWindowsExclusion {
+    fn new() -> Self {
+        Self {
+            own_process: own_process_id(),
+            excluded: Vec::new(),
+            listed: Vec::new(),
+            held_back_until: Instant::now(),
         }
-        // SAFETY: a window of this process, as the call requires.
-        match unsafe { SetWindowDisplayAffinity(window, WDA_EXCLUDEFROMCAPTURE) } {
-            Ok(()) => excluded.push(window),
-            Err(error) => {
-                tracing::debug!(%error, "a Mellow window could not be kept out of the share");
+    }
+
+    /// Excludes any Mellow window not excluded yet, and then holds pictures back for a while.
+    fn exclude_new_windows(&mut self) {
+        // SAFETY: plain queries.
+        self.excluded
+            .retain(|window| unsafe { IsWindow(Some(*window)) }.as_bool());
+        list_top_level_windows(&mut self.listed);
+        let mut has_excluded_one = false;
+        for window in &self.listed {
+            if window_process(*window) != self.own_process || self.excluded.contains(window) {
+                continue;
+            }
+            // SAFETY: a window of this process, as the call requires.
+            match unsafe { SetWindowDisplayAffinity(*window, WDA_EXCLUDEFROMCAPTURE) } {
+                Ok(()) => {
+                    self.excluded.push(*window);
+                    has_excluded_one = true;
+                }
+                Err(error) => {
+                    tracing::debug!(%error, "a Mellow window could not be kept out of the share");
+                }
             }
         }
+        if has_excluded_one {
+            self.held_back_until = Instant::now() + EXCLUSION_SETTLE_TIME;
+        }
+    }
+
+    fn is_holding_back(&self) -> bool {
+        Instant::now() < self.held_back_until
     }
 }
 
-fn restore_own_windows(excluded: &[HWND]) {
-    for window in excluded {
-        // SAFETY: a window of this process; a closed one fails harmlessly.
-        let _ = unsafe { SetWindowDisplayAffinity(*window, WDA_NONE) };
+impl Drop for OwnWindowsExclusion {
+    fn drop(&mut self) {
+        for window in &self.excluded {
+            // SAFETY: a window of this process; a closed one fails harmlessly.
+            let _ = unsafe { SetWindowDisplayAffinity(*window, WDA_NONE) };
+        }
     }
 }
 
@@ -610,27 +642,26 @@ fn start_session(
     })
 }
 
-/// Reads the newest picture 30 times a second until the share or the capture stops.
+/// Reads the newest picture 30 times a second until the share or the capture stops; a display
+/// share keeps excluding Mellow's windows.
 fn capture_loop(
     mut capture: CaptureSession,
-    source: Source,
+    mut exclusion: Option<&mut OwnWindowsExclusion>,
     pictures: &VideoInput,
     state: &CaptureState,
 ) -> Result<(), ScreenShareEnd> {
     let interval = Duration::from_secs(1) / FRAMES_PER_SECOND;
-    let own_process = own_process_id();
-    let mut excluded = Vec::new();
     let mut staging = None;
     let mut next_picture_at = Instant::now();
-    let result = loop {
+    loop {
         if state.should_stop.load(Ordering::Relaxed) || !pictures.is_open() {
             break Ok(());
         }
         if state.is_closed.load(Ordering::Relaxed) {
             break Err(ScreenShareEnd::SourceClosed);
         }
-        if matches!(source, Source::Display(_)) {
-            exclude_own_windows(own_process, &mut excluded);
+        if let Some(exclusion) = exclusion.as_deref_mut() {
+            exclusion.exclude_new_windows();
         }
         // Only the newest frame is read; older ones go back to the pool at once.
         let mut newest: Option<Direct3D11CaptureFrame> = None;
@@ -640,12 +671,20 @@ fn capture_loop(
             }
         }
         if let Some(frame) = newest {
-            let read = read_frame(
-                &capture.direct3d,
-                &frame,
-                &mut staging,
-                pictures.recycled_bytes(),
-            );
+            // A picture that may show a Mellow window just excluded is not sent.
+            let read = if exclusion
+                .as_deref()
+                .is_some_and(OwnWindowsExclusion::is_holding_back)
+            {
+                Ok(None)
+            } else {
+                read_frame(
+                    &capture.direct3d,
+                    &frame,
+                    &mut staging,
+                    pictures.recycled_bytes(),
+                )
+            };
             let content = frame.ContentSize();
             let _ = frame.Close();
             match read {
@@ -675,9 +714,7 @@ fn capture_loop(
             next_picture_at = now;
         }
         std::thread::sleep(next_picture_at.saturating_duration_since(now));
-    };
-    restore_own_windows(&excluded);
-    result
+    }
 }
 
 struct WindowsCapture {
@@ -745,10 +782,18 @@ fn start(
                     let _ = started.send(Err("the source is gone".into()));
                     return;
                 };
+                // Mellow's windows are out of a display share before its first picture.
+                let mut exclusion =
+                    matches!(source, Source::Display(_)).then(OwnWindowsExclusion::new);
+                if let Some(exclusion) = exclusion.as_mut() {
+                    exclusion.exclude_new_windows();
+                }
                 match start_session(source, &state.is_closed) {
                     Ok(capture) => {
                         let _ = started.send(Ok(()));
-                        if let Err(reason) = capture_loop(capture, source, &pictures, &state) {
+                        if let Err(reason) =
+                            capture_loop(capture, exclusion.as_mut(), &pictures, &state)
+                        {
                             capture_share.end(reason);
                         }
                     }
@@ -776,11 +821,24 @@ fn start(
         drop(capture);
         return Err(ScreenCaptureError::System(message));
     }
-    let window_process = match source {
+    let shared_window_process = match source {
         Source::Display(_) => None,
         Source::Window(window) => Some(window_process(window)),
     };
-    let (target, sound_state) = loopback_target(sound, window_process, own_process_id());
+    // Mellow's ancestors and the shell (`explorer.exe`) hold Mellow, or the whole session, in
+    // their process tree: capturing theirs would send the call back into itself.
+    let mut refused_processes = own_ancestor_processes();
+    // SAFETY: a plain query; without a shell the window is null and skipped.
+    let shell = unsafe { GetShellWindow() };
+    if !shell.is_invalid() {
+        refused_processes.push(window_process(shell));
+    }
+    let (target, sound_state) = loopback_target(
+        sound,
+        shared_window_process,
+        own_process_id(),
+        &refused_processes,
+    );
     capture.sound = sound_state;
     if let Some(target) = target {
         match start_share_sound(target, share) {
@@ -812,10 +870,6 @@ impl ScreenSources for SystemScreenSources {
         Ok(list_sources(with_thumbnails))
     }
 
-    fn sound_applications(&self) -> Vec<SoundApplication> {
-        crate::screen_sound_windows::sound_applications()
-    }
-
     fn start(
         &self,
         choice: &ScreenChoice,
@@ -839,13 +893,6 @@ mod tests {
         assert_eq!(parse_source("window:0"), None);
         assert_eq!(parse_source("window:abc"), None);
         assert_eq!(parse_source("monitor:1"), None);
-    }
-
-    #[test]
-    fn thumbnails_keep_the_shape_within_the_longest_side() {
-        assert_eq!(thumbnail_size(1_920, 1_080), (320, 180));
-        assert_eq!(thumbnail_size(1_080, 1_920), (180, 320));
-        assert_eq!(thumbnail_size(200, 100), (200, 100));
     }
 
     #[test]

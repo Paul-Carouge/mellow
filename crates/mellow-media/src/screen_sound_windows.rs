@@ -1,7 +1,7 @@
 //! A share's sound on Windows through WASAPI's process loopback (Windows 10 2004 and later): the
 //! whole system without Mellow's own process tree for a screen (so the call's voices never go
-//! back into it), or one application's process tree for a window or a chosen application. Read
-//! on a thread of its own as 48 kHz stereo float, written to the share's Opus encoder.
+//! back into it), or one application's process tree for a window, never a tree holding Mellow.
+//! Read on a thread of its own as 48 kHz stereo float, written to the share's Opus encoder.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -15,15 +15,17 @@ use windows::Win32::Media::Audio::{
     AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
     AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
     AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, AudioSessionStateActive,
+    AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync,
     IActivateAudioInterfaceCompletionHandler, IAudioCaptureClient, IAudioClient,
-    IAudioSessionControl2, IAudioSessionManager2, IMMDeviceEnumerator, MMDeviceEnumerator,
     PROCESS_LOOPBACK_MODE_EXCLUDE_TARGET_PROCESS_TREE,
     PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE, VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
-    WAVEFORMATEX, eConsole, eRender,
+    WAVEFORMATEX,
 };
+use windows::Win32::System::Com::BLOB;
 use windows::Win32::System::Com::StructuredStorage::{PROPVARIANT, PROPVARIANT_0, PROPVARIANT_0_0};
-use windows::Win32::System::Com::{BLOB, CLSCTX_ALL, CoCreateInstance};
+use windows::Win32::System::Diagnostics::ToolHelp::{
+    CreateToolhelp32Snapshot, PROCESSENTRY32W, Process32FirstW, Process32NextW, TH32CS_SNAPPROCESS,
+};
 use windows::Win32::System::Threading::{
     CreateEventW, GetCurrentProcessId, OpenProcess, PROCESS_NAME_WIN32,
     PROCESS_QUERY_LIMITED_INFORMATION, QueryFullProcessImageNameW, WaitForSingleObject,
@@ -31,9 +33,7 @@ use windows::Win32::System::Threading::{
 use windows::Win32::System::Variant::VT_BLOB;
 use windows::core::{Interface, PWSTR};
 
-use crate::screen_capture::{
-    ScreenCaptureError, ScreenShareContext, ShareSound, ShareSoundState, SoundApplication,
-};
+use crate::screen_capture::{ScreenCaptureError, ScreenShareContext, ShareSound, ShareSoundState};
 use crate::screen_sound::{PcmSoundEncoder, PcmSoundWriter, SCREEN_SOUND_SAMPLE_RATE};
 use crate::windows_media_foundation::{ensure_com, size_as_u32};
 
@@ -50,6 +50,8 @@ const PACKET_WAIT_MILLISECONDS: u32 = 100;
 const PROCESS_PATH_CAPACITY: u32 = 1_024;
 /// How long Windows may take to activate the loopback client.
 const ACTIVATION_TIMEOUT: Duration = Duration::from_secs(5);
+/// The most parents followed up from Mellow (a reused process id can make a loop).
+const MAXIMUM_ANCESTOR_DEPTH: usize = 64;
 
 /// Whose sound a process loopback captures.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,19 +63,24 @@ pub(crate) enum LoopbackTarget {
 }
 
 /// The loopback for `sound`, given the shared source: a whole screen, or a window and its
-/// process. A window of Mellow itself carries no sound (its own sounds are the call's).
+/// process. A process tree holding Mellow carries no sound (its sounds would include the
+/// call's): Mellow itself, and the `refused_processes` (its ancestors, the shell).
 pub(crate) fn loopback_target(
     sound: &ShareSound,
     window_process: Option<u32>,
     own_process: u32,
+    refused_processes: &[u32],
 ) -> (Option<LoopbackTarget>, ShareSoundState) {
+    let only = |process: u32| {
+        (process != own_process && !refused_processes.contains(&process))
+            .then_some(LoopbackTarget::Only(process))
+    };
     let target = match sound {
         ShareSound::Off => return (None, ShareSoundState::Off),
-        ShareSound::Application(id) => id.parse().ok().map(LoopbackTarget::Only),
+        ShareSound::Application(id) => id.parse().ok().and_then(only),
         ShareSound::FromSource => match window_process {
             None => Some(LoopbackTarget::AllBut(own_process)),
-            Some(process) if process != own_process => Some(LoopbackTarget::Only(process)),
-            Some(_) => None,
+            Some(process) => only(process),
         },
     };
     match target {
@@ -86,6 +93,46 @@ pub(crate) fn loopback_target(
 pub(crate) fn own_process_id() -> u32 {
     // SAFETY: a plain call.
     unsafe { GetCurrentProcessId() }
+}
+
+/// The ancestors of `process` (parent first) in `parents`, a list of `(process, parent)`.
+fn ancestors_of(process: u32, parents: &[(u32, u32)]) -> Vec<u32> {
+    let mut ancestors = Vec::new();
+    let mut child = process;
+    while ancestors.len() < MAXIMUM_ANCESTOR_DEPTH {
+        let Some(&(_, parent)) = parents.iter().find(|(listed, _)| *listed == child) else {
+            break;
+        };
+        if parent == 0 || parent == process || ancestors.contains(&parent) {
+            break;
+        }
+        ancestors.push(parent);
+        child = parent;
+    }
+    ancestors
+}
+
+/// Mellow's ancestor processes (the launcher, a terminal, `explorer.exe`); empty when Windows
+/// does not list the processes.
+pub(crate) fn own_ancestor_processes() -> Vec<u32> {
+    let mut parents = Vec::new();
+    // SAFETY: the snapshot is closed once; each entry is sized as the calls require.
+    unsafe {
+        let Ok(snapshot) = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0) else {
+            return Vec::new();
+        };
+        let mut entry = PROCESSENTRY32W {
+            dwSize: size_as_u32::<PROCESSENTRY32W>(),
+            ..Default::default()
+        };
+        let mut listed = Process32FirstW(snapshot, &raw mut entry);
+        while listed.is_ok() {
+            parents.push((entry.th32ProcessID, entry.th32ParentProcessID));
+            listed = Process32NextW(snapshot, &raw mut entry);
+        }
+        let _ = CloseHandle(snapshot);
+    }
+    ancestors_of(own_process_id(), &parents)
 }
 
 /// The file name of `process`'s executable, without `.exe`; `None` when Windows does not tell.
@@ -111,54 +158,6 @@ pub(crate) fn process_name(process: u32) -> Option<String> {
             .unwrap_or(file);
         (!name.is_empty()).then(|| name.to_owned())
     }
-}
-
-/// The applications playing sound now on the default output, Mellow aside.
-pub(crate) fn sound_applications() -> Vec<SoundApplication> {
-    ensure_com();
-    let own = own_process_id();
-    let mut processes: Vec<u32> = Vec::new();
-    // SAFETY: plain COM calls on objects created here, released when dropped.
-    let listed = unsafe {
-        (|| -> windows::core::Result<()> {
-            let enumerator: IMMDeviceEnumerator =
-                CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)?;
-            let device = enumerator.GetDefaultAudioEndpoint(eRender, eConsole)?;
-            let manager: IAudioSessionManager2 = device.Activate(CLSCTX_ALL, None)?;
-            let sessions = manager.GetSessionEnumerator()?;
-            for index in 0..sessions.GetCount()? {
-                let Ok(session) = sessions.GetSession(index) else {
-                    continue;
-                };
-                if session.GetState().ok() != Some(AudioSessionStateActive) {
-                    continue;
-                }
-                let Ok(process) = session
-                    .cast::<IAudioSessionControl2>()
-                    .and_then(|session| session.GetProcessId())
-                else {
-                    continue;
-                };
-                // Process 0 is the system's own sounds.
-                if process != 0 && process != own && !processes.contains(&process) {
-                    processes.push(process);
-                }
-            }
-            Ok(())
-        })()
-    };
-    if let Err(error) = listed {
-        tracing::debug!(%error, "the applications playing sound could not be listed");
-    }
-    processes
-        .into_iter()
-        .filter_map(|process| {
-            Some(SoundApplication {
-                id: process.to_string(),
-                name: process_name(process)?,
-            })
-        })
-        .collect()
 }
 
 /// The activation's completion callback, a COM object of its own.
@@ -425,36 +424,66 @@ mod tests {
     #[test]
     fn a_screen_s_sound_leaves_mellow_out_and_a_window_s_is_its_application_s() {
         let own = 10;
+        let loopback_target = |sound: &ShareSound, window| loopback_target(sound, window, own, &[]);
         assert_eq!(
-            loopback_target(&ShareSound::FromSource, None, own),
+            loopback_target(&ShareSound::FromSource, None),
             (Some(LoopbackTarget::AllBut(own)), ShareSoundState::Captured)
         );
         assert_eq!(
-            loopback_target(&ShareSound::FromSource, Some(42), own),
+            loopback_target(&ShareSound::FromSource, Some(42)),
             (Some(LoopbackTarget::Only(42)), ShareSoundState::Captured)
         );
         assert_eq!(
-            loopback_target(&ShareSound::FromSource, Some(own), own),
+            loopback_target(&ShareSound::FromSource, Some(own)),
             (None, ShareSoundState::NotAvailable)
         );
         assert_eq!(
-            loopback_target(&ShareSound::Application("7".into()), None, own),
+            loopback_target(&ShareSound::Application("7".into()), None),
             (Some(LoopbackTarget::Only(7)), ShareSoundState::Captured)
         );
         assert_eq!(
-            loopback_target(&ShareSound::Application("seven".into()), None, own),
+            loopback_target(&ShareSound::Application("seven".into()), None),
             (None, ShareSoundState::NotAvailable)
         );
         assert_eq!(
-            loopback_target(&ShareSound::Off, None, own),
+            loopback_target(&ShareSound::Off, None),
             (None, ShareSoundState::Off)
         );
     }
 
     #[test]
-    fn this_process_has_a_name_and_the_sound_listing_answers() {
+    fn a_window_of_a_process_holding_mellow_shares_no_sound() {
+        // Explorer (4) started a terminal (8) which started Mellow (10).
+        let parents = [(10, 8), (8, 4), (4, 1), (1, 0), (42, 4)];
+        let ancestors = ancestors_of(10, &parents);
+        assert_eq!(ancestors, [8, 4, 1]);
+        for ancestor in [8, 4] {
+            assert_eq!(
+                loopback_target(&ShareSound::FromSource, Some(ancestor), 10, &ancestors),
+                (None, ShareSoundState::NotAvailable)
+            );
+            assert_eq!(
+                loopback_target(
+                    &ShareSound::Application(ancestor.to_string()),
+                    None,
+                    10,
+                    &ancestors
+                ),
+                (None, ShareSoundState::NotAvailable)
+            );
+        }
+        // A sibling application keeps its own sound.
+        assert_eq!(
+            loopback_target(&ShareSound::FromSource, Some(42), 10, &ancestors),
+            (Some(LoopbackTarget::Only(42)), ShareSoundState::Captured)
+        );
+        // A reused process id making a loop ends the walk.
+        assert_eq!(ancestors_of(10, &[(10, 8), (8, 10)]), [8]);
+    }
+
+    #[test]
+    fn this_process_has_a_name_and_a_parent() {
         assert!(process_name(own_process_id()).is_some());
-        // The runner may have no output device: the listing is then empty, never an error.
-        let _ = sound_applications();
+        assert_ne!(own_ancestor_processes(), Vec::<u32>::new());
     }
 }
