@@ -423,12 +423,13 @@ impl Render for QuickSwitcher {
                         color(tokens.component_quick_switcher_input_icon),
                     ))
                     .child(
-                        with_type(div(), TYPE_HEADING_LG)
+                        div()
                             .flex_1()
                             .min_w_0()
                             .text_color(color(tokens.color_text_heading))
                             .child(
-                                Input::new(&self.input)
+                                // On the input itself: it sets its own size over an inherited one.
+                                with_type(Input::new(&self.input), TYPE_HEADING_LG)
                                     .appearance(false)
                                     .aria_label(strings.quick_switcher().placeholder()),
                             ),
