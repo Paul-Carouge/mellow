@@ -407,6 +407,8 @@ pub fn compress_video(
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+// Same signature as the macOS and Linux backends, which can fail.
+#[allow(clippy::unnecessary_wraps)]
 fn run_backend(
     _path: &Path,
     _maximum_attachment_bytes: Option<u64>,
