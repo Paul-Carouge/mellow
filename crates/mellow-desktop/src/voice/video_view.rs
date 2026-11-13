@@ -90,12 +90,31 @@ pub fn video_view(picture: &VideoPicture, fit: VideoFit) -> impl IntoElement + u
 #[derive(Debug, Default)]
 pub struct VideoPictures {
     pictures: HashMap<Snowflake, VideoPicture>,
+    /// Your own camera, mirrored, for your tile.
+    own_camera: Option<VideoPicture>,
 }
 
 impl VideoPictures {
     #[must_use]
     pub fn picture(&self, user_id: Snowflake) -> Option<&VideoPicture> {
         self.pictures.get(&user_id)
+    }
+
+    #[must_use]
+    pub fn own_camera(&self) -> Option<&VideoPicture> {
+        self.own_camera.as_ref()
+    }
+
+    /// Shows your camera's newest picture (`None`: off), freeing the one it replaces.
+    pub fn show_own_camera(&mut self, frame: Option<DecodedVideoFrame>, cx: &mut Context<Self>) {
+        let picture = frame.and_then(VideoPicture::from_decoded);
+        if picture.is_none() && self.own_camera.is_none() {
+            return;
+        }
+        if let Some(previous) = std::mem::replace(&mut self.own_camera, picture) {
+            free_atlas_tiles(previous.image, cx);
+        }
+        cx.notify();
     }
 
     /// Shows the new pictures, freeing the atlas tiles of the ones they replace.

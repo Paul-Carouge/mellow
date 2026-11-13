@@ -417,7 +417,7 @@ impl DuskShell {
     }
 
     /// The share half: stop while sharing, else the picker (in-app) or the system's dialog.
-    fn press_screen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn press_screen_share(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(voice) = self.voice.clone() else {
             return;
         };

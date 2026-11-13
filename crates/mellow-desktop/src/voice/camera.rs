@@ -6,7 +6,8 @@
 //! (`VoiceSession::start_video`): a permission prompt or a busy device never leaves a camera the
 //! server waits on. Each camera runs on a worker thread of its own, which opens it (that blocks:
 //! permission prompts, the device starting), forwards its pictures into the call once told to,
-//! and converts one to a small mirrored picture for the settings while they show it. Dropping the
+//! and converts one to a small mirrored picture for the settings while they show it, and for your
+//! tile while the call view shows it. Dropping the
 //! worker's handle stops it; the thread closes the device itself, never the interface's thread.
 //! Its few reports (opened, failed, ended) reach the interface through a bounded channel.
 
@@ -36,7 +37,11 @@ pub fn system_cameras() -> CamerasFactory {
 /// How long the worker waits for a picture before it looks at its commands again: the delay of
 /// stopping a camera that sends nothing.
 const PICTURE_WAIT: Duration = Duration::from_millis(100);
-/// The settings' preview is drawn at most this large (the column it sits in).
+/// The settings' preview is drawn at most this large (the column it sits in); your call tile
+/// gets the same picture.
+///
+/// shortcut: your tile gets this 640 × 360 picture, blurry when featured or full screen; convert
+/// at the tile's drawn size if that shows.
 const PREVIEW_SIZE: (u32, u32) = (640, 360);
 /// A worker reports at most twice (opened, then ended or closed).
 const REPORT_QUEUE_CAPACITY: usize = 4;
@@ -280,6 +285,8 @@ pub(super) struct CameraState {
     preview_problem: Option<CameraProblem>,
     /// The settings' Video part is shown: the call's camera converts pictures for it.
     is_preview_shown: bool,
+    /// The call view is open: your tile shows your camera from the same converted pictures.
+    is_own_tile_shown: bool,
     /// `None` until listed once.
     listed: Option<Vec<CameraDescription>>,
     /// Ids for workers, so a stopped one's late reports are ignored.
@@ -298,9 +305,15 @@ impl CameraState {
             preview: None,
             preview_problem: None,
             is_preview_shown: false,
+            is_own_tile_shown: false,
             listed: None,
             next_worker_id: 0,
         }
+    }
+
+    /// Whether the call's camera converts pictures for the settings or your tile.
+    fn is_preview_wanted(&self) -> bool {
+        self.is_preview_shown || self.is_own_tile_shown
     }
 
     /// Leaving the call: the camera goes with it (the engine, gone, needs no telling).
@@ -382,8 +395,9 @@ impl Voice {
         self.camera.is_server_reason_awaited = false;
         self.camera.phase = CameraPhase::Starting;
         let worker = self.start_camera_worker(CameraUse::Call, cx);
-        worker.set_preview_wanted(self.camera.is_preview_shown);
+        worker.set_preview_wanted(self.camera.is_preview_wanted());
         self.camera.worker = Some(worker);
+        self.follow_own_camera_tile(cx);
         cx.notify();
     }
 
@@ -435,7 +449,7 @@ impl Voice {
                 self.camera.previous_worker = replaced;
             }
             let worker = self.start_camera_worker(CameraUse::Call, cx);
-            worker.set_preview_wanted(self.camera.is_preview_shown);
+            worker.set_preview_wanted(self.camera.is_preview_wanted());
             self.camera.worker = Some(worker);
         }
         if self.camera.preview.is_some() {
@@ -472,15 +486,39 @@ impl Voice {
     /// pictures for it; hiding it also stops the test preview.
     pub fn set_camera_preview_shown(&mut self, is_shown: bool, cx: &mut Context<Self>) {
         self.camera.is_preview_shown = is_shown;
+        self.follow_preview_wish();
+        if !is_shown {
+            self.stop_camera_preview(cx);
+        }
+    }
+
+    /// The call view opens or closes: while open, the call's camera converts its pictures for
+    /// your tile too.
+    pub(super) fn set_own_camera_tile_shown(&mut self, is_shown: bool) {
+        self.camera.is_own_tile_shown = is_shown;
+        self.follow_preview_wish();
+    }
+
+    fn follow_preview_wish(&self) {
+        let is_wanted = self.camera.is_preview_wanted();
         for worker in [&self.camera.worker, &self.camera.previous_worker]
             .into_iter()
             .flatten()
         {
-            worker.set_preview_wanted(is_shown);
+            worker.set_preview_wanted(is_wanted);
         }
-        if !is_shown {
-            self.stop_camera_preview(cx);
+    }
+
+    /// The newest picture of the call's camera for your tile; `None` while it is off.
+    ///
+    /// shortcut: the settings preview and your tile take from one slot, so with both shown each
+    /// gets about half the pictures; give each its own slot if that ever shows.
+    #[must_use]
+    pub(super) fn take_own_camera_picture(&self) -> Option<DecodedVideoFrame> {
+        if self.camera.phase == CameraPhase::Off {
+            return None;
         }
+        self.take_camera_preview_picture()
     }
 
     /// "Test the camera", outside the call's camera.

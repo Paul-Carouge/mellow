@@ -4,6 +4,7 @@
 //! sound volume. The watch list goes to the engine as one list, the watched screen first.
 
 use std::collections::{HashMap, HashSet};
+use std::time::Duration;
 
 use gpui::{App, Context, Entity, Task};
 use mellow_client_core::shared_logic::call_view::{WatchedPicture, watch_list_of};
@@ -16,10 +17,13 @@ use mellow_media::{
 };
 use mellow_protocol::{Snowflake, VideoCodec, VideoTileSize};
 
-use super::Voice;
 use super::media_settings::person_setting_of;
 use super::video_view::{VideoPictures, new_video_pictures, pump_video_pictures};
+use super::{CameraPhase, Voice};
 use crate::preferences::{change_preferences, preferences};
+
+/// How often your tile takes your camera's newest picture: the camera's 30 frames per second.
+const OWN_CAMERA_FRAME_PERIOD: Duration = Duration::from_millis(33);
 
 /// A picture the interface shows, at its drawn size in physical pixels.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -39,6 +43,8 @@ pub(super) struct CallVideo {
     pictures: Entity<VideoPictures>,
     /// Brings the engine's pictures; replaced with each engine.
     pump: Option<Task<()>>,
+    /// Brings your camera's pictures to your tile while the call view is open.
+    own_camera_pump: Option<Task<()>>,
 }
 
 impl CallVideo {
@@ -50,6 +56,7 @@ impl CallVideo {
             paused_user_ids: HashSet::new(),
             pictures: new_video_pictures(cx),
             pump: None,
+            own_camera_pump: None,
         }
     }
 
@@ -71,8 +78,11 @@ impl CallVideo {
         self.cameras.clear();
         self.paused_user_ids.clear();
         self.pump = None;
-        self.pictures
-            .update(cx, |pictures, cx| pictures.keep_only(|_| false, cx));
+        self.own_camera_pump = None;
+        self.pictures.update(cx, |pictures, cx| {
+            pictures.keep_only(|_| false, cx);
+            pictures.show_own_camera(None, cx);
+        });
     }
 
     pub(super) fn note_paused(&mut self, user_id: Snowflake, is_paused: bool) {
@@ -137,11 +147,37 @@ impl Voice {
         self.video.is_call_view_open
     }
 
+    /// Whether your tile is on screen with your camera to show: the call view open, no screen
+    /// watched large in its place, the camera not off.
+    fn is_own_camera_tile_wanted(&self) -> bool {
+        self.video.is_call_view_open
+            && self.video.watched_stream.is_none()
+            && self.camera_phase() != CameraPhase::Off
+    }
+
+    /// Starts bringing your camera to your tile when it is wanted, else stops and clears it. The
+    /// camera's own pictures are converted only meanwhile.
+    pub(super) fn follow_own_camera_tile(&mut self, cx: &mut Context<Self>) {
+        let is_wanted = self.is_own_camera_tile_wanted();
+        self.set_own_camera_tile_shown(is_wanted);
+        if is_wanted {
+            if self.video.own_camera_pump.is_none() {
+                self.video.own_camera_pump = Some(pump_own_camera(cx));
+            }
+        } else {
+            self.video.own_camera_pump = None;
+            self.video
+                .pictures
+                .update(cx, |pictures, cx| pictures.show_own_camera(None, cx));
+        }
+    }
+
     /// Opens the call view; only during a call, as there is nothing to show otherwise.
     pub fn open_call_view(&mut self, cx: &mut Context<Self>) {
         let is_open = self.call.is_some();
         if self.video.is_call_view_open != is_open {
             self.video.is_call_view_open = is_open;
+            self.follow_own_camera_tile(cx);
             cx.notify();
         }
     }
@@ -150,6 +186,7 @@ impl Voice {
     pub fn close_call_view(&mut self, cx: &mut Context<Self>) {
         if self.video.is_call_view_open {
             self.video.is_call_view_open = false;
+            self.follow_own_camera_tile(cx);
             self.video.cameras.clear();
             self.apply_watching(cx);
             cx.notify();
@@ -175,6 +212,7 @@ impl Voice {
             display_height: STREAM_FIRST_HEIGHT,
         });
         self.apply_watching(cx);
+        self.follow_own_camera_tile(cx);
         cx.notify();
     }
 
@@ -290,6 +328,41 @@ pub(super) fn seed_stream_sound_settings(store: &InMemoryPersonVoiceSettings, cx
 /// The watched screen's size before the stream view is drawn: a 1080p tile.
 const STREAM_FIRST_WIDTH: u32 = 1_920;
 const STREAM_FIRST_HEIGHT: u32 = 1_080;
+
+/// Your camera's newest picture into your tile at the camera's rate. Ends, clearing the tile,
+/// once the tile no longer wants it (camera off, view closed, a screen watched); started again
+/// by [`Voice::follow_own_camera_tile`].
+fn pump_own_camera(cx: &mut Context<Voice>) -> Task<()> {
+    cx.spawn(async move |voice, cx| {
+        loop {
+            cx.background_executor()
+                .timer(OWN_CAMERA_FRAME_PERIOD)
+                .await;
+            let should_go_on = voice
+                .update(cx, |voice, cx| {
+                    if !voice.is_own_camera_tile_wanted() {
+                        // This task ends right after: detached so dropping it does not cancel
+                        // the poll running it.
+                        if let Some(pump) = voice.video.own_camera_pump.take() {
+                            pump.detach();
+                        }
+                        voice.follow_own_camera_tile(cx);
+                        return false;
+                    }
+                    if let Some(picture) = voice.take_own_camera_picture() {
+                        voice.video.pictures.update(cx, |pictures, cx| {
+                            pictures.show_own_camera(Some(picture), cx);
+                        });
+                    }
+                    true
+                })
+                .unwrap_or(false);
+            if !should_go_on {
+                return;
+            }
+        }
+    })
+}
 
 #[cfg(test)]
 impl Voice {

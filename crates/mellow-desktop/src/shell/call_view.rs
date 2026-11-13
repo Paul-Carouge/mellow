@@ -62,10 +62,19 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme};
 use crate::voice::video_view::{VideoFit, VideoPictures, video_view};
-use crate::voice::{ShownPicture, Voice};
+use crate::voice::{CameraPhase, ShownPicture, Voice};
 
 /// 16:9, the shape of cameras and of most screens.
 const TILE_ASPECT_RATIO: f32 = 16.0 / 9.0;
+
+/// What the call view asks of the shell, which owns the screen picker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum CallViewEvent {
+    /// The share control: start a share (the picker or the system's dialog), or stop it.
+    PressScreenShare,
+}
+
+impl gpui::EventEmitter<CallViewEvent> for CallView {}
 
 /// The call view's state; the shell keeps it while the call or a watched screen shows.
 pub(crate) struct CallView {
@@ -514,7 +523,11 @@ impl CallView {
                     is_speaking: speaking.contains(&person.user_id),
                     is_microphone_off,
                     is_paused: !is_own && voice.is_video_paused(person.user_id),
-                    sentence: is_undecodable.then(|| strings.desktop().call_undecodable()),
+                    sentence: if is_own && voice.camera_phase() == CameraPhase::Starting {
+                        Some(strings.call().starting_camera())
+                    } else {
+                        is_undecodable.then(|| strings.desktop().call_undecodable())
+                    },
                     is_small,
                     is_in_strip,
                     action_label: action_label.into(),
@@ -820,6 +833,18 @@ impl CallView {
         let strings = strings(cx);
         let microphone_voice = self.voice.downgrade();
         let leave_voice = self.voice.downgrade();
+        let camera_voice = self.voice.downgrade();
+        let (camera_phase, can_use_camera, can_share_screen, is_sharing_screen) = {
+            let voice = self.voice.read(cx);
+            (
+                voice.camera_phase(),
+                voice.camera_block(cx).is_none(),
+                voice.can_share_screen(),
+                voice.is_sharing_screen(),
+            )
+        };
+        let view = cx.entity().downgrade();
+        let camera_words = strings.camera();
         div()
             .id("call-view-controls")
             .role(Role::Group)
@@ -847,6 +872,51 @@ impl CallView {
                 window,
                 cx,
             ))
+            // As on the web: shown while the camera can be turned on, or to turn it off.
+            .when(
+                can_use_camera || camera_phase != CameraPhase::Off,
+                |controls| {
+                    controls.child(call_control(
+                        "call-control-camera",
+                        if camera_phase == CameraPhase::Off {
+                            IconName::VideoCameraSlash
+                        } else {
+                            IconName::VideoCamera
+                        },
+                        match camera_phase {
+                            CameraPhase::Starting => camera_words.starting(),
+                            CameraPhase::On => camera_words.turn_off(),
+                            CameraPhase::Off => camera_words.turn_on(),
+                        },
+                        Some(camera_phase != CameraPhase::Off),
+                        false,
+                        move |_, cx| {
+                            let _ = camera_voice.update(cx, Voice::toggle_camera);
+                        },
+                        window,
+                        cx,
+                    ))
+                },
+            )
+            // As on the web: shown while a share can start, or to stop it.
+            .when(can_share_screen || is_sharing_screen, |controls| {
+                controls.child(call_control(
+                    "call-control-screen-share",
+                    IconName::MonitorArrowUp,
+                    if is_sharing_screen {
+                        strings.screen_share().stop()
+                    } else {
+                        strings.call().share_screen()
+                    },
+                    Some(is_sharing_screen),
+                    false,
+                    move |_, cx| {
+                        let _ = view.update(cx, |_, cx| cx.emit(CallViewEvent::PressScreenShare));
+                    },
+                    window,
+                    cx,
+                ))
+            })
             .child(call_control(
                 "call-control-leave",
                 IconName::PhoneDisconnect,
@@ -876,7 +946,12 @@ impl CallView {
         let tokens = theme(cx);
         let strings = strings(cx);
         let user_id = look.person.id;
-        let picture = if look.is_own || look.is_paused {
+        let picture = if look.is_own {
+            // Your camera, mirrored as on the web; never your shared screen.
+            (look.video == Some(CallVideo::Camera))
+                .then(|| self.pictures.read(cx).own_camera().cloned())
+                .flatten()
+        } else if look.is_paused {
             None
         } else {
             self.pictures.read(cx).picture(user_id).cloned()
@@ -1401,6 +1476,7 @@ fn call_control(
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let tokens = theme(cx);
+    let selector = id;
     let id = gpui::ElementId::from(id);
     let focus_handle = remembered_focus_handle(&id, window, cx);
     let is_ring_shown = is_focus_visible(&focus_handle, window);
@@ -1428,6 +1504,7 @@ fn call_control(
     div()
         .id(id)
         .role(Role::Button)
+        .debug_selector(move || selector.to_owned())
         .aria_label(label)
         .when_some(is_pressed, |button, is_pressed| {
             button.aria_toggled(if is_pressed {
@@ -1475,6 +1552,11 @@ impl super::DuskShell {
             (true, false) => {
                 let session = self.session.clone();
                 let view = cx.new(|cx| CallView::new(session, voice, cx));
+                // Lives as long as the view, which goes with the call view.
+                cx.subscribe_in(&view, window, |shell, _, event, window, cx| match event {
+                    CallViewEvent::PressScreenShare => shell.press_screen_share(window, cx),
+                })
+                .detach();
                 let opener = window.focused(cx);
                 let focus = view.read(cx).focus.clone();
                 focus.focus(window, cx);

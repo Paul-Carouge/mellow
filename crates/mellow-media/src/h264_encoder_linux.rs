@@ -12,10 +12,8 @@ use mellow_protocol::SimulcastLayer;
 use vesper_core::VideoFrame;
 use vesper_encode::Encoder;
 
-use crate::h264_stream::{
-    ParameterSets, has_idr_slice, is_constrained_baseline_sequence_parameter_set, nal_type,
-    nal_units,
-};
+use crate::h264::{is_h264_keyframe, nal_unit_type, nal_units};
+use crate::h264_stream::{ParameterSets, is_constrained_baseline_sequence_parameter_set};
 use crate::screen_capture::ScreenShareContext;
 use crate::session::ScreenShareEnd;
 use crate::simulcast::{FRAMES_PER_SECOND, LAYERS, VideoSourceKind, layer_size};
@@ -219,8 +217,8 @@ fn send_packets(
 ) -> Result<(), String> {
     for packet in packets {
         if !layer.is_profile_checked
-            && let Some(sequence_set) =
-                nal_units(&packet.data).find(|unit| nal_type(unit) == Some(SEQUENCE_PARAMETER_SET))
+            && let Some(sequence_set) = nal_units(&packet.data)
+                .find(|unit| nal_unit_type(unit) == Some(SEQUENCE_PARAMETER_SET))
         {
             if !is_constrained_baseline_sequence_parameter_set(sequence_set) {
                 return Err("the GPU encoder does not write Constrained Baseline".into());
@@ -231,7 +229,7 @@ fn send_packets(
         if !layer.is_active {
             continue;
         }
-        if has_idr_slice(&access_unit) && !layer.is_profile_checked {
+        if is_h264_keyframe(&access_unit) && !layer.is_profile_checked {
             // An IDR the receiver cannot place; the next keyframe carries its SPS.
             layer.encoder.force_keyframe();
             continue;
