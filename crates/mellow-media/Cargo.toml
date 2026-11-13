@@ -34,15 +34,18 @@ yuv.workspace = true
 # ALSA (ids are ALSA PCM names, by card name, also stable).
 [target.'cfg(target_os = "linux")'.dependencies]
 cpal = { workspace = true, features = ["pipewire"] }
-# Screen sharing (ADR-0054): the ScreenCast portal and PipeWire, VA-API H.264 and PipeWire sound
-# through Vesper's crates; X11 sessions through x11rb (already in the tree through GPUI), with
-# MIT-SHM's System V segment through libc.
+# Cameras (ADR-0051) and screen sharing (ADR-0054): PipeWire cameras, the ScreenCast portal and
+# PipeWire, VA-API H.264 and PipeWire sound through Vesper's crates; X11 sessions through x11rb
+# (already in the tree through GPUI), with MIT-SHM's System V segment through libc.
 libc.workspace = true
 vesper-audio.workspace = true
 vesper-capture.workspace = true
 vesper-core.workspace = true
 vesper-encode.workspace = true
 x11rb = { version = "0.13.2", default-features = false, features = ["composite", "randr", "shm"] }
+# Received H.264 (ADR-0052) through the system FFmpeg the Linux desktop already links for
+# Vesper's encoder (ADR-0051's amendment).
+rusty_ffmpeg.workspace = true
 
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]
@@ -51,11 +54,14 @@ dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "o
 objc2 = "0.6.5"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-audio-types", "objc2-core-video", "CMBase", "CMSampleBuffer", "CMTime"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-audio-types", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
 # Screen sharing through ScreenCaptureKit (ADR-0054), already in the tree through GPUI.
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-foundation", "libc", "objc2-core-graphics", "objc2-core-media", "SCError", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
+# Received H.264 (ADR-0052) through VideoToolbox, the system's decoder.
+objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
+objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTDecompressionSession", "VTErrors", "objc2-core-media", "objc2-core-video"] }
 
 [build-dependencies]
 cc.workspace = true

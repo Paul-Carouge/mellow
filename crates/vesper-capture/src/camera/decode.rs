@@ -17,8 +17,11 @@ use super::modes::{Matrix, Range};
 use super::{CameraFrame, CpuFrame, CpuLayout, CpuPlane};
 use crate::Error;
 
-/// A JPEG the CPU decoder cannot repack (4:4:4, grey...): every picture of
-/// the camera will be the same, so the stream ends at once.
+/// The chroma sample of grey, in both ranges.
+const NEUTRAL_CHROMA: u8 = 128;
+
+/// A JPEG the CPU decoder cannot repack (an exotic sampling such as 4:1:1):
+/// every picture of the camera will be the same, so the stream ends at once.
 #[derive(Debug)]
 pub struct Unsupported(String);
 
@@ -379,8 +382,8 @@ unsafe fn vpp_graph(dec: *const ff::AVFrame, key: (*mut u8, c_int, c_int)) -> Re
     }
 }
 
-/// A software-decoded picture as NV12 (4:2:0) or YUY2 (4:2:2): the planes
-/// interleaved, the samples untouched.
+/// A software-decoded picture as NV12 (4:2:0, and 4:4:4, 4:4:0 or grey with
+/// the chroma subsampled) or YUY2 (4:2:2): the planes interleaved.
 unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
     let (w, h) = (f.width as usize, f.height as usize);
     if w == 0 || h == 0 {
@@ -435,6 +438,42 @@ unsafe fn repack(f: &ff::AVFrame, pts: Duration) -> Result<CpuFrame, Error> {
             }
         }
         (CpuLayout::Yuy2, data, vec![CpuPlane { offset: 0, stride }])
+    } else if is(ff::AV_PIX_FMT_YUVJ444P)
+        || is(ff::AV_PIX_FMT_YUV444P)
+        || is(ff::AV_PIX_FMT_YUVJ440P)
+        || is(ff::AV_PIX_FMT_YUV440P)
+        || is(ff::AV_PIX_FMT_GRAY8)
+    {
+        // Rarer samplings become NV12 too: the top-left chroma sample of each 2 × 2 block
+        // (rows of 4:4:0 chroma are already halved), and a neutral one for grey.
+        let is_grey = is(ff::AV_PIX_FMT_GRAY8);
+        let has_halved_rows = is(ff::AV_PIX_FMT_YUVJ440P) || is(ff::AV_PIX_FMT_YUV440P);
+        let mut data = Vec::with_capacity(w * h + cw * 2 * ch);
+        for y in 0..h {
+            data.extend_from_slice(row(0, y, w));
+        }
+        for y in 0..ch {
+            if is_grey {
+                data.resize(data.len() + cw * 2, NEUTRAL_CHROMA);
+                continue;
+            }
+            let source_row = if has_halved_rows { y } else { 2 * y };
+            let (us, vs) = (row(1, source_row, w), row(2, source_row, w));
+            for x in 0..cw {
+                data.extend_from_slice(&[us[2 * x], vs[2 * x]]);
+            }
+        }
+        let planes = vec![
+            CpuPlane {
+                offset: 0,
+                stride: w,
+            },
+            CpuPlane {
+                offset: w * h,
+                stride: cw * 2,
+            },
+        ];
+        (CpuLayout::Nv12, data, planes)
     } else {
         return Err(Box::new(Unsupported(format!(
             "the camera's JPEG sampling (FFmpeg pixel format {format}) needs GPU decoding"

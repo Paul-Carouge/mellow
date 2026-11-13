@@ -9,13 +9,18 @@
 //! the processing and the engine's end of the devices' ring buffers; device callbacks only move
 //! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
 //! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
-//! and one decoding thread per watched slot turns received frames into pictures for the
-//! interface. Screen sharing (ADR-0054) captures through each system's own interface and, on
-//! Linux with VA-API, encodes H.264 on the GPU instead.
+//! and one decoding thread per watched slot turns received frames (VP8, or H.264 where the
+//! system decodes it: `VideoToolbox`, FFmpeg on Linux) into pictures for the interface. Screen
+//! sharing (ADR-0054) captures through each system's own interface and, on Linux with VA-API,
+//! encodes H.264 on the GPU instead.
 
 mod audio_engine;
 mod audio_format;
 mod camera;
+#[cfg(any(target_os = "linux", test))]
+mod camera_conversion;
+#[cfg(target_os = "linux")]
+mod camera_linux;
 // AVFoundation is reached only through `unsafe` Objective-C calls; each states its invariant.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
@@ -26,10 +31,19 @@ mod codec;
 mod connection;
 mod devices;
 mod enhancement;
+mod h264;
 #[cfg(target_os = "linux")]
 mod h264_encoder_linux;
+// FFmpeg's C API, reached through `unsafe` calls; each states its invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod h264_ffmpeg;
+// VideoToolbox and CoreMedia, reached through `unsafe` calls; each states its invariant.
 #[cfg(any(target_os = "linux", test))]
 mod h264_stream;
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod h264_videotoolbox;
 mod input_gate;
 mod jitter_buffer;
 mod level;
@@ -70,7 +84,8 @@ mod vp8;
 mod watch_list;
 
 pub use camera::{
-    CameraDescription, CameraError, Cameras, RunningCapture, SyntheticCameras, SystemCameras,
+    CameraDescription, CameraError, CameraFeed, Cameras, RunningCapture, SyntheticCameras,
+    SystemCameras,
 };
 pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
 pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
@@ -85,6 +100,7 @@ pub use enhancement::{
     EqualizerDecibels, MAXIMUM_EQUALIZER_DECIBELS, MINIMUM_EQUALIZER_DECIBELS,
     VoiceEnhancementPreset,
 };
+pub use h264::decodes_video_codec;
 pub use input_gate::{
     DEFAULT_PUSH_TO_TALK_RELEASE_DELAY, DEFAULT_SENSITIVITY_DECIBELS, InputMode,
     MAXIMUM_PUSH_TO_TALK_RELEASE_DELAY, MAXIMUM_SENSITIVITY_DECIBELS, MINIMUM_SENSITIVITY_DECIBELS,

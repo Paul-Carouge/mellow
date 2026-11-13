@@ -14773,6 +14773,20 @@ impl DesktopStrings {
         }
     }
 
+    pub fn call_undecodable(self) -> &'static str {
+        match self.language {
+            Language::English => "Picture not supported by this app",
+            Language::French => "Image non prise en charge par cette app",
+        }
+    }
+
+    pub fn screen_undecodable(self) -> &'static str {
+        match self.language {
+            Language::English => "This app can't play this screen's picture on this computer. Watch it from a browser.",
+            Language::French => "Cette app ne sait pas lire l’image de cet écran sur cet ordinateur. Regarde-le depuis un navigateur.",
+        }
+    }
+
     pub fn voice_could_not_start_title(self) -> &'static str {
         match self.language {
             Language::English => "Voice couldn't start",
@@ -14914,6 +14928,34 @@ impl DesktopStrings {
         match self.language {
             Language::English => "No microphone found. Plug one in, then test again.",
             Language::French => "Aucun micro trouvé. Branches-en un, puis relance le test.",
+        }
+    }
+
+    pub fn camera_failed(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow couldn't start your camera. Turn it on again, or choose another camera in the Voice settings.",
+            Language::French => "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
+        }
+    }
+
+    pub fn camera_denied_macos(self) -> &'static str {
+        match self.language {
+            Language::English => "macOS blocks the camera for Mellow. Allow it in System Settings, under Privacy & Security, then Camera, then turn it on again.",
+            Language::French => "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
+        }
+    }
+
+    pub fn camera_denied_linux(self) -> &'static str {
+        match self.language {
+            Language::English => "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
+            Language::French => "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+        }
+    }
+
+    pub fn open_camera_settings(self) -> &'static str {
+        match self.language {
+            Language::English => "Open System Settings",
+            Language::French => "Ouvrir les Réglages Système",
         }
     }
 }

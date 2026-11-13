@@ -2382,6 +2382,9 @@ export const en = {
     /** Security: the recovery codes file was saved where the person chose. */
     codesSaved: "Recovery codes saved.",
     codesSaveFailed: "Couldn't save the file. Copy the codes instead.",
+    /** The call view, where the web's sentences name the browser (ADR-0052): this app does not decode the sender's codec. */
+    callUndecodable: "Picture not supported by this app",
+    screenUndecodable: "This app can't play this screen's picture on this computer. Watch it from a browser.",
     /** The voice panel, when the app's voice engine could not start (no sound device thread, no address for the instance). */
     voiceCouldNotStartTitle: "Voice couldn't start",
     voiceCouldNotStart: "Mellow couldn't start its sound or find the instance's address. Check your connection, then try again.",
@@ -2413,6 +2416,14 @@ export const en = {
     voicePushToTalkOtherAppsNote: "During a call, it also works in other apps when your system allows it; the voice panel tells you.",
     /** The microphone test found no microphone to open. */
     voiceTestNoMicrophone: "No microphone found. Plug one in, then test again.",
+    /** The camera could not start for a reason the system did not name. */
+    cameraFailed: "Mellow couldn't start your camera. Turn it on again, or choose another camera in the Voice settings.",
+    /** macOS refused the camera to Mellow (Privacy & Security). */
+    cameraDeniedMacos: "macOS blocks the camera for Mellow. Allow it in System Settings, under Privacy & Security, then Camera, then turn it on again.",
+    /** The Camera portal (Linux) refused the camera. */
+    cameraDeniedLinux: "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
+    /** Opens macOS's camera privacy settings. */
+    openCameraSettings: "Open System Settings",
   },
 };
 

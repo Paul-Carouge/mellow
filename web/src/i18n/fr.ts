@@ -2338,6 +2338,8 @@ export const fr: Catalogue = {
     desktopApp: "Mellow pour ordinateur",
     codesSaved: "Codes de récupération enregistrés.",
     codesSaveFailed: "Impossible d’enregistrer le fichier. Copie plutôt les codes.",
+    callUndecodable: "Image non prise en charge par cette app",
+    screenUndecodable: "Cette app ne sait pas lire l’image de cet écran sur cet ordinateur. Regarde-le depuis un navigateur.",
     voiceCouldNotStartTitle: "La voix n’a pas pu démarrer",
     voiceCouldNotStart: "Mellow n’a pas pu démarrer son audio ni trouver l’adresse de l’instance. Vérifie ta connexion, puis réessaie.",
     voiceOutputUnavailable: `Aucune sortie audio trouvée${NO_BREAK_SPACE}: tu n’entends pas les autres tant que tu n’en branches pas une.`,
@@ -2360,5 +2362,9 @@ export const fr: Catalogue = {
       "Égalise ta voix et lui donne de la présence, pour un son net et régulier comme en stream. Elle remplace le gain automatique.",
     voicePushToTalkOtherAppsNote: `Pendant un appel, elle marche aussi dans les autres applis si ton système le permet${NO_BREAK_SPACE}; le panneau vocal te le dit.`,
     voiceTestNoMicrophone: "Aucun micro trouvé. Branches-en un, puis relance le test.",
+    cameraFailed: "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
+    cameraDeniedMacos: "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
+    cameraDeniedLinux: "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+    openCameraSettings: "Ouvrir les Réglages Système",
   },
 };

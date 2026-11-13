@@ -4,6 +4,8 @@
 
 use std::borrow::Cow;
 
+use crate::h264::{nal_unit_type, nal_units};
+
 /// `nal_unit_type` values (H.264 table 7-1).
 const NAL_IDR_SLICE: u8 = 5;
 const NAL_SEQUENCE_PARAMETER_SET: u8 = 7;
@@ -13,40 +15,10 @@ const BASELINE_PROFILE: u8 = 66;
 const CONSTRAINT_SET1_FLAG: u8 = 0x40;
 const START_CODE: [u8; 4] = [0, 0, 0, 1];
 
-/// The NAL units of an Annex B stream, without their start codes.
-pub(crate) fn nal_units(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut rest = stream;
-    std::iter::from_fn(move || {
-        let start = find_start_code(rest)? + 3;
-        let after = &rest[start..];
-        let end = find_start_code(after).unwrap_or(after.len());
-        rest = &after[end..];
-        // Zero bytes before the next start code belong to it (a four-byte start code or
-        // `trailing_zero_8bits`), never to the unit: a NAL unit never ends with a zero byte.
-        let unit = &after[..end];
-        let length = unit
-            .iter()
-            .rposition(|byte| *byte != 0)
-            .map_or(0, |last| last + 1);
-        Some(&unit[..length])
-    })
-    .filter(|unit| !unit.is_empty())
-}
-
-/// Where the next `00 00 01` starts.
-fn find_start_code(bytes: &[u8]) -> Option<usize> {
-    bytes.windows(3).position(|window| window == [0, 0, 1])
-}
-
-/// The unit's `nal_unit_type`.
-pub(crate) fn nal_type(unit: &[u8]) -> Option<u8> {
-    unit.first().map(|header| header & 0x1f)
-}
-
 /// Whether `unit` is a sequence parameter set of the Constrained Baseline profile, the only one
 /// the server forwards.
 pub(crate) fn is_constrained_baseline_sequence_parameter_set(unit: &[u8]) -> bool {
-    nal_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET)
+    nal_unit_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET)
         && unit.get(1) == Some(&BASELINE_PROFILE)
         && unit
             .get(2)
@@ -64,14 +36,16 @@ impl ParameterSets {
     /// `access_unit` with the parameter sets before it when it holds an IDR slice without them;
     /// unchanged otherwise. Remembers the sets of any access unit that carries both.
     pub(crate) fn complete<'a>(&mut self, access_unit: &'a [u8]) -> Cow<'a, [u8]> {
-        let types = || nal_units(access_unit).filter_map(nal_type);
+        let types = || nal_units(access_unit).filter_map(nal_unit_type);
         let has_idr = types().any(|kind| kind == NAL_IDR_SLICE);
         let has_sequence_set = types().any(|kind| kind == NAL_SEQUENCE_PARAMETER_SET);
         let has_picture_set = types().any(|kind| kind == NAL_PICTURE_PARAMETER_SET);
         if has_sequence_set && has_picture_set {
             self.annex_b.clear();
             for wanted in [NAL_SEQUENCE_PARAMETER_SET, NAL_PICTURE_PARAMETER_SET] {
-                for unit in nal_units(access_unit).filter(|unit| nal_type(unit) == Some(wanted)) {
+                for unit in
+                    nal_units(access_unit).filter(|unit| nal_unit_type(unit) == Some(wanted))
+                {
                     self.annex_b.extend_from_slice(&START_CODE);
                     self.annex_b.extend_from_slice(unit);
                 }
@@ -86,11 +60,6 @@ impl ParameterSets {
         completed.extend_from_slice(access_unit);
         Cow::Owned(completed)
     }
-}
-
-/// Whether the access unit holds an IDR slice.
-pub(crate) fn has_idr_slice(access_unit: &[u8]) -> bool {
-    nal_units(access_unit).any(|unit| nal_type(unit) == Some(NAL_IDR_SLICE))
 }
 
 #[cfg(test)]
@@ -142,7 +111,7 @@ mod tests {
     /// B slices are `slice_type` 1 or 6.
     fn has_bidirectional_slices(stream: &[u8]) -> bool {
         nal_units(stream)
-            .filter(|unit| matches!(nal_type(unit), Some(1 | 5)))
+            .filter(|unit| matches!(nal_unit_type(unit), Some(1 | 5)))
             .filter_map(slice_type)
             .any(|kind| kind % 5 == 1)
     }
@@ -153,7 +122,7 @@ mod tests {
         let mut units: Vec<Vec<u8>> = Vec::new();
         let mut is_picture_started = false;
         for unit in nal_units(stream) {
-            let kind = nal_type(unit);
+            let kind = nal_unit_type(unit);
             let starts_new = match kind {
                 Some(NAL_SEQUENCE_PARAMETER_SET | 6 | 9 | 1 | NAL_IDR_SLICE) => is_picture_started,
                 _ => false,
@@ -175,7 +144,7 @@ mod tests {
     #[test]
     fn the_recorded_sample_is_constrained_baseline_without_b_frames() {
         let sequence_sets: Vec<&[u8]> = nal_units(CONSTRAINED_BASELINE)
-            .filter(|unit| nal_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET))
+            .filter(|unit| nal_unit_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET))
             .collect();
         assert_eq!(sequence_sets.len(), 2, "one before each IDR");
         assert!(
@@ -189,7 +158,7 @@ mod tests {
     #[test]
     fn main_profile_and_b_frames_are_told_apart() {
         let sequence_set = nal_units(MAIN_WITH_B_FRAMES)
-            .find(|unit| nal_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET))
+            .find(|unit| nal_unit_type(unit) == Some(NAL_SEQUENCE_PARAMETER_SET))
             .unwrap();
         assert!(!is_constrained_baseline_sequence_parameter_set(
             sequence_set
@@ -205,7 +174,13 @@ mod tests {
         for unit in &units {
             assert!(matches!(sets.complete(unit), Cow::Borrowed(_)));
         }
-        assert_eq!(units.iter().filter(|unit| has_idr_slice(unit)).count(), 2);
+        assert_eq!(
+            units
+                .iter()
+                .filter(|unit| crate::h264::is_h264_keyframe(unit))
+                .count(),
+            2
+        );
     }
 
     #[test]
@@ -217,15 +192,15 @@ mod tests {
         let stripped: Vec<u8> = nal_units(&units[3])
             .filter(|unit| {
                 !matches!(
-                    nal_type(unit),
+                    nal_unit_type(unit),
                     Some(NAL_SEQUENCE_PARAMETER_SET | NAL_PICTURE_PARAMETER_SET)
                 )
             })
             .flat_map(|unit| START_CODE.iter().chain(unit).copied())
             .collect();
-        assert!(has_idr_slice(&stripped));
+        assert!(crate::h264::is_h264_keyframe(&stripped));
         let completed = sets.complete(&stripped);
-        let kinds: Vec<u8> = nal_units(&completed).filter_map(nal_type).collect();
+        let kinds: Vec<u8> = nal_units(&completed).filter_map(nal_unit_type).collect();
         assert_eq!(
             &kinds[..2],
             [NAL_SEQUENCE_PARAMETER_SET, NAL_PICTURE_PARAMETER_SET]

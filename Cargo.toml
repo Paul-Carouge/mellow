@@ -27,8 +27,8 @@ publish = false
 
 [workspace.dependencies]
 anyhow = "1.0.104"
-# Already in the tree through GPUI, with the same runtime: the screen-cast portal of Vesper's capture (ADR-0051).
-ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "screencast"] }
+# Already in the tree through GPUI, with the same runtime: the screen-cast and camera portals of Vesper's capture (ADR-0051).
+ashpd = { version = "0.13.13", default-features = false, features = ["async-io", "camera", "screencast"] }
 # Already in the tree through ashpd and zbus: runs the portal calls of Vesper's capture.
 async-io = "2.6.0"
 futures-lite = "2.6.1"

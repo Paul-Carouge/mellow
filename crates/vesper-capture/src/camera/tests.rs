@@ -156,7 +156,12 @@ const YUV: [u8; 3] = [89, 96, 201];
 #[test]
 fn cpu_fallback_repacks_jpeg_samples_as_bt601_full_range() {
     let pts = Duration::from_millis(1234);
-    for (sampling, layout) in [("yuvj422p", CpuLayout::Yuy2), ("yuvj420p", CpuLayout::Nv12)] {
+    for (sampling, layout) in [
+        ("yuvj422p", CpuLayout::Yuy2),
+        ("yuvj420p", CpuLayout::Nv12),
+        // Subsampled to NV12 on the way.
+        ("yuvj444p", CpuLayout::Nv12),
+    ] {
         // Odd sizes: the last chroma column and row must be there too.
         let Some(jpeg) = jpeg(RGB, 641, 361, sampling) else {
             assert!(!vesper_core::gpu_required(), "no ffmpeg CLI");
@@ -370,20 +375,6 @@ fn gpu_surfaces_keep_their_buffer_id_and_return_on_release() {
     assert!(held.iter().all(|h| h.pool_generation != f.pool_generation));
 }
 
-#[test]
-fn cpu_decoder_rejects_444_jpegs_as_unsupported() {
-    let Some(jpeg) = jpeg(RGB, 64, 64, "yuvj444p") else {
-        assert!(!vesper_core::gpu_required(), "no ffmpeg CLI");
-        eprintln!("no ffmpeg CLI, skipping");
-        return;
-    };
-    let err = decode::Decoder::cpu()
-        .unwrap()
-        .decode(&jpeg, Duration::ZERO)
-        .unwrap_err();
-    assert!(err.is::<decode::Unsupported>(), "{err}");
-}
-
 /// A `Shared` whose PipeWire side is a bare loop (no server).
 fn lifecycle() -> (Arc<Shared>, pw::channel::Receiver<()>) {
     pw::init();
@@ -410,7 +401,7 @@ fn spawn_decoder(shared: &Arc<Shared>) -> std::sync::mpsc::Receiver<()> {
     let (done, exited) = std::sync::mpsc::channel();
     let shared = shared.clone();
     std::thread::spawn(move || {
-        decode_loop(&shared);
+        decode_loop(&shared, true);
         let _ = done.send(());
     });
     exited
