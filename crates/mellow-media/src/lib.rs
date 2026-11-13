@@ -77,6 +77,15 @@ mod soundboard;
 mod sounds;
 mod transport;
 mod uplink;
+mod video_compression;
+// FFmpeg's C API, reached through `unsafe` calls; each states its invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod video_compression_linux;
+// AVFoundation, reached through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod video_compression_macos;
 mod video_frame;
 mod video_receiver;
 mod video_sender;
@@ -134,6 +143,11 @@ pub use soundboard::{
 };
 pub use sounds::{
     LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue, render_notification_chime,
+};
+pub use video_compression::{
+    KeepOriginalReason, VideoCompressionCancelled, VideoCompressionOutcome,
+    can_compress_videos_here, compress_video, compressed_video_file_name,
+    is_compressible_video_file_name,
 };
 pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
 pub use video_receiver::VideoFrames;
