@@ -142,7 +142,7 @@ fn a_problem_says_what_to_do() {
     );
     assert_eq!(
         CameraProblem::Denied.can_open_system_settings(),
-        cfg!(target_os = "macos")
+        cfg!(any(target_os = "macos", windows))
     );
 }
 
