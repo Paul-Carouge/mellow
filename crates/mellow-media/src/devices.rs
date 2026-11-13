@@ -714,8 +714,9 @@ mod tests {
     }
 
     /// Runs the system's own listing (WASAPI on the Windows CI runner, which has no sound card and
-    /// may have no audio service): whatever it finds, it answers without panicking, every entry can
-    /// be stored and opened again by its id, and at most one entry is the default.
+    /// may have no audio service): whatever it finds, it answers without panicking, every id parses
+    /// back as a `cpal::DeviceId`, and at most one entry is the default. The runner most likely
+    /// lists no device, so there this mostly proves the listing does not panic.
     #[test]
     fn the_system_listing_answers_with_well_formed_entries() {
         fn check(listing: DeviceListing) {
