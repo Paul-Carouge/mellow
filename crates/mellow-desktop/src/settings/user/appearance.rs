@@ -1,7 +1,7 @@
 //! Appearance, the desktop's own page (the web follows the browser for both): the theme and the
 //! interface language, each "Same as this computer" by default, kept in the preferences file and
 //! applied at once (`theme::apply_chosen_theme`, `i18n::apply_chosen_language`); and whether closing
-//! the window keeps Mellow running in the background (ADR-0055), on by default.
+//! the window keeps Mellow running in the background (ADR-0056), on by default.
 
 use gpui::{
     App, Context, EventEmitter, IntoElement, ParentElement as _, Render, Styled as _, Subscription,
@@ -138,7 +138,7 @@ impl Render for AppearancePage {
     }
 }
 
-/// Where Mellow stays once its window closes, on this system (ADR-0055).
+/// Where Mellow stays once its window closes, on this system (ADR-0056).
 fn keep_running_description(cx: &App) -> &'static str {
     let words = strings(cx).desktop();
     if cfg!(target_os = "macos") {

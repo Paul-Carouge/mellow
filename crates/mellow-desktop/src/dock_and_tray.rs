@@ -1,6 +1,6 @@
 //! What the app shows outside its window, which GPUI has no API for: the count of what waits for
 //! the reader on the Dock icon, and the item that keeps Mellow reachable while its window is closed
-//! (ADR-0055): the menu bar item on macOS, a `StatusNotifierItem` over D-Bus on Linux (`ksni`; KDE,
+//! (ADR-0056): the menu bar item on macOS, a `StatusNotifierItem` over D-Bus on Linux (`ksni`; KDE,
 //! Hyprland's and most bars show it, GNOME only with the `AppIndicator` extension), a notification
 //! area icon on Windows. Each menu has "Open Mellow", the microphone and headset toggles, and
 //! "Quit Mellow"; a click on the icon itself opens Mellow where the system allows it.

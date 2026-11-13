@@ -69,11 +69,11 @@ zeroize.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, features = ["global_shortcuts"] }
 futures-lite.workspace = true
-# The system tray (StatusNotifierItem, ADR-0055), on the async-io zbus already in the tree for the
+# The system tray (StatusNotifierItem, ADR-0056), on the async-io zbus already in the tree for the
 # portals; only ksni itself and task-local are new (Unlicense, MIT/Apache-2.0).
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 
-# The notification area icon and the single-instance pipe (ADR-0055): the `windows` version and
+# The notification area icon and the single-instance pipe (ADR-0056): the `windows` version and
 # features GPUI's Windows platform already builds, plus `Win32_System_Pipes`.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }

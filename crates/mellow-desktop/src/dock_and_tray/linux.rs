@@ -1,7 +1,7 @@
 //! The Linux tray: a `StatusNotifierItem` over the session bus (`ksni` on the async-io zbus the
 //! portals already use). KDE Plasma, Hyprland's and Sway's bars (Waybar), XFCE and Cinnamon host
 //! it; GNOME only with the `AppIndicator` extension. Without a host, `is_tray_shown` is false and
-//! closing the window quits (ADR-0055).
+//! closing the window quits (ADR-0056).
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
