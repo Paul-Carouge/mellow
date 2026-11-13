@@ -2,8 +2,9 @@
 //! picture inline, in a box its stored size fixes before it loads; a sound with its player
 //! (`audio_attachment`); anything else as a card with its name and size.
 //!
-//! shortcut: no picture viewer, no download, no video player yet; files show as cards without a
-//! link. They come with the picture viewer and downloads (M3 steps 3 and 9).
+//! A video plays in its own card (`video_attachment`); any other file has a download button.
+//!
+//! shortcut: no picture viewer yet; a picture is not enlarged or saved from the list.
 
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
@@ -12,12 +13,15 @@ use gpui::{
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::{FileSize, FileSizeUnit, human_file_size};
+use mellow_media::PLAYABLE_ATTACHMENT_VIDEO_TYPES;
 use mellow_protocol::Attachment;
 
-use super::audio_attachment::AudioAttachment;
+use super::audio_attachment::{AudioAttachment, media_card, name_row};
 use super::time::locale;
+use super::video_attachment::VideoAttachment;
 use super::{picture_animation, picture_for_box};
 use crate::attachment_audio::is_played_in_app;
+use crate::attachment_download::download_control;
 use crate::components::{Tooltip, child_id, icon, with_type};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{self, Strings};
@@ -112,6 +116,26 @@ impl MessageAttachments {
     }
 }
 
+/// A file the app neither shows nor plays: its card with the download button.
+fn downloadable_file_card(id: ElementId, attachment: &Attachment, cx: &App) -> AnyElement {
+    let glyph = if AUDIO_TYPES.contains(&attachment.content_type.as_str()) {
+        IconName::FileAudio
+    } else {
+        IconName::File
+    };
+    let (download, saved) = download_control(&id, attachment, cx);
+    media_card(id, attachment.file_name.clone(), cx)
+        .child(name_row(
+            attachment,
+            glyph,
+            vec![download.into_any_element()],
+            cx,
+        ))
+        .children(saved)
+        .into_any_element()
+}
+
+/// A file not sent yet, or a picture the instance could not serve: name and size only.
 fn file_card(attachment: &Attachment, tokens: &ThemeTokens, strings: Strings) -> AnyElement {
     let is_audio = AUDIO_TYPES.contains(&attachment.content_type.as_str());
     div()
@@ -164,20 +188,21 @@ impl RenderOnce for MessageAttachments {
             .attachments
             .iter()
             .map(|attachment| {
-                if !self.is_pending && is_played_in_app(attachment) {
-                    return AudioAttachment::new(
-                        ElementId::NamedChild(
-                            std::sync::Arc::new(self.id.clone()),
-                            attachment.id.to_string().into(),
-                        ),
-                        attachment.clone(),
-                    )
-                    .into_any_element();
-                }
-                if self.is_pending
-                    || !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str())
-                {
+                let item_id = ElementId::NamedChild(
+                    std::sync::Arc::new(self.id.clone()),
+                    attachment.id.to_string().into(),
+                );
+                if self.is_pending {
                     return file_card(attachment, tokens, strings);
+                }
+                if is_played_in_app(attachment) {
+                    return AudioAttachment::new(item_id, attachment.clone()).into_any_element();
+                }
+                if PLAYABLE_ATTACHMENT_VIDEO_TYPES.contains(&attachment.content_type.as_str()) {
+                    return VideoAttachment::new(item_id, attachment.clone()).into_any_element();
+                }
+                if !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str()) {
+                    return downloadable_file_card(item_id, attachment, cx);
                 }
                 let (width, height) = picture_box(attachment.width, attachment.height);
                 let source = picture_for_box(

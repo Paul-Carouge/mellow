@@ -98,6 +98,10 @@ pub(crate) fn open_clip(
     bytes: Arc<[u8]>,
     content_type: &str,
 ) -> Result<Box<dyn ClipDecoder>, ClipError> {
+    // A video's sound plays here too, so one player at a time covers sounds and videos.
+    if crate::video_file::PLAYABLE_ATTACHMENT_VIDEO_TYPES.contains(&content_type) {
+        return crate::video_file::open_video_sound(bytes, content_type);
+    }
     if !PLAYABLE_ATTACHMENT_AUDIO_TYPES.contains(&content_type)
         || !starts_like(&bytes, content_type)
     {
@@ -368,6 +372,47 @@ impl SymphoniaClip {
             decoded: Vec::new(),
         })
     }
+}
+
+/// An MP4 or `QuickTime` video's AAC sound, or silence of the video's length when it has none
+/// (or one this app does not decode: surround, AC-3), on systems whose video decoder does not
+/// read sound (`AVFoundation` here reads the pictures only).
+#[cfg(not(target_os = "linux"))]
+pub(crate) fn open_mp4_sound_track(
+    bytes: Arc<[u8]>,
+) -> Result<crate::video_file::SoundTrack, ClipError> {
+    use crate::video_file::SoundTrack;
+    match SymphoniaClip::open(Arc::clone(&bytes), "audio/mp4") {
+        Ok(clip) => Ok(SoundTrack::Sound(Box::new(clip))),
+        Err(ClipError::Unsupported) => Ok(SoundTrack::Silent {
+            duration: longest_track(bytes),
+        }),
+        Err(error) => Err(error),
+    }
+}
+
+/// The length of a file's longest track, as its container states it.
+#[cfg(not(target_os = "linux"))]
+fn longest_track(bytes: Arc<[u8]>) -> Option<std::time::Duration> {
+    let source = MediaSourceStream::new(
+        Box::new(Cursor::new(bytes)),
+        MediaSourceStreamOptions::default(),
+    );
+    let format = symphonia::default::get_probe()
+        .probe(
+            &Hint::new(),
+            source,
+            FormatOptions::default(),
+            MetadataOptions::default(),
+        )
+        .ok()?;
+    format
+        .tracks()
+        .iter()
+        .filter_map(|track| track.time_base?.calc_duration(track.duration?))
+        .filter_map(|time| u64::try_from(time.as_nanos()).ok())
+        .max()
+        .map(std::time::Duration::from_nanos)
 }
 
 /// The codec the sniffed container type normally holds (`is_codec_expected_for_sniffed_type`
