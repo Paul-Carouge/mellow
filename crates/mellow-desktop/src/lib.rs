@@ -8,6 +8,7 @@
 #![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
 
 pub mod attachment_audio;
+mod attachment_download;
 pub mod column_widths;
 pub mod components;
 pub mod composer;

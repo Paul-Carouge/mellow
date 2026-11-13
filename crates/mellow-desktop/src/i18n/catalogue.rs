@@ -15190,6 +15190,34 @@ impl DesktopStrings {
             Language::French => "Ouvrir les Réglages Système",
         }
     }
+
+    pub fn attachment_saving(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Saving {file_name}…"),
+            Language::French => format!("Enregistrement de {file_name}…"),
+        }
+    }
+
+    pub fn attachment_saved(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("{file_name} saved."),
+            Language::French => format!("{file_name} est enregistré."),
+        }
+    }
+
+    pub fn attachment_save_failed(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Couldn't save {file_name}. Check your connection, then try again."),
+            Language::French => format!("Impossible d’enregistrer {file_name}. Vérifie ta connexion, puis réessaie."),
+        }
+    }
+
+    pub fn close_enlarged_video(self) -> &'static str {
+        match self.language {
+            Language::English => "Close the video",
+            Language::French => "Fermer la vidéo",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

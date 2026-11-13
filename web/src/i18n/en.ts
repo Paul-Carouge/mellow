@@ -2471,6 +2471,12 @@ export const en = {
     cameraDeniedLinux: "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
     /** Opens macOS's camera privacy settings. */
     openCameraSettings: "Open System Settings",
+    /** A file card's download: the app asks where to save the file, then writes it there. */
+    attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
+    attachmentSaved: (fileName: string) => `${fileName} saved.`,
+    attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Check your connection, then try again.`,
+    /** The enlarged video's way back to the conversation. */
+    closeEnlargedVideo: "Close the video",
   },
 };
 
