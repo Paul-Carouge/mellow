@@ -86,6 +86,21 @@ impl Drop for TemporaryFile {
     }
 }
 
+/// The asset of the file at `file_url`, reading only the media data inside it: a movie's
+/// references to other files (other copies in the temporary directory, the rest of the person's
+/// disk, devices) are never followed, where the default forbids only local-to-remote ones. Shared
+/// with the video compression, which must not pull other files into an upload.
+pub(crate) fn asset_without_references(file_url: &NSURL) -> Retained<AVURLAsset> {
+    let restrictions =
+        NSNumber::numberWithUnsignedInteger(AVAssetReferenceRestrictions::ForbidAll.0);
+    // SAFETY: a static `AVFoundation` key, set for the process.
+    let restrictions_key = unsafe { AVURLAssetReferenceRestrictionsKey };
+    let restrictions_value: &AnyObject = &restrictions;
+    let options = NSDictionary::from_slices(&[restrictions_key], &[restrictions_value]);
+    // SAFETY: a file URL and the reference restrictions option, an `NSNumber` as documented.
+    unsafe { AVURLAsset::URLAssetWithURL_options(file_url, Some(&options)) }
+}
+
 pub(crate) struct AssetVideoTrack {
     track: Retained<AVAssetTrack>,
     asset: Retained<AVURLAsset>,
@@ -113,17 +128,7 @@ impl AssetVideoTrack {
         // `AVFoundation` reads the copy on disk: this reference to the memory goes now.
         drop(bytes);
         let path = NSString::from_str(&file.0.to_string_lossy());
-        let url = NSURL::fileURLWithPath(&path);
-        // Only media data inside the copy: a received movie's references to other local files
-        // (other copies in the temporary directory, devices) are never followed.
-        let restrictions =
-            NSNumber::numberWithUnsignedInteger(AVAssetReferenceRestrictions::ForbidAll.0);
-        // SAFETY: a static `AVFoundation` key, set for the process.
-        let restrictions_key = unsafe { AVURLAssetReferenceRestrictionsKey };
-        let restrictions_value: &AnyObject = &restrictions;
-        let options = NSDictionary::from_slices(&[restrictions_key], &[restrictions_value]);
-        // SAFETY: a file URL and the reference restrictions option, an `NSNumber` as documented.
-        let asset = unsafe { AVURLAsset::URLAssetWithURL_options(&url, Some(&options)) };
+        let asset = asset_without_references(&NSURL::fileURLWithPath(&path));
         // SAFETY: a static `AVFoundation` constant, set for the process.
         let media_type = unsafe { AVMediaTypeVideo }.ok_or(ClipError::Unsupported)?;
         // The synchronous accessor is fine on the decoding thread; it reads the file's header.

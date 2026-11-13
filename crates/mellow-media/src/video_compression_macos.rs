@@ -17,14 +17,13 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderOutput, AVAssetReaderStatus, AVAssetReaderTrackOutput,
-    AVAssetReaderVideoCompositionOutput, AVAssetReferenceRestrictions, AVAssetTrack, AVAssetWriter,
-    AVAssetWriterInput, AVAssetWriterStatus, AVFileTypeMPEG4,
-    AVMediaCharacteristicContainsHDRVideo, AVMediaTypeAudio, AVMediaTypeVideo,
-    AVMutableVideoComposition, AVURLAsset, AVURLAssetReferenceRestrictionsKey,
-    AVVideoAverageBitRateKey, AVVideoCodecKey, AVVideoCodecTypeH264,
-    AVVideoCompressionPropertiesKey, AVVideoExpectedSourceFrameRateKey, AVVideoHeightKey,
-    AVVideoMaxKeyFrameIntervalDurationKey, AVVideoProfileLevelH264HighAutoLevel,
-    AVVideoProfileLevelKey, AVVideoScalingModeKey, AVVideoScalingModeResize, AVVideoWidthKey,
+    AVAssetReaderVideoCompositionOutput, AVAssetTrack, AVAssetWriter, AVAssetWriterInput,
+    AVAssetWriterStatus, AVFileTypeMPEG4, AVMediaCharacteristicContainsHDRVideo, AVMediaTypeAudio,
+    AVMediaTypeVideo, AVMutableVideoComposition, AVURLAsset, AVVideoAverageBitRateKey,
+    AVVideoCodecKey, AVVideoCodecTypeH264, AVVideoCompressionPropertiesKey,
+    AVVideoExpectedSourceFrameRateKey, AVVideoHeightKey, AVVideoMaxKeyFrameIntervalDurationKey,
+    AVVideoProfileLevelH264HighAutoLevel, AVVideoProfileLevelKey, AVVideoScalingModeKey,
+    AVVideoScalingModeResize, AVVideoWidthKey,
 };
 use objc2_core_audio_types::{kAudioFormatLinearPCM, kAudioFormatMPEG4AAC};
 use objc2_core_foundation::CFRetained;
@@ -44,6 +43,7 @@ use crate::video_compression::{
     MAXIMUM_OUTPUT_FRAME_RATE, MeasuredVideo, ProgressCallback, SourceAudioCodec,
     VideoCompressionPlan, VideoSource, runs_past_measured_duration,
 };
+use crate::video_file_macos::asset_without_references;
 
 /// AAC's output rate: every source rate converts to it.
 const AUDIO_SAMPLE_RATE: f64 = 48_000.0;
@@ -77,16 +77,9 @@ fn open_asset(path: &Path) -> Result<Retained<AVURLAsset>, BackendError> {
     let path = path
         .to_str()
         .ok_or_else(|| failed("a path that is not UTF-8"))?;
-    let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    // Only media inside the picked file: a reference movie must not pull other files of the
-    // person's disk into the upload (the default forbids only local-to-remote references).
-    let restrictions =
-        NSNumber::numberWithUnsignedInteger(AVAssetReferenceRestrictions::ForbidAll.0);
-    // SAFETY: a file URL, and the reference restrictions key with an `NSNumber`, as documented.
-    unsafe {
-        let options = dictionary(&[(AVURLAssetReferenceRestrictionsKey, &restrictions)]);
-        Ok(AVURLAsset::URLAssetWithURL_options(&url, Some(&options)))
-    }
+    Ok(asset_without_references(&NSURL::fileURLWithPath(
+        &NSString::from_str(path),
+    )))
 }
 
 /// The asset's tracks of `media_type`, in order.
