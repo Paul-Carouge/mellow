@@ -42,6 +42,7 @@ const LANGUAGE_KEY: &str = "language";
 const VOICE_SETTINGS_KEY: &str = "voice-settings";
 const VOICE_TOGGLES_KEY: &str = "voice-toggles";
 const VOICE_PEOPLE_KEY: &str = "voice-people";
+const STREAM_PEOPLE_KEY: &str = "stream-people";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -167,6 +168,9 @@ pub struct Preferences {
     /// Each person's volume and local mute, only those changed from the default, most recent
     /// last.
     pub voice_people: Vec<(Snowflake, PersonVoiceSetting)>,
+    /// Each sharer's screen sound volume and local mute (the web's
+    /// `mellow.stream-sound-settings`), kept like `voice_people`.
+    pub stream_people: Vec<(Snowflake, PersonVoiceSetting)>,
 }
 
 impl Preferences {
@@ -256,6 +260,25 @@ impl Preferences {
         if !setting.is_default() {
             self.voice_people.push((user_id, setting));
             keep_latest(&mut self.voice_people, MAXIMUM_REMEMBERED_VOICE_PEOPLE);
+        }
+    }
+
+    /// The volume and local mute the reader gave `user_id`'s screen sound.
+    #[must_use]
+    pub fn stream_person(&self, user_id: Snowflake) -> PersonVoiceSetting {
+        self.stream_people
+            .iter()
+            .find(|(user, _)| *user == user_id)
+            .map(|(_, setting)| *setting)
+            .unwrap_or_default()
+    }
+
+    /// Keeps `setting` for `user_id`'s screen sound; a default one is forgotten.
+    pub fn set_stream_person(&mut self, user_id: Snowflake, setting: PersonVoiceSetting) {
+        self.stream_people.retain(|(user, _)| *user != user_id);
+        if !setting.is_default() {
+            self.stream_people.push((user_id, setting));
+            keep_latest(&mut self.stream_people, MAXIMUM_REMEMBERED_VOICE_PEOPLE);
         }
     }
 
@@ -387,7 +410,7 @@ impl Preferences {
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 // The web's JSON, validated field by field as the web reads it.
-                VOICE_SETTINGS_KEY | VOICE_TOGGLES_KEY | VOICE_PEOPLE_KEY => {
+                VOICE_SETTINGS_KEY | VOICE_TOGGLES_KEY | VOICE_PEOPLE_KEY | STREAM_PEOPLE_KEY => {
                     let stored = serde_json::from_str(value).unwrap_or(serde_json::Value::Null);
                     match key.trim() {
                         VOICE_SETTINGS_KEY => {
@@ -395,6 +418,11 @@ impl Preferences {
                         }
                         VOICE_TOGGLES_KEY => {
                             preferences.voice_toggles = parse_voice_toggles(&stored);
+                        }
+                        STREAM_PEOPLE_KEY => {
+                            for (user_id, setting) in parse_person_voice_settings(&stored) {
+                                preferences.set_stream_person(user_id, setting);
+                            }
                         }
                         _ => {
                             for (user_id, setting) in parse_person_voice_settings(&stored) {
@@ -487,6 +515,10 @@ impl Preferences {
         if !self.voice_people.is_empty() {
             let json = person_voice_settings_to_json(&self.voice_people);
             let _ = writeln!(text, "{VOICE_PEOPLE_KEY}={json}");
+        }
+        if !self.stream_people.is_empty() {
+            let json = person_voice_settings_to_json(&self.stream_people);
+            let _ = writeln!(text, "{STREAM_PEOPLE_KEY}={json}");
         }
         for (user_id, settings) in &self.notification_settings_by_user {
             let json = notification_settings_to_json(settings);
@@ -614,6 +646,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
         was_microphone_muted_before_deafening: false,
     },
     voice_people: Vec::new(),
+    stream_people: Vec::new(),
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -816,6 +849,15 @@ mod tests {
         );
         preferences.set_voice_person(id(8), PersonVoiceSetting::default());
         assert_eq!(preferences.voice_people.len(), 1);
+        preferences.set_stream_person(
+            id(7),
+            PersonVoiceSetting {
+                volume_percent: 150,
+                is_locally_muted: false,
+            },
+        );
+        assert_eq!(preferences.stream_person(id(7)).volume_percent, 150);
+        assert_eq!(preferences.voice_person(id(7)).volume_percent, 40, "apart");
         assert_eq!(
             Preferences::from_file_text(&preferences.to_file_text()),
             preferences

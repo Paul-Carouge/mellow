@@ -556,3 +556,92 @@ fn the_microphone_test_gives_way_to_the_call_and_hearing_yourself_ends_with_it(
     cx.run_until_parked();
     runtime.block_on(instance.stop());
 }
+
+/// A friend's synthetic camera, watched by the owner: its pictures reach the owner's
+/// `VideoPictures` (the entity the call view draws), at the size asked for.
+#[gpui::test]
+fn a_watched_camera_s_pictures_reach_the_call_view_s_pictures(cx: &mut TestAppContext) {
+    use mellow_media::{Cameras as _, SyntheticCameras, VideoSourceKind};
+    use mellow_protocol::VideoTileSize;
+
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    cx.executor().allow_parking();
+    let handle = runtime.handle().clone();
+    cx.update(|cx| {
+        install_network_runtime(handle, cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+    });
+    let (owner, friend, channel_id) = runtime.block_on(async {
+        let owner = instance.registered("owner").await;
+        let friend = instance.registered("friend").await;
+        let channel_id = shared_voice_channel(&owner, &friend).await;
+        (owner, friend, channel_id)
+    });
+    let (owner_session, owner_voice) = signed_in(owner, SyntheticSound::Silence, cx);
+    let (friend_session, friend_voice) = signed_in(friend, SyntheticSound::Silence, cx);
+    wait_until(cx, "the voice channel in both states", |cx| {
+        [&owner_session, &friend_session].iter().all(|session| {
+            session.read_with(cx, |session, _| {
+                session.state().guild_channel(channel_id).is_some()
+            })
+        })
+    });
+    owner_voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    friend_voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    wait_until(cx, "both connected", |cx| {
+        [&owner_voice, &friend_voice].iter().all(|voice| {
+            voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+        })
+    });
+    let friend_id = own_voice_state(&friend_session, cx).unwrap().user_id;
+    let camera = friend_voice.read_with(cx, |voice, _| {
+        let input = voice.engine().unwrap().start_video(VideoSourceKind::Camera);
+        SyntheticCameras {
+            width: 320,
+            height: 180,
+        }
+        .open(None, input)
+        .unwrap()
+    });
+    wait_until(cx, "the friend's camera in the owner's state", |cx| {
+        owner_session.read_with(cx, |session, _| {
+            session
+                .state()
+                .voice_state_of(friend_id)
+                .is_some_and(|state| state.self_video)
+        })
+    });
+    owner_voice.update(cx, |voice, cx| {
+        voice.open_call_view(cx);
+        voice.watch_cameras(
+            vec![ShownPicture {
+                user_id: friend_id,
+                tile_size: VideoTileSize::Large,
+                display_width: 160,
+                display_height: 90,
+            }],
+            cx,
+        );
+    });
+    let pictures = owner_voice.read_with(cx, |voice, _| voice.video_pictures());
+    wait_until(cx, "the friend's picture, decoded for the owner", |cx| {
+        pictures.read_with(cx, |pictures, _| pictures.picture(friend_id).is_some())
+    });
+    let (width, height) = pictures.read_with(cx, |pictures, _| {
+        let picture = pictures.picture(friend_id).unwrap();
+        (picture.width, picture.height)
+    });
+    assert_eq!((width, height), (160, 90), "scaled to the tile");
+
+    // Back to the chat: the camera is no longer asked for, its picture forgotten.
+    owner_voice.update(cx, Voice::close_call_view);
+    assert!(pictures.read_with(cx, |pictures, _| pictures.picture(friend_id).is_none()));
+
+    drop(camera);
+    friend_voice.update(cx, Voice::leave);
+    owner_voice.update(cx, Voice::leave);
+    drop((owner_voice, friend_voice, owner_session, friend_session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}

@@ -8,6 +8,7 @@ use gpui::{
     ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window,
     div, prelude::FluentBuilder as _,
 };
+use mellow_client_core::shared_logic::call_view::{LiveBadge, Watcher, live_badge_of};
 use mellow_client_core::shared_logic::channel_order::channel_sections;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::group_conversations::participant_count;
@@ -615,6 +616,34 @@ impl DuskShell {
                     )
                 });
         let is_microphone_off = is_self_muted || is_suppressed;
+        let is_streaming = voice_state.as_ref().is_some_and(|state| state.self_stream);
+        let is_camera_on = voice_state.as_ref().is_some_and(|state| state.self_video);
+        let live_badge = voice_state.as_ref().and_then(|voice_state| {
+            let watcher = self.voice.as_ref().map_or(
+                Watcher {
+                    connected_channel_id: None,
+                    can_watch_streams: false,
+                },
+                |voice| {
+                    let voice = voice.read(cx);
+                    Watcher {
+                        connected_channel_id: voice
+                            .phase()
+                            .is_some()
+                            .then(|| voice.channel_id())
+                            .flatten(),
+                        can_watch_streams: crate::voice::Voice::can_show_video_in(
+                            voice_state.video_codec,
+                        ),
+                    }
+                },
+            );
+            live_badge_of(
+                voice_state,
+                state.current_user().map(|user| user.id),
+                watcher,
+            )
+        });
         let states: Vec<&str> = [
             (is_deafened, strings.voice().sound_off()),
             (
@@ -623,6 +652,8 @@ impl DuskShell {
             ),
             (is_suppressed, strings.voice().cannot_speak()),
             (is_muted_for_me, strings.voice().muted_for_you()),
+            (is_streaming, strings.screen_share().shares_screen()),
+            (is_camera_on, strings.camera().camera_on()),
         ]
         .into_iter()
         .filter_map(|(is_shown, word)| is_shown.then_some(word))
@@ -641,7 +672,8 @@ impl DuskShell {
         let popover_name: SharedString = name.clone().into();
         // Your own row opens nothing: the user card holds your toggles.
         let can_open = !is_me && self.voice.is_some();
-        div()
+        let watch_label = strings.screen_share().watch(&name);
+        let row = div()
             .id(id)
             .role(Role::Button)
             .aria_label(label)
@@ -750,16 +782,78 @@ impl DuskShell {
                     color(tokens.component_voice_participant_local_mute_icon),
                 ))
             })
+            .when(is_camera_on, |row| {
+                row.child(icon(
+                    IconName::VideoCamera,
+                    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+                    state_ink,
+                ))
+            })
+            // Shown only: your own share never loops back, and elsewhere you join first.
+            .when(
+                live_badge.is_some_and(|badge| badge != LiveBadge::Watch),
+                |row| {
+                    row.child(super::call_view::live_chip(
+                        strings.screen_share().live(),
+                        cx,
+                    ))
+                },
+            )
             .when(is_ring_shown, |row| {
                 row.child(inset_focus_ring(COMPONENT_CHANNEL_ROW_RADIUS, cx))
-            })
+            });
+        if live_badge != Some(LiveBadge::Watch) {
+            return row.into_any_element();
+        }
+        // Their screen, watched large: a button of its own beside the row.
+        let watch_id = ElementId::from(("voice-participant-watch", user_id.raw()));
+        let watch_focus = remembered_focus_handle(&watch_id, window, cx);
+        let is_watch_ring_shown = is_focus_visible(&watch_focus, window);
+        let voice = self.voice.clone();
+        div()
+            .flex()
+            .items_center()
+            .child(div().flex_1().min_w_0().child(row))
+            .child(
+                div()
+                    .id(watch_id)
+                    .role(Role::Button)
+                    .aria_label(watch_label)
+                    .track_focus(&watch_focus)
+                    .relative()
+                    .flex_none()
+                    .h(length(COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT))
+                    .pr(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
+                    .flex()
+                    .items_center()
+                    .cursor_pointer()
+                    .on_click(move |_, _, cx| {
+                        if let Some(voice) = voice.as_ref() {
+                            voice.update(cx, |voice, cx| voice.watch_stream(Some(user_id), cx));
+                        }
+                    })
+                    .child(super::call_view::live_chip(
+                        strings.screen_share().live(),
+                        cx,
+                    ))
+                    .when(is_watch_ring_shown, |button| {
+                        button.child(inset_focus_ring(COMPONENT_CHANNEL_ROW_RADIUS, cx))
+                    }),
+            )
             .into_any_element()
     }
 
-    /// Joins a voice channel from its row.
+    /// Joins a voice channel from its row; in the channel you are in, it shows the call
+    /// (ADR-0035), as on Discord.
     fn join_voice(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
         if let Some(voice) = self.voice.clone() {
-            voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+            voice.update(cx, |voice, cx| {
+                if voice.channel_id() == Some(channel_id) {
+                    voice.open_call_view(cx);
+                } else {
+                    voice.join(channel_id, cx);
+                }
+            });
         }
     }
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.

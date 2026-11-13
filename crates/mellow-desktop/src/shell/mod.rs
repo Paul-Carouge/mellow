@@ -5,6 +5,7 @@
 //! with the column widths and member sheets in the preferences. Below their breakpoints the
 //! navigator becomes a drawer and the member sheet an overlay. Every length and colour is a token.
 
+mod call_view;
 mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;
@@ -256,6 +257,8 @@ pub struct DuskShell {
     voice: Option<Entity<crate::voice::Voice>>,
     voice_person_popover: Option<voice_panel::VoicePersonPopover>,
     soundboard: soundboard_host::SoundboardHost,
+    /// The call view or the watched screen in the sheet's place, and what had focus before.
+    call_view: Option<(Entity<call_view::CallView>, Option<FocusHandle>)>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -290,7 +293,10 @@ impl DuskShell {
             cx.observe_global::<PreferencesStore>(|shell, cx| shell.follow_state(&[], cx)),
         ];
         if let Some(voice) = voice.as_ref() {
-            subscriptions.push(cx.observe(voice, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe_in(voice, window, |shell, _, window, cx| {
+                shell.follow_call_view(window, cx);
+                cx.notify();
+            }));
             // A push-to-talk key held while the window goes to the back never comes up here.
             subscriptions.push(cx.observe_window_activation(window, |shell, window, cx| {
                 if !window.is_window_active()
@@ -332,6 +338,7 @@ impl DuskShell {
             voice,
             voice_person_popover: None,
             soundboard: soundboard_host::SoundboardHost::new(cx),
+            call_view: None,
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
@@ -407,6 +414,13 @@ impl DuskShell {
         }
         self.load_members_of_open_server(cx);
         self.show_place_in_conversation(cx);
+        // Another place shows it: the call and the watched screen step aside (the call goes on).
+        if let Some(voice) = self.voice.clone() {
+            voice.update(cx, |voice, cx| {
+                voice.close_call_view(cx);
+                voice.watch_stream(None, cx);
+            });
+        }
         cx.notify();
     }
 
@@ -1237,7 +1251,8 @@ impl Render for DuskShell {
             })
             .children(self.render_place_menus(window, cx))
             .children(self.render_voice_person_popover(cx))
-            .children(self.render_soundboard_popover(window, cx));
+            .children(self.render_soundboard_popover(window, cx))
+            .children(self.render_fullscreen_call_view(cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

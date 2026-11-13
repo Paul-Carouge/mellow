@@ -34,6 +34,10 @@
 pub mod global_push_to_talk;
 pub mod media_settings;
 mod soundboard;
+mod video;
+pub mod video_view;
+
+pub use self::video::ShownPicture;
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
@@ -154,6 +158,8 @@ pub struct Voice {
     is_recording_push_to_talk_key: bool,
     /// Bumped by each join: a start that finishes after a leave or another join is stopped.
     attempt: u64,
+    /// Others' cameras and screens: the call view, the watched screen, their pictures.
+    video: video::CallVideo,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -389,6 +395,7 @@ impl Voice {
             is_monitoring: false,
             is_recording_push_to_talk_key: false,
             attempt: 0,
+            video: video::CallVideo::new(cx),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -645,6 +652,7 @@ impl Voice {
                 );
             }
         }
+        video::seed_stream_sound_settings(&store, cx);
         let start = spawn_on_network_runtime(
             cx,
             start_engine(EngineStart {
@@ -737,6 +745,9 @@ impl Voice {
             call.devices.is_output_device_missing = started.is_output_device_missing;
             // Settings changed during the start were never applied to it.
             self.applied_settings = call.start_settings.clone();
+        }
+        if let Some(engine) = self.call.as_mut().and_then(|call| call.engine.as_mut()) {
+            self.video.attach(engine, cx);
         }
         // The meter now reads the call's microphone: the test's is let go.
         self.microphone_test = None;
@@ -834,10 +845,11 @@ impl Voice {
                 };
                 self.end_with(problem, cx);
             }
+            VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
+                self.video.note_paused(*user_id, *is_paused);
+            }
             // Cameras and screens come with the call view (M3 step 8).
-            VoiceSessionEvent::VideoRefused(_)
-            | VoiceSessionEvent::VideoStoppedByServer
-            | VoiceSessionEvent::VideoPaused { .. } => {}
+            VoiceSessionEvent::VideoRefused(_) | VoiceSessionEvent::VideoStoppedByServer => {}
         }
     }
 
@@ -866,6 +878,7 @@ impl Voice {
             self.is_monitoring = false;
         }
         self.announcement = SharedString::default();
+        self.video.end_call();
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),
