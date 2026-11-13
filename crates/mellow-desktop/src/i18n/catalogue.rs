@@ -15207,8 +15207,8 @@ impl DesktopStrings {
 
     pub fn attachment_save_failed(self, file_name: &str) -> String {
         match self.language {
-            Language::English => format!("Couldn't save {file_name}. Check your connection, then try again."),
-            Language::French => format!("Impossible d’enregistrer {file_name}. Vérifie ta connexion, puis réessaie."),
+            Language::English => format!("Couldn't save {file_name}. Try again, or choose another folder."),
+            Language::French => format!("Impossible d’enregistrer {file_name}. Réessaie, ou choisis un autre dossier."),
         }
     }
 

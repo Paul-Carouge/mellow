@@ -2474,7 +2474,7 @@ export const en = {
     /** A file card's download: the app asks where to save the file, then writes it there. */
     attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
     attachmentSaved: (fileName: string) => `${fileName} saved.`,
-    attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Check your connection, then try again.`,
+    attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
     /** The enlarged video's way back to the conversation. */
     closeEnlargedVideo: "Close the video",
   },

@@ -2,9 +2,11 @@
 //! file card's download button asks where to save, in the Downloads folder first, then fetches
 //! the file on the authenticated download path and writes it off the interface thread. Files the
 //! app does not show or play (a codec it lacks, a size past the player's) are kept this way; the
-//! card reads out "saved" or the failure.
+//! card reads out "saved" or the failure. A saved file is marked as downloaded from the internet,
+//! as browsers mark theirs, so the system checks it before it opens.
 
 use std::collections::HashMap;
+use std::path::Path;
 
 use gpui::{App, ElementId, Global, IntoElement, ParentElement as _, Styled as _, div};
 use mellow_client_core::{Download, DownloadableFile};
@@ -82,7 +84,15 @@ pub(crate) fn save_attachment(attachment: &Attachment, cx: &mut App) {
         let written = match download.await {
             Ok(Ok(Download::Fetched(file))) => cx
                 .background_executor()
-                .spawn(async move { std::fs::write(&path, &file.bytes) })
+                .spawn(async move {
+                    std::fs::write(&path, &file.bytes)?;
+                    // The file is saved either way: a volume without extended attributes or
+                    // streams (FAT) cannot hold the mark, as for browsers' downloads.
+                    if let Err(error) = mark_as_downloaded(&path) {
+                        tracing::warn!(error = %error.kind(), "cannot mark a saved attachment");
+                    }
+                    Ok::<(), std::io::Error>(())
+                })
                 .await
                 .map_err(
                     |error| tracing::warn!(error = %error.kind(), "cannot save an attachment"),
@@ -107,6 +117,52 @@ pub(crate) fn save_attachment(attachment: &Attachment, cx: &mut App) {
         });
     })
     .detach();
+}
+
+/// Marks a saved file as downloaded from the internet, so `Gatekeeper` on macOS, and `SmartScreen`
+/// and Office's protected view on Windows, check it before it opens, as they do browsers'
+/// downloads: a member can send a `.command`, an unsigned app or a script.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn mark_as_downloaded(path: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    // Flags 0081: downloaded, not opened yet; then the time in hexadecimal and the agent.
+    let seconds = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_or(0, |since| since.as_secs());
+    let value = format!("0081;{seconds:08x};Mellow;");
+    let path = std::ffi::CString::new(path.as_os_str().as_bytes())?;
+    // SAFETY: a NUL-terminated path and attribute name, and a value of the length given.
+    let status = unsafe {
+        libc::setxattr(
+            path.as_ptr(),
+            c"com.apple.quarantine".as_ptr(),
+            value.as_ptr().cast(),
+            value.len(),
+            0,
+            0,
+        )
+    };
+    if status == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
+}
+
+/// See the macOS version: the Internet zone (3) in the file's `Zone.Identifier` stream.
+#[cfg(windows)]
+fn mark_as_downloaded(path: &Path) -> std::io::Result<()> {
+    let mut stream = path.as_os_str().to_owned();
+    stream.push(":Zone.Identifier");
+    std::fs::write(stream, "[ZoneTransfer]\r\nZoneId=3\r\n")
+}
+
+/// Linux desktops keep no such mark; the file is written without the permission to run.
+#[cfg(not(any(target_os = "macos", windows)))]
+#[allow(clippy::unnecessary_wraps)] // The same signature as on macOS and Windows.
+fn mark_as_downloaded(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 /// The card's download button, and what became of the last save, read out when it changes.
@@ -147,4 +203,26 @@ pub(crate) fn download_control(
             ))
     });
     (button, note)
+}
+
+#[cfg(test)]
+mod tests {
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn a_saved_file_is_quarantined() {
+        let folder = tempfile::tempdir().unwrap();
+        let path = folder.path().join("report.command");
+        std::fs::write(&path, b"#!/bin/sh").unwrap();
+        super::mark_as_downloaded(&path).unwrap();
+        let mark = std::process::Command::new("xattr")
+            .args(["-p", "com.apple.quarantine"])
+            .arg(&path)
+            .output()
+            .unwrap();
+        let mark = String::from_utf8(mark.stdout).unwrap();
+        assert!(
+            mark.starts_with("0081;") && mark.trim_end().ends_with(";Mellow;"),
+            "{mark}"
+        );
+    }
 }

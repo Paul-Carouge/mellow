@@ -2401,7 +2401,7 @@ export const fr: Catalogue = {
     openCameraSettings: "Ouvrir les Réglages Système",
     attachmentSaving: (fileName) => `Enregistrement de ${fileName}…`,
     attachmentSaved: (fileName) => `${fileName} est enregistré.`,
-    attachmentSaveFailed: (fileName) => `Impossible d’enregistrer ${fileName}. Vérifie ta connexion, puis réessaie.`,
+    attachmentSaveFailed: (fileName) => `Impossible d’enregistrer ${fileName}. Réessaie, ou choisis un autre dossier.`,
     closeEnlargedVideo: "Fermer la vidéo",
   },
 };
