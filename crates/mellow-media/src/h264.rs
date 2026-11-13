@@ -17,12 +17,16 @@ pub(crate) const DECODES_H264: bool = cfg!(any(target_os = "linux", target_os = 
 
 /// The largest picture a sender's highest layer may have (ADR-0037's 1440p `h` layer): the
 /// server refuses larger ones, and the decoders refuse them again before allocating.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const MAXIMUM_DECODED_WIDTH: u32 = 2_560;
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) const MAXIMUM_DECODED_HEIGHT: u32 = 1_440;
 
 /// NAL unit types (ITU-T H.264 table 7-1).
 const IDR_SLICE: u8 = 5;
+#[cfg(target_os = "macos")]
 pub(crate) const SEQUENCE_PARAMETER_SET: u8 = 7;
+#[cfg(target_os = "macos")]
 pub(crate) const PICTURE_PARAMETER_SET: u8 = 8;
 
 /// Whether this app can show a picture sent in `codec`, as a voice state names it (absent: VP8).
@@ -36,6 +40,7 @@ pub fn decodes_video_codec(codec: Option<VideoCodec>) -> bool {
 }
 
 /// An H.264 decoder failed: no decoder on this system, a picture too large, or a corrupt frame.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 #[derive(Debug, thiserror::Error)]
 #[error("H.264 decoding failed: {0}")]
 pub(crate) struct H264Error(pub(crate) String);
@@ -74,6 +79,7 @@ pub(crate) fn is_h264_keyframe(frame: &[u8]) -> bool {
 }
 
 /// Whether a decoded picture fits the largest layer.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 pub(crate) fn is_within_maximum_size(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width <= MAXIMUM_DECODED_WIDTH && height <= MAXIMUM_DECODED_HEIGHT
 }
@@ -134,6 +140,7 @@ pub(crate) mod tests {
     }
 
     #[test]
+    #[cfg(any(target_os = "linux", target_os = "macos"))]
     fn pictures_larger_than_the_highest_layer_are_refused() {
         assert!(is_within_maximum_size(2_560, 1_440));
         assert!(!is_within_maximum_size(2_561, 1_440));
