@@ -445,8 +445,7 @@ impl SharedSegment {
 fn window_exists(connection: &RustConnection, window: Window) -> bool {
     connection
         .get_window_attributes(window)
-        .ok()
-        .is_some_and(|cookie| cookie.reply().is_ok())
+        .is_ok_and(|cookie| cookie.reply().is_ok())
 }
 
 /// The area to read now: a monitor's, or the window's current size.
