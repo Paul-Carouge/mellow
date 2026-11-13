@@ -159,16 +159,17 @@ impl Layers {
         })
     }
 
-    fn apply(&mut self, active: Option<&[SimulcastLayer]>, keyframes: &[Option<SimulcastLayer>]) {
+    /// Sends only the `active` layers (given every time: encoders reopened for a new size or
+    /// quality must not send a layer the server or the uplink paused) and forces the keyframes
+    /// asked for.
+    fn apply(&mut self, active: &[SimulcastLayer], keyframes: &[Option<SimulcastLayer>]) {
         for layer in &mut self.encoders {
-            if let Some(active) = active {
-                let is_active = active.contains(&layer.layer);
-                // A resumed layer's watchers wait for a keyframe: send it at once.
-                if is_active && !layer.is_active {
-                    layer.encoder.force_keyframe();
-                }
-                layer.is_active = is_active;
+            let is_active = active.contains(&layer.layer);
+            // A resumed layer's watchers wait for a keyframe: send it at once.
+            if is_active && !layer.is_active {
+                layer.encoder.force_keyframe();
             }
+            layer.is_active = is_active;
             if keyframes
                 .iter()
                 .any(|asked| asked.is_none_or(|asked| asked == layer.layer))
@@ -243,6 +244,8 @@ fn send_packets(
 fn run(mut input: EncodedVideoInput, pictures: &Receiver<VideoFrame>) -> Result<(), String> {
     let mut layers: Option<Layers> = None;
     let mut last_encoded_at: Option<Instant> = None;
+    // The server only says when its layers change: kept for encoders opened later.
+    let mut active_layers = LAYERS.to_vec();
     while input.is_open() {
         let frame = match pictures.recv_timeout(REQUEST_POLL_INTERVAL) {
             Ok(frame) => Some(frame),
@@ -253,6 +256,9 @@ fn run(mut input: EncodedVideoInput, pictures: &Receiver<VideoFrame>) -> Result<
             return Ok(());
         };
         let requests = input.take_requests();
+        if let Some(active) = requests.active_layers {
+            active_layers = active;
+        }
         // A new quality or source size needs encoders of other sizes.
         if let Some(frame) = &frame
             && layers.as_ref().is_none_or(|layers| {
@@ -264,7 +270,7 @@ fn run(mut input: EncodedVideoInput, pictures: &Receiver<VideoFrame>) -> Result<
         let Some(current) = layers.as_mut() else {
             continue;
         };
-        current.apply(requests.active_layers.as_deref(), &requests.keyframes);
+        current.apply(&active_layers, &requests.keyframes);
         let now = Instant::now();
         let is_repeat_due = last_encoded_at
             .is_some_and(|at| now.saturating_duration_since(at) >= LONGEST_INTERVAL_BETWEEN_FRAMES);

@@ -50,12 +50,20 @@ struct Inbox {
     generation: u64,
     picture: Option<(CapturedFrame, Instant)>,
     active_layers: Option<Vec<SimulcastLayer>>,
-    /// The highest layer the uplink carries now (`crate::uplink`).
+    /// The highest layer the uplink carries now (`crate::uplink`); `None` until it first
+    /// changed, which means every layer. Kept, never taken: the uplink reports only changes, and
+    /// a source started later (the VP8 thread's or one encoded elsewhere) must start within it.
     layer_ceiling: Option<SimulcastLayer>,
     keyframe_requests: Vec<Option<SimulcastLayer>>,
     is_stopped: bool,
     /// Something above changed since the thread last looked.
     has_news: bool,
+}
+
+impl Inbox {
+    fn current_layer_ceiling(&self) -> SimulcastLayer {
+        self.layer_ceiling.unwrap_or(SimulcastLayer::High)
+    }
 }
 
 /// Shared between the encoding thread and everything that feeds it.
@@ -105,7 +113,7 @@ impl VideoEncoderControl {
             outgoing,
             clock_start: Instant::now(),
             asked_layers: LAYERS.to_vec(),
-            layer_ceiling: SimulcastLayer::High,
+            layer_ceiling: self.layer_ceiling(),
             is_first_take: true,
         }
     }
@@ -163,6 +171,11 @@ impl VideoEncoderControl {
         self.update(|inbox| inbox.layer_ceiling = Some(ceiling));
     }
 
+    /// The uplink's current ceiling (every layer before its first report).
+    fn layer_ceiling(&self) -> SimulcastLayer {
+        self.inbox().current_layer_ceiling()
+    }
+
     pub(crate) fn request_keyframe(&self, layer: Option<SimulcastLayer>) {
         self.update(|inbox| {
             // Bounded: a request for every layer covers the others, and a layer asked twice
@@ -197,7 +210,7 @@ impl VideoEncoderControl {
         let mut layer_ceiling = SimulcastLayer::High;
         let mut encoded_generation = 0;
         loop {
-            let (source, generation, picture, active_layers, new_ceiling, keyframe_requests) = {
+            let (source, generation, picture, active_layers, current_ceiling, keyframe_requests) = {
                 let repeat_due_at = last_picture
                     .as_ref()
                     .and(last_encoded_at)
@@ -215,7 +228,7 @@ impl VideoEncoderControl {
                     inbox.generation,
                     inbox.picture.take(),
                     inbox.active_layers.take_if(|_| is_mine),
-                    inbox.layer_ceiling.take_if(|_| is_mine),
+                    inbox.current_layer_ceiling(),
                     if is_mine {
                         std::mem::take(&mut inbox.keyframe_requests)
                     } else {
@@ -247,12 +260,12 @@ impl VideoEncoderControl {
                 tracing::warn!(%error, "the video encoders could not change source");
             }
             let has_layers_changed =
-                is_new_encoder || active_layers.is_some() || new_ceiling.is_some();
+                is_new_encoder || active_layers.is_some() || current_ceiling != layer_ceiling;
             // An empty list leaves the layers as they are: the session ends the source instead.
             if let Some(active) = active_layers.filter(|active| !active.is_empty()) {
                 asked_layers = active;
             }
-            layer_ceiling = new_ceiling.unwrap_or(layer_ceiling);
+            layer_ceiling = current_ceiling;
             if has_layers_changed {
                 encoder.set_active_layers(&layers_within(&asked_layers, layer_ceiling));
             }
@@ -469,16 +482,16 @@ impl EncodedVideoInput {
             }
             (
                 inbox.active_layers.take(),
-                inbox.layer_ceiling.take(),
+                inbox.current_layer_ceiling(),
                 std::mem::take(&mut inbox.keyframe_requests),
             )
         };
-        let has_changed = asked.is_some() || ceiling.is_some() || self.is_first_take;
+        let has_changed = asked.is_some() || ceiling != self.layer_ceiling || self.is_first_take;
         self.is_first_take = false;
         if let Some(asked) = asked.filter(|asked| !asked.is_empty()) {
             self.asked_layers = asked;
         }
-        self.layer_ceiling = ceiling.unwrap_or(self.layer_ceiling);
+        self.layer_ceiling = ceiling;
         EncoderRequests {
             active_layers: has_changed
                 .then(|| layers_within(&self.asked_layers, self.layer_ceiling)),
@@ -624,6 +637,28 @@ mod tests {
                 .try_iter()
                 .all(|frame| frame.codec == VideoCodec::Vp8)
         );
+    }
+
+    /// The uplink reports only changes: a source started after one (an H.264 share on a link
+    /// already lossy) starts within the ceiling, and the VP8 thread keeps it after that share.
+    #[test]
+    fn a_source_started_after_the_uplink_dropped_starts_within_its_ceiling() {
+        let control = Arc::new(VideoEncoderControl::default());
+        control.set_layer_ceiling(SimulcastLayer::Low);
+        let (outgoing, _frames) = mpsc::channel();
+        let mut input = control.start_encoded(
+            VideoSourceKind::Screen(crate::simulcast::ScreenShareQuality::High),
+            VideoCodec::H264,
+            outgoing,
+        );
+        assert_eq!(
+            input.take_requests().active_layers,
+            Some(vec![SimulcastLayer::Quarter, SimulcastLayer::Low])
+        );
+        assert_eq!(input.take_requests().active_layers, None);
+        control.set_layer_ceiling(SimulcastLayer::High);
+        assert_eq!(input.take_requests().active_layers, Some(LAYERS.to_vec()));
+        assert_eq!(control.layer_ceiling(), SimulcastLayer::High);
     }
 
     #[test]
