@@ -104,7 +104,7 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
         .set_stats_interval(Some(STATS_INTERVAL));
     // Video lines take H.264 too where the system decodes it (ADR-0052): the server then sends
     // native sharers' pictures here. The camera line sends VP8, which the server picks first.
-    if crate::h264::DECODES_H264 {
+    if crate::h264::decodes_h264() {
         builder.codec_config().add_h264(
             Pt::new_with_value(H264_PAYLOAD_TYPE),
             Some(Pt::new_with_value(H264_RETRANSMISSION_PAYLOAD_TYPE)),
@@ -258,10 +258,10 @@ mod tests {
         );
         assert_eq!(
             sdp.contains("a=rtpmap:108 H264/90000"),
-            crate::h264::DECODES_H264,
+            crate::h264::decodes_h264(),
             "{sdp}"
         );
-        if crate::h264::DECODES_H264 {
+        if crate::h264::decodes_h264() {
             assert!(
                 sdp.contains("profile-level-id=42e01f") && sdp.contains("packetization-mode=1"),
                 "{sdp}"

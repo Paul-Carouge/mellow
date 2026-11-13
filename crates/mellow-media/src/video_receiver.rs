@@ -268,6 +268,9 @@ impl Drop for VideoReceivers {
 /// The decoder of the codec a slot carries now, started at its first frame in that codec.
 enum SlotDecoder {
     None,
+    /// No decoder of this codec could start: its frames are skipped, without trying or logging
+    /// again on every frame, until the slot carries another codec.
+    Failed(ReceivedCodec),
     Vp8(Vp8Decoder),
     #[cfg(any(target_os = "linux", target_os = "macos"))]
     H264(crate::h264::H264Decoder),
@@ -281,6 +284,7 @@ impl SlotDecoder {
             (Self::Vp8(_), ReceivedCodec::Vp8) => true,
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             (Self::H264(_), ReceivedCodec::H264) => true,
+            (Self::Failed(failed), _) if *failed == codec => return false,
             _ => false,
         };
         if !is_ready {
@@ -289,13 +293,13 @@ impl SlotDecoder {
                     Ok(decoder) => Self::Vp8(decoder),
                     Err(error) => {
                         tracing::warn!(%error, "a VP8 decoder could not start");
-                        Self::None
+                        Self::Failed(codec)
                     }
                 },
                 ReceivedCodec::H264 => Self::new_h264(),
             };
         }
-        !matches!(self, Self::None)
+        !matches!(self, Self::None | Self::Failed(_))
     }
 
     #[cfg(any(target_os = "linux", target_os = "macos"))]
@@ -304,7 +308,7 @@ impl SlotDecoder {
             Ok(decoder) => Self::H264(decoder),
             Err(error) => {
                 tracing::warn!(%error, "an H.264 decoder could not start");
-                Self::None
+                Self::Failed(ReceivedCodec::H264)
             }
         }
     }
@@ -312,14 +316,14 @@ impl SlotDecoder {
     /// This platform offers no H.264, so the server sends none; a stray frame is dropped.
     #[cfg(not(any(target_os = "linux", target_os = "macos")))]
     fn new_h264() -> Self {
-        Self::None
+        Self::Failed(ReceivedCodec::H264)
     }
 
     /// Decodes `frame` and hands its picture, if any, to `publish`. `false` when it did not
     /// decode (a keyframe is needed).
     fn decode(&mut self, frame: &[u8], publish: impl FnOnce(I420View<'_>)) -> bool {
         let picture = match self {
-            Self::None => return true,
+            Self::None | Self::Failed(_) => return true,
             Self::Vp8(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
             #[cfg(any(target_os = "linux", target_os = "macos"))]
             Self::H264(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
@@ -435,6 +439,18 @@ mod tests {
         assert!(is_vp8_keyframe(&frames[0]));
         assert!(!is_vp8_keyframe(&frames[1]));
         assert!(!is_vp8_keyframe(&[]));
+    }
+
+    #[test]
+    fn a_codec_whose_decoder_failed_is_not_started_again_until_the_codec_changes() {
+        let mut decoder = SlotDecoder::Failed(ReceivedCodec::H264);
+        assert!(!decoder.prepare(ReceivedCodec::H264));
+        assert!(matches!(decoder, SlotDecoder::Failed(ReceivedCodec::H264)));
+        assert!(decoder.decode(&[0, 0, 1, 0x65], |_| panic!("no picture")));
+        assert!(
+            decoder.prepare(ReceivedCodec::Vp8),
+            "another codec starts its own"
+        );
     }
 
     #[test]

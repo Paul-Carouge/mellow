@@ -12,8 +12,26 @@ pub(crate) use crate::h264_ffmpeg::H264Decoder;
 #[cfg(target_os = "macos")]
 pub(crate) use crate::h264_videotoolbox::H264Decoder;
 
-/// Whether this platform decodes received H.264, so its video receive lines offer it.
-pub(crate) const DECODES_H264: bool = cfg!(any(target_os = "linux", target_os = "macos"));
+/// Whether this system decodes received H.264, so its video receive lines offer it. The system
+/// FFmpeg may lack the decoder (built without it, or a distribution's patent-free build), so on
+/// Linux a decoder is opened once to find out. `VideoToolbox` always has one; Windows has none yet.
+pub(crate) fn decodes_h264() -> bool {
+    #[cfg(target_os = "linux")]
+    {
+        static DECODES_H264: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *DECODES_H264.get_or_init(|| match H264Decoder::new() {
+            Ok(_) => true,
+            Err(error) => {
+                tracing::warn!(%error, "H.264 is not offered: the system FFmpeg cannot decode it");
+                false
+            }
+        })
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        cfg!(target_os = "macos")
+    }
+}
 
 /// The largest picture a sender's highest layer may have (ADR-0037's 1440p `h` layer): the
 /// server refuses larger ones, and the decoders refuse them again before allocating.
@@ -34,7 +52,7 @@ pub(crate) const PICTURE_PARAMETER_SET: u8 = 8;
 pub fn decodes_video_codec(codec: Option<VideoCodec>) -> bool {
     match codec {
         None | Some(VideoCodec::Vp8) => true,
-        Some(VideoCodec::H264) => DECODES_H264,
+        Some(VideoCodec::H264) => decodes_h264(),
         Some(VideoCodec::Unknown) => false,
     }
 }
@@ -135,7 +153,7 @@ pub(crate) mod tests {
     fn the_codecs_this_platform_shows_are_named() {
         assert!(decodes_video_codec(None), "absent means VP8");
         assert!(decodes_video_codec(Some(VideoCodec::Vp8)));
-        assert_eq!(decodes_video_codec(Some(VideoCodec::H264)), DECODES_H264);
+        assert_eq!(decodes_video_codec(Some(VideoCodec::H264)), decodes_h264());
         assert!(!decodes_video_codec(Some(VideoCodec::Unknown)));
     }
 

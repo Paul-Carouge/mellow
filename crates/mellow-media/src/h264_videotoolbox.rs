@@ -150,6 +150,9 @@ impl H264Decoder {
         unsafe { session.decompression.wait_for_asynchronous_frames() };
         drop(sample);
         if status != NO_ERROR {
+            // A session can stop working (sleep, a GPU reset) while the parameter sets stay the
+            // same: the next keyframe builds a new one rather than reusing a broken one.
+            self.session = None;
             return Err(H264Error(format!(
                 "VideoToolbox refused a frame ({status})"
             )));
