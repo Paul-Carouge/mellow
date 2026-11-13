@@ -315,10 +315,52 @@ fn the_last_pictures_go_when_the_call_ends(cx: &mut TestAppContext) {
     let pictures = voice.read_with(cx, |voice, _| voice.video_pictures());
     pictures.update(cx, |pictures, cx| {
         pictures.show(vec![(ANA, synthetic_frame(64, 36))], cx);
+        pictures.show_own_camera(Some(synthetic_frame(64, 36)), cx);
     });
     voice.update(cx, Voice::leave);
     cx.run_until_parked();
-    assert!(pictures.read_with(cx, |pictures, _| pictures.picture(ANA).is_none()));
+    pictures.read_with(cx, |pictures, _| {
+        assert!(pictures.picture(ANA).is_none());
+        assert!(pictures.own_camera().is_none());
+    });
+}
+
+/// Your voice state says `video`, as the instance sends it back.
+fn set_own_video(shell: &Entity<DuskShell>, video: Option<CallVideo>, cx: &mut VisualTestContext) {
+    let session = shell.read_with(cx, |shell, _| shell.session.clone());
+    session.update(cx, |session, cx| {
+        session.state_mut().apply_event(
+            GatewayEvent::VoiceStateUpdate {
+                voice_state: voice_state(ME, video, Some(VideoCodec::Vp8)),
+            },
+            0,
+        );
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn your_tile_shows_your_camera_never_your_shared_screen(cx: &mut TestAppContext) {
+    let (shell, voice, cx) = shell_in_a_call(cx);
+    let own_picture: &'static str = format!("call-picture-{}", ME.raw()).leak();
+    let pictures = voice.read_with(cx, |voice, _| voice.video_pictures());
+    pictures.update(cx, |pictures, cx| {
+        pictures.show_own_camera(Some(synthetic_frame(64, 36)), cx);
+    });
+    set_own_video(&shell, Some(CallVideo::Camera), cx);
+    assert!(cx.debug_bounds(own_picture).is_some());
+
+    set_own_video(&shell, Some(CallVideo::Screen), cx);
+    assert!(cx.debug_bounds(own_picture).is_none());
+}
+
+#[gpui::test]
+fn the_camera_control_is_hidden_while_the_camera_cannot_be_turned_on(cx: &mut TestAppContext) {
+    // A call still connecting: the camera cannot be turned on yet, and it is off.
+    let (_shell, _voice, cx) = shell_in_a_call(cx);
+    assert!(cx.debug_bounds("call-control-microphone").is_some());
+    assert!(cx.debug_bounds("call-control-camera").is_none());
 }
 
 #[test]

@@ -147,13 +147,37 @@ impl Voice {
         self.video.is_call_view_open
     }
 
+    /// Whether your tile is on screen with your camera to show: the call view open, no screen
+    /// watched large in its place, the camera not off.
+    fn is_own_camera_tile_wanted(&self) -> bool {
+        self.video.is_call_view_open
+            && self.video.watched_stream.is_none()
+            && self.camera_phase() != CameraPhase::Off
+    }
+
+    /// Starts bringing your camera to your tile when it is wanted, else stops and clears it. The
+    /// camera's own pictures are converted only meanwhile.
+    pub(super) fn follow_own_camera_tile(&mut self, cx: &mut Context<Self>) {
+        let is_wanted = self.is_own_camera_tile_wanted();
+        self.set_own_camera_tile_shown(is_wanted);
+        if is_wanted {
+            if self.video.own_camera_pump.is_none() {
+                self.video.own_camera_pump = Some(pump_own_camera(cx));
+            }
+        } else {
+            self.video.own_camera_pump = None;
+            self.video
+                .pictures
+                .update(cx, |pictures, cx| pictures.show_own_camera(None, cx));
+        }
+    }
+
     /// Opens the call view; only during a call, as there is nothing to show otherwise.
     pub fn open_call_view(&mut self, cx: &mut Context<Self>) {
         let is_open = self.call.is_some();
         if self.video.is_call_view_open != is_open {
             self.video.is_call_view_open = is_open;
-            self.set_own_camera_tile_shown(is_open);
-            self.video.own_camera_pump = is_open.then(|| pump_own_camera(cx));
+            self.follow_own_camera_tile(cx);
             cx.notify();
         }
     }
@@ -162,11 +186,7 @@ impl Voice {
     pub fn close_call_view(&mut self, cx: &mut Context<Self>) {
         if self.video.is_call_view_open {
             self.video.is_call_view_open = false;
-            self.set_own_camera_tile_shown(false);
-            self.video.own_camera_pump = None;
-            self.video
-                .pictures
-                .update(cx, |pictures, cx| pictures.show_own_camera(None, cx));
+            self.follow_own_camera_tile(cx);
             self.video.cameras.clear();
             self.apply_watching(cx);
             cx.notify();
@@ -192,6 +212,7 @@ impl Voice {
             display_height: STREAM_FIRST_HEIGHT,
         });
         self.apply_watching(cx);
+        self.follow_own_camera_tile(cx);
         cx.notify();
     }
 
@@ -308,26 +329,35 @@ pub(super) fn seed_stream_sound_settings(store: &InMemoryPersonVoiceSettings, cx
 const STREAM_FIRST_WIDTH: u32 = 1_920;
 const STREAM_FIRST_HEIGHT: u32 = 1_080;
 
-/// Your camera's newest picture into your tile at the camera's rate; cleared once it is off.
+/// Your camera's newest picture into your tile at the camera's rate. Ends, clearing the tile,
+/// once the tile no longer wants it (camera off, view closed, a screen watched); started again
+/// by [`Voice::follow_own_camera_tile`].
 fn pump_own_camera(cx: &mut Context<Voice>) -> Task<()> {
     cx.spawn(async move |voice, cx| {
         loop {
             cx.background_executor()
                 .timer(OWN_CAMERA_FRAME_PERIOD)
                 .await;
-            let is_gone = voice
+            let should_go_on = voice
                 .update(cx, |voice, cx| {
-                    let is_off = voice.camera_phase() == CameraPhase::Off;
-                    let picture = voice.take_own_camera_picture();
-                    if is_off || picture.is_some() {
-                        voice
-                            .video
-                            .pictures
-                            .update(cx, |pictures, cx| pictures.show_own_camera(picture, cx));
+                    if !voice.is_own_camera_tile_wanted() {
+                        // This task ends right after: detached so dropping it does not cancel
+                        // the poll running it.
+                        if let Some(pump) = voice.video.own_camera_pump.take() {
+                            pump.detach();
+                        }
+                        voice.follow_own_camera_tile(cx);
+                        return false;
                     }
+                    if let Some(picture) = voice.take_own_camera_picture() {
+                        voice.video.pictures.update(cx, |pictures, cx| {
+                            pictures.show_own_camera(Some(picture), cx);
+                        });
+                    }
+                    true
                 })
-                .is_err();
-            if is_gone {
+                .unwrap_or(false);
+            if !should_go_on {
                 return;
             }
         }

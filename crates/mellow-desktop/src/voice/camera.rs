@@ -6,7 +6,8 @@
 //! (`VoiceSession::start_video`): a permission prompt or a busy device never leaves a camera the
 //! server waits on. Each camera runs on a worker thread of its own, which opens it (that blocks:
 //! permission prompts, the device starting), forwards its pictures into the call once told to,
-//! and converts one to a small mirrored picture for the settings while they show it. Dropping the
+//! and converts one to a small mirrored picture for the settings while they show it, and for your
+//! tile while the call view shows it. Dropping the
 //! worker's handle stops it; the thread closes the device itself, never the interface's thread.
 //! Its few reports (opened, failed, ended) reach the interface through a bounded channel.
 
@@ -36,7 +37,11 @@ pub fn system_cameras() -> CamerasFactory {
 /// How long the worker waits for a picture before it looks at its commands again: the delay of
 /// stopping a camera that sends nothing.
 const PICTURE_WAIT: Duration = Duration::from_millis(100);
-/// The settings' preview is drawn at most this large (the column it sits in).
+/// The settings' preview is drawn at most this large (the column it sits in); your call tile
+/// gets the same picture.
+///
+/// shortcut: your tile gets this 640 × 360 picture, blurry when featured or full screen; convert
+/// at the tile's drawn size if that shows.
 const PREVIEW_SIZE: (u32, u32) = (640, 360);
 /// A worker reports at most twice (opened, then ended or closed).
 const REPORT_QUEUE_CAPACITY: usize = 4;
@@ -392,6 +397,7 @@ impl Voice {
         let worker = self.start_camera_worker(CameraUse::Call, cx);
         worker.set_preview_wanted(self.camera.is_preview_wanted());
         self.camera.worker = Some(worker);
+        self.follow_own_camera_tile(cx);
         cx.notify();
     }
 

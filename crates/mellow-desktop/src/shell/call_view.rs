@@ -1433,6 +1433,7 @@ fn call_control(
     cx: &mut App,
 ) -> gpui::Stateful<gpui::Div> {
     let tokens = theme(cx);
+    let selector = id;
     let id = gpui::ElementId::from(id);
     let focus_handle = remembered_focus_handle(&id, window, cx);
     let is_ring_shown = is_focus_visible(&focus_handle, window);
@@ -1460,6 +1461,7 @@ fn call_control(
     div()
         .id(id)
         .role(Role::Button)
+        .debug_selector(move || selector.to_owned())
         .aria_label(label)
         .when_some(is_pressed, |button, is_pressed| {
             button.aria_toggled(if is_pressed {
