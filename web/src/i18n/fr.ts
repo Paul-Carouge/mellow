@@ -2403,5 +2403,9 @@ export const fr: Catalogue = {
     cameraDeniedMacos: "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
     cameraDeniedLinux: "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
     openCameraSettings: "Ouvrir les Réglages Système",
+    attachmentSaving: (fileName) => `Enregistrement de ${fileName}…`,
+    attachmentSaved: (fileName) => `${fileName} est enregistré.`,
+    attachmentSaveFailed: (fileName) => `Impossible d’enregistrer ${fileName}. Réessaie, ou choisis un autre dossier.`,
+    closeEnlargedVideo: "Fermer la vidéo",
   },
 };

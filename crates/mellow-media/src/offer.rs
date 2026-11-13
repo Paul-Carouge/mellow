@@ -432,8 +432,11 @@ mod tests {
             sdp.contains("transport-wide-cc"),
             "the server's allocation needs it"
         );
+        // Only codec lines: the random ICE credentials may spell "VP9" or "AV1".
         assert!(
-            !sdp.contains("VP9") && !sdp.contains("AV1"),
+            sdp.lines()
+                .filter(|line| line.starts_with("a=rtpmap:"))
+                .all(|line| !line.contains("VP9") && !line.contains("AV1")),
             "VP8 and H.264 only"
         );
         assert_eq!(

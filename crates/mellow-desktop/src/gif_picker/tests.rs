@@ -195,6 +195,31 @@ fn tiles_play_the_animated_picture_and_keep_the_jpeg_still_under_reduced_motion(
 }
 
 #[test]
+fn a_tile_plays_klipys_clip_where_it_decodes_and_motion_is_not_reduced() {
+    let gif = KlipyGif {
+        slug: "a".to_owned(),
+        title: String::new(),
+        tile: KlipyMedia {
+            is_video: true,
+            ..media("sm.mp4")
+        },
+        picture_tile: Some(media("md.webp")),
+        still: Some(media("sm.jpg")),
+        message_url: media("md.webp").url,
+    };
+    assert_eq!(
+        tile_clip(&gif, Animation::Animate).is_some(),
+        cfg!(any(target_os = "linux", target_os = "macos"))
+    );
+    assert_eq!(tile_clip(&gif, Animation::StillFrame), None);
+    let with_webp = KlipyGif {
+        tile: media("sm.webp"),
+        ..gif
+    };
+    assert_eq!(tile_clip(&with_webp, Animation::Animate), None);
+}
+
+#[test]
 fn arrows_and_home_end_name_tile_keys() {
     assert_eq!(tile_key("left"), Some(GifTileKey::Left));
     assert_eq!(tile_key("end"), Some(GifTileKey::End));

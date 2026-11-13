@@ -5026,6 +5026,7 @@ dependencies = [
  "keyring",
  "keyring-core",
  "ksni",
+ "libc",
  "mellow-client-core",
  "mellow-media",
  "mellow-protocol",
