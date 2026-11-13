@@ -1,36 +1,191 @@
 //! What the app shows outside its window, which GPUI has no API for: the count of what waits for
-//! the reader on the Dock icon, and a menu bar item with "Open Mellow" and "Quit Mellow".
+//! the reader on the Dock icon, and the item that keeps Mellow reachable while its window is closed
+//! (ADR-0056): the menu bar item on macOS, a `StatusNotifierItem` over D-Bus on Linux (`ksni`; KDE,
+//! Hyprland's and most bars show it, GNOME only with the `AppIndicator` extension), a notification
+//! area icon on Windows. Each menu has "Open Mellow", the microphone and headset toggles, and
+//! "Quit Mellow"; a click on the icon itself opens Mellow where the system allows it.
 //!
-//! macOS only for now. On Linux and Windows the count shows in the window's title (and so in the
-//! taskbar); a Linux launcher badge (`com.canonical.Unity.LauncherEntry`), a Linux tray
-//! (`StatusNotifierItem`) and a Windows taskbar overlay and notification area icon are left for
-//! later. Closing the window still quits the app (ADR-0051: one window), so the menu bar item
-//! only brings the window to the front or quits.
+//! The count also shows beside the menu bar item, as the Linux item's attention state and in the
+//! tray tooltips; a Linux launcher badge (`com.canonical.Unity.LauncherEntry`) and a Windows
+//! taskbar overlay are left for later.
 
-use gpui::App;
+#[cfg(target_os = "linux")]
+mod linux;
+#[cfg(windows)]
+mod notification_area;
 
-/// Shows `count` on the Dock icon and beside the menu bar item; zero clears it.
+use gpui::{App, Global};
+use mellow_client_core::shared_logic::notifications::window_title;
+
+use crate::i18n::strings;
+use crate::window_chrome::WINDOW_TITLE;
+
+/// A choice made in the tray's menu, carried to the UI thread.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", windows)),
+    allow(dead_code)
+)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TrayCommand {
+    OpenMellow,
+    ToggleMicrophone,
+    ToggleDeafened,
+    QuitMellow,
+}
+
+/// Clicks come at a person's pace: a full queue drops one rather than grow.
+#[cfg_attr(
+    not(any(target_os = "macos", target_os = "linux", windows)),
+    allow(dead_code)
+)]
+const TRAY_COMMAND_QUEUE_CAPACITY: usize = 8;
+
+/// The words and state the tray shows, rebuilt when the language, the count or the voice
+/// toggles change, and applied only when they differ.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct TrayMenu {
+    open: String,
+    microphone: String,
+    headset: String,
+    quit: String,
+    /// "(3) Mellow", as the window's title.
+    tooltip: String,
+    attention_count: u32,
+}
+
+/// What the tray last showed, and the count it shows.
+#[derive(Default)]
+struct ShownTray {
+    attention_count: u32,
+    menu: Option<TrayMenu>,
+}
+
+impl Global for ShownTray {}
+
+fn tray_menu(attention_count: u32, cx: &App) -> TrayMenu {
+    let catalogue = strings(cx);
+    let (is_muted, is_deafened) = crate::voice::voice(cx).map_or((false, false), |voice| {
+        let toggles = voice.read(cx).toggles();
+        (toggles.is_muted(), toggles.is_deafened())
+    });
+    let user_card = catalogue.user_card();
+    TrayMenu {
+        open: catalogue.desktop().open_mellow().to_owned(),
+        microphone: if is_muted {
+            user_card.unmute_microphone()
+        } else {
+            user_card.mute_microphone()
+        }
+        .to_owned(),
+        headset: if is_deafened {
+            user_card.undeafen()
+        } else {
+            user_card.deafen()
+        }
+        .to_owned(),
+        quit: catalogue.desktop().quit_mellow().to_owned(),
+        tooltip: window_title(attention_count, WINDOW_TITLE),
+        attention_count,
+    }
+}
+
+/// Shows the tray's words and state again, if they changed.
+fn refresh_tray(cx: &mut App) {
+    let attention_count = cx
+        .try_global::<ShownTray>()
+        .map_or(0, |shown| shown.attention_count);
+    let menu = tray_menu(attention_count, cx);
+    if cx
+        .try_global::<ShownTray>()
+        .is_some_and(|shown| shown.menu.as_ref() == Some(&menu))
+    {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    macos::show_menu(&menu, cx);
+    #[cfg(target_os = "linux")]
+    linux::show_menu(&menu, cx);
+    #[cfg(windows)]
+    notification_area::show_menu(&menu, cx);
+    cx.default_global::<ShownTray>().menu = Some(menu);
+}
+
+/// Shows `count` on the Dock icon, beside the menu bar item and in the tray; zero clears it.
 pub fn show_attention_count(count: u32, cx: &mut App) {
+    cx.default_global::<ShownTray>().attention_count = count;
     #[cfg(target_os = "macos")]
     macos::show_attention_count(count, cx);
-    #[cfg(not(target_os = "macos"))]
-    let _ = (count, cx);
+    refresh_tray(cx);
 }
 
-/// Adds the menu bar item; called once at start.
+/// Adds the menu bar item or the tray icon; called once at start, after the voice is installed.
 pub fn install_menu_bar_item(cx: &mut App) {
+    let (sender, mut commands) = tokio::sync::mpsc::channel(TRAY_COMMAND_QUEUE_CAPACITY);
     #[cfg(target_os = "macos")]
-    macos::install_menu_bar_item(cx);
-    #[cfg(not(target_os = "macos"))]
-    let _ = cx;
+    macos::install_menu_bar_item(sender, cx);
+    #[cfg(target_os = "linux")]
+    linux::install_tray(sender, cx);
+    #[cfg(windows)]
+    notification_area::install_tray(sender, cx);
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    drop(sender);
+    if let Some(voice) = crate::voice::voice(cx) {
+        cx.observe(&voice, |_, cx| refresh_tray(cx)).detach();
+    }
+    refresh_tray(cx);
+    cx.spawn(async move |cx| {
+        while let Some(command) = commands.recv().await {
+            cx.update(|cx| follow_tray_command(command, cx));
+        }
+    })
+    .detach();
 }
 
-/// Retitles the menu bar item's menu in the language now spoken.
+fn follow_tray_command(command: TrayCommand, cx: &mut App) {
+    match command {
+        TrayCommand::OpenMellow => crate::background::show_main_window(cx),
+        TrayCommand::ToggleMicrophone => {
+            if let Some(voice) = crate::voice::voice(cx) {
+                voice.update(cx, crate::voice::Voice::toggle_microphone);
+            }
+        }
+        TrayCommand::ToggleDeafened => {
+            if let Some(voice) = crate::voice::voice(cx) {
+                voice.update(cx, crate::voice::Voice::toggle_deafened);
+            }
+        }
+        // The call is left on the way out (`voice::leave_the_call_when_the_app_quits`).
+        TrayCommand::QuitMellow => cx.quit(),
+    }
+}
+
+/// Retitles the menu bar item's or the tray's menu in the language now spoken.
 pub fn retitle_menu_bar_item(cx: &mut App) {
+    refresh_tray(cx);
+}
+
+/// Whether something outside the window can bring Mellow back once it closes: the Dock and the
+/// menu bar item on macOS, a tray icon a host shows on Linux, the notification area on Windows.
+#[must_use]
+pub fn can_show_mellow_again(cx: &App) -> bool {
     #[cfg(target_os = "macos")]
-    macos::retitle_menu_bar_item(cx);
-    #[cfg(not(target_os = "macos"))]
-    let _ = cx;
+    {
+        let _ = cx;
+        true
+    }
+    #[cfg(target_os = "linux")]
+    {
+        linux::is_tray_shown(cx)
+    }
+    #[cfg(windows)]
+    {
+        notification_area::is_tray_shown(cx)
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
+    {
+        let _ = cx;
+        false
+    }
 }
 
 /// "99+" past 99, as the window's title says it.
@@ -44,13 +199,29 @@ fn badge_label(count: u32) -> Option<String> {
     }
 }
 
+/// The app's icon for the Linux and Windows trays, as RGBA rows of `size` × `size`; decoded from
+/// the web app's icon, so nothing new is drawn.
+#[cfg(any(target_os = "linux", windows))]
+fn tray_icon_rgba(size: u32) -> Option<image::RgbaImage> {
+    const APP_ICON_PNG: &[u8] = include_bytes!("../../../web/public/icons/mellow-192.png");
+    let icon = image::load_from_memory_with_format(APP_ICON_PNG, image::ImageFormat::Png)
+        .inspect_err(|error| tracing::warn!(%error, "cannot decode the tray icon"))
+        .ok()?;
+    Some(image::imageops::resize(
+        &icon.to_rgba8(),
+        size,
+        size,
+        image::imageops::FilterType::Lanczos3,
+    ))
+}
+
 // AppKit's Objective-C API: every call the safe bindings cannot check is commented.
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod macos {
     use gpui::{App, Global};
     use objc2::rc::Retained;
-    use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol};
+    use objc2::runtime::{AnyObject, NSObject, NSObjectProtocol, Sel};
     use objc2::{
         AnyThread as _, DefinedClass as _, MainThreadMarker, MainThreadOnly, define_class,
         msg_send, sel,
@@ -60,21 +231,14 @@ mod macos {
         NSVariableStatusItemLength,
     };
     use objc2_foundation::{NSData, NSSize, NSString};
-    use tokio::sync::mpsc::{UnboundedSender, unbounded_channel};
+    use tokio::sync::mpsc::Sender;
 
-    use super::badge_label;
-    use crate::i18n::strings;
+    use super::{TrayCommand, TrayMenu, badge_label};
     use crate::theme::icons::IconName;
     use crate::window_chrome::WINDOW_TITLE;
 
     /// The menu bar's own icon size, in points.
     const MENU_BAR_ICON_SIZE: f64 = 18.0;
-
-    #[derive(Debug, Clone, Copy)]
-    enum MenuBarCommand {
-        OpenMellow,
-        QuitMellow,
-    }
 
     define_class!(
         // SAFETY: `NSObject` has no subclassing requirements, and this class does not implement
@@ -82,7 +246,7 @@ mod macos {
         #[unsafe(super(NSObject))]
         #[thread_kind = MainThreadOnly]
         #[name = "MellowMenuBarTarget"]
-        #[ivars = UnboundedSender<MenuBarCommand>]
+        #[ivars = Sender<TrayCommand>]
         struct MenuBarTarget;
 
         unsafe impl NSObjectProtocol for MenuBarTarget {}
@@ -90,18 +254,28 @@ mod macos {
         impl MenuBarTarget {
             #[unsafe(method(openMellow:))]
             fn open_mellow(&self, _sender: Option<&AnyObject>) {
-                let _ = self.ivars().send(MenuBarCommand::OpenMellow);
+                let _ = self.ivars().try_send(TrayCommand::OpenMellow);
+            }
+
+            #[unsafe(method(toggleMicrophone:))]
+            fn toggle_microphone(&self, _sender: Option<&AnyObject>) {
+                let _ = self.ivars().try_send(TrayCommand::ToggleMicrophone);
+            }
+
+            #[unsafe(method(toggleDeafened:))]
+            fn toggle_deafened(&self, _sender: Option<&AnyObject>) {
+                let _ = self.ivars().try_send(TrayCommand::ToggleDeafened);
             }
 
             #[unsafe(method(quitMellow:))]
             fn quit_mellow(&self, _sender: Option<&AnyObject>) {
-                let _ = self.ivars().send(MenuBarCommand::QuitMellow);
+                let _ = self.ivars().try_send(TrayCommand::QuitMellow);
             }
         }
     );
 
     impl MenuBarTarget {
-        fn new(sender: UnboundedSender<MenuBarCommand>, mtm: MainThreadMarker) -> Retained<Self> {
+        fn new(sender: Sender<TrayCommand>, mtm: MainThreadMarker) -> Retained<Self> {
             let this = Self::alloc(mtm).set_ivars(sender);
             // SAFETY: `init` is `NSObject`'s designated initializer.
             unsafe { msg_send![super(this), init] }
@@ -115,6 +289,8 @@ mod macos {
         /// Without its icon, the item's title carries the name so it stays visible.
         has_icon: bool,
         open_item: Retained<NSMenuItem>,
+        microphone_item: Retained<NSMenuItem>,
+        headset_item: Retained<NSMenuItem>,
         quit_item: Retained<NSMenuItem>,
         _menu: Retained<NSMenu>,
         _target: Retained<MenuBarTarget>,
@@ -144,45 +320,53 @@ mod macos {
         }
     }
 
-    pub(super) fn retitle_menu_bar_item(cx: &mut App) {
-        let catalogue = strings(cx).desktop();
+    pub(super) fn show_menu(menu: &TrayMenu, cx: &mut App) {
         if let Some(menu_bar_item) = cx.try_global::<MenuBarItem>() {
-            menu_bar_item
-                .open_item
-                .setTitle(&NSString::from_str(catalogue.open_mellow()));
-            menu_bar_item
-                .quit_item
-                .setTitle(&NSString::from_str(catalogue.quit_mellow()));
+            for (item, title) in [
+                (&menu_bar_item.open_item, &menu.open),
+                (&menu_bar_item.microphone_item, &menu.microphone),
+                (&menu_bar_item.headset_item, &menu.headset),
+                (&menu_bar_item.quit_item, &menu.quit),
+            ] {
+                item.setTitle(&NSString::from_str(title));
+            }
         }
     }
 
-    pub(super) fn install_menu_bar_item(cx: &mut App) {
+    fn menu_item(
+        action: Sel,
+        target: &MenuBarTarget,
+        mtm: MainThreadMarker,
+    ) -> Retained<NSMenuItem> {
+        // SAFETY: the action is one `MenuBarTarget` implements, with the `sender:` argument; the
+        // title is set by `show_menu`.
+        let item = unsafe {
+            NSMenuItem::initWithTitle_action_keyEquivalent(
+                NSMenuItem::alloc(mtm),
+                &NSString::new(),
+                Some(action),
+                &NSString::new(),
+            )
+        };
+        // SAFETY: the target is kept alive in `MenuBarItem` for as long as the menu.
+        unsafe { item.setTarget(Some(target)) };
+        item
+    }
+
+    pub(super) fn install_menu_bar_item(sender: Sender<TrayCommand>, cx: &mut App) {
         let Some(mtm) = MainThreadMarker::new() else {
             return;
         };
-        let catalogue = strings(cx).desktop();
-        let (sender, mut commands) = unbounded_channel();
         let target = MenuBarTarget::new(sender, mtm);
         let menu = NSMenu::new(mtm);
-        let [open_item, quit_item] = [
-            (catalogue.open_mellow(), sel!(openMellow:)),
-            (catalogue.quit_mellow(), sel!(quitMellow:)),
-        ]
-        .map(|(label, action)| {
-            // SAFETY: the action is one `MenuBarTarget` implements, with the `sender:` argument.
-            let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &NSString::from_str(label),
-                    Some(action),
-                    &NSString::new(),
-                )
-            };
-            // SAFETY: the target is kept alive in `MenuBarItem` for as long as the menu.
-            unsafe { item.setTarget(Some(&target)) };
-            item
-        });
+        let open_item = menu_item(sel!(openMellow:), &target, mtm);
+        let microphone_item = menu_item(sel!(toggleMicrophone:), &target, mtm);
+        let headset_item = menu_item(sel!(toggleDeafened:), &target, mtm);
+        let quit_item = menu_item(sel!(quitMellow:), &target, mtm);
         menu.addItem(&open_item);
+        menu.addItem(&NSMenuItem::separatorItem(mtm));
+        menu.addItem(&microphone_item);
+        menu.addItem(&headset_item);
         menu.addItem(&NSMenuItem::separatorItem(mtm));
         menu.addItem(&quit_item);
         let item = NSStatusBar::systemStatusBar().statusItemWithLength(NSVariableStatusItemLength);
@@ -211,24 +395,12 @@ mod macos {
             item,
             has_icon,
             open_item,
+            microphone_item,
+            headset_item,
             quit_item,
             _menu: menu,
             _target: target,
         });
-        cx.spawn(async move |cx| {
-            while let Some(command) = commands.recv().await {
-                cx.update(|cx| match command {
-                    MenuBarCommand::OpenMellow => {
-                        cx.activate(true);
-                        if let Some(window) = cx.windows().first() {
-                            let _ = window.update(cx, |_, window, _| window.activate_window());
-                        }
-                    }
-                    MenuBarCommand::QuitMellow => cx.quit(),
-                });
-            }
-        })
-        .detach();
     }
 }
 
