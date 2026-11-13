@@ -68,27 +68,30 @@ pub(crate) fn nal_unit_type(nal_unit: &[u8]) -> Option<u8> {
     nal_unit.first().map(|header| header & 0x1f)
 }
 
-/// The NAL units of an Annex B access unit, without their start codes (3 or 4 bytes) or the
-/// zero bytes that may trail them.
+/// The NAL units of an Annex B stream, without their start codes (3 or 4 bytes) or the zero
+/// bytes that may trail them.
 pub(crate) fn nal_units(stream: &[u8]) -> impl Iterator<Item = &[u8]> {
-    let mut rest = next_start_code(stream).map(|(_, after)| &stream[after..]);
+    let mut rest = stream;
     std::iter::from_fn(move || {
-        let current = rest?;
-        rest = next_start_code(current).map(|(_, after)| &current[after..]);
-        Some(next_start_code(current).map_or(current, |(end, _)| &current[..end]))
+        let start = find_start_code(rest)? + 3;
+        let after = &rest[start..];
+        let end = find_start_code(after).unwrap_or(after.len());
+        rest = &after[end..];
+        // Zero bytes before the next start code belong to it (a four-byte start code or
+        // `trailing_zero_8bits`), never to the unit: a NAL unit never ends with a zero byte.
+        let unit = &after[..end];
+        let length = unit
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1);
+        Some(&unit[..length])
     })
-    .filter(|nal_unit| !nal_unit.is_empty())
+    .filter(|unit| !unit.is_empty())
 }
 
-/// Where the next `00 00 01` starts, its zero bytes before it trimmed (a 4-byte start code, or
-/// trailing zeros), and where the NAL unit after it starts.
-fn next_start_code(data: &[u8]) -> Option<(usize, usize)> {
-    let position = data.windows(3).position(|bytes| bytes == [0, 0, 1])?;
-    let end = data[..position]
-        .iter()
-        .rposition(|byte| *byte != 0)
-        .map_or(0, |last| last + 1);
-    Some((end, position + 3))
+/// Where the next `00 00 01` starts.
+fn find_start_code(bytes: &[u8]) -> Option<usize> {
+    bytes.windows(3).position(|window| window == [0, 0, 1])
 }
 
 /// Whether `frame` holds an IDR slice a decoder can start from.

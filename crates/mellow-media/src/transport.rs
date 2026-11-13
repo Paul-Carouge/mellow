@@ -4,6 +4,8 @@
 //! offer, and reports what happened as session events. It writes the camera's or screen's
 //! simulcast layers, hands received video frames to their decoding threads, passes keyframe
 //! requests both ways, and keeps the video signalling (`voice_state`'s video, the watch list).
+//! It also writes the shared screen's sound, and offers the session again when the camera line
+//! must carry another codec (ADR-0052, ADR-0054).
 
 use std::collections::HashMap;
 use std::io::ErrorKind;
@@ -13,7 +15,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{Receiver, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
-use mellow_protocol::{ClientFrame, GatewayEvent, Snowflake, WatchedCamera};
+use mellow_protocol::{ClientFrame, GatewayEvent, Snowflake, VideoCodec, WatchedCamera};
 use str0m::change::{SdpAnswer, SdpPendingOffer};
 use str0m::format::Codec;
 use str0m::media::{Frequency, KeyframeRequestKind, MediaTime, Mid, Pt, Rid};
@@ -24,7 +26,8 @@ use crate::audio_engine::AudioCommand;
 use crate::connection::{ConnectionAction, ConnectionInput, ConnectionMachine};
 use crate::offer::{MediaLines, OfferError, ReceiveSlotKind, new_peer};
 use crate::person_settings::{PersonSoundSource, PersonVoiceSettingsStore};
-use crate::session::{VoiceSessionEvent, VoiceSignalling, VoiceToggles};
+use crate::screen_sound::OutgoingScreenSoundPacket;
+use crate::session::{ScreenShareEnd, VoiceSessionEvent, VoiceSignalling, VoiceToggles};
 use crate::simulcast::{LAYERS, VideoSourceKind, rid_of};
 use crate::uplink::{UplinkLayerCeiling, loss_percent_of};
 use crate::video_receiver::{ReceivedCodec, VideoReceivers};
@@ -70,6 +73,15 @@ pub(crate) enum NetworkCommand {
     SetToggles(VoiceToggles),
     /// The camera or a screen turned on (replacing the other), or off: tell the server.
     SetVideoSource(Option<VideoSourceKind>),
+    /// The codec the next source sends: offer the session again when the camera line carries
+    /// another.
+    SetCameraCodec(VideoCodec),
+    /// The capture of the source started as `generation` ended by itself: turn it off and tell
+    /// the server and the interface.
+    ScreenShareEnded {
+        generation: u64,
+        reason: ScreenShareEnd,
+    },
     /// The cameras and screens to receive, and their tile sizes.
     WatchCameras(Vec<WatchedCamera>),
     /// Send `voice_leave` and stop.
@@ -95,8 +107,11 @@ pub(crate) struct PeerConnection {
     /// The address announced to the server; the socket itself listens on every interface.
     local_candidate: SocketAddr,
     pub(crate) media_lines: MediaLines,
+    /// What the camera line sends in this media session.
+    camera_codec: VideoCodec,
     voice_payload_type: Option<Pt>,
     video_payload_type: Option<Pt>,
+    screen_sound_payload_type: Option<Pt>,
     /// DTLS is done: ICE coming back to `connected` means media flows again.
     is_media_connected: bool,
 }
@@ -120,8 +135,13 @@ pub(crate) enum PeerError {
 }
 
 impl PeerConnection {
-    /// A new socket and peer facing `server_address`, with its offer made.
-    pub(crate) fn new(server_address: Ipv4Addr, offer_id: u32) -> Result<Self, PeerError> {
+    /// A new socket and peer facing `server_address`, with its offer made, its camera line
+    /// sending `camera_codec`.
+    pub(crate) fn new(
+        server_address: Ipv4Addr,
+        offer_id: u32,
+        camera_codec: VideoCodec,
+    ) -> Result<Self, PeerError> {
         // Bound to every interface so the system picks the source per destination (the server
         // may answer from another of its addresses); only the candidate names one interface.
         let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0))?;
@@ -129,7 +149,7 @@ impl PeerConnection {
             local_address_towards(server_address)?,
             socket.local_addr()?.port(),
         );
-        let peer = new_peer(local_candidate, Instant::now())?;
+        let peer = new_peer(local_candidate, Instant::now(), camera_codec)?;
         Ok(Self {
             offer_id,
             sdp_offer: peer.sdp_offer,
@@ -138,8 +158,10 @@ impl PeerConnection {
             socket,
             local_candidate,
             media_lines: peer.media_lines,
+            camera_codec,
             voice_payload_type: None,
             video_payload_type: None,
+            screen_sound_payload_type: None,
             is_media_connected: false,
         })
     }
@@ -158,9 +180,11 @@ impl PeerConnection {
     /// Sends the queued voice and video, then runs the peer until its next timer or datagram
     /// (at most [`MAXIMUM_SOCKET_WAIT`]). `is_path_dropped` silences the socket both ways
     /// (tests).
+    #[allow(clippy::too_many_arguments)] // one step of the peer touches every stream
     fn step(
         &mut self,
         outgoing: &Receiver<OutgoingVoicePacket>,
+        screen_sound: &Receiver<OutgoingScreenSoundPacket>,
         incoming: &Sender<IncomingAudioPacket>,
         video: &mut VideoLink,
         reports: &mut Vec<PeerReport>,
@@ -168,6 +192,7 @@ impl PeerConnection {
         buffer: &mut [u8],
     ) -> Result<(), String> {
         self.send_voice(outgoing)?;
+        self.send_screen_sound(screen_sound);
         self.send_video(video);
         self.request_keyframes(video);
         let timeout = loop {
@@ -233,8 +258,14 @@ impl PeerConnection {
             Event::Connected => {
                 self.voice_payload_type =
                     self.payload_type(self.media_lines.voice_send, Codec::Opus);
+                let camera_codec = match self.camera_codec {
+                    VideoCodec::H264 => Codec::H264,
+                    VideoCodec::Vp8 | VideoCodec::Unknown => Codec::Vp8,
+                };
                 self.video_payload_type =
-                    self.payload_type(self.media_lines.camera_send, Codec::Vp8);
+                    self.payload_type(self.media_lines.camera_send, camera_codec);
+                self.screen_sound_payload_type =
+                    self.payload_type(self.media_lines.screen_sound_send, Codec::Opus);
                 self.is_media_connected = true;
                 // Pictures encoded before now were dropped: start every layer afresh.
                 video.encoder.request_keyframe(None);
@@ -318,6 +349,10 @@ impl PeerConnection {
             let Some(payload_type) = self.video_payload_type else {
                 continue;
             };
+            // A source of the other codec, sent before this session was offered for it.
+            if frame.codec != self.camera_codec {
+                continue;
+            }
             let Some(writer) = self.rtc.writer(self.media_lines.camera_send) else {
                 continue;
             };
@@ -329,6 +364,28 @@ impl PeerConnection {
             );
             if let Err(error) = written {
                 tracing::warn!(%error, "a video frame could not be sent");
+            }
+        }
+    }
+
+    /// Writes the shared screen's sound; before the connection it is dropped. A packet that
+    /// cannot be written is lost, as on any audio line.
+    fn send_screen_sound(&mut self, packets: &Receiver<OutgoingScreenSoundPacket>) {
+        while let Ok(packet) = packets.try_recv() {
+            let Some(payload_type) = self.screen_sound_payload_type else {
+                continue;
+            };
+            let Some(writer) = self.rtc.writer(self.media_lines.screen_sound_send) else {
+                continue;
+            };
+            let written = writer.write(
+                payload_type,
+                Instant::now(),
+                MediaTime::new(packet.rtp_timestamp, Frequency::FORTY_EIGHT_KHZ),
+                packet.payload,
+            );
+            if let Err(error) = written {
+                tracing::warn!(%error, "a packet of the screen's sound could not be sent");
             }
         }
     }
@@ -418,6 +475,9 @@ pub(crate) struct NetworkThread {
     pub(crate) settings_store: Arc<dyn PersonVoiceSettingsStore>,
     pub(crate) commands: Receiver<NetworkCommand>,
     pub(crate) outgoing: Receiver<OutgoingVoicePacket>,
+    pub(crate) screen_sound: Receiver<OutgoingScreenSoundPacket>,
+    /// What the camera line of the next offer sends.
+    pub(crate) camera_codec: VideoCodec,
     pub(crate) incoming: Sender<IncomingAudioPacket>,
     pub(crate) events: Sender<VoiceSessionEvent>,
     pub(crate) audio_commands: Sender<AudioCommand>,
@@ -473,6 +533,7 @@ impl NetworkThread {
             let Some(peer) = self.peer.as_mut() else {
                 // Between peers: voice and video have nowhere to go.
                 while self.outgoing.try_recv().is_ok() {}
+                while self.screen_sound.try_recv().is_ok() {}
                 while self.video.outgoing.try_recv().is_ok() {}
                 std::thread::sleep(MAXIMUM_SOCKET_WAIT);
                 continue;
@@ -480,6 +541,7 @@ impl NetworkThread {
             let offer_id = peer.offer_id;
             let stepped = peer.step(
                 &self.outgoing,
+                &self.screen_sound,
                 &self.incoming,
                 &mut self.video,
                 &mut reports,
@@ -529,6 +591,17 @@ impl NetworkThread {
                 self.send_voice_state();
             }
             NetworkCommand::SetVideoSource(kind) => self.set_video_source(kind),
+            NetworkCommand::SetCameraCodec(codec) => self.set_camera_codec(codec),
+            NetworkCommand::ScreenShareEnded { generation, reason } => {
+                if self.video.encoder.is_generation_on(generation) {
+                    self.video.encoder.stop_source();
+                    self.video.source = None;
+                    self.send_voice_state();
+                    let _ = self
+                        .events
+                        .send(VoiceSessionEvent::ScreenShareEnded(reason));
+                }
+            }
             NetworkCommand::WatchCameras(cameras) => {
                 self.video.watched_cameras.clone_from(&cameras);
                 if let Some(cameras) = self.video.watch_list_pacing.offer(cameras, now) {
@@ -687,6 +760,25 @@ impl NetworkThread {
         }
     }
 
+    /// A media session sends one codec on its camera line (ADR-0052): another one needs a new
+    /// offer, made at once so the source's first frames find it.
+    fn set_camera_codec(&mut self, codec: VideoCodec) {
+        if self.camera_codec == codec {
+            return;
+        }
+        self.camera_codec = codec;
+        if self
+            .peer
+            .as_ref()
+            .is_some_and(|peer| peer.camera_codec != codec)
+        {
+            let actions = self
+                .machine
+                .handle(ConnectionInput::Renegotiate, Instant::now());
+            self.perform(actions);
+        }
+    }
+
     /// The server refused or turned off the camera or screen: it already knows.
     fn end_video(&mut self, event: VoiceSessionEvent) {
         self.video.source = None;
@@ -726,7 +818,7 @@ impl NetworkThread {
         let peer = match self.peer.take() {
             // The first offer's peer, made by `join`.
             Some(peer) if peer.offer_id == offer_id => Ok(peer),
-            _ => PeerConnection::new(self.server_address, offer_id),
+            _ => PeerConnection::new(self.server_address, offer_id, self.camera_codec),
         };
         let peer = match peer {
             Ok(peer) => peer,
@@ -788,6 +880,7 @@ mod tests {
         let (events, event_receiver) = mpsc::channel();
         let (_commands, command_receiver) = mpsc::channel();
         let (_outgoing, outgoing_receiver) = mpsc::channel();
+        let (_screen_sound, screen_sound_receiver) = mpsc::channel();
         let (incoming, _incoming_receiver) = mpsc::channel();
         let (audio_commands, _audio_receiver) = mpsc::channel();
         let (_video_out, video_out_receiver) = mpsc::channel();
@@ -802,6 +895,8 @@ mod tests {
             settings_store: Arc::new(InMemoryPersonVoiceSettings::default()),
             commands: command_receiver,
             outgoing: outgoing_receiver,
+            screen_sound: screen_sound_receiver,
+            camera_codec: VideoCodec::Vp8,
             incoming,
             events,
             audio_commands,
@@ -876,6 +971,41 @@ mod tests {
             events.try_recv(),
             Ok(VoiceSessionEvent::VideoRefused(
                 VoiceVideoRefusal::TooManyCameras
+            ))
+        );
+    }
+
+    /// A capture that ended by itself turns its share off and tells the server and the
+    /// interface; an end reported by an older share changes nothing.
+    #[test]
+    fn a_screen_whose_capture_ended_is_turned_off_once() {
+        let (mut network, sent, events) = network_without_peer();
+        let screen = VideoSourceKind::Screen(crate::simulcast::ScreenShareQuality::High);
+        let old = network.video.encoder.start(screen);
+        let input = network.video.encoder.start(screen);
+        network.handle_command(NetworkCommand::SetCameraCodec(VideoCodec::H264));
+        assert_eq!(
+            network.camera_codec,
+            VideoCodec::H264,
+            "kept for the next offer"
+        );
+        network.handle_command(NetworkCommand::SetVideoSource(Some(screen)));
+        assert_eq!(video_state(&sent), Some((true, true)));
+        network.handle_command(NetworkCommand::ScreenShareEnded {
+            generation: old.generation(),
+            reason: ScreenShareEnd::SourceClosed,
+        });
+        assert!(input.is_open() && events.try_recv().is_err());
+        network.handle_command(NetworkCommand::ScreenShareEnded {
+            generation: input.generation(),
+            reason: ScreenShareEnd::SourceClosed,
+        });
+        assert!(!input.is_open() && network.video.source.is_none());
+        assert_eq!(video_state(&sent), Some((false, false)));
+        assert_eq!(
+            events.try_recv(),
+            Ok(VoiceSessionEvent::ScreenShareEnded(
+                ScreenShareEnd::SourceClosed
             ))
         );
     }

@@ -81,6 +81,9 @@ pub(crate) enum ConnectionInput {
     MoveTo {
         channel_id: Snowflake,
     },
+    /// The camera line must send another codec (ADR-0052: fixed per media session): offer the
+    /// session again in the same channel, without calling it a reconnection.
+    Renegotiate,
 }
 
 /// What the network thread must do, in order.
@@ -283,6 +286,7 @@ impl ConnectionMachine {
                     self.rejoin(&mut actions);
                 }
             }
+            ConnectionInput::Renegotiate => self.negotiate(&mut actions),
             ConnectionInput::MoveTo { channel_id } if channel_id != self.channel_id => {
                 self.channel_id = channel_id;
                 self.reconnect_attempts = 0;
@@ -442,6 +446,31 @@ mod tests {
             ConnectionAction::Emit(VoiceSessionEvent::ConnectionFailed(problem)) => Some(*problem),
             _ => None,
         })
+    }
+
+    /// A codec change offers again in silence: no phase change, and the call stays connected
+    /// once the new peer carries media.
+    #[test]
+    fn a_renegotiation_offers_again_without_a_reconnection() {
+        let start = Instant::now();
+        let mut machine = connected(start);
+        let actions = machine.handle(ConnectionInput::Renegotiate, start);
+        assert_eq!(
+            actions,
+            [ConnectionAction::Offer {
+                channel_id: channel(),
+                offer_id: 2,
+            }]
+        );
+        machine.offer_sent(true, start);
+        machine.handle(ConnectionInput::AnswerApplied { offer_id: 2 }, start);
+        assert_eq!(
+            machine.handle(ConnectionInput::MediaConnected { offer_id: 2 }, start),
+            []
+        );
+        assert_eq!(machine.next_deadline(), None);
+        machine.leave();
+        assert_eq!(machine.handle(ConnectionInput::Renegotiate, start), []);
     }
 
     #[test]

@@ -875,6 +875,8 @@ impl Voice {
             VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
                 self.video.note_paused(*user_id, *is_paused);
             }
+            // The screen share's interface comes with the screen-sharing track (M3 step 8).
+            VoiceSessionEvent::ScreenShareEnded(_) => {}
         }
     }
 

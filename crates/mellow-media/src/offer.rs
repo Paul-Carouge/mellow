@@ -3,13 +3,15 @@
 //! camera line (VP8, simulcast `h`, `l`, `q`; H.264 offered too where the system decodes it,
 //! ADR-0052) and 9 camera slots, the screen-sound line and 3
 //! screen-sound slots. Order is all that tells voice lines from screen-sound lines, so the mids
-//! of each group are kept here.
+//! of each group are kept here. While an H.264 share runs, the camera line offers H.264
+//! Constrained Baseline only and the receive lines stay as they were (ADR-0052, ADR-0054).
 
 use std::net::SocketAddr;
 use std::time::{Duration, Instant};
 
 use mellow_protocol::{
     MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
+    VideoCodec,
 };
 use str0m::change::SdpPendingOffer;
 use str0m::format::{Codec, FormatParams};
@@ -44,6 +46,8 @@ pub(crate) struct MediaLines {
     /// The camera or shared screen, simulcast `q`, `l`, `h`.
     pub(crate) camera_send: Mid,
     pub(crate) camera_receive: Vec<Mid>,
+    /// The shared screen's sound (ADR-0037).
+    pub(crate) screen_sound_send: Mid,
     pub(crate) screen_sound_receive: Vec<Mid>,
 }
 
@@ -95,16 +99,24 @@ impl std::fmt::Debug for PendingPeer {
 pub struct OfferError(String);
 
 /// A peer whose only candidate is `local_address` (the server is ICE-lite with one public host
-/// candidate: no STUN or TURN is needed), and its offer.
-pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<PendingPeer, OfferError> {
+/// candidate: no STUN or TURN is needed), and its offer, whose camera line sends
+/// `camera_codec`.
+pub(crate) fn new_peer(
+    local_address: SocketAddr,
+    now: Instant,
+    camera_codec: VideoCodec,
+) -> Result<PendingPeer, OfferError> {
     str0m::crypto::from_feature_flags().install_process_default();
     let mut builder = Rtc::builder()
         .clear_codecs()
         .enable_vp8(true)
         .set_stats_interval(Some(STATS_INTERVAL));
     // Video lines take H.264 too where the system decodes it (ADR-0052): the server then sends
-    // native sharers' pictures here. The camera line sends VP8, which the server picks first.
-    if crate::h264::decodes_h264() {
+    // native sharers' pictures here. The camera line sends VP8, which the server picks first,
+    // unless an H.264 share runs (ADR-0054).
+    let is_h264_camera = camera_codec == VideoCodec::H264;
+    let receive_lines_take_h264 = crate::h264::decodes_h264();
+    if is_h264_camera || receive_lines_take_h264 {
         builder.codec_config().add_h264(
             Pt::new_with_value(H264_PAYLOAD_TYPE),
             Some(Pt::new_with_value(H264_RETRANSMISSION_PAYLOAD_TYPE)),
@@ -145,8 +157,6 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
     for rid in SIMULCAST_RIDS {
         simulcast.add_send_layer(SimulcastLayer::new(rid));
     }
-    // The screen-sound send line carries nothing yet; the server requires it for the receive
-    // lines after it.
     let camera_send = change.add_media(
         MediaKind::Video,
         Direction::SendOnly,
@@ -164,7 +174,7 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
         Direction::RecvOnly,
         MAXIMUM_VIDEO_RECEIVE_SLOTS,
     );
-    add_lines(MediaKind::Audio, Direction::SendOnly, 1);
+    let screen_sound_send = add_lines(MediaKind::Audio, Direction::SendOnly, 1);
     let screen_sound_receive = add_lines(
         MediaKind::Audio,
         Direction::RecvOnly,
@@ -176,18 +186,93 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
     let Some(&voice_send) = voice_send.first() else {
         return Err(OfferError("the voice line is missing".into()));
     };
+    let Some(&screen_sound_send) = screen_sound_send.first() else {
+        return Err(OfferError("the screen sound line is missing".into()));
+    };
+    let sdp_offer = offer.to_sdp_string();
+    let sdp_offer = if is_h264_camera {
+        let h264 = [H264_PAYLOAD_TYPE, H264_RETRANSMISSION_PAYLOAD_TYPE];
+        restrict_video_payload_types(&sdp_offer, &camera_send, &h264, receive_lines_take_h264)
+    } else {
+        sdp_offer
+    };
     Ok(PendingPeer {
         rtc,
         pending,
-        sdp_offer: offer.to_sdp_string(),
+        sdp_offer,
         media_lines: MediaLines {
             voice_send,
             voice_receive,
             camera_send,
             camera_receive,
+            screen_sound_send,
             screen_sound_receive,
         },
     })
+}
+
+/// The offer with the video m-line `camera_mid` carrying only `payload_types` and every other
+/// video m-line carrying all but them, unless `receive_lines_keep_them`. `str0m` offers its
+/// whole codec configuration on every line of a kind, while the server reads the camera line's
+/// codecs as what the participant sends and the receive lines' as what it decodes (ADR-0052).
+/// The answer only ever names payload types of this offer, which `str0m` accepts.
+fn restrict_video_payload_types(
+    sdp: &str,
+    camera_mid: &Mid,
+    payload_types: &[u8],
+    receive_lines_keep_them: bool,
+) -> String {
+    let mut sections: Vec<Vec<&str>> = vec![Vec::new()];
+    for line in sdp.lines() {
+        if line.starts_with("m=") {
+            sections.push(Vec::new());
+        }
+        if let Some(section) = sections.last_mut() {
+            section.push(line);
+        }
+    }
+    let camera_mid_line = format!("a=mid:{camera_mid}");
+    let mut restricted = String::with_capacity(sdp.len());
+    for section in sections {
+        let is_video = section
+            .first()
+            .is_some_and(|line| line.starts_with("m=video "));
+        let is_camera = section.iter().any(|line| *line == camera_mid_line);
+        let keeps = |payload_type: u8| {
+            if is_camera {
+                payload_types.contains(&payload_type)
+            } else {
+                receive_lines_keep_them || !payload_types.contains(&payload_type)
+            }
+        };
+        for line in section {
+            let kept = if !is_video {
+                Some(line.to_owned())
+            } else if line.starts_with("m=video ") {
+                // `m=video <port> <proto> <payload types…>`
+                let mut fields: Vec<&str> = line.split(' ').collect();
+                let kept_formats: Vec<&str> = fields
+                    .split_off(3.min(fields.len()))
+                    .into_iter()
+                    .filter(|format| format.parse().is_ok_and(keeps))
+                    .collect();
+                fields.extend(kept_formats);
+                Some(fields.join(" "))
+            } else {
+                let payload_type = ["a=rtpmap:", "a=fmtp:", "a=rtcp-fb:"]
+                    .iter()
+                    .find_map(|prefix| line.strip_prefix(prefix))
+                    .and_then(|rest| rest.split([' ', ':']).next())
+                    .and_then(|payload_type| payload_type.parse::<u8>().ok());
+                payload_type.is_none_or(keeps).then(|| line.to_owned())
+            };
+            if let Some(kept) = kept {
+                restricted.push_str(&kept);
+                restricted.push_str("\r\n");
+            }
+        }
+    }
+    restricted
 }
 
 #[cfg(test)]
@@ -195,7 +280,102 @@ mod tests {
     use super::*;
 
     fn offer() -> PendingPeer {
-        new_peer("127.0.0.1:40000".parse().unwrap(), Instant::now()).unwrap()
+        offer_with(VideoCodec::Vp8)
+    }
+
+    fn offer_with(camera_codec: VideoCodec) -> PendingPeer {
+        new_peer(
+            "127.0.0.1:40000".parse().unwrap(),
+            Instant::now(),
+            camera_codec,
+        )
+        .unwrap()
+    }
+
+    /// The `m=` line and attribute lines of the section whose mid is `mid`.
+    fn section_of<'a>(sdp: &'a str, mid: &Mid) -> Vec<&'a str> {
+        let mut sections: Vec<Vec<&str>> = Vec::new();
+        for line in sdp.lines() {
+            if line.starts_with("m=") {
+                sections.push(Vec::new());
+            }
+            if let Some(section) = sections.last_mut() {
+                section.push(line);
+            }
+        }
+        let mid_line = format!("a=mid:{mid}");
+        sections
+            .into_iter()
+            .find(|section| section.contains(&mid_line.as_str()))
+            .unwrap()
+    }
+
+    #[test]
+    fn an_h264_share_offers_h264_alone_on_the_camera_line_and_nothing_else_changes() {
+        let peer = offer_with(VideoCodec::H264);
+        let sdp = &peer.sdp_offer;
+        let camera = section_of(sdp, &peer.media_lines.camera_send);
+        assert!(camera[0].ends_with(" 108 109"), "{camera:?}");
+        let rtpmaps: Vec<&&str> = camera
+            .iter()
+            .filter(|line| line.starts_with("a=rtpmap:"))
+            .collect();
+        assert_eq!(
+            rtpmaps,
+            [&"a=rtpmap:108 H264/90000", &"a=rtpmap:109 rtx/90000"]
+        );
+        let fmtp = camera
+            .iter()
+            .find(|line| line.starts_with("a=fmtp:108 "))
+            .unwrap();
+        for parameter in ["packetization-mode=1", "profile-level-id=42e01f"] {
+            assert!(fmtp.contains(parameter), "{fmtp}");
+        }
+        assert!(camera.contains(&"a=simulcast:send q;l;h"));
+        for mid in &peer.media_lines.camera_receive {
+            let receive = section_of(sdp, mid);
+            assert_eq!(
+                receive.join("\n").contains("H264"),
+                crate::h264::decodes_h264(),
+                "{receive:?}"
+            );
+            assert!(receive.iter().any(|line| line.contains("VP8/90000")));
+        }
+        // Still the server's shape.
+        let sections = media_sections(sdp);
+        assert_eq!(sections.len(), 31);
+    }
+
+    /// Where the system decodes H.264, an H.264 sharer's receive lines keep it, so others'
+    /// H.264 shares still reach it; elsewhere they lose it.
+    #[test]
+    fn receive_lines_keep_h264_only_when_the_system_decodes_it() {
+        let section = |mid: &str| {
+            format!(
+                "m=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109\r\na=mid:{mid}\r\n\
+                 a=rtpmap:96 VP8/90000\r\na=rtpmap:97 rtx/90000\r\n\
+                 a=rtpmap:108 H264/90000\r\na=fmtp:108 packetization-mode=1\r\n\
+                 a=rtcp-fb:108 nack\r\na=rtpmap:109 rtx/90000\r\n"
+            )
+        };
+        let sdp = format!("v=0\r\n{}{}", section("0"), section("1"));
+        let h264 = [H264_PAYLOAD_TYPE, H264_RETRANSMISSION_PAYLOAD_TYPE];
+        for receive_lines_keep_them in [false, true] {
+            let restricted =
+                restrict_video_payload_types(&sdp, &Mid::from("0"), &h264, receive_lines_keep_them);
+            let camera = section_of(&restricted, &Mid::from("0"));
+            assert_eq!(camera[0], "m=video 9 UDP/TLS/RTP/SAVPF 108 109");
+            assert!(!camera.join("\n").contains("VP8"));
+            let receive = section_of(&restricted, &Mid::from("1"));
+            assert!(receive.contains(&"a=rtpmap:96 VP8/90000"));
+            if receive_lines_keep_them {
+                assert_eq!(receive[0], "m=video 9 UDP/TLS/RTP/SAVPF 96 97 108 109");
+                assert!(receive.contains(&"a=rtcp-fb:108 nack"));
+            } else {
+                assert_eq!(receive[0], "m=video 9 UDP/TLS/RTP/SAVPF 96 97");
+                assert!(!receive.join("\n").contains("H264"));
+            }
+        }
     }
 
     /// The `m=` lines with their direction, in order.
@@ -311,6 +491,7 @@ mod tests {
         );
         assert_eq!(lines.receive_slot_kind(lines.voice_send), None);
         assert_eq!(lines.receive_slot_kind(lines.camera_send), None);
+        assert_eq!(lines.receive_slot_kind(lines.screen_sound_send), None);
         assert_eq!(lines.audio_receive().count(), 19);
     }
 }

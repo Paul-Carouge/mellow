@@ -35,6 +35,17 @@ pub fn spa_to_drm(format: VideoFormat) -> Option<u32> {
     })
 }
 
+/// Whether shared-memory frames in `format` reach the callback: the four
+/// layouts with alpha or padding last (`XR24`, `AR24`, `XB24`, `AB24`), the
+/// ones a CPU consumer converts. The others are never offered in shared
+/// memory, so a compositor cannot pick a layout no frame would be read in.
+pub fn is_shared_memory_format(format: VideoFormat) -> bool {
+    matches!(
+        format,
+        VideoFormat::BGRx | VideoFormat::BGRA | VideoFormat::RGBx | VideoFormat::RGBA
+    )
+}
+
 /// The video properties of a format pod we care about.
 #[derive(Debug, Default, PartialEq)]
 pub struct FormatInfo {
@@ -126,9 +137,9 @@ pub(crate) fn serialize(obj: Object) -> Vec<u8> {
         .into_inner()
 }
 
-/// Builds a DMA-BUF `EnumFormat` pod. One modifier is a fixated choice;
-/// several let the server pick. `modifiers` must not be empty. `max_fps`
-/// caps `maxFramerate`, so the compositor sends no more frames than that.
+/// Builds an `EnumFormat` pod. One modifier is a fixated choice; several
+/// let the server pick; none asks for shared memory. `max_fps` caps
+/// `maxFramerate`, so the compositor sends no more frames than that.
 pub fn enum_format(format: VideoFormat, modifiers: &[u64], max_fps: u32) -> Vec<u8> {
     let max_fps = Fraction {
         num: max_fps.max(1),
@@ -184,7 +195,8 @@ pub fn enum_format(format: VideoFormat, modifiers: &[u64], max_fps: u32) -> Vec<
         ),
     ];
     match modifiers {
-        [] => unreachable!("DMA-BUF formats always carry modifiers"),
+        // Shared memory: a format without a modifier.
+        [] => {}
         [m] => properties.push(Property {
             key: sys::SPA_FORMAT_VIDEO_modifier,
             flags: PropertyFlags::MANDATORY,
@@ -220,8 +232,12 @@ fn range_choice<T: pipewire::spa::pod::CanonicalFixedSizedPod>(
     )
 }
 
-/// The `Buffers` param: DMA-BUF only.
-pub fn buffers_param() -> Vec<u8> {
+/// The `Buffers` param: DMA-BUF only, or memory PipeWire maps for us.
+pub fn buffers_param(memory: crate::FrameMemory) -> Vec<u8> {
+    let data_types = match memory {
+        crate::FrameMemory::DmaBuf => 1 << sys::SPA_DATA_DmaBuf,
+        crate::FrameMemory::Shared => (1 << sys::SPA_DATA_MemFd) | (1 << sys::SPA_DATA_MemPtr),
+    };
     serialize(Object {
         type_: sys::SPA_TYPE_OBJECT_ParamBuffers,
         id: sys::SPA_PARAM_Buffers,
@@ -230,7 +246,7 @@ pub fn buffers_param() -> Vec<u8> {
             Value::Choice(ChoiceValue::Int(Choice(
                 ChoiceFlags::empty(),
                 ChoiceEnum::Flags {
-                    default: 1 << sys::SPA_DATA_DmaBuf,
+                    default: data_types,
                     flags: vec![],
                 },
             ))),
@@ -279,6 +295,15 @@ pub fn frame_pts(header_pts: Option<i64>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_memory_offers_only_the_layouts_with_alpha_last() {
+        assert!(is_shared_memory_format(VideoFormat::BGRx));
+        assert!(is_shared_memory_format(VideoFormat::RGBA));
+        assert!(!is_shared_memory_format(VideoFormat::xRGB));
+        assert!(!is_shared_memory_format(VideoFormat::ABGR));
+        assert!(spa_to_drm(VideoFormat::ABGR).is_some());
+    }
 
     #[test]
     fn maps_common_formats_to_drm() {
@@ -333,6 +358,13 @@ mod tests {
         let fixed = parse_format(&enum_format(VideoFormat::BGRA, &[MOD_LINEAR], 60)).unwrap();
         assert_eq!(fixed.modifiers, vec![MOD_LINEAR]);
         assert!(!fixed.dont_fixate);
+    }
+
+    #[test]
+    fn a_shared_memory_format_carries_no_modifier() {
+        let info = parse_format(&enum_format(VideoFormat::BGRx, &[], 30)).unwrap();
+        assert_eq!(info.formats, [VideoFormat::BGRx]);
+        assert!(info.modifiers.is_empty() && !info.dont_fixate);
     }
 
     #[test]

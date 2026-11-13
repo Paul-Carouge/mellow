@@ -271,6 +271,12 @@ pub struct Options {
     /// streams to itself instead of reading its monitor; with no app held
     /// it reads the monitor, as without this. `None`: neither.
     pub exclusions: Option<Arc<Exclusions>>,
+    /// A desktop or output track leaving apps out that cannot follow the
+    /// default sink goes silent and retries, as a lost source, instead of
+    /// recording the sink's monitor with every app: for a track whose apps
+    /// left out must never be heard (a call's own voices in a shared
+    /// screen's sound).
+    pub exclusions_required: bool,
 }
 
 impl std::fmt::Debug for Options {
@@ -506,9 +512,22 @@ impl AudioCapture {
         let (stop, stop_rx) = ::pipewire::channel::channel();
         let (ready_tx, ready_rx) = mpsc::channel();
         let (on_state, except) = (options.on_state, options.exclusions);
+        let exclusions_required = options.exclusions_required;
         let pw_thread = std::thread::Builder::new()
             .name("vesper-audio-pw".into())
-            .spawn(move || pw::run(source, except, chunk_tx, stop_rx, ready_tx, on_state))?;
+            .spawn(move || {
+                pw::run(
+                    source,
+                    pw::Excluding {
+                        exclusions: except,
+                        required: exclusions_required,
+                    },
+                    chunk_tx,
+                    stop_rx,
+                    ready_tx,
+                    on_state,
+                );
+            })?;
         let capture = Self {
             shared,
             extradata,
