@@ -7,6 +7,7 @@
 
 use std::process::ExitCode;
 
+use mellow_desktop::components::gallery::gallery_requested;
 use mellow_desktop::session::LOGOUT_ON_EXIT_TIMEOUT;
 use mellow_desktop::single_instance::{InstanceClaim, claim_single_instance};
 use mellow_desktop::theme::EmbeddedAssets;
@@ -17,14 +18,17 @@ fn main() -> ExitCode {
         .with_writer(std::io::stderr)
         .init();
 
-    // Before anything else: a second launch only shows the running Mellow's window.
-    let show_requests = match claim_single_instance() {
-        Ok(InstanceClaim::First(show_requests)) => Some(show_requests),
-        Ok(InstanceClaim::AlreadyRunning) => {
+    // Before anything else: a second launch only shows the running Mellow's window. The component
+    // gallery opens next to a running Mellow.
+    let claim = gallery_requested().is_none().then(claim_single_instance);
+    let show_requests = match claim {
+        None => None,
+        Some(Ok(InstanceClaim::First(show_requests))) => Some(show_requests),
+        Some(Ok(InstanceClaim::AlreadyRunning)) => {
             tracing::info!("Mellow already runs: its window was asked to show");
             return ExitCode::SUCCESS;
         }
-        Err(error) => {
+        Some(Err(error)) => {
             tracing::warn!(error = %error.kind(), "cannot make sure only one Mellow runs");
             None
         }
