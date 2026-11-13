@@ -43,7 +43,7 @@ printf '%s' "${password}" > password.txt
 # SHA-1 and 3DES: the PKCS#12 algorithms every macOS `security import` reads.
 openssl pkcs12 -export -inkey private-key.pem -in certificate.pem -name "${common_name}" \
   -keypbe PBE-SHA1-3DES -certpbe PBE-SHA1-3DES -macalg sha1 \
-  -passout "pass:${password}" -out identity.p12
+  -passout file:password.txt -out identity.p12
 base64 < identity.p12 | tr -d '\n' > identity.p12.base64
 rm -f private-key.pem certificate.cnf
 

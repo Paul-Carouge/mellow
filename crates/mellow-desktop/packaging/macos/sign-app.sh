@@ -37,6 +37,8 @@ security set-keychain-settings -lut 900 "${keychain}"
 security unlock-keychain -p "${keychain_password}" "${keychain}"
 # Searched first, as codesign and the partition list below expect on every macOS version.
 security list-keychains -d user -s "${keychain}" "${original_keychains[@]}"
+# `security import` takes the password on its command line only; accepted, as the runner is a
+# single-tenant VM that no other account shares.
 security import "${work_directory}/identity.p12" -k "${keychain}" -f pkcs12 \
   -P "${MACOS_SIGNING_CERTIFICATE_PASSWORD}" -T /usr/bin/codesign
 echo "allowing codesign to use the key"
