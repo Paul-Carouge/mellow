@@ -135,7 +135,7 @@ pub struct WriteRequest(u64);
 fn drafts_directory() -> Option<PathBuf> {
     Some(
         dirs::data_local_dir()?
-            .join(APPLICATION_DIRECTORY)
+            .join(&*crate::profile::with_profile_suffix(APPLICATION_DIRECTORY))
             .join(DRAFTS_DIRECTORY),
     )
 }

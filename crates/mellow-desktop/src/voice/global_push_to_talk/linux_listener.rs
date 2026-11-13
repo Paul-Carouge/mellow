@@ -330,7 +330,9 @@ async fn register_host_app_once() {
     if HAS_TRIED.swap(true, Ordering::AcqRel) {
         return;
     }
-    let registered = match ashpd::AppID::try_from(crate::APP_IDENTIFIER) {
+    let registered = match ashpd::AppID::try_from(&*crate::profile::profile_app_identifier(
+        crate::APP_IDENTIFIER,
+    )) {
         Ok(app_id) => ashpd::register_host_app(app_id).await,
         Err(error) => Err(error),
     };

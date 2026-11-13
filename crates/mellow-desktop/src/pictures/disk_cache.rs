@@ -43,7 +43,7 @@ pub(crate) fn disk_file_name(file: DownloadableFile) -> Option<String> {
 pub(crate) fn pictures_directory() -> Option<PathBuf> {
     Some(
         dirs::cache_dir()?
-            .join(APPLICATION_DIRECTORY)
+            .join(&*crate::profile::with_profile_suffix(APPLICATION_DIRECTORY))
             .join(PICTURES_DIRECTORY),
     )
 }

@@ -50,7 +50,8 @@ fn menu_entry(label: &str, command: TrayCommand) -> MenuItem<MellowTray> {
 
 impl ksni::Tray for MellowTray {
     fn id(&self) -> String {
-        APP_IDENTIFIER.to_owned()
+        // One tray item per profile, so a test profile's icon is never taken for the everyday one.
+        crate::profile::profile_app_identifier(APP_IDENTIFIER).into_owned()
     }
 
     fn title(&self) -> String {

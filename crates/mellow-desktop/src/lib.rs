@@ -29,6 +29,7 @@ pub mod navigation;
 pub mod notifier;
 pub mod pictures;
 pub mod preferences;
+pub mod profile;
 pub mod self_update;
 pub mod session;
 pub mod session_store;

@@ -86,7 +86,9 @@ const SOCKET_FILE_NAME: &str = "instance.socket";
 #[cfg(unix)]
 fn instance_directory() -> Option<PathBuf> {
     let base = dirs::runtime_dir().or_else(dirs::data_local_dir)?;
-    Some(base.join(crate::pictures::disk_cache::APPLICATION_DIRECTORY))
+    Some(base.join(&*crate::profile::with_profile_suffix(
+        crate::pictures::disk_cache::APPLICATION_DIRECTORY,
+    )))
 }
 
 #[cfg(unix)]
@@ -218,7 +220,11 @@ mod windows_pipe {
         }
         let domain = std::env::var("USERDOMAIN").unwrap_or_default();
         let account = format!("{domain}.{account}").replace('\\', ".");
-        Ok(format!("{PIPE_NAME_PREFIX}{account}"))
+        let profile = crate::profile::active_profile_name()
+            // `;` cannot appear in a Windows account name, so no account's pipe can spell another's.
+            .map(|name| format!(";profile={name}"))
+            .unwrap_or_default();
+        Ok(format!("{PIPE_NAME_PREFIX}{account}{profile}"))
     }
 
     pub(super) fn claim(name: &str) -> io::Result<InstanceClaim> {
