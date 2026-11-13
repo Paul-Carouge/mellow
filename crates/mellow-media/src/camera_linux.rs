@@ -1,10 +1,10 @@
 //! Linux cameras through Vesper's PipeWire capture (`vesper_capture::camera`): the camera nodes
-//! WirePlumber makes of every V4L2 (and libcamera) device, opened by their stable `node.name`.
+//! `WirePlumber` makes of every V4L2 (and libcamera) device, opened by their stable `node.name`.
 //! When the session's PipeWire shows none (a sandbox, or an access policy that hides cameras from
 //! plain clients) the xdg Camera portal hands a PipeWire connection that sees them.
 //!
 //! No direct V4L2 path: PipeWire already reads V4L2 underneath on every desktop the client
-//! targets, and opening `/dev/video*` beside it would fight WirePlumber for the device (busy).
+//! targets, and opening `/dev/video*` beside it would fight `WirePlumber` for the device (busy).
 //!
 //! Pictures stay in system memory (MJPEG decoded by FFmpeg on the CPU, YUY2 and NV12 copied by
 //! Vesper's PipeWire thread), at most 1280 × 720. A thread of ours takes the newest one (Vesper
@@ -35,7 +35,8 @@ const FIRST_PICTURE_TIMEOUT: Duration = Duration::from_secs(12);
 /// How often the conversion thread looks whether it must stop while no picture comes.
 const STOP_CHECK_PERIOD: Duration = Duration::from_millis(100);
 
-fn system_error(error: &vesper_capture::Error) -> CameraError {
+#[allow(clippy::needless_pass_by_value)] // the shape `map_err` hands over
+fn system_error(error: vesper_capture::Error) -> CameraError {
     CameraError::System(error.to_string())
 }
 
@@ -85,7 +86,7 @@ fn cameras_through_the_portal() -> Result<Option<(OwnedFd, Vec<CameraInfo>)>, Ca
     let listing_remote = remote
         .try_clone()
         .map_err(|error| CameraError::System(error.to_string()))?;
-    let listed = cameras_on(Some(listing_remote)).map_err(|error| system_error(&error))?;
+    let listed = cameras_on(Some(listing_remote)).map_err(system_error)?;
     Ok(Some((remote, listed)))
 }
 
@@ -115,10 +116,13 @@ fn captured_frame_of(frame: &CpuFrame) -> Option<CapturedFrame> {
 
 fn push_picture(frame: &CameraFrame, frames: &VideoInput) {
     match frame {
-        CameraFrame::Cpu(frame) => match captured_frame_of(frame) {
-            Some(captured) => frames.push(captured),
-            None => tracing::warn!("a camera picture does not match its size; dropped"),
-        },
+        CameraFrame::Cpu(frame) => {
+            if let Some(captured) = captured_frame_of(frame) {
+                frames.push(captured);
+            } else {
+                tracing::warn!("a camera picture does not match its size; dropped");
+            }
+        }
         // Never asked for (`decode_on_gpu: false`).
         CameraFrame::Gpu(_) => {}
     }
@@ -172,7 +176,7 @@ impl Drop for PipeWireCapture {
 
 impl Cameras for SystemCameras {
     fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
-        let listed = cameras().map_err(|error| system_error(&error))?;
+        let listed = cameras().map_err(system_error)?;
         if !listed.is_empty() {
             return Ok(listed.into_iter().map(description_of).collect());
         }
@@ -186,22 +190,20 @@ impl Cameras for SystemCameras {
         device_id: Option<&str>,
         frames: VideoInput,
     ) -> Result<Box<dyn RunningCapture>, CameraError> {
-        let listed = cameras().map_err(|error| system_error(&error))?;
-        let (node, remote) = match chosen_node(&listed, device_id) {
-            Some(node) => (node, None),
-            None => {
-                let (remote, listed) =
-                    cameras_through_the_portal()?.ok_or(CameraError::NoCamera)?;
-                let node = chosen_node(&listed, device_id).ok_or(CameraError::NoCamera)?;
-                (node, Some(remote))
-            }
+        let listed = cameras().map_err(system_error)?;
+        let (node, remote) = if let Some(node) = chosen_node(&listed, device_id) {
+            (node, None)
+        } else {
+            let (remote, listed) = cameras_through_the_portal()?.ok_or(CameraError::NoCamera)?;
+            let node = chosen_node(&listed, device_id).ok_or(CameraError::NoCamera)?;
+            (node, Some(remote))
         };
         let options = OpenOptions {
             remote,
             max_size: PREFERRED_CAMERA_SIZE,
             decode_on_gpu: false,
         };
-        let camera = Camera::open_with(&node, options).map_err(|error| system_error(&error))?;
+        let camera = Camera::open_with(&node, options).map_err(system_error)?;
         // The first picture says the camera works: a busy or broken one fails here, where the
         // caller can tell the user, rather than leaving a camera that never sends.
         let deadline = Instant::now() + FIRST_PICTURE_TIMEOUT;
