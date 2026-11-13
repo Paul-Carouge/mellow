@@ -501,6 +501,7 @@ pub fn run<F>(
                 // Every compositor offers its formats in shared memory too.
                 FrameMemory::Shared => supported
                     .iter()
+                    .filter(|(f, _)| format::is_shared_memory_format(*f))
                     .map(|(f, _)| format::enum_format(*f, &[], max_fps))
                     .collect(),
             };

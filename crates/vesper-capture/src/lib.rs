@@ -93,7 +93,8 @@ pub struct MemoryFrame<'a> {
     pub height: u32,
     /// Bytes from one row to the next (at least `width * 4`).
     pub stride: u32,
-    /// DRM fourcc of the 8-bit RGB layout, e.g. `XR24` (`BGRx` in memory).
+    /// DRM fourcc of the 8-bit RGB layout: `XR24`, `AR24`, `XB24` or `AB24`
+    /// (`BGRx`, `BGRA`, `RGBx`, `RGBA` in memory).
     pub fourcc: u32,
     /// `stride * (height - 1) + width * 4` bytes at least.
     pub pixels: &'a [u8],

@@ -35,6 +35,17 @@ pub fn spa_to_drm(format: VideoFormat) -> Option<u32> {
     })
 }
 
+/// Whether shared-memory frames in `format` reach the callback: the four
+/// layouts with alpha or padding last (`XR24`, `AR24`, `XB24`, `AB24`), the
+/// ones a CPU consumer converts. The others are never offered in shared
+/// memory, so a compositor cannot pick a layout no frame would be read in.
+pub fn is_shared_memory_format(format: VideoFormat) -> bool {
+    matches!(
+        format,
+        VideoFormat::BGRx | VideoFormat::BGRA | VideoFormat::RGBx | VideoFormat::RGBA
+    )
+}
+
 /// The video properties of a format pod we care about.
 #[derive(Debug, Default, PartialEq)]
 pub struct FormatInfo {
@@ -284,6 +295,15 @@ pub fn frame_pts(header_pts: Option<i64>) -> Duration {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shared_memory_offers_only_the_layouts_with_alpha_last() {
+        assert!(is_shared_memory_format(VideoFormat::BGRx));
+        assert!(is_shared_memory_format(VideoFormat::RGBA));
+        assert!(!is_shared_memory_format(VideoFormat::xRGB));
+        assert!(!is_shared_memory_format(VideoFormat::ABGR));
+        assert!(spa_to_drm(VideoFormat::ABGR).is_some());
+    }
 
     #[test]
     fn maps_common_formats_to_drm() {
