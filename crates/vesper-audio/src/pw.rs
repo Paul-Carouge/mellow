@@ -16,7 +16,7 @@ use pw::registry::GlobalObject;
 use pw::spa;
 use pw::spa::pod::Pod;
 use pw::types::ObjectType;
-use tracing::{debug, error, info, warn};
+use tracing::{debug, error, warn};
 
 use crate::ring::{Producer, Writer};
 use crate::{Error, Exclusions, OnState, SAMPLE_RATE, Source, TrackState};
@@ -227,13 +227,17 @@ impl Health {
 /// sink (it then reads the monitor for good).
 pub fn run(
     source: Source,
-    exclusions: Option<Arc<Exclusions>>,
+    excluding: Excluding,
     tx: Writer,
     stop: pw::channel::Receiver<()>,
     ready: mpsc::Sender<Result<(), Error>>,
     on_state: Option<OnState>,
 ) {
     pw::init();
+    let Excluding {
+        exclusions,
+        required: exclusions_required,
+    } = excluding;
     let mainloop = match pw::main_loop::MainLoopRc::new(None) {
         Ok(m) => m,
         Err(e) => return drop(ready.send(Err(e.into()))),
@@ -256,7 +260,10 @@ pub fn run(
     let mut reconnect = Reconnect::default();
     // The desktop or output track's apps left out, and its reopening.
     let sink_track = matches!(source, Source::Desktop | Source::Output(_));
-    let reopen = Rc::new(Reopen::default());
+    let reopen = Rc::new(Reopen {
+        exclusions_required,
+        ..Reopen::default()
+    });
     let (except_tx, except_rx) = pw::channel::channel();
     let excluded = exclusions.as_ref().filter(|_| sink_track);
     if let Some(ex) = excluded {
@@ -285,7 +292,7 @@ pub fn run(
             let source = source.clone();
             move || {
                 if reconnecting.replace(false) {
-                    info!("{source:?}: capturing again");
+                    debug!("{source:?}: capturing again");
                     on_state(TrackState::Running);
                 }
             }
@@ -347,7 +354,8 @@ pub fn run(
         // Warned once per outage: a removed device retries every 2 s, and a
         // flapping one keeps backing off within the same outage.
         if new_outage {
-            warn!("{source:?}: {reason}; reconnecting");
+            // The kind only: an app track's source names the app.
+            warn!("{}: {reason}; reconnecting", kind_of(&source));
         } else {
             debug!("{source:?}: {reason}; reconnecting in {wait:?}");
         }
@@ -384,9 +392,30 @@ pub fn run(
     }
 }
 
+/// The apps a track leaves out, see [`crate::Options::exclusions`] and
+/// [`crate::Options::exclusions_required`].
+pub(crate) struct Excluding {
+    pub(crate) exclusions: Option<Arc<Exclusions>>,
+    pub(crate) required: bool,
+}
+
+/// What a track records, without naming the app or device: for warnings,
+/// which reach logs that must not hold them.
+fn kind_of(source: &Source) -> &'static str {
+    match source {
+        Source::Desktop => "desktop",
+        Source::Microphone => "microphone",
+        Source::Output(_) => "output device",
+        Source::Input(_) => "input device",
+        Source::App(_) => "app",
+    }
+}
+
 /// A desktop or output track's reopening, see `run`.
 #[derive(Default)]
 struct Reopen {
+    /// Never falls back to the monitor (`Options::exclusions_required`).
+    exclusions_required: bool,
     /// The apps held when the session opened.
     apps: RefCell<Vec<String>>,
     /// A session runs the loop.
@@ -561,10 +590,15 @@ impl Session {
         let input = source.is_input();
         // How the sink an app plays to stamps its monitor; unused otherwise.
         let timing = Arc::new(AppTiming::default());
-        // Leaving apps out needs the default sink: without it, the monitor.
+        // Leaving apps out needs the default sink: without it, the monitor,
+        // or silence until it can when the apps must stay out.
         let fallback: Rc<dyn Fn(&str)> = {
-            let (reopen, mainloop) = (reopen.clone(), mainloop.clone());
+            let (reopen, mainloop, health) = (reopen.clone(), mainloop.clone(), health.clone());
             Rc::new(move |why| {
+                if reopen.exclusions_required {
+                    health.lose(format!("{why}; the apps left out cannot be"), &mainloop);
+                    return;
+                }
                 warn!("{name}: {why}; recording the sink's monitor with every app");
                 reopen.monitor.set(true);
                 reopen.wanted.set(true);
@@ -1063,14 +1097,7 @@ impl AppLinks {
                         }
                         // After the sinks: a sink is never one of the streams.
                         ObjectType::Node if s.wanted.matches(props, &s.own_pid) => {
-                            match s.wanted {
-                                Wanted::App(_) => {
-                                    info!("{}: following stream node {}", s.wanted, global.id);
-                                }
-                                Wanted::SinkExcept { .. } => {
-                                    debug!("{}: following stream node {}", s.wanted, global.id);
-                                }
-                            }
+                            debug!("{}: following stream node {}", s.wanted, global.id);
                             s.nodes.insert(global.id);
                         }
                         ObjectType::Port => {
@@ -1170,7 +1197,7 @@ impl AppLinks {
                 {
                     let mut s = state.borrow_mut();
                     if s.default_sink != default {
-                        info!("{}: default sink {default:?}", s.wanted);
+                        debug!("{}: default sink {default:?}", s.wanted);
                         s.default_sink = default;
                         s.update(&core, stream.node_id());
                     }
@@ -1221,7 +1248,7 @@ impl AppLinks {
                     Ok(link) => {
                         links.insert((out_id, in_id), link);
                     }
-                    Err(e) => warn!("{wanted}: could not link port {out_id}: {e}"),
+                    Err(e) => warn!("could not link port {out_id}: {e}"),
                 }
             }
         }
@@ -1267,7 +1294,7 @@ impl AppLinks {
         match self.watch_sink(sink, port, registry.clone(), core.clone()) {
             Ok(w) => self.sink = Some(w),
             Err(e) => {
-                warn!("{}: cannot follow sink {sink}: {e}", self.wanted);
+                warn!("cannot follow sink {sink}: {e}");
                 self.failed = Some(sink);
             }
         }
@@ -1289,7 +1316,7 @@ impl AppLinks {
                 if let Some(l) = pod.and_then(parse_latency)
                     && l != timing.monitor()
                 {
-                    info!("{app}: monitor latency of its sink {l:?}");
+                    debug!("{app}: monitor latency of its sink {l:?}");
                     timing.set_monitor(l);
                 }
             })
@@ -1314,8 +1341,8 @@ impl AppLinks {
         let reference_listener = reference
             .add_local_listener()
             .state_changed(move |_, _, _, new| match new {
-                pw::stream::StreamState::Streaming => info!("{app}: timing its sink's monitor"),
-                pw::stream::StreamState::Error(e) => warn!("{app}: sink monitor timing: {e}"),
+                pw::stream::StreamState::Streaming => debug!("{app}: timing its sink's monitor"),
+                pw::stream::StreamState::Error(e) => warn!("sink monitor timing: {e}"),
                 _ => {}
             })
             .register()?;

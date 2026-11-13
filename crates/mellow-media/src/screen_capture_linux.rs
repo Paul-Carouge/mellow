@@ -172,6 +172,8 @@ pub(crate) fn start_share_sound(
         speaks: false,
         ducking: DuckSettings::default(),
         exclusions,
+        // Never the monitor with every app: it would send the call's own voices back to it.
+        exclusions_required: true,
     };
     let capture = AudioCapture::start(source, options, move |packet| {
         input.push_opus(packet.data.to_vec());
