@@ -1,15 +1,15 @@
-//! Mellow keeps running when its window closes, as Discord does (ADR-0055): the session, the
+//! Mellow keeps running when its window closes, as Discord does (ADR-0056): the session, the
 //! gateway, the voice call and the notifications go on, and the window opens again from the menu
 //! bar item or the Dock (macOS), the tray (Linux, Windows), a notification, or launching Mellow
 //! again (`single_instance`). Closing really closes the window, on every system: Wayland has no
-//! way to hide one, and a closed window frees its views; the next one opens at the remembered
-//! place, with the drafts kept on disk.
+//! way to hide one, and a closed window frees its views; the next one opens at the size, place
+//! and state (maximised, full screen) the last one had, with the drafts kept on disk.
 //!
 //! Quitting is Cmd/Ctrl+Q, the app menu's or the tray's Quit: the call is left first
 //! (`voice::leave_the_call_when_the_app_quits`).
 
 use anyhow::{Context as _, Result};
-use gpui::{App, AppContext as _, Entity, Global, WindowHandle};
+use gpui::{App, AppContext as _, Bounds, Entity, Global, WindowBounds, WindowHandle};
 
 use crate::dock_and_tray;
 use crate::main_window::MainWindow;
@@ -51,10 +51,12 @@ pub fn window_close_outcome(facts: WindowCloseFacts) -> WindowCloseOutcome {
     }
 }
 
-/// The app's main window, while it is open, and the session a new one shows.
+/// The app's main window, while it is open, and the session and bounds a new one opens with.
 struct MainWindowSlot {
     session: Entity<Session>,
     window: Option<WindowHandle<MainWindow>>,
+    /// The last window's, for the next one; kept in memory only, as closing does not quit.
+    bounds: Option<WindowBounds>,
 }
 
 impl Global for MainWindowSlot {}
@@ -70,6 +72,7 @@ pub fn open_main_window_and_stay_in_background(
     cx.set_global(MainWindowSlot {
         session,
         window: None,
+        bounds: None,
     });
     cx.on_window_closed(|cx, closed_window_id| {
         let is_main_window = cx
@@ -124,10 +127,22 @@ pub fn show_main_window(cx: &mut App) {
 }
 
 fn open_main_window(cx: &mut App) -> Result<WindowHandle<MainWindow>> {
-    let session = cx.global::<MainWindowSlot>().session.clone();
-    cx.open_window(window_chrome::main_window_options(cx), |window, cx| {
+    let slot = cx.global::<MainWindowSlot>();
+    let session = slot.session.clone();
+    let remembered_bounds = slot.bounds;
+    let mut options = window_chrome::main_window_options(cx);
+    if let Some(bounds) = remembered_bounds {
+        options.window_bounds = Some(placed_on_a_display(bounds, cx));
+    }
+    cx.open_window(options, |window, cx| {
         theme::follow_window_appearance(window, cx);
         cx.new(|cx| {
+            // Moves, resizes, maximising and full screen all report here; read only when the
+            // next window opens.
+            cx.observe_window_bounds(window, |_, window, cx| {
+                cx.global_mut::<MainWindowSlot>().bounds = Some(window.window_bounds());
+            })
+            .detach();
             // macOS and Windows post no reduced-motion change gpui-base can follow, so the
             // setting is read again whenever the window comes back to the front.
             cx.observe_window_activation(window, |_, _, cx| {
@@ -138,6 +153,25 @@ fn open_main_window(cx: &mut App) -> Result<WindowHandle<MainWindow>> {
         })
     })
     .context("cannot open the main window")
+}
+
+/// The remembered bounds, centred again when their display was unplugged since. Wayland places
+/// windows itself and keeps only the size and state.
+fn placed_on_a_display(bounds: WindowBounds, cx: &App) -> WindowBounds {
+    let restored = bounds.get_bounds();
+    let is_on_a_display = cx
+        .displays()
+        .iter()
+        .any(|display| display.bounds().intersects(&restored));
+    if is_on_a_display {
+        return bounds;
+    }
+    let centred = Bounds::centered(None, restored.size, cx);
+    match bounds {
+        WindowBounds::Windowed(_) => WindowBounds::Windowed(centred),
+        WindowBounds::Maximized(_) => WindowBounds::Maximized(centred),
+        WindowBounds::Fullscreen(_) => WindowBounds::Fullscreen(centred),
+    }
 }
 
 #[cfg(test)]

@@ -178,6 +178,100 @@ fn with_its_window_closed_mellow_still_notifies(cx: &mut TestAppContext) {
     assert_ne!(next.entity_id(), notifier.entity_id());
 }
 
+/// The app's main window, as `background` opens it.
+fn main_window(
+    cx: &mut TestAppContext,
+) -> Option<gpui::WindowHandle<crate::main_window::MainWindow>> {
+    cx.update(|cx| {
+        cx.windows()
+            .into_iter()
+            .find_map(|window| window.downcast())
+    })
+}
+
+#[gpui::test]
+fn the_window_closed_and_opened_again_keeps_its_size_count_and_notification_clicks(
+    cx: &mut TestAppContext,
+) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
+        cx.set_app_identity("org.mellow.test", "Mellow");
+        change_preferences(cx, |preferences| {
+            let settings = NotificationSettings {
+                are_desktop_notifications_enabled: true,
+                is_sound_enabled: false,
+                ..NotificationSettings::default()
+            };
+            preferences.set_notification_settings(ME, settings);
+        });
+    });
+    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+    session.update(cx, |session, _| {
+        *session.state_mut() = sample_state();
+        session.pretend_signed_in();
+    });
+    let opening_session = session.clone();
+    cx.update(|cx| {
+        crate::background::open_main_window_and_stay_in_background(opening_session, cx).unwrap();
+    });
+    cx.run_until_parked();
+    let first = main_window(cx).expect("the main window opens");
+    let resized = size(px(1111.0), px(777.0));
+    VisualTestContext::from_window(first.into(), cx).simulate_resize(resized);
+    cx.run_until_parked();
+
+    first
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    assert!(main_window(cx).is_none(), "closing really closes it");
+    session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(
+            vec![GatewayUpdate::Event(GatewayEvent::MessageCreate(message(
+                10_001,
+                CONVERSATION_ANA,
+                ANA,
+                "tea?",
+            )))],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(cx.delivered_system_notifications().len(), 1);
+
+    // Opened again from the tray, the Dock or a second launch: the same size, and the notifier
+    // shows its count in the new window.
+    cx.update(crate::background::show_main_window);
+    cx.run_until_parked();
+    let second = main_window(cx).expect("the main window opens again");
+    let mut second_cx = VisualTestContext::from_window(second.into(), cx);
+    let bounds = second_cx.update(|window, _| window.bounds());
+    assert_eq!(bounds.size, resized);
+    assert_eq!(second_cx.window_title().as_deref(), Some("(1) Mellow"));
+
+    // Closed again, a click on the notification opens the window at its conversation.
+    second
+        .update(cx, |_, window, _| window.remove_window())
+        .unwrap();
+    cx.run_until_parked();
+    cx.simulate_system_notification_response(SystemNotificationResponse {
+        tag: "mellow-channel-50".into(),
+        action_id: None,
+    });
+    cx.run_until_parked();
+    let third = main_window(cx).expect("the click opens the window");
+    let selected = third
+        .read_with(cx, |main_window, cx| {
+            main_window
+                .shell()
+                .and_then(|shell| shell.read(cx).navigation().selected_channel_id())
+        })
+        .unwrap();
+    assert_eq!(selected, Some(CONVERSATION_ANA));
+}
+
 #[gpui::test]
 fn only_what_the_rules_allow_notifies(cx: &mut TestAppContext) {
     let (session, _shell, _notifier, cx) = open_notifier(cx);
