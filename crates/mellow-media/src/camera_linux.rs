@@ -19,7 +19,7 @@ use std::time::{Duration, Instant};
 
 use vesper_capture::camera::{
     Camera, CameraFrame, CameraInfo, CpuFrame, CpuLayout, OpenOptions, Range, cameras, cameras_on,
-    portal_remote,
+    is_portal_camera_present, portal_remote,
 };
 
 use crate::camera::{
@@ -180,9 +180,17 @@ impl Cameras for SystemCameras {
         if !listed.is_empty() {
             return Ok(listed.into_iter().map(description_of).collect());
         }
-        Ok(cameras_through_the_portal()?
-            .map(|(_, listed)| listed.into_iter().map(description_of).collect())
-            .unwrap_or_default())
+        // Never `AccessCamera` here: listing runs on joining a call and in the settings, and the
+        // portal's consent dialog must only follow a click on the camera. Names show once opened.
+        match is_portal_camera_present() {
+            Ok(true) => Ok(vec![CameraDescription::unnamed()]),
+            Ok(false) => Ok(Vec::new()),
+            Err(error) => {
+                // No portal (a bare window manager): the session's empty list stands.
+                tracing::debug!(%error, "the camera portal is unavailable");
+                Ok(Vec::new())
+            }
+        }
     }
 
     fn open(

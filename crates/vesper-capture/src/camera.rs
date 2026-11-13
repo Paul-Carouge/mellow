@@ -146,6 +146,15 @@ pub fn cameras_on(remote: Option<OwnedFd>) -> Result<Vec<CameraInfo>> {
     Ok(list)
 }
 
+/// Whether the xdg Camera portal says a camera is present. Asks nothing of
+/// the user (no `AccessCamera`): fit for a listing.
+/// # Errors
+/// When the portal is missing or fails.
+pub fn is_portal_camera_present() -> Result<bool> {
+    use ashpd::desktop::camera::Camera as CameraPortal;
+    futures_lite::future::block_on(async { Ok(CameraPortal::new().await?.is_present().await?) })
+}
+
 /// Asks the xdg Camera portal for the cameras (`AccessCamera`, which may
 /// show a dialog, then `OpenPipeWireRemote`): a PipeWire connection that
 /// sees them, or `None` when the portal says no camera is present. Blocks

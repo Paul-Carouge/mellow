@@ -18,7 +18,7 @@ use gpui::{
 };
 use image::{Delay, Frame, RgbaImage};
 use mellow_client_core::shared_logic::voice_settings::{DeviceChoice, DeviceChoices};
-use mellow_media::DecodedVideoFrame;
+use mellow_media::{CameraDescription, DecodedVideoFrame};
 
 use super::{DEVICE_REFRESH_PERIOD, device_group, helper_text, warning_line};
 use crate::components::{Button, ButtonVariant, icon, polite_live_region, with_type};
@@ -189,6 +189,7 @@ impl Render for VoiceVideoSection {
             devices: listed
                 .unwrap_or_default()
                 .iter()
+                .filter(|camera| !camera.is_unnamed())
                 .map(|camera| DeviceChoice {
                     device_id: camera.id.clone(),
                     label: camera.name.clone(),
@@ -200,6 +201,8 @@ impl Render for VoiceVideoSection {
         let is_shown = is_camera_on || is_preview_running;
         let problem = voice.camera_preview_problem();
         let has_no_camera = listed.is_some_and(<[_]>::is_empty);
+        let are_names_hidden =
+            listed.is_some_and(|listed| listed.iter().any(CameraDescription::is_unnamed));
         let toggle_voice = voice_entity.downgrade();
         let problem_sentence: SharedString = problem
             .map_or_else(SharedString::default, |problem| {
@@ -224,6 +227,9 @@ impl Render for VoiceVideoSection {
             ))
             .when(has_no_camera, |controls| {
                 controls.child(helper_text(catalogue.camera().problems().not_found(), cx))
+            })
+            .when(are_names_hidden, |controls| {
+                controls.child(helper_text(words.camera_names_hidden(), cx))
             })
             .child(helper_text(
                 if is_camera_on {

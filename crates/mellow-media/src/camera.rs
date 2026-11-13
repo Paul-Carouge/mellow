@@ -23,6 +23,24 @@ pub struct CameraDescription {
     pub name: String,
 }
 
+impl CameraDescription {
+    /// A camera the system says is there without naming it until access is granted (the Linux
+    /// Camera portal): opening any id falls back to it.
+    #[must_use]
+    pub fn unnamed() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+        }
+    }
+
+    /// Whether this is [`Self::unnamed`]: not a choice of its own, the default camera.
+    #[must_use]
+    pub fn is_unnamed(&self) -> bool {
+        self.id.is_empty()
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum CameraError {
     #[error("no camera is available")]
