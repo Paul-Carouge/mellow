@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.49.0] - 2026-11-13
+The first release of the native desktop app, built with GPUI at parity with the web client (ADR-0051): a signed macOS app and Linux packages that update themselves. No database migration; the protocol is unchanged for the web client. The desktop app is a preview: it has not yet been tried on every system, so report what does not work.
+
+### Added
+- **Desktop app** for macOS (universal `Mellow.app`, macOS 11 or later) and Linux (x86-64 tarballs for FFmpeg 6, 7, 8 and 9, installed into your home without root; see the README's "Desktop app"). It signs in with the token in the system keychain and has the web client's servers, channels, messages and composer, rich messages (polls, checklists, progress bars, forwards, link previews, GIFs, audio and video attachments), conversations and friends, profiles and presence, notifications with a badge, context menus, search, the user, server and channel settings, voice channels with push-to-talk outside the window and the soundboard, cameras, and native screen sharing with its sound.
+- The macOS app is signed with Mellow's own certificate (ADR-0055), so its camera, microphone and screen recording permissions survive updates; macOS asks once, the first time, to "Open Anyway" in System Settings. Check the certificate fingerprint in these release notes first.
+- The desktop app updates itself from these releases, after checking their signature, never during a call (ADR-0057; Settings → About).
+- Closing the window keeps Mellow running in the menu bar or the system tray, like Discord; a setting makes the close button quit instead (ADR-0056).
+- Videos are compressed before upload in the desktop app, as in the browser.
+- Voice channels accept H.264 Constrained Baseline next to VP8 (ADR-0052), which the desktop app uses for hardware-encoded screen shares on Linux.
+
+### Fixed
+- One desktop offer in about 500 repeated an m-line id and was refused by the server (the vendored `str0m` now draws unused ids).
+- GIF favourites starred within the same millisecond stay newest first.
+
 ## [0.48.0] - 2026-11-05
 Accounts: one unique name per account, friend codes, two-factor sign-in, richer profiles and role icons, and a remembered media volume. Database migrations 0041 (unique names and friend codes), 0042 (two-factor sign-in) and 0043 (profile links and role icons); the protocol gains `display_name` uniqueness, `friend_code`, the two-factor routes and types, `UserProfile` and role icons, all additive. `username` stays a deprecated alias of the name in API v1.
 
