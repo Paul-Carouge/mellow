@@ -727,16 +727,19 @@ fn write_atomically(path: &Path, text: &str) -> std::io::Result<()> {
 /// `$XDG_CONFIG_HOME/mellow` (or `~/.config/mellow`) elsewhere.
 fn preferences_file_path() -> Option<PathBuf> {
     let directory = if cfg!(target_os = "macos") {
-        PathBuf::from(std::env::var_os("HOME")?).join("Library/Application Support/Mellow")
+        PathBuf::from(std::env::var_os("HOME")?)
+            .join("Library/Application Support")
+            .join(&*crate::profile::with_profile_suffix("Mellow"))
     } else if cfg!(windows) {
-        PathBuf::from(std::env::var_os("APPDATA")?).join("Mellow")
+        PathBuf::from(std::env::var_os("APPDATA")?)
+            .join(&*crate::profile::with_profile_suffix("Mellow"))
     } else {
         // The XDG base directory spec ignores relative paths.
         std::env::var_os("XDG_CONFIG_HOME")
             .map(PathBuf::from)
             .filter(|path| path.is_absolute())
             .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?
-            .join("mellow")
+            .join(&*crate::profile::with_profile_suffix("mellow"))
     };
     Some(directory.join(FILE_NAME))
 }

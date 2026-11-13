@@ -128,7 +128,11 @@ fn secret_store_entry() -> keyring::Result<keyring_core::Entry> {
     let modifiers = std::collections::HashMap::from([("persistence", "Local")]);
     #[cfg(not(windows))]
     let modifiers = std::collections::HashMap::new();
-    keyring_core::Entry::new_with_modifiers(SECRET_STORE_SERVICE, SECRET_STORE_ACCOUNT, &modifiers)
+    keyring_core::Entry::new_with_modifiers(
+        &crate::profile::with_profile_dotted_suffix(SECRET_STORE_SERVICE),
+        SECRET_STORE_ACCOUNT,
+        &modifiers,
+    )
 }
 
 fn save_session_blocking(instance: &InstanceAddress, token: &str) -> keyring::Result<()> {

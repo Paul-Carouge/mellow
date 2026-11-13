@@ -17,6 +17,8 @@ fn main() -> ExitCode {
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
+    // A bad MELLOW_PROFILE ends the launch here, before any thread could read the everyday one.
+    let _ = mellow_desktop::profile::active_profile_name();
 
     // Before anything else: a second launch only shows the running Mellow's window. The component
     // gallery opens next to a running Mellow.
