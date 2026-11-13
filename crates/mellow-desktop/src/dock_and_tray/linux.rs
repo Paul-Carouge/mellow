@@ -1,6 +1,6 @@
-//! The Linux tray: a StatusNotifierItem over the session bus (`ksni` on the async-io zbus the
+//! The Linux tray: a `StatusNotifierItem` over the session bus (`ksni` on the async-io zbus the
 //! portals already use). KDE Plasma, Hyprland's and Sway's bars (Waybar), XFCE and Cinnamon host
-//! it; GNOME only with the AppIndicator extension. Without a host, `is_tray_shown` is false and
+//! it; GNOME only with the `AppIndicator` extension. Without a host, `is_tray_shown` is false and
 //! closing the window quits (ADR-0055).
 
 use std::sync::Arc;
@@ -126,10 +126,10 @@ fn pixmap(size: u32) -> Option<Icon> {
             [alpha, red, green, blue]
         })
         .collect();
-    let side = i32::try_from(size).ok()?;
+    let edge = i32::try_from(size).ok()?;
     Some(Icon {
-        width: side,
-        height: side,
+        width: edge,
+        height: edge,
         data,
     })
 }
