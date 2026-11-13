@@ -17,13 +17,14 @@ use objc2::runtime::AnyObject;
 use objc2::sel;
 use objc2_av_foundation::{
     AVAsset, AVAssetReader, AVAssetReaderOutput, AVAssetReaderStatus, AVAssetReaderTrackOutput,
-    AVAssetReaderVideoCompositionOutput, AVAssetTrack, AVAssetWriter, AVAssetWriterInput,
-    AVAssetWriterStatus, AVFileTypeMPEG4, AVMediaCharacteristicContainsHDRVideo, AVMediaTypeAudio,
-    AVMediaTypeVideo, AVMutableVideoComposition, AVURLAsset, AVVideoAverageBitRateKey,
-    AVVideoCodecKey, AVVideoCodecTypeH264, AVVideoCompressionPropertiesKey,
-    AVVideoExpectedSourceFrameRateKey, AVVideoHeightKey, AVVideoMaxKeyFrameIntervalDurationKey,
-    AVVideoProfileLevelH264HighAutoLevel, AVVideoProfileLevelKey, AVVideoScalingModeKey,
-    AVVideoScalingModeResize, AVVideoWidthKey,
+    AVAssetReaderVideoCompositionOutput, AVAssetReferenceRestrictions, AVAssetTrack, AVAssetWriter,
+    AVAssetWriterInput, AVAssetWriterStatus, AVFileTypeMPEG4,
+    AVMediaCharacteristicContainsHDRVideo, AVMediaTypeAudio, AVMediaTypeVideo,
+    AVMutableVideoComposition, AVURLAsset, AVURLAssetReferenceRestrictionsKey,
+    AVVideoAverageBitRateKey, AVVideoCodecKey, AVVideoCodecTypeH264,
+    AVVideoCompressionPropertiesKey, AVVideoExpectedSourceFrameRateKey, AVVideoHeightKey,
+    AVVideoMaxKeyFrameIntervalDurationKey, AVVideoProfileLevelH264HighAutoLevel,
+    AVVideoProfileLevelKey, AVVideoScalingModeKey, AVVideoScalingModeResize, AVVideoWidthKey,
 };
 use objc2_core_audio_types::{kAudioFormatLinearPCM, kAudioFormatMPEG4AAC};
 use objc2_core_foundation::CFRetained;
@@ -40,8 +41,8 @@ use objc2_foundation::{
 
 use crate::video_compression::{
     AudioEncoderCodec, AudioPlan, BackendError, EncoderSupport, KEY_FRAME_INTERVAL_SECONDS,
-    MAXIMUM_OUTPUT_FRAME_RATE, Measured, ProgressCallback, SourceAudioCodec, VideoCompressionPlan,
-    VideoSource,
+    MAXIMUM_OUTPUT_FRAME_RATE, MeasuredVideo, ProgressCallback, SourceAudioCodec,
+    VideoCompressionPlan, VideoSource, runs_past_measured_duration,
 };
 
 /// AAC's output rate: every source rate converts to it.
@@ -77,8 +78,15 @@ fn open_asset(path: &Path) -> Result<Retained<AVURLAsset>, BackendError> {
         .to_str()
         .ok_or_else(|| failed("a path that is not UTF-8"))?;
     let url = NSURL::fileURLWithPath(&NSString::from_str(path));
-    // SAFETY: a file URL and no options.
-    Ok(unsafe { AVURLAsset::URLAssetWithURL_options(&url, None) })
+    // Only media inside the picked file: a reference movie must not pull other files of the
+    // person's disk into the upload (the default forbids only local-to-remote references).
+    let restrictions =
+        NSNumber::numberWithUnsignedInteger(AVAssetReferenceRestrictions::ForbidAll.0);
+    // SAFETY: a file URL, and the reference restrictions key with an `NSNumber`, as documented.
+    unsafe {
+        let options = dictionary(&[(AVURLAssetReferenceRestrictionsKey, &restrictions)]);
+        Ok(AVURLAsset::URLAssetWithURL_options(&url, Some(&options)))
+    }
 }
 
 /// The asset's tracks of `media_type`, in order.
@@ -114,7 +122,12 @@ fn channel_count(track: &AVAssetTrack) -> Option<u32> {
     (!basic.is_null()).then(|| unsafe { (*basic).mChannelsPerFrame })
 }
 
-pub(crate) fn measure(path: &Path, byte_size: u64) -> Result<Option<Measured>, BackendError> {
+/// `AVFoundation`'s property loads cannot be interrupted: the flag is read once they are done.
+pub(crate) fn measure(
+    path: &Path,
+    byte_size: u64,
+    _is_cancelled: &AtomicBool,
+) -> Result<Option<MeasuredVideo>, BackendError> {
     let video_type = constant(unsafe { AVMediaTypeVideo }, "AVMediaTypeVideo")?;
     let audio_type = constant(unsafe { AVMediaTypeAudio }, "AVMediaTypeAudio")?;
     let hdr = constant(
@@ -168,7 +181,7 @@ pub(crate) fn measure(path: &Path, byte_size: u64) -> Result<Option<Measured>, B
         is_high_dynamic_range: is_hdr,
         audio_codec,
     };
-    Ok(Some(Measured {
+    Ok(Some(MeasuredVideo {
         source,
         // `VideoToolbox` encodes H.264 and Core Audio AAC on every Mac.
         support: EncoderSupport {
@@ -203,7 +216,7 @@ struct TrackCopy {
 #[allow(clippy::too_many_lines)] // One pipeline, set up in the order it runs.
 pub(crate) fn execute(
     path: &Path,
-    measured: &Measured,
+    measured: &MeasuredVideo,
     plan: &VideoCompressionPlan,
     output_path: &Path,
     on_progress: ProgressCallback<'_>,
@@ -217,7 +230,7 @@ pub(crate) fn execute(
         .first()
         .ok_or_else(|| failed("the video track is gone"))?;
     let audio = tracks_of(&asset, audio_type).into_iter().next();
-    let (video_copy_hint, audio_plan) = match plan {
+    let (is_video_remuxed, audio_plan) = match plan {
         VideoCompressionPlan::KeepOriginal(_) => return Ok(()),
         VideoCompressionPlan::Remux { audio } => (true, *audio),
         VideoCompressionPlan::Transcode(transcode) => (false, transcode.audio),
@@ -241,7 +254,7 @@ pub(crate) fn execute(
         writer.setShouldOptimizeForNetworkUse(true);
 
         let mut copies = Vec::with_capacity(2);
-        let video_copy = if video_copy_hint {
+        let video_copy = if is_video_remuxed {
             let output = AVAssetReaderTrackOutput::assetReaderTrackOutputWithTrack_outputSettings(
                 video, None,
             );
@@ -465,8 +478,12 @@ pub(crate) fn execute(
                     copy.is_done = true;
                     continue;
                 };
+                let seconds = sample.presentation_time_stamp().seconds();
+                if runs_past_measured_duration(seconds, duration) {
+                    return Err(stop(failed("the file runs far past its measured duration")));
+                }
                 if copy.is_video {
-                    on_progress(sample.presentation_time_stamp().seconds() / duration);
+                    on_progress(seconds / duration);
                 }
                 if !copy.input.appendSampleBuffer(&sample) {
                     let error = writer.error().map_or_else(
@@ -480,6 +497,21 @@ pub(crate) fn execute(
                 break;
             }
             if !has_moved {
+                // A writer or reader failing on its own leaves every input not ready: stop.
+                if writer.status() == AVAssetWriterStatus::Failed {
+                    let error = writer.error().map_or_else(
+                        || failed("the writer failed"),
+                        |error| ns_failure("the writer failed", &error),
+                    );
+                    return Err(stop(error));
+                }
+                if reader.status() == AVAssetReaderStatus::Failed {
+                    let error = reader.error().map_or_else(
+                        || failed("the reader failed"),
+                        |error| ns_failure("the reader failed", &error),
+                    );
+                    return Err(stop(error));
+                }
                 std::thread::sleep(WRITER_BUSY_PAUSE);
             }
         }
@@ -512,7 +544,9 @@ mod tests {
     fn measures_a_quicktime_clip() {
         let path =
             Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/mpeg4-pcm-192x108.mov");
-        let measured = measure(&path, 1).unwrap().expect("a video track");
+        let measured = measure(&path, 1, &AtomicBool::new(false))
+            .unwrap()
+            .expect("a video track");
         assert_eq!(
             (
                 measured.source.display_width,

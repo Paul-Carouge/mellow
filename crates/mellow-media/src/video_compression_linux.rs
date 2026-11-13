@@ -7,7 +7,8 @@
 //! `OpenH264`. Audio is copied (AAC, Opus) or encoded to AAC, else Opus. Each step is tried in
 //! that order of encoders: a VA-API driver refusing the stream falls back to software.
 
-use std::ffi::{CStr, CString, c_char, c_int};
+use std::ffi::{CStr, CString, c_char, c_int, c_void};
+use std::marker::PhantomData;
 use std::path::Path;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -16,9 +17,18 @@ use rusty_ffmpeg::ffi as ff;
 
 use crate::video_compression::{
     AudioEncoderCodec, AudioPlan, BackendError, EncoderSupport, KEY_FRAME_INTERVAL_SECONDS,
-    MAXIMUM_OUTPUT_FRAME_RATE, Measured, ProgressCallback, SourceAudioCodec, VideoCompressionPlan,
-    VideoSource,
+    MAXIMUM_OUTPUT_FRAME_RATE, MeasuredVideo, ProgressCallback, SourceAudioCodec,
+    VideoCompressionPlan, VideoSource, runs_past_measured_duration,
 };
+
+/// The demuxers allowed to read a picked file: those of the containers the web's compression
+/// reads (MP4 and `QuickTime`, Matroska and `WebM`). Anything else, a DASH or HLS manifest named
+/// like a video included, keeps its original, as on the web.
+const ALLOWED_DEMUXERS: &CStr = c"mov,matroska";
+/// A picked file is read from the disk only: no demuxer may open network or other protocols.
+const ALLOWED_PROTOCOLS: &CStr = c"file";
+/// Automatic: one thread per core, for the decoders and the software H.264 encoder.
+const AUTOMATIC_THREAD_COUNT: c_int = 0;
 
 /// FFmpeg's `AV_TIME_BASE`: container durations are in microseconds.
 const MICROSECONDS_PER_SECOND: f64 = 1_000_000.0;
@@ -134,29 +144,69 @@ fn audio_encoder() -> Option<AudioEncoderCodec> {
     }
 }
 
-/// An opened input file.
-struct Input(*mut ff::AVFormatContext);
+/// FFmpeg's interrupt callback: blocking reads (probing, the drain) end once the flag is set.
+unsafe extern "C" fn is_interrupted(is_cancelled: *mut c_void) -> c_int {
+    // SAFETY: the `AtomicBool` the `Input` borrows for as long as its context lives.
+    c_int::from(unsafe { &*is_cancelled.cast::<AtomicBool>() }.load(Ordering::Relaxed))
+}
 
-impl Input {
-    fn open(path: &Path) -> Result<Self, BackendError> {
+/// An opened input file, interrupted by the cancel flag it borrows.
+struct Input<'flag>(*mut ff::AVFormatContext, PhantomData<&'flag AtomicBool>);
+
+impl<'flag> Input<'flag> {
+    fn open(path: &Path, is_cancelled: &'flag AtomicBool) -> Result<Self, BackendError> {
         let path = path
             .to_str()
             .ok_or_else(|| BackendError::Failed("a path that is not UTF-8".into()))?;
         let path = c_string(path)?;
-        let mut context = ptr::null_mut();
-        // SAFETY: FFmpeg allocates the context on success; on failure it frees it itself.
-        unsafe {
-            check(
-                ff::avformat_open_input(
-                    &raw mut context,
-                    path.as_ptr(),
-                    ptr::null(),
-                    ptr::null_mut(),
+        // SAFETY: FFmpeg allocates the context; `avformat_open_input` frees it on failure, and the
+        // options dictionary is freed on every path. The flag outlives the context (`'flag`).
+        let input = unsafe {
+            let mut context = not_null(ff::avformat_alloc_context(), "an input context")?;
+            (*context).interrupt_callback = ff::AVIOInterruptCB {
+                callback: Some(is_interrupted),
+                opaque: ptr::from_ref(is_cancelled).cast_mut().cast(),
+            };
+            let mut options = ptr::null_mut();
+            let opened = check(
+                ff::av_dict_set(
+                    &raw mut options,
+                    c"protocol_whitelist".as_ptr(),
+                    ALLOWED_PROTOCOLS.as_ptr(),
+                    0,
                 ),
-                "open the file",
-            )?;
-        }
-        let input = Self(context);
+                "the input's options",
+            )
+            .and_then(|_| {
+                check(
+                    ff::av_dict_set(
+                        &raw mut options,
+                        c"format_whitelist".as_ptr(),
+                        ALLOWED_DEMUXERS.as_ptr(),
+                        0,
+                    ),
+                    "the input's options",
+                )
+            });
+            let opened = match opened {
+                Ok(_) => check(
+                    ff::avformat_open_input(
+                        &raw mut context,
+                        path.as_ptr(),
+                        ptr::null(),
+                        &raw mut options,
+                    ),
+                    "open the file",
+                ),
+                Err(error) => {
+                    ff::avformat_free_context(context);
+                    Err(error)
+                }
+            };
+            ff::av_dict_free(&raw mut options);
+            opened?;
+            Self(context, PhantomData)
+        };
         // SAFETY: an opened context.
         unsafe {
             check(
@@ -187,7 +237,7 @@ impl Input {
     }
 }
 
-impl Drop for Input {
+impl Drop for Input<'_> {
     fn drop(&mut self) {
         // SAFETY: owned here; accepts a null pointer.
         unsafe { ff::avformat_close_input(&raw mut self.0) };
@@ -231,8 +281,12 @@ fn quarter_turns_for_rotation(counter_clockwise_degrees: f64) -> u32 {
     quarters % 4
 }
 
-pub(crate) fn measure(path: &Path, byte_size: u64) -> Result<Option<Measured>, BackendError> {
-    let input = Input::open(path)?;
+pub(crate) fn measure(
+    path: &Path,
+    byte_size: u64,
+    is_cancelled: &AtomicBool,
+) -> Result<Option<MeasuredVideo>, BackendError> {
+    let input = Input::open(path, is_cancelled)?;
     let Some(video_index) = input.best_stream(ff::AVMEDIA_TYPE_VIDEO, -1) else {
         return Ok(None);
     };
@@ -286,7 +340,7 @@ pub(crate) fn measure(path: &Path, byte_size: u64) -> Result<Option<Measured>, B
         }
     };
     let has_vaapi_device = has_encoder(c"h264_vaapi") && VaapiDevice::open().is_some();
-    Ok(Some(Measured {
+    Ok(Some(MeasuredVideo {
         source,
         support: EncoderSupport {
             can_encode_h264: !h264_encoders(has_vaapi_device).is_empty(),
@@ -390,7 +444,7 @@ impl Drop for Pipeline {
 
 pub(crate) fn execute(
     path: &Path,
-    measured: &Measured,
+    measured: &MeasuredVideo,
     plan: &VideoCompressionPlan,
     output_path: &Path,
     on_progress: ProgressCallback<'_>,
@@ -437,14 +491,14 @@ pub(crate) fn execute(
 #[allow(clippy::too_many_lines)] // One pipeline, set up in the order it runs.
 fn execute_with(
     path: &Path,
-    measured: &Measured,
+    measured: &MeasuredVideo,
     plan: &VideoCompressionPlan,
     encoder: Option<(H264Encoder, Option<&VaapiDevice>)>,
     output_path: &Path,
     on_progress: ProgressCallback<'_>,
     is_cancelled: &AtomicBool,
 ) -> Result<(), BackendError> {
-    let input = Input::open(path)?;
+    let input = Input::open(path, is_cancelled)?;
     let video_index = input
         .best_stream(ff::AVMEDIA_TYPE_VIDEO, -1)
         .ok_or_else(|| BackendError::Failed("the video stream is gone".into()))?;
@@ -483,7 +537,7 @@ fn execute_with(
         let needs_global_header =
             (*(*pipeline.output).oformat).flags & flag(ff::AVFMT_GLOBALHEADER) != 0;
 
-        let mut works = Vec::with_capacity(2);
+        let mut output_streams = Vec::with_capacity(2);
         let video_stream = input.stream(video_index);
         let video_transcoder = match (plan, encoder) {
             (VideoCompressionPlan::Transcode(transcode), Some((encoder, device))) => {
@@ -496,6 +550,7 @@ fn execute_with(
                 );
                 Some(open_video_transcoder(
                     video_stream,
+                    ff::av_guess_frame_rate(input.0, video_stream, ptr::null_mut()),
                     &filters,
                     encoder,
                     device,
@@ -508,7 +563,7 @@ fn execute_with(
             }
             _ => None,
         };
-        works.push(add_output_stream(
+        output_streams.push(add_output_stream(
             pipeline.output,
             video_stream,
             video_index,
@@ -527,7 +582,7 @@ fn execute_with(
                 )?)),
             };
             if let Some(transcoder) = audio_transcoder {
-                works.push(add_output_stream(
+                output_streams.push(add_output_stream(
                     pipeline.output,
                     audio_stream,
                     audio_index,
@@ -578,21 +633,30 @@ fn execute_with(
             }
             check(status, "read a packet")?;
             let index = (*pipeline.packet).stream_index;
-            let Some(work) = works.iter().find(|work| work.input_index == index) else {
+            let Some(work) = output_streams.iter().find(|work| work.input_index == index) else {
                 ff::av_packet_unref(pipeline.packet);
                 continue;
             };
-            if index == video_index && (*pipeline.packet).pts != ff::AV_NOPTS_VALUE {
+            if (*pipeline.packet).pts != ff::AV_NOPTS_VALUE {
                 #[allow(clippy::cast_precision_loss)] // Ticks of a real clip.
-                let seconds = (*pipeline.packet).pts as f64 * ratio(work.input_time_base);
-                on_progress((seconds - start_seconds) / duration);
+                let seconds =
+                    (*pipeline.packet).pts as f64 * ratio(work.input_time_base) - start_seconds;
+                if runs_past_measured_duration(seconds, duration) {
+                    ff::av_packet_unref(pipeline.packet);
+                    return Err(BackendError::Failed(
+                        "the file runs far past its measured duration".into(),
+                    ));
+                }
+                if index == video_index {
+                    on_progress(seconds / duration);
+                }
             }
             let result = feed(&pipeline, work, pipeline.packet);
             ff::av_packet_unref(pipeline.packet);
             result?;
         }
         // Drain each decoder, filter graph and encoder.
-        for work in &works {
+        for work in &output_streams {
             if work.transcoder.is_some() {
                 feed(&pipeline, work, ptr::null_mut())?;
             }
@@ -664,6 +728,8 @@ unsafe fn open_decoder(stream: *mut ff::AVStream) -> Result<*mut ff::AVCodecCont
         .and_then(|_| {
             (*decoder).pkt_timebase = (*stream).time_base;
             (*decoder).max_pixels = MAXIMUM_DECODED_PIXELS;
+            // FFmpeg decodes on one thread by default: a 4K HEVC clip would take minutes.
+            (*decoder).thread_count = AUTOMATIC_THREAD_COUNT;
             check(
                 ff::avcodec_open2(decoder, codec, ptr::null_mut()),
                 "open the decoder",
@@ -763,6 +829,7 @@ unsafe fn build_graph(
 /// `stream` belongs to an opened input; `device` is given for [`H264Encoder::Vaapi`].
 unsafe fn open_video_transcoder(
     stream: *mut ff::AVStream,
+    source_frame_rate: ff::AVRational,
     filters: &str,
     encoder: H264Encoder,
     device: Option<&VaapiDevice>,
@@ -792,8 +859,19 @@ unsafe fn open_video_transcoder(
             (1, 1)
         };
         let time_base = (*stream).time_base;
+        let has_source_frame_rate = source_frame_rate.num > 0 && source_frame_rate.den > 0;
+        // The encoder's rate comes from the sink: without it `h264_vaapi` would take the time
+        // base for one (thousands of frames a second, a tiny bit budget per frame).
+        let frame_rate_argument = if has_source_frame_rate {
+            format!(
+                ":frame_rate={}/{}",
+                source_frame_rate.num, source_frame_rate.den
+            )
+        } else {
+            String::new()
+        };
         let source_arguments = format!(
-            "video_size={}x{}:pix_fmt={pixel_format}:time_base={}/{}:pixel_aspect={aspect_num}/{aspect_den}",
+            "video_size={}x{}:pix_fmt={pixel_format}:time_base={}/{}:pixel_aspect={aspect_num}/{aspect_den}{frame_rate_argument}",
             (*parameters).width,
             (*parameters).height,
             time_base.num,
@@ -824,7 +902,12 @@ unsafe fn open_video_transcoder(
         (*context).sample_aspect_ratio = ff::AVRational { num: 1, den: 1 };
         (*context).pix_fmt = ff::av_buffersink_get_format(sink);
         (*context).time_base = ff::av_buffersink_get_time_base(sink);
-        let frame_rate = ff::av_buffersink_get_frame_rate(sink);
+        let sink_frame_rate = ff::av_buffersink_get_frame_rate(sink);
+        let frame_rate = if sink_frame_rate.num > 0 && sink_frame_rate.den > 0 {
+            sink_frame_rate
+        } else {
+            source_frame_rate
+        };
         (*context).framerate = frame_rate;
         let bitrate = i64::try_from(bitrate).unwrap_or(i64::MAX);
         (*context).bit_rate = bitrate;
@@ -843,11 +926,15 @@ unsafe fn open_video_transcoder(
         if needs_global_header {
             (*context).flags |= flag(ff::AV_CODEC_FLAG_GLOBAL_HEADER);
         }
-        if encoder == H264Encoder::Vaapi {
-            (*context).hw_frames_ctx = not_null(
-                ff::av_buffer_ref(ff::av_buffersink_get_hw_frames_ctx(sink)),
-                "the GPU frames",
-            )?;
+        match encoder {
+            H264Encoder::Vaapi => {
+                (*context).hw_frames_ctx = not_null(
+                    ff::av_buffer_ref(ff::av_buffersink_get_hw_frames_ctx(sink)),
+                    "the GPU frames",
+                )?;
+            }
+            // `libx264` copies this into its own threads; the default is one.
+            H264Encoder::Software(_) => (*context).thread_count = AUTOMATIC_THREAD_COUNT,
         }
         check(
             ff::avcodec_open2(context, codec, ptr::null_mut()),

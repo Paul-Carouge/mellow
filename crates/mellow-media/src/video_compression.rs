@@ -35,6 +35,17 @@ pub(crate) const LIMIT_BUDGET_SHARE: f64 = 0.9;
 pub(crate) const AAC_BITRATE: u32 = 128_000;
 pub(crate) const OPUS_BITRATE: u32 = 96_000;
 pub(crate) const KEY_FRAME_INTERVAL_SECONDS: f64 = 2.0;
+/// How far past its measured duration a file may run before compression gives up: the plan's
+/// bitrate comes from that duration, so a file lying about its length would otherwise write an
+/// output as long as it really is.
+const MAXIMUM_DURATION_OVERRUN_RATIO: f64 = 1.5;
+/// Slack for very short clips, whose last frame may end a little after the stated duration.
+const DURATION_OVERRUN_SLACK_SECONDS: f64 = 1.0;
+
+/// Whether a sample at `seconds` lies too far past the measured `duration_seconds`.
+pub(crate) fn runs_past_measured_duration(seconds: f64, duration_seconds: f64) -> bool {
+    seconds > duration_seconds * MAXIMUM_DURATION_OVERRUN_RATIO + DURATION_OVERRUN_SLACK_SECONDS
+}
 
 /// The audio codecs MP4 carries that every browser plays: copied as they are.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -337,7 +348,7 @@ pub(crate) enum BackendError {
 
 /// What a backend measured of the file, or `None` without a video track.
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub(crate) struct Measured {
+pub(crate) struct MeasuredVideo {
     pub source: VideoSource,
     pub support: EncoderSupport,
 }
@@ -364,13 +375,15 @@ pub fn compress_video(
     if is_cancelled.load(Ordering::Relaxed) {
         return Err(VideoCompressionCancelled);
     }
-    // The encoders report every frame; the tray shows whole percents, so the interface gets no more.
+    // The encoders report every frame; the tray shows whole percents, so the interface gets no
+    // more. Only increases: packets come in decode order (B-frames) and a failed VA-API attempt
+    // restarts the next encoder at 0.
     let mut posted_percent = None;
     let mut whole_percents = |fraction: f64| {
         // From 0 to 100.
         #[allow(clippy::cast_possible_truncation)]
         let percent = (fraction.clamp(0.0, 1.0) * 100.0).floor() as i32;
-        if posted_percent != Some(percent) {
+        if posted_percent.is_none_or(|posted| percent > posted) {
             posted_percent = Some(percent);
             on_progress(fraction.clamp(0.0, 1.0));
         }
@@ -422,7 +435,7 @@ fn run_backend(
             BackendError::Failed(format!("reading the file's size: {}", error.kind()))
         })?
         .len();
-    let Some(measured) = backend::measure(path, byte_size)? else {
+    let Some(measured) = backend::measure(path, byte_size, is_cancelled)? else {
         return Ok(VideoCompressionOutcome::KeptOriginal(
             KeepOriginalReason::NoVideoTrack,
         ));
@@ -847,5 +860,12 @@ mod tests {
         assert!(!is_compressible_video_file_name("photo.jpg"));
         assert!(!is_compressible_video_file_name("take 3.wav"));
         assert!(!is_compressible_video_file_name("mp4"));
+    }
+
+    #[test]
+    fn stops_a_file_running_far_past_its_measured_duration() {
+        assert!(!runs_past_measured_duration(10.4, 10.0));
+        assert!(!runs_past_measured_duration(1.7, 0.5));
+        assert!(runs_past_measured_duration(3_600.0, 1.0));
     }
 }
