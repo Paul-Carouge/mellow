@@ -63,6 +63,36 @@ objc2-screen-capture-kit = { version = "0.3.2", default-features = false, featur
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
 objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTDecompressionSession", "VTErrors", "objc2-core-media", "objc2-core-video"] }
 
+# Cameras and received H.264 through Media Foundation, screen sharing through
+# Windows.Graphics.Capture, Direct3D 11 and GDI, and its sound through WASAPI's process loopback:
+# the `windows` crate cpal and GPUI already bring, with the features these need.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `windows::core::implement`'s expansion names `windows_core` (the WASAPI activation callback).
+windows-core = "0.62.2"
+
 [build-dependencies]
 cc.workspace = true
 sha2.workspace = true
