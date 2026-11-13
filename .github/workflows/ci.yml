@@ -106,8 +106,10 @@ jobs:
 
   desktop-windows:
     name: Desktop client (Windows)
-    # Builds only, so Windows does not drift while macOS and Linux come first (ADR-0051); tests
-    # come later. libvpx is built from source by MSBuild (mellow-media's build.rs), driven by
+    # Lints and tests the desktop client, its voice engine and the crates they share, so Windows
+    # does not drift while macOS and Linux come first (ADR-0051). The server refuses to run on
+    # Windows (ADR-0006), so its tests stay on Linux, the tests that start one are left out here
+    # (`#![cfg(not(windows))]`) and it is not a dev-dependency on Windows. libvpx is built from source by MSBuild (mellow-media's build.rs), driven by
     # MSYS2's sh and make (preinstalled on the runner; first in PATH, since a native make would
     # start libvpx's `#!/bin/bash` scripts with WSL's bash) and assembled by yasm; nasm assembles
     # rav1d and aws-lc; libopus is built by cmake (on the runner).
@@ -123,12 +125,17 @@ jobs:
           choco install --yes --no-progress nasm yasm
           C:\msys64\usr\bin\pacman.exe --sync --noconfirm --needed make diffutils perl
           "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
-      - name: Build
+      - name: Clippy
         shell: pwsh
         run: |
           # rustc and cc find MSVC's link.exe by its full path, so MSYS2's link does not matter.
           $env:PATH = "C:\msys64\usr\bin;$env:PATH"
-          cargo build --locked -p mellow-desktop -p mellow-media
+          cargo clippy --locked --all-targets -p mellow-desktop -p mellow-media -p mellow-client-core -p mellow-protocol -- -D warnings
+      - name: Test
+        shell: pwsh
+        run: |
+          $env:PATH = "C:\msys64\usr\bin;$env:PATH"
+          cargo test --locked --no-fail-fast -p mellow-desktop -p mellow-media -p mellow-client-core -p mellow-protocol
 
   web:
     name: Web client

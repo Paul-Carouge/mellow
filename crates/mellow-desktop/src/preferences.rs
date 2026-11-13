@@ -48,6 +48,7 @@ const VOICE_PEOPLE_KEY: &str = "voice-people";
 const STREAM_PEOPLE_KEY: &str = "stream-people";
 const SCREEN_SHARE_QUALITY_KEY: &str = "screen-share-quality";
 const SCREEN_SHARE_SOUND_OFF_KEY: &str = "screen-share-sound-off";
+const CLOSE_QUITS_KEY: &str = "close-quits";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -180,6 +181,9 @@ pub struct Preferences {
     pub screen_share_quality: ScreenShareQuality,
     /// Screens are shared without their sound.
     pub is_screen_share_sound_off: bool,
+    /// The window's close button quits Mellow instead of leaving it running in the background
+    /// (Discord's "Minimise to tray" turned off).
+    pub does_closing_the_window_quit: bool,
 }
 
 impl Preferences {
@@ -423,6 +427,7 @@ impl Preferences {
                 SCREEN_SHARE_SOUND_OFF_KEY => {
                     preferences.is_screen_share_sound_off = value == "true";
                 }
+                CLOSE_QUITS_KEY => preferences.does_closing_the_window_quit = value == "true",
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 // The web's JSON, validated field by field as the web reads it.
@@ -519,6 +524,9 @@ impl Preferences {
         }
         if self.is_screen_share_sound_off {
             let _ = writeln!(text, "{SCREEN_SHARE_SOUND_OFF_KEY}=true");
+        }
+        if self.does_closing_the_window_quit {
+            let _ = writeln!(text, "{CLOSE_QUITS_KEY}=true");
         }
         if let Some(theme) = self.theme.as_file_text() {
             let _ = writeln!(text, "{THEME_KEY}={theme}");
@@ -672,6 +680,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     stream_people: Vec::new(),
     screen_share_quality: ScreenShareQuality::High,
     is_screen_share_sound_off: false,
+    does_closing_the_window_quit: false,
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -755,6 +764,7 @@ mod tests {
         preferences.is_media_muted = true;
         preferences.screen_share_quality = ScreenShareQuality::Highest;
         preferences.is_screen_share_sound_off = true;
+        preferences.does_closing_the_window_quit = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
 

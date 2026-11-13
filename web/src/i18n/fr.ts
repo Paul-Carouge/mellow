@@ -2324,6 +2324,10 @@ export const fr: Catalogue = {
   desktop: {
     quitMellow: "Quitter Mellow",
     openMellow: "Ouvrir Mellow",
+    keepRunningInBackground: "Continuer en arrière-plan",
+    keepRunningInBackgroundMenuBar: "Fermer la fenêtre garde Mellow dans la barre des menus et le Dock, avec ton appel et tes notifications. Quitte avec Cmd+Q.",
+    keepRunningInBackgroundTray: "Fermer la fenêtre garde Mellow dans la zone de notification, avec ton appel et tes notifications. Quitte depuis son menu ou avec Ctrl+Q.",
+    keepRunningInBackgroundNoTray: `Ton bureau n’affiche pas de zone de notification${NO_BREAK_SPACE}: fermer la fenêtre quitte Mellow.`,
     notificationsIntro: `Quand ton statut est «${NO_BREAK_SPACE}Ne pas déranger${NO_BREAK_SPACE}», rien ne te notifie. Ces réglages restent sur cet ordinateur.`,
     appearance: "Apparence",
     appearanceIntro: "Ces réglages restent sur cet ordinateur.",

@@ -281,6 +281,52 @@ fn two_people_join_hear_of_each_other_mute_and_leave(cx: &mut TestAppContext) {
 }
 
 #[gpui::test]
+fn quitting_during_a_call_leaves_it_on_the_gateway_at_once(cx: &mut TestAppContext) {
+    let runtime: Runtime = build_network_runtime().unwrap();
+    let instance = runtime.block_on(RunningInstance::start());
+    cx.executor().allow_parking();
+    let handle = runtime.handle().clone();
+    cx.update(|cx| {
+        install_network_runtime(handle, cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+    });
+    let (owner, friend, channel_id) = runtime.block_on(async {
+        let owner = instance.registered("owner").await;
+        let friend = instance.registered("friend").await;
+        let channel_id = shared_voice_channel(&owner, &friend).await;
+        (owner, friend, channel_id)
+    });
+    drop(friend);
+    let (session, voice) = signed_in(owner, SyntheticSound::Silence, cx);
+    wait_until(cx, "the voice channel in the state", |cx| {
+        session.read_with(cx, |session, _| {
+            session.state().guild_channel(channel_id).is_some()
+        })
+    });
+    voice.update(cx, |voice, cx| voice.join(channel_id, cx));
+    wait_until(cx, "the connection", |cx| {
+        voice.read_with(cx, |voice, _| voice.phase() == Some(CallPhase::Connected))
+            && own_voice_state(&session, cx).is_some_and(|state| state.channel_id == channel_id)
+    });
+
+    // The engine stops without telling the server: only the frame queued here can end the call
+    // on the instance before its media timeout.
+    let gateway = voice.update(cx, Voice::leave_before_quitting);
+    assert!(gateway.is_some(), "voice_leave was queued on the gateway");
+    assert_eq!(voice.read_with(cx, |voice, _| voice.phase()), None);
+    wait_until(cx, "the leave, seen by the instance", |cx| {
+        own_voice_state(&session, cx).is_none()
+    });
+    assert!(gateway.is_some_and(|gateway| gateway.has_no_frame_waiting()));
+    // Nothing to leave any more: quitting again sends nothing.
+    assert!(voice.update(cx, Voice::leave_before_quitting).is_none());
+
+    drop((voice, session));
+    cx.run_until_parked();
+    runtime.block_on(instance.stop());
+}
+
+#[gpui::test]
 fn a_channel_the_state_does_not_know_joins_nothing(cx: &mut TestAppContext) {
     let runtime: Runtime = build_network_runtime().unwrap();
     let instance = runtime.block_on(RunningInstance::start());

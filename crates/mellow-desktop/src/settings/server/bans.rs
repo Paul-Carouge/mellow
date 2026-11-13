@@ -77,7 +77,8 @@ impl ServerBansPage {
         page
     }
 
-    #[cfg(test)]
+    // Only the tests against a real server read it; the server refuses Windows (ADR-0006).
+    #[cfg(all(test, not(windows)))]
     pub(crate) fn bans(&self) -> Option<&[Ban]> {
         self.bans.as_deref()
     }
