@@ -97,11 +97,15 @@ gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] 
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
 # Authenticator codes for the two-factor test; already built for the server.
 aws-lc-rs.workspace = true
-# The sign-in tests run a real in-process server, as the client core's do.
-mellow-server = { path = "../mellow-server" }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+# The sign-in tests run a real in-process server, as the client core's do.
+# Not on Windows: the server refuses to run there (ADR-0006) and the tests that start one are
+# compiled out, so building it (and its vendored OpenSSL) would be wasted.
+mellow-server = { path = "../mellow-server" }
 
 [lints]
 workspace = true
