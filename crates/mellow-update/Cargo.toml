@@ -8,6 +8,10 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
+[features]
+# `UpdateClient::with_test_release_host`, for tests against a local HTTP server.
+test-release-host = []
+
 [dependencies]
 minisign-verify.workspace = true
 reqwest.workspace = true

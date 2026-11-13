@@ -1,5 +1,6 @@
 //! Finds, verifies and installs signed Mellow releases (ADR-0003, ADR-0016, ADR-0018). Shared by
-//! `mellow-server update` (and native clients to come); no UI and no service management here.
+//! `mellow-server update` and the desktop app's self-update (ADR-0057); no UI and no service
+//! management here.
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
@@ -102,8 +103,25 @@ impl Release {
     /// offered at all.
     #[must_use]
     pub fn has_executable_for(&self, program: Program) -> bool {
-        let name = asset_name(program, &self.version, CURRENT_TARGET);
-        self.asset_names.contains(&format!("{name}.minisig")) && self.asset_names.contains(&name)
+        self.has_signed_asset(&asset_name(program, &self.version, CURRENT_TARGET))
+    }
+
+    /// A release as a test describes it. Tests only: release builds do not enable the feature.
+    #[cfg(feature = "test-release-host")]
+    #[must_use]
+    pub fn for_tests(version: Version, asset_names: Vec<String>) -> Self {
+        Self {
+            version,
+            asset_names,
+        }
+    }
+
+    /// Whether the release carries the asset `name` and its signature.
+    #[must_use]
+    pub fn has_signed_asset(&self, name: &str) -> bool {
+        let signature_name = format!("{name}.minisig");
+        self.asset_names.iter().any(|asset| asset == name)
+            && self.asset_names.contains(&signature_name)
     }
 }
 
@@ -139,6 +157,9 @@ pub fn asset_name(program: Program, version: &Version, target: &str) -> String {
 #[derive(Debug, Clone)]
 pub struct UpdateClient {
     http: reqwest::Client,
+    latest_release_url: String,
+    download_base_url: String,
+    public_key: String,
 }
 
 impl UpdateClient {
@@ -151,7 +172,33 @@ impl UpdateClient {
             .https_only(true)
             .connect_timeout(CONNECT_TIMEOUT)
             .build()?;
-        Ok(Self { http })
+        Ok(Self {
+            http,
+            latest_release_url: LATEST_RELEASE_URL.to_owned(),
+            download_base_url: RELEASE_DOWNLOAD_BASE_URL.to_owned(),
+            public_key: RELEASE_PUBLIC_KEY.to_owned(),
+        })
+    }
+
+    /// A client of a local test server (plain HTTP allowed) whose releases are signed with
+    /// `public_key`: `<base_url>/latest` describes the release and
+    /// `<base_url>/download/vX.Y.Z/<asset>` serves its assets. Tests only: release builds do not
+    /// enable the feature.
+    ///
+    /// # Errors
+    /// Fails only if the HTTP stack cannot initialise.
+    #[cfg(feature = "test-release-host")]
+    pub fn with_test_release_host(base_url: &str, public_key: &str) -> Result<Self, UpdateError> {
+        let http = reqwest::Client::builder()
+            .user_agent("mellow-update")
+            .connect_timeout(CONNECT_TIMEOUT)
+            .build()?;
+        Ok(Self {
+            http,
+            latest_release_url: format!("{base_url}/latest"),
+            download_base_url: format!("{base_url}/download"),
+            public_key: public_key.to_owned(),
+        })
     }
 
     /// # Errors
@@ -159,7 +206,7 @@ impl UpdateClient {
     pub async fn fetch_latest_release(&self) -> Result<Release, UpdateError> {
         let request = self
             .http
-            .get(LATEST_RELEASE_URL)
+            .get(&self.latest_release_url)
             .header(reqwest::header::ACCEPT, "application/vnd.github+json");
         let body = download_body_with_size_limit(request, METADATA_TIMEOUT, MAXIMUM_METADATA_BYTES)
             .await
@@ -185,26 +232,42 @@ impl UpdateClient {
         program: Program,
     ) -> Result<Vec<u8>, UpdateError> {
         let name = asset_name(program, &release.version, CURRENT_TARGET);
+        self.download_verified_asset(release, &name, MAXIMUM_EXECUTABLE_BYTES)
+            .await
+    }
+
+    /// Downloads the asset `name` of `release` (at most `maximum_bytes`) and its signature, and
+    /// returns the asset only if the signature verifies against the release key for that exact
+    /// file name.
+    ///
+    /// # Errors
+    /// Network errors, a missing or too large asset, or a signature that does not verify.
+    pub async fn download_verified_asset(
+        &self,
+        release: &Release,
+        name: &str,
+        maximum_bytes: usize,
+    ) -> Result<Vec<u8>, UpdateError> {
         let signature_name = format!("{name}.minisig");
-        for wanted in [&name, &signature_name] {
-            if !release.asset_names.contains(wanted) {
+        for wanted in [name, signature_name.as_str()] {
+            if !release.asset_names.iter().any(|asset| asset == wanted) {
                 return Err(UpdateError::MissingAsset {
                     version: release.version.clone(),
-                    asset_name: wanted.clone(),
+                    asset_name: wanted.to_owned(),
                 });
             }
         }
         let download = |asset: &str, timeout, maximum_bytes| {
-            let url = format!("{RELEASE_DOWNLOAD_BASE_URL}/v{}/{asset}", release.version);
+            let url = format!("{}/v{}/{asset}", self.download_base_url, release.version);
             download_body_with_size_limit(self.http.get(url), timeout, maximum_bytes)
         };
         let signature =
             download(&signature_name, METADATA_TIMEOUT, MAXIMUM_SIGNATURE_BYTES).await?;
-        let executable = download(&name, DOWNLOAD_TIMEOUT, MAXIMUM_EXECUTABLE_BYTES).await?;
+        let asset = download(name, DOWNLOAD_TIMEOUT, maximum_bytes).await?;
         let signature = String::from_utf8(signature)
             .map_err(|_| UpdateError::UnexpectedResponse("signature is not text".into()))?;
-        verify_signed_file(&executable, &signature, &name, RELEASE_PUBLIC_KEY)?;
-        Ok(executable)
+        verify_signed_file(&asset, &signature, name, &self.public_key)?;
+        Ok(asset)
     }
 }
 
