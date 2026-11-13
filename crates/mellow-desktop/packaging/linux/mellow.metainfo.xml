@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- The id is the desktop entry's, which is the window's Wayland app_id (window_chrome.rs). -->
+<component type="desktop-application">
+  <id>mellow</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>AGPL-3.0-or-later</project_license>
+  <name>Mellow</name>
+  <summary>Chat, voice and video with your communities</summary>
+  <summary xml:lang="fr">Discussion, voix et vidéo avec vos communautés</summary>
+  <description>
+    <p>
+      Mellow is a self-hosted, open-source place for communities: servers with text channels,
+      voice and video channels, screen sharing, direct messages and groups. This app connects to
+      the Mellow instance of your choice.
+    </p>
+    <p xml:lang="fr">
+      Mellow est un lieu libre et auto-hébergé pour les communautés : des serveurs avec des salons
+      textuels, des salons vocaux et vidéo, le partage d’écran, des messages privés et des groupes.
+      Cette application se connecte à l’instance Mellow de votre choix.
+    </p>
+  </description>
+  <launchable type="desktop-id">mellow.desktop</launchable>
+  <developer id="io.github.paul-carouge">
+    <name>Paul Carouge</name>
+  </developer>
+  <url type="homepage">https://github.com/Paul-Carouge/mellow</url>
+  <url type="bugtracker">https://github.com/Paul-Carouge/mellow/issues</url>
+  <categories>
+    <category>Network</category>
+    <category>InstantMessaging</category>
+  </categories>
+  <content_rating type="oars-1.1">
+    <content_attribute id="social-chat">intense</content_attribute>
+    <content_attribute id="social-audio">intense</content_attribute>
+  </content_rating>
+</component>

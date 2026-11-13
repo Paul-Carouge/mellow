@@ -51,14 +51,25 @@ pub fn generate_web_app_icons(
     Ok(icons)
 }
 
-fn render_png(tree: &usvg::Tree, size: u32) -> Result<Vec<u8>> {
+pub fn render_png(tree: &usvg::Tree, size: u32) -> Result<Vec<u8>> {
+    render_png_with_margin(tree, size, 0.0)
+}
+
+/// The picture drawn `margin_fraction` of `size` away from each edge, on a transparent canvas.
+pub fn render_png_with_margin(
+    tree: &usvg::Tree,
+    size: u32,
+    margin_fraction: f32,
+) -> Result<Vec<u8>> {
     let mut pixmap = Pixmap::new(size, size).ok_or_else(|| anyhow!("empty icon size"))?;
     // Icon sizes are small integers: the f32 conversion is exact.
     #[allow(clippy::cast_precision_loss)]
-    let scale = size as f32 / tree.size().width();
+    let size_in_pixels = size as f32;
+    let margin = size_in_pixels * margin_fraction;
+    let scale = (size_in_pixels - 2.0 * margin) / tree.size().width();
     resvg::render(
         tree,
-        Transform::from_row(scale, 0.0, 0.0, scale, 0.0, 0.0),
+        Transform::from_row(scale, 0.0, 0.0, scale, margin, margin),
         &mut pixmap.as_mut(),
     );
     pixmap

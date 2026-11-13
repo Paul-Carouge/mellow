@@ -4,6 +4,13 @@
 //! `cargo xtask tokens [--check]`: generates the web token stylesheet, the app icons, the web app
 //! manifest and the desktop client's token and icon modules from `design/tokens.json` and
 //! `design/icons`, and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
+//!
+//! `cargo xtask macos-app [--binary PATH] [--output DIRECTORY] [--sign IDENTITY]`: builds
+//! `Mellow.app` around a built `mellow` (by default the release build) and signs it, ad hoc unless
+//! an identity is given (ADR-0055).
+//!
+//! `cargo xtask linux-package --binary PATH --output DIRECTORY`: lays out the Linux package the
+//! release workflow archives (ADR-0055).
 
 // A command-line program: its messages to the operator go to stderr.
 #![allow(clippy::print_stderr)]
@@ -11,11 +18,13 @@
 mod app_icons;
 mod css_tokens;
 mod design_tokens;
+mod desktop_package;
 mod favicon;
 mod i18n;
 mod rust_tokens;
 mod web_manifest;
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 
@@ -23,7 +32,11 @@ use anyhow::{Context as _, Result, anyhow, bail};
 
 use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 
-const USAGE: &str = "usage: cargo xtask tokens [--check] | cargo xtask i18n [--check]";
+const USAGE: &str = "usage: cargo xtask tokens [--check] | cargo xtask i18n [--check] \
+| cargo xtask macos-app [--binary PATH] [--output DIRECTORY] [--sign IDENTITY] \
+| cargo xtask linux-package --binary PATH --output DIRECTORY";
+/// codesign's name for an ad hoc signature, which needs no certificate.
+const AD_HOC_SIGNING_IDENTITY: &str = "-";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
 const CSS_TOKENS_OUTPUT_PATH: &str = "web/src/lib/tokens.css";
 const FAVICON_OUTPUT_PATH: &str = "web/public/favicon.svg";
@@ -53,8 +66,59 @@ fn run(arguments: &[String]) -> Result<()> {
         ["tokens", "--check"] => generate_tokens(true),
         ["i18n"] => generate_i18n_catalogue(false),
         ["i18n", "--check"] => generate_i18n_catalogue(true),
+        ["macos-app", options @ ..] => build_macos_app(options),
+        ["linux-package", options @ ..] => build_linux_package(options),
         _ => bail!("{USAGE}"),
     }
+}
+
+/// `--name value` pairs, each name at most once and among `allowed`.
+fn parse_options<'a>(arguments: &[&'a str], allowed: &[&str]) -> Result<HashMap<String, &'a str>> {
+    let mut options = HashMap::new();
+    let mut rest = arguments.iter();
+    while let Some(name) = rest.next() {
+        let Some(value) = rest.next() else {
+            bail!("{name} needs a value\n{USAGE}");
+        };
+        if !allowed.contains(name) || options.insert((*name).to_owned(), *value).is_some() {
+            bail!("unexpected or repeated option {name}\n{USAGE}");
+        }
+    }
+    Ok(options)
+}
+
+/// Where Cargo writes builds: `CARGO_TARGET_DIR`, or `target/` in the workspace.
+fn cargo_target_directory(root: &Path) -> PathBuf {
+    std::env::var_os("CARGO_TARGET_DIR").map_or_else(|| root.join("target"), PathBuf::from)
+}
+
+fn build_macos_app(arguments: &[&str]) -> Result<()> {
+    let options = parse_options(arguments, &["--binary", "--output", "--sign"])?;
+    let root = workspace_root()?;
+    let release_directory = cargo_target_directory(&root).join("release");
+    let binary = options
+        .get("--binary")
+        .map_or_else(|| release_directory.join("mellow"), PathBuf::from);
+    let output = options
+        .get("--output")
+        .map_or(release_directory, PathBuf::from);
+    let identity = options
+        .get("--sign")
+        .copied()
+        .unwrap_or(AD_HOC_SIGNING_IDENTITY);
+    let app = desktop_package::build_macos_app(&root, &binary, &output, identity)?;
+    eprintln!("built {} ({})", app.display(), desktop_package::VERSION);
+    Ok(())
+}
+
+fn build_linux_package(arguments: &[&str]) -> Result<()> {
+    let options = parse_options(arguments, &["--binary", "--output"])?;
+    let (Some(binary), Some(output)) = (options.get("--binary"), options.get("--output")) else {
+        bail!("{USAGE}");
+    };
+    desktop_package::build_linux_package(&workspace_root()?, Path::new(binary), Path::new(output))?;
+    eprintln!("laid out {output} ({})", desktop_package::VERSION);
+    Ok(())
 }
 
 fn workspace_root() -> Result<PathBuf> {

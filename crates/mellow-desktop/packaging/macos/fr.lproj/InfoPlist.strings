@@ -1,0 +1,3 @@
+/* The permission prompts' sentences in French. */
+"NSCameraUsageDescription" = "Mellow utilise votre caméra quand vous l’allumez dans un appel.";
+"NSMicrophoneUsageDescription" = "Mellow utilise votre micro dans les salons vocaux et les appels.";
