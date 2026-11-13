@@ -40,7 +40,10 @@ const PREVIEW_ASPECT_RATIO: f32 = 16.0 / 9.0;
 
 pub(super) struct VoiceVideoSection {
     pub(super) picture: Option<Arc<RenderImage>>,
-    /// Images replaced since the last draw, whose atlas slots that draw frees.
+    /// The image last drawn, the only one that holds an atlas slot to free.
+    drawn: Option<Arc<RenderImage>>,
+    /// Drawn images replaced since the last draw, whose atlas slots that draw frees. At most one
+    /// waits while the window is not drawn (hidden, minimised): the others never reached it.
     released: Vec<Arc<RenderImage>>,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
@@ -78,6 +81,7 @@ impl VoiceVideoSection {
         }
         Self {
             picture: None,
+            drawn: None,
             released: Vec::new(),
             _tasks: tasks,
             _subscriptions: subscriptions,
@@ -119,7 +123,7 @@ impl VoiceVideoSection {
                         )
                     };
                     if !is_shown && section.picture.is_some() {
-                        section.released.extend(section.picture.take());
+                        section.retire_picture();
                         cx.notify();
                     }
                     picture
@@ -134,7 +138,7 @@ impl VoiceVideoSection {
                     .await;
                 let is_gone = section
                     .update(cx, |section, cx| {
-                        section.released.extend(section.picture.take());
+                        section.retire_picture();
                         section.picture = image;
                         cx.notify();
                     })
@@ -144,6 +148,23 @@ impl VoiceVideoSection {
                 }
             }
         })
+    }
+}
+
+impl VoiceVideoSection {
+    /// Takes the picture off the stage; its atlas slot is freed at the next draw if it was drawn.
+    fn retire_picture(&mut self) {
+        let Some(picture) = self.picture.take() else {
+            return;
+        };
+        if self
+            .drawn
+            .as_ref()
+            .is_some_and(|drawn| Arc::ptr_eq(drawn, &picture))
+        {
+            self.drawn = None;
+            self.released.push(picture);
+        }
     }
 }
 
@@ -249,6 +270,9 @@ impl Render for VoiceVideoSection {
             ));
 
         let picture = self.picture.clone().filter(|_| is_shown);
+        if picture.is_some() {
+            self.drawn.clone_from(&picture);
+        }
         let caption = if is_shown {
             catalogue.camera().starting()
         } else {
@@ -309,5 +333,42 @@ impl Render for VoiceVideoSection {
                     .child(controls)
                     .child(stage),
             )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn picture() -> Option<Arc<RenderImage>> {
+        render_image_of(&DecodedVideoFrame {
+            width: 2,
+            height: 2,
+            format: mellow_media::DecodedPixelFormat::Bgra,
+            pixels: vec![0; 16].into(),
+        })
+    }
+
+    fn section() -> VoiceVideoSection {
+        VoiceVideoSection {
+            picture: None,
+            drawn: None,
+            released: Vec::new(),
+            _tasks: Vec::new(),
+            _subscriptions: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn pictures_replaced_while_the_window_is_not_drawn_are_not_kept() {
+        let mut section = section();
+        section.picture = picture();
+        section.drawn.clone_from(&section.picture);
+        for _ in 0..100 {
+            section.retire_picture();
+            section.picture = picture();
+        }
+        assert_eq!(section.released.len(), 1);
+        assert!(section.drawn.is_none());
     }
 }
