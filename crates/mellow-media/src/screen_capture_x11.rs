@@ -1,4 +1,4 @@
-//! Screen sharing on an X11 session (ADR-0054): an in-app picker of the RandR monitors and the
+//! Screen sharing on an X11 session (ADR-0054): an in-app picker of the `RandR` monitors and the
 //! managed windows (`_NET_CLIENT_LIST`, Mellow's own left out by `_NET_WM_PID`), and pictures
 //! read with MIT-SHM `GetImage` into one shared segment reused for every picture (plain
 //! `GetImage` without MIT-SHM), at 30 frames per second, encoded in VP8. `x11rb` speaks the
@@ -114,7 +114,7 @@ fn monitor_id(area: Area) -> String {
     )
 }
 
-/// The monitors as RandR lists them, or the whole root window without RandR.
+/// The monitors as `RandR` lists them, or the whole root window without `RandR`.
 fn monitors(
     connection: &RustConnection,
     root: Window,
@@ -202,11 +202,11 @@ fn windows(
         .map_err(system_error)?
         .reply()
         .map_err(system_error)?;
-    let Some(windows) = listed.value32() else {
+    let Some(listed_windows) = listed.value32() else {
         return Ok(Vec::new());
     };
     let mut described = Vec::new();
-    for window in windows {
+    for window in listed_windows {
         let Some(attributes) = connection
             .get_window_attributes(window)
             .ok()
@@ -557,7 +557,7 @@ impl Drop for X11Capture {
 pub(crate) fn start(
     choice: &ScreenChoice,
     sound: &ShareSound,
-    share: ScreenShareContext,
+    share: &ScreenShareContext,
 ) -> Result<Box<dyn RunningScreenCapture>, ScreenCaptureError> {
     let ScreenChoice::Source(id) = choice else {
         return Err(ScreenCaptureError::Unavailable);
@@ -581,18 +581,18 @@ pub(crate) fn start(
     let pictures = share.start_pictures();
     let is_whole_screen = matches!(source, Source::Monitor(_));
     let (running_sound, sound_state) =
-        start_sound_for(sound, is_whole_screen, window_application, &share);
+        start_sound_for(sound, is_whole_screen, window_application, share);
     let should_stop = Arc::new(AtomicBool::new(false));
     let thread = {
         let should_stop = Arc::clone(&should_stop);
-        let share = share.clone();
+        let capture_share = share.clone();
         std::thread::Builder::new()
             .name("mellow-screen-x11".into())
             .spawn(move || {
                 if let Err(reason) =
                     capture_loop(&connection, root, source, &pictures, &should_stop)
                 {
-                    share.end(reason);
+                    capture_share.end(reason);
                 }
             })
             .map_err(|error| {

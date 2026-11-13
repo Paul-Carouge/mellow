@@ -86,7 +86,7 @@ fn error_of(error: &vesper_capture::Error) -> ScreenCaptureError {
 /// Asks the portal for a screen or window and starts sharing it.
 pub(crate) fn start(
     sound: &ShareSound,
-    share: ScreenShareContext,
+    share: &ScreenShareContext,
 ) -> Result<Box<dyn RunningScreenCapture>, ScreenCaptureError> {
     let memory = if crate::h264_encoder_linux::can_encode_h264() {
         FrameMemory::DmaBuf
@@ -155,7 +155,7 @@ pub(crate) fn start(
         ));
     }
     // The portal names no application for a window: its sound is not known.
-    let (running_sound, sound_state) = start_sound_for(sound, is_whole_screen, None, &share);
+    let (running_sound, sound_state) = start_sound_for(sound, is_whole_screen, None, share);
     Ok(Box::new(PortalCapture {
         _capture: capture,
         _encoder: encoder,

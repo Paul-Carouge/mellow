@@ -4,7 +4,7 @@
 //! it on the GPU. Runs on its own thread, fed the newest picture through a one-slot queue, so the
 //! capture callback never waits for it.
 
-use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender, TrySendError};
+use std::sync::mpsc::{Receiver, RecvTimeoutError, SyncSender};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
@@ -58,9 +58,8 @@ pub(crate) struct H264PictureSlot {
 impl H264PictureSlot {
     /// Never blocks.
     pub(crate) fn offer(&self, frame: VideoFrame) {
-        match self.sender.try_send(frame) {
-            Ok(()) | Err(TrySendError::Full(_) | TrySendError::Disconnected(_)) => {}
-        }
+        // A full slot or a stopped encoder drops the picture, which releases its buffer.
+        let _ = self.sender.try_send(frame);
     }
 }
 

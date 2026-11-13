@@ -71,8 +71,8 @@ impl ScreenSources for SystemScreenSources {
         share: ScreenShareContext,
     ) -> Result<Box<dyn RunningScreenCapture>, ScreenCaptureError> {
         match session_kind() {
-            SessionKind::Wayland => crate::screen_capture_wayland::start(sound, share),
-            SessionKind::X11 => crate::screen_capture_x11::start(choice, sound, share),
+            SessionKind::Wayland => crate::screen_capture_wayland::start(sound, &share),
+            SessionKind::X11 => crate::screen_capture_x11::start(choice, sound, &share),
             SessionKind::None => Err(ScreenCaptureError::Unavailable),
         }
     }
