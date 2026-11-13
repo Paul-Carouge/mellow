@@ -33,7 +33,8 @@ env:
   # Vesper's Linux capture and encoder (ADR-0051), linked by the desktop's screen sharing
   # (ADR-0054, whose X11 capture adds none: x11rb is pure Rust): PipeWire, VA-API and FFmpeg's headers and
   # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
-  # only libavcodec, libavfilter and libavutil, but rusty_ffmpeg's build script probes all seven.
+  # libavcodec, libavfilter, libavformat, libavutil, libswscale and libswresample (video
+  # attachments read files with the last three); rusty_ffmpeg's build script probes all seven.
   VESPER_BUILD_PACKAGES: libpipewire-0.3-dev libva-dev libclang-dev libavcodec-dev libavdevice-dev libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
   # The camera decoder's tests make their JPEGs with the ffmpeg command and skip without it.
   VESPER_TEST_PACKAGES: ffmpeg
