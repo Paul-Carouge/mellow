@@ -43,23 +43,23 @@ mod tests {
 
     /// (typographic family, weight, is italic) of every embedded face.
     fn embedded_faces() -> Vec<(String, u16, bool)> {
+        use skrifa::MetadataProvider as _;
+        use skrifa::string::StringId;
+
         EMBEDDED_FONT_FILES
             .iter()
             .map(|bytes| {
-                let face = ttf_parser::Face::parse(bytes, 0).expect("an embedded font parses");
-                let family = [
-                    ttf_parser::name_id::TYPOGRAPHIC_FAMILY,
-                    ttf_parser::name_id::FAMILY,
-                ]
-                .into_iter()
-                .find_map(|id| {
-                    face.names()
-                        .into_iter()
-                        .find(|name| name.name_id == id && name.is_unicode())
-                        .and_then(|name| name.to_string())
-                })
-                .expect("an embedded font names its family");
-                (family, face.weight().to_number(), face.is_italic())
+                let font = skrifa::FontRef::new(bytes).expect("an embedded font parses");
+                let family = [StringId::TYPOGRAPHIC_FAMILY_NAME, StringId::FAMILY_NAME]
+                    .into_iter()
+                    .find_map(|id| font.localized_strings(id).english_or_first())
+                    .expect("an embedded font names its family")
+                    .to_string();
+                let attributes = font.attributes();
+                #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                let weight = attributes.weight.value().round() as u16;
+                let is_italic = attributes.style != skrifa::attribute::Style::Normal;
+                (family, weight, is_italic)
             })
             .collect()
     }
