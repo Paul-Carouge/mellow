@@ -100,8 +100,6 @@ fn are_automatic_updates_on(cx: &App) -> Option<bool> {
 
 pub struct SelfUpdate {
     status: UpdateStatus,
-    /// Detected once, at the first check.
-    installation: Option<Result<Installation, UpdateProblem>>,
     staged: Option<StagedUpdate>,
     /// Swapped in: kept until the process ends, as on macOS it holds the replaced app this
     /// process still runs from.
@@ -167,7 +165,6 @@ impl SelfUpdate {
         });
         Self {
             status: UpdateStatus::Idle,
-            installation: None,
             staged: None,
             applied: None,
             work: None,
@@ -209,31 +206,20 @@ impl SelfUpdate {
         }
         self.status = UpdateStatus::Checking;
         cx.notify();
-        let known_installation = self.installation.clone();
+        // Detected at each check: installing FFmpeg or fixing the folder's rights takes effect.
         let find = spawn_on_network_runtime(cx, async move {
-            let installation = match known_installation {
-                Some(installation) => installation,
-                None => tokio::task::spawn_blocking(package::detect_installation)
-                    .await
-                    .unwrap_or(Err(UpdateProblem::InstallFailed)),
-            };
-            let found = match &installation {
-                Ok(installation) => find_update_for(installation).await,
-                Err(problem) => Err(*problem),
-            };
-            (installation, found)
+            let installation = tokio::task::spawn_blocking(package::detect_installation)
+                .await
+                .unwrap_or(Err(UpdateProblem::InstallFailed))?;
+            find_update_for(installation).await
         });
         self.work = Some(cx.spawn(async move |this, cx| {
-            let Ok((installation, found)) = find.await else {
-                return;
-            };
-            let _ = this.update(cx, |this, cx| {
-                this.installation = Some(installation);
-                match found {
-                    Ok(None) => this.finish(UpdateStatus::UpToDate, cx),
-                    Ok(Some(update)) => this.download(update, cx),
-                    Err(problem) => this.finish(UpdateStatus::Failed(problem), cx),
-                }
+            // Only a panic or the runtime shutting down lose the answer.
+            let found = find.await.unwrap_or(Err(UpdateProblem::InstallFailed));
+            let _ = this.update(cx, |this, cx| match found {
+                Ok(None) => this.finish(UpdateStatus::UpToDate, cx),
+                Ok(Some(update)) => this.download(update, cx),
+                Err(problem) => this.finish(UpdateStatus::Failed(problem), cx),
             });
         }));
     }
@@ -243,14 +229,10 @@ impl SelfUpdate {
             tracing::info!(?problem, "the app could not update itself");
         }
         self.status = status;
-        self.work = None;
         cx.notify();
     }
 
     fn download(&mut self, update: FoundUpdate, cx: &mut Context<Self>) {
-        let Some(Ok(installation)) = self.installation.clone() else {
-            return;
-        };
         let version = update.release.version.clone();
         self.status = UpdateStatus::Downloading(version.clone());
         cx.notify();
@@ -263,15 +245,13 @@ impl SelfUpdate {
             .await?;
             // Unpacking a large archive and running `codesign` block: off the network workers.
             tokio::task::spawn_blocking(move || {
-                package::stage_package(&installation, version, &update.asset_name, &package)
+                package::stage_package(&update.installation, version, &update.asset_name, &package)
             })
             .await
             .unwrap_or(Err(UpdateProblem::InstallFailed))
         });
         self.work = Some(cx.spawn(async move |this, cx| {
-            let Ok(staged) = download.await else {
-                return;
-            };
+            let staged = download.await.unwrap_or(Err(UpdateProblem::InstallFailed));
             let _ = this.update(cx, |this, cx| match staged {
                 Ok(staged) => {
                     let version = staged.version.clone();
@@ -325,21 +305,21 @@ impl SelfUpdate {
 
 /// A newer release, the client that found it and the asset for this installation.
 struct FoundUpdate {
+    installation: Installation,
     client: UpdateClient,
     release: Release,
     asset_name: String,
 }
 
-async fn find_update_for(
-    installation: &Installation,
-) -> Result<Option<FoundUpdate>, UpdateProblem> {
+async fn find_update_for(installation: Installation) -> Result<Option<FoundUpdate>, UpdateProblem> {
     let client = UpdateClient::new().map_err(|_| UpdateProblem::Network)?;
     let current = mellow_update::current_version();
     let Some(release) = package::find_newer_release(&client, &current).await? else {
         return Ok(None);
     };
-    let asset_name = package::asset_name_for(installation, &release)?;
+    let asset_name = package::asset_name_for(&installation, &release)?;
     Ok(Some(FoundUpdate {
+        installation,
         client,
         release,
         asset_name,
