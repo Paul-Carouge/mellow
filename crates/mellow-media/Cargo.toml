@@ -41,9 +41,12 @@ block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 objc2 = "0.6.5"
 objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-video", "CMSampleBuffer"] }
+objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-audio-types", "objc2-core-video", "CMBase", "CMSampleBuffer", "CMTime"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSDictionary", "NSError", "NSObject", "NSString", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
+# Screen sharing through ScreenCaptureKit (ADR-0054), already in the tree through GPUI.
+objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-foundation", "libc", "objc2-core-graphics", "objc2-core-media", "SCError", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
 
 [build-dependencies]
 cc.workspace = true

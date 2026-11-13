@@ -10,7 +10,8 @@
 //! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
 //! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
 //! and one decoding thread per watched slot turns received frames into pictures for the
-//! interface.
+//! interface. Screen sharing (ADR-0054) captures through each system's own interface and, on
+//! Linux with VA-API, encodes H.264 on the GPU instead.
 
 mod audio_engine;
 mod audio_format;
@@ -25,6 +26,8 @@ mod codec;
 mod connection;
 mod devices;
 mod enhancement;
+#[cfg(any(target_os = "linux", test))]
+mod h264_stream;
 mod input_gate;
 mod jitter_buffer;
 mod level;
@@ -35,6 +38,12 @@ mod person_settings;
 mod playback;
 mod processing;
 mod resampling;
+mod screen_capture;
+// ScreenCaptureKit is reached only through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod screen_capture_macos;
+mod screen_sound;
 mod session;
 mod simulcast;
 mod sound_player;
@@ -78,10 +87,16 @@ pub use person_settings::{
 };
 pub use processing::{NoiseSuppressionMode, ProcessingSettings};
 pub use resampling::ResamplingError;
+pub use screen_capture::{
+    RunningScreenCapture, ScreenCaptureError, ScreenChoice, ScreenPicker, ScreenShare,
+    ScreenShareContext, ScreenSourceDescription, ScreenSourceKind, ScreenSources, ShareSound,
+    ShareSoundState, SoundApplication, SyntheticScreens, SystemScreenSources,
+};
+pub use screen_sound::ScreenSoundInput;
 pub use session::{
-    AudioDirection, GOOD_ROUND_TRIP, LatencyQuality, MEDIUM_ROUND_TRIP, VoiceSession,
-    VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions, VoiceSignalling, VoiceToggles,
-    WatchedVideo, is_voice_session_event, latency_quality,
+    AudioDirection, GOOD_ROUND_TRIP, LatencyQuality, MEDIUM_ROUND_TRIP, ScreenShareEnd,
+    VoiceSession, VoiceSessionError, VoiceSessionEvent, VoiceSessionOptions, VoiceSignalling,
+    VoiceToggles, WatchedVideo, is_voice_session_event, latency_quality,
 };
 pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;
@@ -95,4 +110,4 @@ pub use sounds::{
 };
 pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
 pub use video_receiver::VideoFrames;
-pub use video_sender::VideoInput;
+pub use video_sender::{EncodedVideoInput, EncoderRequests, VideoInput};

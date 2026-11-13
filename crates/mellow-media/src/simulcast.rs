@@ -34,7 +34,7 @@ pub enum ScreenShareQuality {
 }
 
 impl ScreenShareQuality {
-    const fn top_size(self) -> (u32, u32) {
+    pub(crate) const fn top_size(self) -> (u32, u32) {
         match self {
             Self::Standard => (1_280, 720),
             Self::High => (1_920, 1_080),

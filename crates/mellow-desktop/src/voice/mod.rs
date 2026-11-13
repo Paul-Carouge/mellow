@@ -837,7 +837,8 @@ impl Voice {
             // Cameras and screens come with the call view (M3 step 8).
             VoiceSessionEvent::VideoRefused(_)
             | VoiceSessionEvent::VideoStoppedByServer
-            | VoiceSessionEvent::VideoPaused { .. } => {}
+            | VoiceSessionEvent::VideoPaused { .. }
+            | VoiceSessionEvent::ScreenShareEnded(_) => {}
         }
     }
 

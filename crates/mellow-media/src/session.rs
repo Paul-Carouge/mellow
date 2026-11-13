@@ -5,7 +5,8 @@
 //! [`VoiceSession::handle_gateway_event`] (events in), so the desktop wires it to the client
 //! core's gateway and tests to a plain WebSocket. The session reconnects by itself as the web
 //! client does: a fresh offer after a lost path, a gateway `READY` or `RESUMED`, or the network
-//! coming back, and it says why it stopped.
+//! coming back, and it says why it stopped. A screen share starts with
+//! [`VoiceSession::start_screen_share`] from a [`crate::ScreenSources`] capture (ADR-0054).
 
 use std::collections::HashMap;
 use std::net::Ipv4Addr;
@@ -16,8 +17,8 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use mellow_protocol::{
-    ClientFrame, GatewayEvent, Snowflake, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal,
-    VoiceVideoRefusal, WatchedCamera,
+    ClientFrame, GatewayEvent, Snowflake, VideoCodec, VideoTileSize, VoiceDisconnectReason,
+    VoiceJoinRefusal, VoiceVideoRefusal, WatchedCamera,
 };
 
 use crate::audio_engine::{AudioCommand, AudioEngine, AudioEngineChannels, AudioSettings};
@@ -28,6 +29,10 @@ use crate::level::MicrophoneLevel;
 use crate::offer::OfferError;
 use crate::person_settings::{PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore};
 use crate::processing::ProcessingSettings;
+use crate::screen_capture::{
+    ScreenCaptureError, ScreenChoice, ScreenShare, ScreenShareContext, ScreenSources, ShareSound,
+};
+use crate::screen_sound::OutgoingScreenSoundPacket;
 use crate::simulcast::{ScreenShareQuality, VideoSourceKind};
 use crate::sounds::{LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue};
 use crate::transport::{NetworkCommand, NetworkThread, PeerConnection, PeerError, VideoLink};
@@ -90,6 +95,18 @@ pub enum VoiceSessionEvent {
     /// This session's connection is too slow for `user_id`'s video even at its lowest layer
     /// (`is_paused`), or it flows again: show their avatar meanwhile.
     VideoPaused { user_id: Snowflake, is_paused: bool },
+    /// The shared screen's capture ended by itself; the share is off and the server knows.
+    ScreenShareEnded(ScreenShareEnd),
+}
+
+/// Why a screen share's capture ended by itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ScreenShareEnd {
+    /// The window closed, the display went away, or the system revoked the capture (the
+    /// Wayland portal's session, macOS's own controls).
+    SourceClosed,
+    /// The capture or its encoder failed; the text is the system's, never a window's title.
+    Failed(String),
 }
 
 /// A camera or screen this session shows, and how large its tile is drawn.
@@ -254,22 +271,32 @@ pub struct VoiceSession {
     network_commands: Sender<NetworkCommand>,
     is_path_dropped: Arc<AtomicBool>,
     video_encoder: Arc<VideoEncoderControl>,
+    /// Where sources encoded elsewhere (a GPU's H.264) send their layers.
+    outgoing_video: Sender<OutgoingVideoFrame>,
+    /// Where the shared screen's sound goes.
+    outgoing_screen_sound: Sender<OutgoingScreenSoundPacket>,
     video_frames: VideoFrames,
     /// The last list sent to the network thread: only a change goes again.
     watched_cameras: Vec<WatchedCamera>,
     threads: Vec<JoinHandle<()>>,
 }
 
-/// The video encoding thread, idle until a source starts, and where its frames come out.
+/// The video encoding thread, idle until a source starts, where its frames come out, and a
+/// sender into the same queue for sources encoded elsewhere.
 fn spawn_video_encoder(
     control: &Arc<VideoEncoderControl>,
-) -> std::io::Result<(JoinHandle<()>, Receiver<OutgoingVideoFrame>)> {
+) -> std::io::Result<(
+    JoinHandle<()>,
+    Receiver<OutgoingVideoFrame>,
+    Sender<OutgoingVideoFrame>,
+)> {
     let (outgoing, outgoing_receiver) = mpsc::channel();
+    let encoded_elsewhere = outgoing.clone();
     let control = Arc::clone(control);
     let thread = std::thread::Builder::new()
         .name("mellow-video-encode".into())
         .spawn(move || control.run(&outgoing))?;
-    Ok((thread, outgoing_receiver))
+    Ok((thread, outgoing_receiver, encoded_elsewhere))
 }
 
 impl std::fmt::Debug for VoiceSession {
@@ -312,11 +339,12 @@ impl VoiceSession {
         signalling: Box<dyn VoiceSignalling>,
         settings_store: Arc<dyn PersonVoiceSettingsStore>,
     ) -> Result<(Self, Receiver<VoiceSessionEvent>), VoiceSessionError> {
-        let first_peer = PeerConnection::new(options.server_address, 1)?;
+        let first_peer = PeerConnection::new(options.server_address, 1, VideoCodec::Vp8)?;
         let (events, event_receiver) = mpsc::channel();
         let (audio_commands, audio_command_receiver) = mpsc::channel();
         let (network_commands, network_command_receiver) = mpsc::channel();
         let (outgoing, outgoing_receiver) = mpsc::channel();
+        let (outgoing_screen_sound, screen_sound_receiver) = mpsc::channel();
         let (incoming, incoming_receiver) = mpsc::channel();
         let settings = AudioSettings {
             is_muted: options.toggles.is_muted(),
@@ -362,7 +390,7 @@ impl VoiceSession {
         let is_path_dropped = Arc::new(AtomicBool::new(false));
         let video_encoder = Arc::new(VideoEncoderControl::default());
         let video_frames = VideoFrames::new(options.decoded_pixel_format);
-        let (video_thread, outgoing_video) = spawn_video_encoder(&video_encoder)?;
+        let (video_thread, outgoing_video, encoded_video) = spawn_video_encoder(&video_encoder)?;
         let (keyframe_requests, keyframe_request_receiver) = mpsc::channel();
         let video = VideoLink {
             encoder: Arc::clone(&video_encoder),
@@ -385,6 +413,8 @@ impl VoiceSession {
             settings_store: settings_store.clone(),
             commands: network_command_receiver,
             outgoing: outgoing_receiver,
+            screen_sound: screen_sound_receiver,
+            camera_codec: VideoCodec::Vp8,
             incoming,
             events,
             audio_commands: audio_commands.clone(),
@@ -404,6 +434,8 @@ impl VoiceSession {
             network_commands,
             is_path_dropped,
             video_encoder,
+            outgoing_video: encoded_video,
+            outgoing_screen_sound,
             video_frames,
             watched_cameras: Vec::new(),
             threads: vec![audio_thread, network_thread, video_thread],
@@ -477,9 +509,40 @@ impl VoiceSession {
     /// [`VoiceSessionEvent::VideoRefused`] when it does not allow it.
     #[must_use]
     pub fn start_video(&self, kind: VideoSourceKind) -> VideoInput {
+        self.network(NetworkCommand::SetCameraCodec(VideoCodec::Vp8));
         let input = self.video_encoder.start(kind);
         self.network(NetworkCommand::SetVideoSource(Some(kind)));
         input
+    }
+
+    /// Shares a screen or window from `sources` at `quality`, replacing the camera or another
+    /// share (ADR-0054). Blocks while a system picker is open or the system starts the capture:
+    /// call it off the interface's thread. Nothing turns on unless the capture starts. Dropping
+    /// the returned share stops it; [`VoiceSession::stop_video`] does too.
+    ///
+    /// # Errors
+    /// Cancelled, refused (permission), gone, unavailable on this system, or the system failed.
+    pub fn start_screen_share(
+        &self,
+        sources: &dyn ScreenSources,
+        choice: &ScreenChoice,
+        quality: ScreenShareQuality,
+        sound: &ShareSound,
+    ) -> Result<ScreenShare, ScreenCaptureError> {
+        let context = ScreenShareContext::new(
+            quality,
+            Arc::clone(&self.video_encoder),
+            self.network_commands.clone(),
+            self.outgoing_video.clone(),
+            self.outgoing_screen_sound.clone(),
+        );
+        let capture = sources.start(choice, sound, context.clone())?;
+        if !context.is_on() {
+            return Err(ScreenCaptureError::System(
+                "the capture started without pictures".into(),
+            ));
+        }
+        Ok(ScreenShare::new(context, capture))
     }
 
     /// A new quality for the shared screen: only bit rates change, as on the web.
@@ -712,6 +775,8 @@ mod tests {
     ) {
         let (audio_commands, audio_command_receiver) = mpsc::channel();
         let (network_commands, network_command_receiver) = mpsc::channel();
+        let (outgoing_video, _outgoing_video_receiver) = mpsc::channel();
+        let (outgoing_screen_sound, _screen_sound_receiver) = mpsc::channel();
         let store = Arc::new(InMemoryPersonVoiceSettings::default());
         let session = VoiceSession {
             channel_id: Snowflake::from_raw(1),
@@ -723,6 +788,8 @@ mod tests {
             network_commands,
             is_path_dropped: Arc::new(AtomicBool::new(false)),
             video_encoder: Arc::new(VideoEncoderControl::default()),
+            outgoing_video,
+            outgoing_screen_sound,
             video_frames: VideoFrames::new(DecodedPixelFormat::Bgra),
             watched_cameras: Vec::new(),
             threads: Vec::new(),
