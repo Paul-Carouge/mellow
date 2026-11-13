@@ -320,7 +320,21 @@ impl DuskShell {
             .bg(color(fill))
             .text_color(color(ink))
             .cursor_pointer()
-            .tooltip(move |_, cx| Tooltip::view(tooltip.clone(), cx))
+            .tooltip({
+                // The item's slot, as wide as the strip: the label starts at its trailing edge.
+                let shell = cx.entity().downgrade();
+                move |window, cx| {
+                    let slot = shell.upgrade().and_then(|shell| {
+                        shell
+                            .read(cx)
+                            .regions
+                            .rail
+                            .scroll
+                            .bounds_for_item(child_index)
+                    });
+                    Tooltip::view_on_trailing_side(tooltip.clone(), slot, window, cx)
+                }
+            })
             .tooltip_show_delay(delay(COMPONENT_RAIL_TOOLTIP_DELAY))
             .on_hover(move |is_hovered, _, cx| {
                 hover.update(cx, |remembered, cx| {
