@@ -79,6 +79,7 @@ fn problem_sentence(problem: UpdateProblem, catalogue: Strings) -> &'static str 
         UpdateProblem::PackageManager => words.update_package_manager(),
         UpdateProblem::InstalledElsewhere => words.update_installed_elsewhere(),
         UpdateProblem::NotWritable => words.update_not_writable(),
+        UpdateProblem::Translocated => words.update_translocated(),
         UpdateProblem::UnsupportedSystem => words.update_unsupported_system(),
         UpdateProblem::NoFfmpeg => words.update_no_ffmpeg(),
         UpdateProblem::Network => words.update_network(),

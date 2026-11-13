@@ -14878,6 +14878,13 @@ impl DesktopStrings {
         }
     }
 
+    pub fn update_translocated(self) -> &'static str {
+        match self.language {
+            Language::English => "macOS opened Mellow from a temporary read-only copy. Move Mellow to your Applications folder, open it from there, then check again.",
+            Language::French => "macOS a ouvert Mellow depuis une copie temporaire en lecture seule. Déplace Mellow dans ton dossier Applications, ouvre-le depuis là, puis vérifie à nouveau.",
+        }
+    }
+
     pub fn update_unsupported_system(self) -> &'static str {
         match self.language {
             Language::English => "Mellow can't update itself on this system yet. Download new versions from its releases on GitHub.",
@@ -14894,8 +14901,8 @@ impl DesktopStrings {
 
     pub fn update_network(self) -> &'static str {
         match self.language {
-            Language::English => "Couldn't download the update. Mellow will try again later.",
-            Language::French => "Impossible de télécharger la mise à jour. Mellow réessaiera plus tard.",
+            Language::English => "Couldn't download the update. Check your connection and try again.",
+            Language::French => "Impossible de télécharger la mise à jour. Vérifie ta connexion et réessaie.",
         }
     }
 

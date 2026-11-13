@@ -5005,6 +5005,7 @@ dependencies = [
  "image",
  "keyring",
  "keyring-core",
+ "libc",
  "mellow-client-core",
  "mellow-media",
  "mellow-protocol",

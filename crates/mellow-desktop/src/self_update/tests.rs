@@ -105,6 +105,7 @@ fn linux_installation(home: &Path, executable: &Path, ffmpeg_majors: Vec<u32>) -
         executable: executable.to_owned(),
         home: home.to_owned(),
         ffmpeg_majors,
+        staging_folder: home.join(".cache").join("mellow").join("updates"),
     }
 }
 
@@ -135,7 +136,7 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
     let downloaded = package::download_verified_package(&client, &release, &asset_name)
         .await
         .unwrap();
-    let staged = package::stage_package(
+    let mut staged = package::stage_package(
         &installation,
         release.version.clone(),
         &asset_name,
@@ -148,7 +149,7 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
         "nothing replaced before the swap"
     );
 
-    let restart_path = package::apply_staged_update(&staged).unwrap();
+    let restart_path = package::apply_staged_update(&mut staged).unwrap();
     assert_eq!(restart_path, executable);
     assert_eq!(std::fs::read(&executable).unwrap(), NEW_BINARY);
     assert_eq!(
@@ -156,6 +157,37 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
         ["mellow"],
         "no previous copy or temporary file left beside it"
     );
+    let staging_folder = home.path().join(".cache").join("mellow").join("updates");
+    assert_eq!(file_names_in(&staging_folder).len(), 1);
+    drop(staged);
+    assert!(
+        file_names_in(&staging_folder).is_empty(),
+        "staged in the user's cache, removed with the update"
+    );
+}
+
+#[test]
+fn a_copy_reinstalled_after_staging_is_not_replaced() {
+    let (home, executable) = home_with_installed_mellow();
+    let installation = linux_installation(home.path(), &executable, vec![7]);
+    let mut staged = package::stage_package(
+        &installation,
+        Version::new(9, 0, 0),
+        LINUX_PACKAGE_NAME,
+        LINUX_PACKAGE,
+    )
+    .unwrap();
+    // A newer version installed by hand, as `install.sh` does: a new file renamed into place.
+    let manual = executable.with_file_name(".manual");
+    std::fs::write(&manual, b"manual mellow\n").unwrap();
+    std::fs::rename(&manual, &executable).unwrap();
+
+    assert_eq!(
+        package::apply_staged_update(&mut staged).unwrap(),
+        executable,
+        "the reinstalled copy is what restarts"
+    );
+    assert_eq!(std::fs::read(&executable).unwrap(), b"manual mellow\n");
 }
 
 #[tokio::test]
@@ -362,6 +394,12 @@ fn a_release_app_is_recognised_by_its_bundle_and_requirement() {
         package::bundle_of_executable(Path::new("/Users/a/target/debug/mellow")),
         None
     );
+    assert!(package::is_translocated(Path::new(
+        "/private/var/folders/ab/cd/T/AppTranslocation/0123-4567/d/Mellow.app"
+    )));
+    assert!(!package::is_translocated(Path::new(
+        "/Applications/Mellow.app"
+    )));
     let output = "Executable=/Applications/Mellow.app/Contents/MacOS/mellow\n\
         designated => identifier \"org.mellow.desktop\" and certificate leaf = H\"0123abcd\"\n";
     let requirement = package::designated_requirement_of(output).unwrap();
@@ -389,14 +427,17 @@ fn a_failed_swap_puts_the_installed_copy_back() {
     std::fs::write(installed.join("version"), b"old").unwrap();
 
     let missing = directory.path().join("missing.app");
-    assert!(package::swap_in(&missing, &installed, &previous).is_err());
+    assert_eq!(
+        package::swap_in(&missing, &installed, &previous),
+        Err(package::SwapFailure::NothingMoved)
+    );
     assert_eq!(std::fs::read(installed.join("version")).unwrap(), b"old");
     assert!(!previous.exists());
 
     let new = directory.path().join("new.app");
     std::fs::create_dir(&new).unwrap();
     std::fs::write(new.join("version"), b"new").unwrap();
-    package::swap_in(&new, &installed, &previous).unwrap();
+    assert_eq!(package::swap_in(&new, &installed, &previous), Ok(()));
     assert_eq!(std::fs::read(installed.join("version")).unwrap(), b"new");
     assert_eq!(std::fs::read(previous.join("version")).unwrap(), b"old");
     assert!(!new.exists());
@@ -413,6 +454,21 @@ fn a_failing_install_script_leaves_the_running_binary_in_place() {
         "printf broken > \"$HOME/.local/bin/.new\" && mv -f \"$HOME/.local/bin/.new\" \"$HOME/.local/bin/mellow\"\nexit 1\n",
     )
     .unwrap();
+    assert_eq!(
+        package::run_install_script(&script, &executable, home.path()),
+        Err(UpdateProblem::InstallFailed)
+    );
+    assert_eq!(std::fs::read(&executable).unwrap(), OLD_BINARY);
+    assert_eq!(file_names_in(executable.parent().unwrap()), ["mellow"]);
+}
+
+#[test]
+fn an_install_script_failing_before_replacing_anything_leaves_no_extra_name() {
+    let (home, executable) = home_with_installed_mellow();
+    let package = tempfile::tempdir().unwrap();
+    let script = package.path().join("install.sh");
+    // As `install.sh` stopping at its `ldd` check, before it moves anything.
+    std::fs::write(&script, "exit 1\n").unwrap();
     assert_eq!(
         package::run_install_script(&script, &executable, home.path()),
         Err(UpdateProblem::InstallFailed)
@@ -500,11 +556,21 @@ fn leftover_staging_folders_are_removed_and_nothing_else() {
     std::fs::write(folder.path().join(".mellow-update-abc").join("file"), b"").unwrap();
     std::fs::write(folder.path().join(".mellow-update-file"), b"").unwrap();
     std::fs::create_dir(folder.path().join("Mellow.app")).unwrap();
+    // Another running instance's ready update, its lock held.
+    let held = folder.path().join(".mellow-update-held");
+    std::fs::create_dir(&held).unwrap();
+    let lock = std::fs::File::create(held.join("lock")).unwrap();
+    lock.try_lock().unwrap();
+    // A crashed instance's, its lock released.
+    let released = folder.path().join(".mellow-update-released");
+    std::fs::create_dir(&released).unwrap();
+    std::fs::write(released.join("lock"), b"").unwrap();
     package::remove_stale_staging_directories(folder.path());
     assert_eq!(
         file_names_in(folder.path()),
-        [".mellow-update-file", "Mellow.app"]
+        [".mellow-update-file", ".mellow-update-held", "Mellow.app"]
     );
+    drop(lock);
 }
 
 #[test]

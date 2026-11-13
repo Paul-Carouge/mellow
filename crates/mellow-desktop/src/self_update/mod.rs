@@ -8,9 +8,10 @@ pub mod package;
 mod tests;
 
 use std::hash::BuildHasher as _;
+use std::path::PathBuf;
 use std::time::Duration;
 
-use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task};
+use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task, WeakEntity};
 use mellow_update::{Release, UpdateClient};
 use semver::Version;
 
@@ -39,6 +40,8 @@ pub enum UpdateProblem {
     /// Linux: not where the package's `install.sh` puts it.
     InstalledElsewhere,
     NotWritable,
+    /// macOS: run from the read-only copy macOS makes of an app opened where it was downloaded.
+    Translocated,
     /// Windows, or a Linux processor the release has no package for.
     UnsupportedSystem,
     /// Linux: no FFmpeg the packages are built for.
@@ -104,6 +107,8 @@ pub struct SelfUpdate {
     /// Swapped in: kept until the process ends, as on macOS it holds the replaced app this
     /// process still runs from.
     applied: Option<StagedUpdate>,
+    /// Swapped in while a call started: what "Restart to update" starts once the call ends.
+    restart_path_after_call: Option<PathBuf>,
     /// The check, download or installation under way; dropping it cancels it.
     work: Option<Task<()>>,
     _schedule: Task<()>,
@@ -125,6 +130,14 @@ impl Global for SelfUpdateGlobal {}
 
 /// Starts the scheduled checks and installs a ready update when the app quits.
 pub fn install_self_update(cx: &mut App) -> Entity<SelfUpdate> {
+    // Once per start, automatic updates on or off: after a restart to update, the replaced app
+    // waits there (on macOS, beside the installed one).
+    cx.background_spawn(async {
+        if let Some(folder) = package::staging_folder_of_this_copy() {
+            package::remove_stale_staging_directories(&folder);
+        }
+    })
+    .detach();
     let self_update = cx.new(SelfUpdate::new);
     cx.set_global(SelfUpdateGlobal(self_update.clone()));
     self_update
@@ -153,8 +166,8 @@ impl SelfUpdate {
         // At a quit the call ends anyway; a ready update is swapped in, and the next start runs
         // it. Blocking, but the window is already closing and the swap is a rename or two.
         let quit_subscription = cx.on_app_quit(|this, _| {
-            if let Some(staged) = this.staged.take() {
-                match package::apply_staged_update(&staged) {
+            if let Some(mut staged) = this.staged.take() {
+                match package::apply_staged_update(&mut staged) {
                     Ok(_) => this.applied = Some(staged),
                     Err(problem) => {
                         tracing::warn!(?problem, "the update could not be installed at quit");
@@ -167,6 +180,7 @@ impl SelfUpdate {
             status: UpdateStatus::Idle,
             staged: None,
             applied: None,
+            restart_path_after_call: None,
             work: None,
             _schedule: schedule,
             _quit_subscription: quit_subscription,
@@ -192,36 +206,50 @@ impl SelfUpdate {
         delay_with_jitter(CHECK_INTERVAL, CHECK_JITTER, random_number())
     }
 
-    /// Looks for a newer release and, if there is one, downloads, verifies and stages it.
+    /// Looks for a newer release and, if there is one, downloads, verifies and stages it. With an
+    /// update already ready (the app can run for weeks), only a newer one replaces it, quietly.
     pub fn check_now(&mut self, cx: &mut Context<Self>) {
         if matches!(
             self.status,
-            UpdateStatus::Checking
-                | UpdateStatus::Downloading(_)
-                | UpdateStatus::Ready(_)
-                | UpdateStatus::Installing(_)
+            UpdateStatus::Checking | UpdateStatus::Downloading(_) | UpdateStatus::Installing(_)
         ) || self.applied.is_some()
+            || self.work.is_some() && self.staged.is_some()
         {
             return;
         }
-        self.status = UpdateStatus::Checking;
-        cx.notify();
+        let newest_known = if let Some(staged) = &self.staged {
+            staged.version.clone()
+        } else {
+            self.status = UpdateStatus::Checking;
+            cx.notify();
+            mellow_update::current_version()
+        };
         // Detected at each check: installing FFmpeg or fixing the folder's rights takes effect.
         let find = spawn_on_network_runtime(cx, async move {
             let installation = tokio::task::spawn_blocking(package::detect_installation)
                 .await
                 .unwrap_or(Err(UpdateProblem::InstallFailed))?;
-            find_update_for(installation).await
+            find_update_for(installation, &newest_known).await
         });
         self.work = Some(cx.spawn(async move |this, cx| {
             // Only a panic or the runtime shutting down lose the answer.
             let found = find.await.unwrap_or(Err(UpdateProblem::InstallFailed));
             let _ = this.update(cx, |this, cx| match found {
-                Ok(None) => this.finish(UpdateStatus::UpToDate, cx),
+                Ok(None) => this.finish_unless_ready(UpdateStatus::UpToDate, cx),
                 Ok(Some(update)) => this.download(update, cx),
-                Err(problem) => this.finish(UpdateStatus::Failed(problem), cx),
+                Err(problem) => this.finish_unless_ready(UpdateStatus::Failed(problem), cx),
             });
         }));
+    }
+
+    /// Ends a check or a download; with an update still ready, its status stays.
+    fn finish_unless_ready(&mut self, status: UpdateStatus, cx: &mut Context<Self>) {
+        self.work = None;
+        if self.staged.is_none() {
+            self.finish(status, cx);
+        } else if let UpdateStatus::Failed(problem) = status {
+            tracing::info!(?problem, "a newer update could not be prepared");
+        }
     }
 
     fn finish(&mut self, status: UpdateStatus, cx: &mut Context<Self>) {
@@ -234,8 +262,10 @@ impl SelfUpdate {
 
     fn download(&mut self, update: FoundUpdate, cx: &mut Context<Self>) {
         let version = update.release.version.clone();
-        self.status = UpdateStatus::Downloading(version.clone());
-        cx.notify();
+        if self.staged.is_none() {
+            self.status = UpdateStatus::Downloading(version.clone());
+            cx.notify();
+        }
         let download = spawn_on_network_runtime(cx, async move {
             let package = package::download_verified_package(
                 &update.client,
@@ -255,10 +285,12 @@ impl SelfUpdate {
             let _ = this.update(cx, |this, cx| match staged {
                 Ok(staged) => {
                     let version = staged.version.clone();
+                    // Replacing an older ready update removes its staging directory.
                     this.staged = Some(staged);
+                    this.work = None;
                     this.finish(UpdateStatus::Ready(version), cx);
                 }
-                Err(problem) => this.finish(UpdateStatus::Failed(problem), cx),
+                Err(problem) => this.finish_unless_ready(UpdateStatus::Failed(problem), cx),
             });
         }));
     }
@@ -268,13 +300,20 @@ impl SelfUpdate {
         if !can_restart_to_update(&self.status, is_in_call(cx)) {
             return;
         }
-        let Some(staged) = self.staged.take() else {
+        if let Some(restart_path) = self.restart_path_after_call.take() {
+            self.work = Some(cx.spawn(async move |this, cx| {
+                cx.update(|cx| restart_unless_in_call(&this, restart_path, cx));
+            }));
+            return;
+        }
+        // A newer update being prepared quietly is dropped: this one is what the user saw.
+        let Some(mut staged) = self.staged.take() else {
             return;
         };
         self.status = UpdateStatus::Installing(staged.version.clone());
         cx.notify();
         let apply = cx.background_spawn(async move {
-            let applied = package::apply_staged_update(&staged);
+            let applied = package::apply_staged_update(&mut staged);
             (staged, applied)
         });
         self.work = Some(cx.spawn(async move |this, cx| {
@@ -292,15 +331,32 @@ impl SelfUpdate {
                 })
                 .ok()
                 .flatten();
-            // Outside the entity's update: quitting runs this entity's quit hook.
             if let Some(restart_path) = restart_path {
-                cx.update(|cx| {
-                    cx.set_restart_path(restart_path);
-                    cx.restart();
-                });
+                cx.update(|cx| restart_unless_in_call(&this, restart_path, cx));
             }
         }));
     }
+}
+
+/// Starts `restart_path` instead of this process, unless a call began while the update was
+/// swapped in: then the swapped files wait for "Restart to update" after the call, or the next
+/// start. Outside the entity's update: quitting runs this entity's quit hook.
+fn restart_unless_in_call(this: &WeakEntity<SelfUpdate>, restart_path: PathBuf, cx: &mut App) {
+    if is_in_call(cx) {
+        let _ = this.update(cx, |this, cx| {
+            let version = this
+                .applied
+                .as_ref()
+                .map_or_else(mellow_update::current_version, |applied| {
+                    applied.version.clone()
+                });
+            this.restart_path_after_call = Some(restart_path);
+            this.finish(UpdateStatus::Ready(version), cx);
+        });
+        return;
+    }
+    cx.set_restart_path(restart_path);
+    cx.restart();
 }
 
 /// A newer release, the client that found it and the asset for this installation.
@@ -311,10 +367,13 @@ struct FoundUpdate {
     asset_name: String,
 }
 
-async fn find_update_for(installation: Installation) -> Result<Option<FoundUpdate>, UpdateProblem> {
+/// A release newer than `newest_known` (the running version, or the update already ready).
+async fn find_update_for(
+    installation: Installation,
+    newest_known: &Version,
+) -> Result<Option<FoundUpdate>, UpdateProblem> {
     let client = UpdateClient::new().map_err(|_| UpdateProblem::Network)?;
-    let current = mellow_update::current_version();
-    let Some(release) = package::find_newer_release(&client, &current).await? else {
+    let Some(release) = package::find_newer_release(&client, newest_known).await? else {
         return Ok(None);
     };
     let asset_name = package::asset_name_for(&installation, &release)?;

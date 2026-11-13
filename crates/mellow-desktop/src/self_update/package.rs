@@ -13,9 +13,18 @@ use super::UpdateProblem;
 /// A universal app zipped, or a Linux build in a tarball, is tens of megabytes; this bounds what
 /// a broken or hostile release host can make the app hold in memory.
 const MAXIMUM_PACKAGE_BYTES: usize = 512 * 1024 * 1024;
-/// Every staging directory, in the app's folder (macOS) or the temporary folder (Linux), starts
-/// with this, so one a quit or a crash left behind is recognised and removed.
+/// Every staging directory, in the app's folder (macOS) or the user's cache (Linux), starts with
+/// this, so one a quit or a crash left behind is recognised and removed.
 const STAGING_PREFIX: &str = ".mellow-update-";
+/// Held locked by the process that staged the update, so another instance's start leaves it alone.
+const STAGING_LOCK_FILE: &str = "lock";
+/// `<user cache>/mellow/updates` on Linux: not a tmpfs that `systemd-tmpfiles` empties after ten
+/// days, and often on the same file system as `~/.local/bin`.
+#[cfg(target_os = "linux")]
+const LINUX_STAGING_DIRECTORIES: [&str; 2] = ["mellow", "updates"];
+/// macOS runs an app opened from a quarantined download from a read-only random folder.
+#[cfg(any(target_os = "macos", test))]
+const APP_TRANSLOCATION_FOLDER: &str = "AppTranslocation";
 /// The app's bundle identifier, which an update's code signature must carry (ADR-0055).
 #[cfg(any(target_os = "macos", test))]
 const BUNDLE_IDENTIFIER_REQUIREMENT: &str = "identifier \"org.mellow.desktop\"";
@@ -53,16 +62,26 @@ pub enum Installation {
         executable: PathBuf,
         home: PathBuf,
         ffmpeg_majors: Vec<u32>,
+        /// Where updates are unpacked before `install.sh` runs.
+        staging_folder: PathBuf,
     },
 }
+
+/// The device and inode of a file: they change when the installed copy is replaced.
+type FileIdentity = (u64, u64);
 
 /// A package downloaded, verified and unpacked, waiting to be swapped in. Its private staging
 /// directory is removed when it is dropped.
 #[derive(Debug)]
 pub struct StagedUpdate {
     pub version: Version,
+    /// Dropped before `staging`: the lock only matters while the directory exists.
+    _lock: std::fs::File,
     staging: tempfile::TempDir,
     kind: StagedKind,
+    /// The installed copy's identity when the update was staged; a copy reinstalled by hand
+    /// since then is newer or chosen, and is not replaced.
+    installed_identity: Option<FileIdentity>,
 }
 
 #[derive(Debug)]
@@ -89,6 +108,9 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
         .and_then(std::fs::canonicalize)
         .map_err(|_| UpdateProblem::NotPackaged)?;
     let bundle = bundle_of_executable(&executable).ok_or(UpdateProblem::NotPackaged)?;
+    if is_translocated(&bundle) {
+        return Err(UpdateProblem::Translocated);
+    }
     let output = Command::new("/usr/bin/codesign")
         .args(["--display", "--requirements", "-"])
         .arg(&bundle)
@@ -101,9 +123,10 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
         .filter(|requirement| is_release_certificate_requirement(requirement))
         .ok_or(UpdateProblem::NotPackaged)?
         .to_owned();
-    if let Some(folder) = bundle.parent() {
-        remove_stale_staging_directories(folder);
-    }
+    // Before any download: the update is staged beside the bundle, and a standard account cannot
+    // write to an administrator's /Applications.
+    let folder = bundle.parent().ok_or(UpdateProblem::NotWritable)?;
+    tempfile::tempfile_in(folder).map_err(|_| UpdateProblem::NotWritable)?;
     Ok(Installation::MacosBundle {
         bundle,
         designated_requirement,
@@ -120,12 +143,13 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
     let executable = std::env::current_exe().map_err(|_| UpdateProblem::InstalledElsewhere)?;
     let home = dirs::home_dir().ok_or(UpdateProblem::InstalledElsewhere)?;
     check_linux_install_location(&executable, &home)?;
-    remove_stale_staging_directories(&std::env::temp_dir());
+    let staging_folder = staging_folder_of_this_copy().ok_or(UpdateProblem::NotWritable)?;
     let directories: Vec<&Path> = LIBRARY_DIRECTORIES.iter().map(Path::new).collect();
     Ok(Installation::LinuxUserInstall {
         executable,
         home,
         ffmpeg_majors: ffmpeg_majors_in(&directories),
+        staging_folder,
     })
 }
 
@@ -134,6 +158,39 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
 pub fn detect_installation() -> Result<Installation, UpdateProblem> {
     Err(UpdateProblem::UnsupportedSystem)
+}
+
+/// Where this copy stages its updates, so the leftovers of an earlier run can be removed at the
+/// start: the app's folder on macOS, the user's cache on Linux. Blocking.
+#[must_use]
+pub fn staging_folder_of_this_copy() -> Option<PathBuf> {
+    #[cfg(target_os = "macos")]
+    {
+        let executable = std::env::current_exe()
+            .and_then(std::fs::canonicalize)
+            .ok()?;
+        Some(bundle_of_executable(&executable)?.parent()?.to_owned())
+    }
+    #[cfg(target_os = "linux")]
+    {
+        Some(
+            LINUX_STAGING_DIRECTORIES
+                .iter()
+                .fold(dirs::cache_dir()?, |folder, name| folder.join(name)),
+        )
+    }
+    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    {
+        None
+    }
+}
+
+/// Whether macOS runs this bundle from its read-only App Translocation copy.
+#[cfg(any(target_os = "macos", test))]
+pub(super) fn is_translocated(bundle: &Path) -> bool {
+    bundle
+        .components()
+        .any(|component| component.as_os_str() == APP_TRANSLOCATION_FOLDER)
 }
 
 /// `…/Mellow.app` for `…/Mellow.app/Contents/MacOS/mellow`.
@@ -313,17 +370,31 @@ pub fn stage_package(
 ) -> Result<StagedUpdate, UpdateProblem> {
     // Beside the bundle on macOS, so the swap is a rename on one file system; tempfile makes the
     // folder readable by its owner only.
-    let staging_folder = match installation {
-        Installation::MacosBundle { bundle, .. } => bundle
-            .parent()
-            .ok_or(UpdateProblem::NotWritable)?
-            .to_owned(),
-        Installation::LinuxUserInstall { .. } => std::env::temp_dir(),
+    let (staging_folder, installed_file) = match installation {
+        Installation::MacosBundle { bundle, .. } => (
+            bundle
+                .parent()
+                .ok_or(UpdateProblem::NotWritable)?
+                .to_owned(),
+            bundle.join("Contents").join("Info.plist"),
+        ),
+        Installation::LinuxUserInstall {
+            executable,
+            staging_folder,
+            ..
+        } => {
+            std::fs::create_dir_all(staging_folder).map_err(|_| UpdateProblem::NotWritable)?;
+            (staging_folder.clone(), executable.clone())
+        }
     };
+    let installed_identity = file_identity(&installed_file);
     let staging = tempfile::Builder::new()
         .prefix(STAGING_PREFIX)
         .tempdir_in(&staging_folder)
         .map_err(|_| UpdateProblem::NotWritable)?;
+    let lock = std::fs::File::create(staging.path().join(STAGING_LOCK_FILE))
+        .map_err(|_| UpdateProblem::NotWritable)?;
+    lock.try_lock().map_err(|_| UpdateProblem::NotWritable)?;
     let archive = staging.path().join("package");
     let unpacked = staging.path().join("unpacked");
     std::fs::write(&archive, package)
@@ -386,8 +457,10 @@ pub fn stage_package(
     let _ = std::fs::remove_file(&archive);
     Ok(StagedUpdate {
         version,
+        _lock: lock,
         staging,
         kind,
+        installed_identity,
     })
 }
 
@@ -403,11 +476,26 @@ fn check_code_signature(bundle: &Path, designated_requirement: &str) -> Result<(
 }
 
 /// Swaps the staged package in and returns what to start instead of this process. The call
-/// checks come before this: it is never run during a voice call (ADR-0057). Blocking.
+/// checks come before this: it is never run during a voice call (ADR-0057). A copy reinstalled
+/// by hand since the update was staged is left alone (replacing it could be a downgrade) and is
+/// what the returned path starts. Blocking.
 ///
 /// # Errors
 /// `InstallFailed`, with the running version left in place.
-pub fn apply_staged_update(staged: &StagedUpdate) -> Result<PathBuf, UpdateProblem> {
+pub fn apply_staged_update(staged: &mut StagedUpdate) -> Result<PathBuf, UpdateProblem> {
+    let (installed_file, restart_path) = match &staged.kind {
+        StagedKind::MacosBundle {
+            installed_bundle, ..
+        } => (
+            installed_bundle.join("Contents").join("Info.plist"),
+            installed_bundle.clone(),
+        ),
+        StagedKind::LinuxPackage { executable, .. } => (executable.clone(), executable.clone()),
+    };
+    if file_identity(&installed_file) != staged.installed_identity {
+        tracing::info!("Mellow was reinstalled since the update was staged; it is not replaced");
+        return Ok(restart_path);
+    }
     match &staged.kind {
         StagedKind::MacosBundle {
             new_bundle,
@@ -415,30 +503,85 @@ pub fn apply_staged_update(staged: &StagedUpdate) -> Result<PathBuf, UpdateProbl
         } => {
             // The replaced bundle goes into the staging directory, removed at the next start.
             let previous = staged.staging.path().join("previous.app");
-            swap_in(new_bundle, installed_bundle, &previous)
-                .map_err(|_| UpdateProblem::InstallFailed)?;
-            Ok(installed_bundle.clone())
+            match swap_in(new_bundle, installed_bundle, &previous) {
+                Ok(()) => {}
+                Err(SwapFailure::NothingMoved) => return Err(UpdateProblem::InstallFailed),
+                Err(SwapFailure::InstalledCopyLeftAside) => {
+                    // The only copy of the app is in the staging directory now: keep it.
+                    staged.staging.disable_cleanup(true);
+                    tracing::warn!("the installed app could not be put back after a failed update");
+                    return Err(UpdateProblem::InstallFailed);
+                }
+            }
         }
         StagedKind::LinuxPackage {
             install_script,
             executable,
             home,
-        } => {
-            run_install_script(install_script, executable, home)?;
-            Ok(executable.clone())
-        }
+        } => run_install_script(install_script, executable, home)?,
     }
+    Ok(restart_path)
 }
 
-/// Moves `installed` to `previous` and `new` to `installed`; if the second rename fails, the
-/// first is undone, so `installed` is never left missing.
-pub(super) fn swap_in(new: &Path, installed: &Path, previous: &Path) -> std::io::Result<()> {
-    std::fs::rename(installed, previous)?;
-    if let Err(error) = std::fs::rename(new, installed) {
-        std::fs::rename(previous, installed)?;
-        return Err(error);
+#[cfg(unix)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    use std::os::unix::fs::MetadataExt as _;
+    std::fs::metadata(path)
+        .ok()
+        .map(|metadata| (metadata.dev(), metadata.ino()))
+}
+
+/// Windows stages no update (ADR-0055).
+#[cfg(not(unix))]
+fn file_identity(_path: &Path) -> Option<FileIdentity> {
+    None
+}
+
+/// Why [`swap_in`] failed.
+#[derive(Debug, PartialEq, Eq)]
+pub(super) enum SwapFailure {
+    /// `installed` is untouched.
+    NothingMoved,
+    /// Neither copy is at `installed`: the installed one is at `previous`.
+    InstalledCopyLeftAside,
+}
+
+/// Puts `new` at `installed` and the installed copy at `previous`, never leaving `installed`
+/// missing: in one exchange where the file system allows it (APFS), otherwise in two renames
+/// with the first undone if the second fails.
+pub(super) fn swap_in(new: &Path, installed: &Path, previous: &Path) -> Result<(), SwapFailure> {
+    #[cfg(target_os = "macos")]
+    if exchange_paths(new, installed).is_ok() {
+        // The installed copy is at `new` now, inside the staging directory either way.
+        let _ = std::fs::rename(new, previous);
+        return Ok(());
+    }
+    std::fs::rename(installed, previous).map_err(|_| SwapFailure::NothingMoved)?;
+    if std::fs::rename(new, installed).is_err() {
+        return match std::fs::rename(previous, installed) {
+            Ok(()) => Err(SwapFailure::NothingMoved),
+            Err(_) => Err(SwapFailure::InstalledCopyLeftAside),
+        };
     }
     Ok(())
+}
+
+/// Exchanges two paths atomically (`renamex_np` with `RENAME_SWAP`); fails where the file system
+/// cannot (`ENOTSUP` outside APFS), leaving both in place.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+fn exchange_paths(first: &Path, second: &Path) -> std::io::Result<()> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let first = std::ffi::CString::new(first.as_os_str().as_bytes())?;
+    let second = std::ffi::CString::new(second.as_os_str().as_bytes())?;
+    // SAFETY: both pointers come from live `CString`s, so they are valid, NUL-terminated and
+    // outlive the call, which only reads them.
+    let result = unsafe { libc::renamex_np(first.as_ptr(), second.as_ptr(), libc::RENAME_SWAP) };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::last_os_error())
+    }
 }
 
 /// Runs the new package's own `install.sh` (signed with it), which checks its libraries with
@@ -464,7 +607,11 @@ pub(super) fn run_install_script(
     );
     if installed.is_err() {
         // An atomic rename: the binary is the old one again, whatever the script got to.
-        if std::fs::rename(&previous, executable).is_err() {
+        if std::fs::rename(&previous, executable).is_ok() {
+            // When the script failed before replacing anything, both names are one file and
+            // `rename(2)` keeps both: the extra name goes.
+            let _ = std::fs::remove_file(&previous);
+        } else {
             tracing::warn!("the previous Mellow binary could not be put back");
         }
         return Err(UpdateProblem::InstallFailed);
@@ -494,7 +641,7 @@ fn is_regular_file(path: &Path) -> bool {
 }
 
 /// Removes staging directories a quit or a crash left in `folder` (after a restart, one holds the
-/// replaced app). Blocking.
+/// replaced app), but not one another running instance holds locked. Blocking.
 pub fn remove_stale_staging_directories(folder: &Path) {
     let Ok(entries) = std::fs::read_dir(folder) else {
         return;
@@ -506,8 +653,16 @@ pub fn remove_stale_staging_directories(folder: &Path) {
             .is_some_and(|name| name.starts_with(STAGING_PREFIX));
         // `file_type` does not follow links, so a link named like one is left alone.
         let is_directory = entry.file_type().is_ok_and(|kind| kind.is_dir());
-        if is_staging && is_directory && std::fs::remove_dir_all(entry.path()).is_err() {
+        if !is_staging || !is_directory || is_staging_held_by_a_running_app(&entry.path()) {
+            continue;
+        }
+        if std::fs::remove_dir_all(entry.path()).is_err() {
             tracing::debug!("a leftover update folder could not be removed");
         }
     }
+}
+
+fn is_staging_held_by_a_running_app(staging: &Path) -> bool {
+    std::fs::File::open(staging.join(STAGING_LOCK_FILE))
+        .is_ok_and(|lock| matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock)))
 }

@@ -2355,9 +2355,10 @@ export const fr: Catalogue = {
     updateInstalledElsewhere:
       "Cette copie de Mellow n’est pas là où son script d’installation la met (~/.local/bin), elle ne peut donc pas se mettre à jour. Installe le dernier paquet avec son install.sh.",
     updateNotWritable: "Mellow ne peut pas écrire dans le dossier où il est installé, il ne peut donc pas se mettre à jour.",
+    updateTranslocated: "macOS a ouvert Mellow depuis une copie temporaire en lecture seule. Déplace Mellow dans ton dossier Applications, ouvre-le depuis là, puis vérifie à nouveau.",
     updateUnsupportedSystem: "Mellow ne peut pas encore se mettre à jour sur ce système. Télécharge les nouvelles versions depuis ses publications sur GitHub.",
     updateNoFfmpeg: "Mellow n’a trouvé aucune des versions de FFmpeg pour lesquelles ses paquets sont construits (6 à 9). Installe les bibliothèques FFmpeg de ta distribution, puis vérifie à nouveau.",
-    updateNetwork: "Impossible de télécharger la mise à jour. Mellow réessaiera plus tard.",
+    updateNetwork: "Impossible de télécharger la mise à jour. Vérifie ta connexion et réessaie.",
     updateNoPackage: "La nouvelle version n’a pas encore de paquet pour ce système.",
     updateBadSignature: "La mise à jour téléchargée n’est pas signée par Mellow, elle a donc été supprimée.",
     updateBadPackage: "La mise à jour téléchargée n’a pas la forme attendue, elle a donc été supprimée.",

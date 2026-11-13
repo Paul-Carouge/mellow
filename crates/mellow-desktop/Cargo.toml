@@ -81,6 +81,8 @@ rav1d = { workspace = true, features = ["asm"] }
 # The Dock badge and the menu bar item, which GPUI has no API for; the same versions GPUI's macOS
 # platform already builds, so nothing new is built or audited.
 [target.'cfg(target_os = "macos")'.dependencies]
+# `renamex_np` swaps a self-update's app bundle in atomically (already in the tree).
+libc.workspace = true
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSObject", "NSString"] }
