@@ -9,8 +9,8 @@ use windows::Win32::Media::MediaFoundation::{
     IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
     MF_MT_SUBTYPE, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea, MFVideoFormat_H264,
-    MFVideoFormat_I420, MFVideoFormat_IYUV,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFVideoArea, MFVideoFormat_H264, MFVideoFormat_I420, MFVideoFormat_IYUV,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 
@@ -21,6 +21,9 @@ use crate::windows_media_foundation::ensure_media_foundation;
 /// Media Foundation counts time in 100 ns units; pictures are stamped 1/30 s apart (the decoder
 /// wants increasing times, never shows them).
 const SAMPLE_DURATION_HUNDRED_NANOSECONDS: i64 = 10_000_000 / 30;
+/// The most pictures read out after one access unit (a sender may pack several in one); the
+/// newest is shown.
+const MAXIMUM_OUTPUTS_PER_ACCESS_UNIT: usize = 8;
 
 fn failed(what: &str) -> impl FnOnce(windows::core::Error) -> H264Error + '_ {
     move |error| H264Error(format!("{what}: {error}"))
@@ -131,12 +134,26 @@ impl H264Decoder {
                 }
                 index += 1;
             };
+            let layout = layout_of(&chosen);
+            // Refused before any output buffer is allocated for it.
+            if layout.is_some_and(|layout| !is_within_maximum_size(layout.width, layout.height)) {
+                return Err(H264Error("the picture is too large".into()));
+            }
             self.transform
                 .SetOutputType(0, &chosen, 0)
                 .map_err(failed("set the planar output"))?;
-            self.layout = layout_of(&chosen);
+            self.layout = layout;
         }
         Ok(())
+    }
+
+    /// Drops whatever the decoder holds after an error, so the next keyframe starts afresh
+    /// instead of every later input being refused.
+    fn flush(&self) {
+        // SAFETY: a plain message to the decoder this value owns.
+        if let Err(error) = unsafe { self.transform.ProcessMessage(MFT_MESSAGE_COMMAND_FLUSH, 0) } {
+            tracing::debug!(%error, "the H.264 decoder could not be flushed");
+        }
     }
 
     fn unlock(&mut self) {
@@ -202,21 +219,28 @@ impl H264Decoder {
             let _ = sample.SetSampleTime(self.next_sample_time);
             let _ = sample.SetSampleDuration(SAMPLE_DURATION_HUNDRED_NANOSECONDS);
             self.next_sample_time += SAMPLE_DURATION_HUNDRED_NANOSECONDS;
-            self.transform
-                .ProcessInput(0, &sample, 0)
-                .map_err(failed("decode an H.264 frame"))?;
+            if let Err(error) = self.transform.ProcessInput(0, &sample, 0) {
+                self.flush();
+                return Err(failed("decode an H.264 frame")(error));
+            }
         }
-        let Some(picture) = self.take_picture()? else {
-            return Ok(None);
+        let picture = match self.take_picture() {
+            Ok(Some(picture)) => picture,
+            Ok(None) => return Ok(None),
+            Err(error) => {
+                self.flush();
+                return Err(error);
+            }
         };
         self.view_of(&picture)
     }
 
-    /// The next decoded picture, following the decoder's stream changes (the first SPS, a new
-    /// size); `None` when it needs more input.
+    /// The newest decoded picture, every waiting one read out and the decoder's stream changes
+    /// (the first SPS, a new size) followed; `None` when the access unit gave none.
     fn take_picture(&mut self) -> Result<Option<IMFSample>, H264Error> {
-        // A stream change is answered once per picture; two in a row means the decoder is stuck.
-        for _ in 0..2 {
+        let mut newest = None;
+        let mut has_just_changed = false;
+        for _ in 0..MAXIMUM_OUTPUTS_PER_ACCESS_UNIT {
             let sample = self.output_sample()?;
             let mut output = [MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
@@ -235,24 +259,32 @@ impl H264Decoder {
             let sample = ManuallyDrop::into_inner(output.pSample);
             drop(ManuallyDrop::into_inner(output.pEvents));
             match result {
-                Ok(()) => return Ok(sample),
-                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(None),
-                Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                Ok(()) => {
+                    newest = sample;
+                    has_just_changed = false;
+                }
+                Err(error) if error.code() == MF_E_TRANSFORM_NEED_MORE_INPUT => return Ok(newest),
+                // Two changes in a row means the decoder is stuck.
+                Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE && !has_just_changed => {
+                    has_just_changed = true;
+                    // A picture taken before the change has the old layout.
+                    newest = None;
                     self.choose_planar_output()?;
+                }
+                Err(error) if error.code() == MF_E_TRANSFORM_STREAM_CHANGE => {
+                    return Err(H264Error("the decoder keeps changing its output".into()));
                 }
                 Err(error) => return Err(failed("decode an H.264 frame")(error)),
             }
         }
-        Err(H264Error("the decoder keeps changing its output".into()))
+        Ok(newest)
     }
 
     fn view_of(&mut self, picture: &IMFSample) -> Result<Option<I420View<'_>>, H264Error> {
+        // Within the maximum size: `choose_planar_output` refuses any other layout.
         let Some(layout) = self.layout else {
             return Ok(None);
         };
-        if !is_within_maximum_size(layout.width, layout.height) {
-            return Err(H264Error("the picture is too large".into()));
-        }
         // SAFETY: the buffer stays locked, and so its bytes valid, until the next `decode` or
         // the drop, both of which need `&mut self` and unlock it first.
         unsafe {
