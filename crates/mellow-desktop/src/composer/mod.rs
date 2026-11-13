@@ -13,6 +13,7 @@ mod saved_drafts;
 mod slash_menu;
 mod suggestions;
 mod tray;
+mod video_compression;
 
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -234,6 +235,8 @@ pub struct Composer {
     is_field_focus_pending: bool,
     rest: Option<RestClient>,
     maximum_attachment_bytes: Option<u64>,
+    /// Videos are compressed before upload where the system can (ADR-0046).
+    video_compressor: Option<video_compression::VideoCompressor>,
     suggestions: SuggestionState,
     slash_menu: SlashMenuState,
     /// The caret and text the suggestions were last read from.
@@ -296,6 +299,7 @@ impl Composer {
             is_field_focus_pending: false,
             rest: None,
             maximum_attachment_bytes: None,
+            video_compressor: video_compression::VideoCompressor::system(),
             suggestions: SuggestionState::default(),
             slash_menu: SlashMenuState::default(),
             suggestions_read_at: None,
@@ -1051,10 +1055,17 @@ impl Composer {
             self.notice = Some(ComposerNotice::TooManyAttachments);
             return;
         }
+        let compressor = self
+            .video_compressor
+            .clone()
+            .filter(|_| mellow_media::is_compressible_video_file_name(&file_name));
         let Some(key) = self.drafts.attach(path, file_name, size_bytes) else {
             return;
         };
-        self.start_upload(key, cx);
+        match compressor {
+            Some(compressor) => self.start_compression(key, &compressor, cx),
+            None => self.start_upload(key, cx),
+        }
         cx.notify();
     }
 
@@ -1074,6 +1085,7 @@ impl Composer {
         let wants_preview = item.preview.is_none();
         let (path, file_name, channel_id) =
             (item.path.clone(), item.file_name.clone(), item.channel_id);
+        let compressed_bytes = item.compressed_bytes.clone();
         let Some(rest) = self.rest.clone() else {
             self.fail_upload(key, &ClientError::NotSignedIn, cx);
             return;
@@ -1081,7 +1093,11 @@ impl Composer {
         let task = cx.spawn(async move |composer, cx| {
             let read = cx
                 .background_spawn(async move {
-                    let bytes = read_file_within(&path, maximum_bytes)?;
+                    // A compressed video uploads in its file's place (ADR-0046).
+                    let bytes = match compressed_bytes {
+                        Some(compressed) => Some(Vec::clone(&compressed)),
+                        None => read_file_within(&path, maximum_bytes)?,
+                    };
                     let preview = bytes
                         .as_deref()
                         .filter(|_| wants_preview)

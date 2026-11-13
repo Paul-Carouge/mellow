@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use gpui::{RenderImage, Task};
 use mellow_protocol::{Attachment, Snowflake};
@@ -27,10 +28,31 @@ pub struct TrayItem {
     pub preview: Option<Arc<RenderImage>>,
     /// The running upload; dropping it (removal, a cleared tray) stops the request.
     pub upload: Option<Task<()>>,
+    /// A video's compression (ADR-0046); dropping it stops the encoder.
+    pub compression: Option<VideoCompression>,
+    /// The compressed video to upload in the file's place, kept for Retry.
+    pub compressed_bytes: Option<Arc<Vec<u8>>>,
+}
+
+/// A video compressing on its own thread before it uploads.
+#[derive(Debug)]
+pub struct VideoCompression {
+    /// Set by "Send the original" and by removal: the encoder stops at its next frame.
+    pub is_cancelled: Arc<AtomicBool>,
+    /// Follows the thread's progress and starts the upload once it is done.
+    pub task: Option<Task<()>>,
+}
+
+impl Drop for VideoCompression {
+    fn drop(&mut self) {
+        self.is_cancelled.store(true, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum TrayItemStatus {
+    /// A video compressed before it uploads, at this many percent.
+    Compressing(u8),
     Uploading,
     Uploaded(Attachment),
     /// Why, as a sentence; the file is not sent and waits to be tried again.
@@ -161,6 +183,8 @@ impl ComposerDrafts {
             status: TrayItemStatus::Uploading,
             preview: None,
             upload: None,
+            compression: None,
+            compressed_bytes: None,
         });
         Some(key)
     }
@@ -204,9 +228,13 @@ impl ComposerDrafts {
 
     #[must_use]
     pub fn is_uploading(&self) -> bool {
-        self.tray
-            .iter()
-            .any(|item| item.status == TrayItemStatus::Uploading)
+        // Send waits for compressing files as for uploading ones.
+        self.tray.iter().any(|item| {
+            matches!(
+                item.status,
+                TrayItemStatus::Uploading | TrayItemStatus::Compressing(_)
+            )
+        })
     }
 
     /// The open tray's uploaded files, in tray order; failed ones are left out.
@@ -216,7 +244,9 @@ impl ComposerDrafts {
             .iter()
             .filter_map(|item| match &item.status {
                 TrayItemStatus::Uploaded(attachment) => Some(attachment.clone()),
-                TrayItemStatus::Uploading | TrayItemStatus::Failed(_) => None,
+                TrayItemStatus::Compressing(_)
+                | TrayItemStatus::Uploading
+                | TrayItemStatus::Failed(_) => None,
             })
             .collect()
     }
@@ -375,6 +405,27 @@ mod tests {
         let _ = drafts.remove_tray_item(failed);
         assert_eq!(names(&drafts), ["uploaded.png"]);
         assert_eq!(drafts.tray_room(), MAXIMUM_ATTACHMENTS_PER_MESSAGE - 1);
+    }
+
+    #[test]
+    fn waits_for_a_compressing_video_and_stops_its_encoder_when_it_is_removed() {
+        let mut drafts = ComposerDrafts::default();
+        drafts.open(Some(channel(1)), String::new());
+        let key = attach(&mut drafts, "clip.mov");
+        let is_cancelled = Arc::new(AtomicBool::new(false));
+        let item = drafts.tray_item_mut(key).expect("in the tray");
+        item.status = TrayItemStatus::Compressing(42);
+        item.compression = Some(VideoCompression {
+            is_cancelled: Arc::clone(&is_cancelled),
+            task: None,
+        });
+        assert!(drafts.is_uploading());
+        assert_eq!(drafts.uploaded_attachments(), []);
+
+        drop(drafts.remove_tray_item(key));
+
+        assert!(is_cancelled.load(Ordering::Relaxed));
+        assert!(!drafts.is_uploading());
     }
 
     #[test]
