@@ -10,9 +10,9 @@
 //! samples through wait-free ring buffers. Video: an encoding thread turns the camera's or
 //! screen's pictures into three VP8 simulcast layers (libvpx, built from source by `build.rs`),
 //! and one decoding thread per watched slot turns received frames (VP8, or H.264 where the
-//! system decodes it: `VideoToolbox`, FFmpeg on Linux) into pictures for the interface. Screen
-//! sharing (ADR-0054) captures through each system's own interface and, on Linux with VA-API,
-//! encodes H.264 on the GPU instead.
+//! system decodes it: `VideoToolbox`, FFmpeg on Linux, Media Foundation on Windows) into
+//! pictures for the interface. Screen sharing (ADR-0054) captures through each system's own
+//! interface and, on Linux with VA-API, encodes H.264 on the GPU instead.
 
 mod audio_engine;
 mod audio_format;
@@ -25,6 +25,10 @@ mod camera_linux;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod camera_macos;
+// Media Foundation, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod camera_windows;
 mod clip_decoder;
 mod clip_player;
 mod codec;
@@ -38,6 +42,10 @@ mod h264_encoder_linux;
 #[cfg(target_os = "linux")]
 #[allow(unsafe_code)]
 mod h264_ffmpeg;
+// Media Foundation's H.264 decoder, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod h264_media_foundation;
 // VideoToolbox and CoreMedia, reached through `unsafe` calls; each states its invariant.
 #[cfg(any(target_os = "linux", test))]
 mod h264_stream;
@@ -68,7 +76,16 @@ mod screen_capture_x11;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod screen_capture_macos;
+// Windows.Graphics.Capture, Direct3D 11 and GDI, reached through `unsafe` calls; each states its
+// invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod screen_capture_windows;
 mod screen_sound;
+// WASAPI's process loopback, reached through `unsafe` COM calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod screen_sound_windows;
 mod session;
 mod simulcast;
 mod sound_player;
@@ -77,18 +94,40 @@ mod soundboard;
 mod sounds;
 mod transport;
 mod uplink;
+mod video_compression;
+// FFmpeg's C API, reached through `unsafe` calls; each states its invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod video_compression_linux;
+// AVFoundation, reached through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod video_compression_macos;
+mod video_file;
+// FFmpeg's C API, reached through `unsafe` calls; each states its invariant.
+#[cfg(target_os = "linux")]
+#[allow(unsafe_code)]
+mod video_file_ffmpeg;
+// AVFoundation, reached through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "macos")]
+#[allow(unsafe_code)]
+mod video_file_macos;
 mod video_frame;
 mod video_receiver;
 mod video_sender;
 mod vp8;
 mod watch_list;
+// COM and Media Foundation start-up, reached through `unsafe` calls; each states its invariant.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+mod windows_media_foundation;
 
 pub use camera::{
     CameraDescription, CameraError, CameraFeed, Cameras, RunningCapture, SyntheticCameras,
     SystemCameras,
 };
 pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
-pub use clip_player::{ClipPhase, ClipPlayer, ClipStatus};
+pub use clip_player::{ClipClock, ClipPhase, ClipPlayer, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
@@ -134,6 +173,16 @@ pub use soundboard::{
 };
 pub use sounds::{
     LocalSound, SoundboardPlayer, SoundboardSoundsToStop, VoiceCue, render_notification_chime,
+};
+pub use video_compression::{
+    KeepOriginalReason, VideoCompressionCancelled, VideoCompressionOutcome,
+    can_compress_videos_here, compress_video, compressed_video_file_name,
+    is_compressible_video_file_name,
+};
+pub use video_file::{
+    MAXIMUM_SHOWN_VIDEO_SIZE, PLAYABLE_ATTACHMENT_VIDEO_TYPES, VideoClock, VideoContainer,
+    VideoStream, VideoStreamPhase, VideoStreamStatus, VideoTiming, plays_video_type,
+    video_container,
 };
 pub use video_frame::{CapturedFrame, CapturedPixelFormat, DecodedPixelFormat, DecodedVideoFrame};
 pub use video_receiver::VideoFrames;

@@ -44,8 +44,8 @@ pub mod video_view;
 pub use self::video::ShownPicture;
 
 pub use camera::{
-    CameraBlock, CameraPhase, CameraProblem, CamerasFactory, open_camera_system_settings,
-    system_cameras,
+    CameraBlock, CameraPhase, CameraProblem, CamerasFactory, open_camera_settings_label,
+    open_camera_system_settings, system_cameras,
 };
 
 use std::net::{IpAddr, Ipv4Addr};

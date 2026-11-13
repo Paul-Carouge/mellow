@@ -1,33 +1,36 @@
 //! Received H.264 (ADR-0052): Constrained Baseline in Annex B form, as `str0m` hands frames over
 //! and as native senders' hardware encoders write them. Decoded by the system: `VideoToolbox` on
 //! macOS, FFmpeg's software decoder on Linux (the system FFmpeg the Linux desktop already links,
-//! ADR-0051's amendment). Windows has no decoder yet (Media Foundation comes with its own
-//! change): its offer leaves H.264 out, so the server never sends it H.264 pictures and the
-//! interface says the picture is not supported.
+//! ADR-0051's amendment), Media Foundation's decoder on Windows. Where none opens, the offer
+//! leaves H.264 out, so the server never sends H.264 pictures and the interface says the
+//! picture is not supported.
 
 use mellow_protocol::VideoCodec;
 
 #[cfg(target_os = "linux")]
 pub(crate) use crate::h264_ffmpeg::H264Decoder;
+#[cfg(windows)]
+pub(crate) use crate::h264_media_foundation::H264Decoder;
 #[cfg(target_os = "macos")]
 pub(crate) use crate::h264_videotoolbox::H264Decoder;
 
 /// Whether this system decodes received H.264, so its video receive lines offer it. The system
-/// FFmpeg may lack the decoder (built without it, or a distribution's patent-free build), so on
-/// Linux a decoder is opened once to find out. `VideoToolbox` always has one; Windows has none yet.
+/// FFmpeg may lack the decoder (built without it, or a distribution's patent-free build), and
+/// Windows N editions lack Media Foundation, so there a decoder is opened once to find out.
+/// `VideoToolbox` always has one.
 pub(crate) fn decodes_h264() -> bool {
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     {
         static DECODES_H264: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
         *DECODES_H264.get_or_init(|| match H264Decoder::new() {
             Ok(_) => true,
             Err(error) => {
-                tracing::warn!(%error, "H.264 is not offered: the system FFmpeg cannot decode it");
+                tracing::warn!(%error, "H.264 is not offered: the system cannot decode it");
                 false
             }
         })
     }
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(not(any(target_os = "linux", windows)))]
     {
         cfg!(target_os = "macos")
     }
@@ -35,9 +38,9 @@ pub(crate) fn decodes_h264() -> bool {
 
 /// The largest picture a sender's highest layer may have (ADR-0037's 1440p `h` layer): the
 /// server refuses larger ones, and the decoders refuse them again before allocating.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) const MAXIMUM_DECODED_WIDTH: u32 = 2_560;
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) const MAXIMUM_DECODED_HEIGHT: u32 = 1_440;
 
 /// NAL unit types (ITU-T H.264 table 7-1).
@@ -58,7 +61,7 @@ pub fn decodes_video_codec(codec: Option<VideoCodec>) -> bool {
 }
 
 /// An H.264 decoder failed: no decoder on this system, a picture too large, or a corrupt frame.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 #[derive(Debug, thiserror::Error)]
 #[error("H.264 decoding failed: {0}")]
 pub(crate) struct H264Error(pub(crate) String);
@@ -100,7 +103,7 @@ pub(crate) fn is_h264_keyframe(frame: &[u8]) -> bool {
 }
 
 /// Whether a decoded picture fits the largest layer.
-#[cfg(any(target_os = "linux", target_os = "macos"))]
+#[cfg(any(target_os = "linux", target_os = "macos", windows))]
 pub(crate) fn is_within_maximum_size(width: u32, height: u32) -> bool {
     width > 0 && height > 0 && width <= MAXIMUM_DECODED_WIDTH && height <= MAXIMUM_DECODED_HEIGHT
 }
@@ -161,14 +164,14 @@ pub(crate) mod tests {
     }
 
     #[test]
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn pictures_larger_than_the_highest_layer_are_refused() {
         assert!(is_within_maximum_size(2_560, 1_440));
         assert!(!is_within_maximum_size(2_561, 1_440));
         assert!(!is_within_maximum_size(0, 10));
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn the_fixture_decodes_one_picture_per_access_unit_at_its_size() {
         let mut decoder = H264Decoder::new().unwrap();

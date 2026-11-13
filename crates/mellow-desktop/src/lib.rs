@@ -8,6 +8,7 @@
 #![cfg_attr(all(test, target_os = "macos"), allow(linker_messages))]
 
 pub mod attachment_audio;
+mod attachment_download;
 pub mod background;
 pub mod column_widths;
 pub mod components;
@@ -17,6 +18,7 @@ pub mod conversation;
 pub mod dock_and_tray;
 pub mod emoji_picker;
 pub mod gif_picker;
+mod gif_video;
 pub mod home;
 pub mod i18n;
 mod local_widgets;

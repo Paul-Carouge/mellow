@@ -15212,10 +15212,52 @@ impl DesktopStrings {
         }
     }
 
+    pub fn camera_denied_windows(self) -> &'static str {
+        match self.language {
+            Language::English => "Windows blocks the camera for Mellow. In Settings, under Privacy & security, then Camera, allow desktop apps to use it, then turn it on again.",
+            Language::French => "Windows bloque la caméra pour Mellow. Dans Paramètres, sous Confidentialité et sécurité, puis Caméra, autorise les applications de bureau à l’utiliser, puis rallume-la.",
+        }
+    }
+
     pub fn open_camera_settings(self) -> &'static str {
         match self.language {
             Language::English => "Open System Settings",
             Language::French => "Ouvrir les Réglages Système",
+        }
+    }
+
+    pub fn open_camera_settings_windows(self) -> &'static str {
+        match self.language {
+            Language::English => "Open Settings",
+            Language::French => "Ouvrir les Paramètres",
+        }
+    }
+
+    pub fn attachment_saving(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Saving {file_name}…"),
+            Language::French => format!("Enregistrement de {file_name}…"),
+        }
+    }
+
+    pub fn attachment_saved(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("{file_name} saved."),
+            Language::French => format!("{file_name} est enregistré."),
+        }
+    }
+
+    pub fn attachment_save_failed(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Couldn't save {file_name}. Try again, or choose another folder."),
+            Language::French => format!("Impossible d’enregistrer {file_name}. Réessaie, ou choisis un autre dossier."),
+        }
+    }
+
+    pub fn close_enlarged_video(self) -> &'static str {
+        match self.language {
+            Language::English => "Close the video",
+            Language::French => "Fermer la vidéo",
         }
     }
 }

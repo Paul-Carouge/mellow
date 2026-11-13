@@ -25,6 +25,9 @@ str0m.workspace = true
 # Ogg Vorbis: sound effects people pick for the soundboard, and attachments the instance keeps as
 # uploaded (it never transcodes Ogg).
 symphonia = { workspace = true, features = ["ogg", "vorbis"] }
+# Videos compressed before upload are written to a temporary directory (ADR-0046): FFmpeg and
+# AVFoundation write faststart MP4s to a file.
+tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
 yuv.workspace = true
@@ -52,16 +55,48 @@ rusty_ffmpeg.workspace = true
 block2 = "0.6.2"
 dispatch2 = { version = "0.3.1", default-features = false, features = ["std", "objc2"] }
 objc2 = "0.6.5"
-objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-media", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat"] }
+# Video attachments are read through AVAssetReader and compressed through AVAssetWriter (ADR-0051's amendment).
+objc2-av-foundation = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-foundation", "objc2-core-media", "AVAsset", "AVAssetReader", "AVAssetReaderOutput", "AVAssetTrack", "AVCaptureDevice", "AVCaptureInput", "AVCaptureOutputBase", "AVCaptureSession", "AVCaptureSessionPreset", "AVCaptureVideoDataOutput", "AVMediaFormat", "AVAssetWriter", "AVAssetWriterInput", "AVVideoComposition", "AVVideoSettings"] }
 objc2-core-audio-types = { version = "0.3.2", default-features = false, features = ["std", "CoreAudioBaseTypes"] }
-objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-audio-types", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime"] }
+objc2-core-media = { version = "0.3.2", default-features = false, features = ["std", "objc2-core-audio-types", "objc2-core-video", "CMBase", "CMBlockBuffer", "CMFormatDescription", "CMSampleBuffer", "CMTime", "CMTimeRange"] }
 objc2-core-video = { version = "0.3.2", default-features = false, features = ["std", "CVBase", "CVBuffer", "CVImageBuffer", "CVPixelBuffer", "CVReturn"] }
-objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSValue"] }
+objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSArray", "NSDictionary", "NSEnumerator", "NSError", "NSObject", "NSString", "NSURL", "NSValue"] }
 # Screen sharing through ScreenCaptureKit (ADR-0054), already in the tree through GPUI.
 objc2-screen-capture-kit = { version = "0.3.2", default-features = false, features = ["std", "block2", "dispatch2", "objc2-core-foundation", "libc", "objc2-core-graphics", "objc2-core-media", "SCError", "SCScreenshotManager", "SCShareableContent", "SCStream"] }
 # Received H.264 (ADR-0052) through VideoToolbox, the system's decoder.
 objc2-core-foundation = { version = "0.3.2", default-features = false, features = ["std", "CFBase", "CFDictionary"] }
 objc2-video-toolbox = { version = "0.3.2", default-features = false, features = ["std", "VTDecompressionSession", "VTErrors", "objc2-core-media", "objc2-core-video"] }
+
+# Cameras and received H.264 through Media Foundation, screen sharing through
+# Windows.Graphics.Capture, Direct3D 11 and GDI, and its sound through WASAPI's process loopback:
+# the `windows` crate cpal and GPUI already bring, with the features these need.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = [
+    "Foundation",
+    "Graphics_Capture",
+    "Graphics_DirectX_Direct3D11",
+    "Win32_Foundation",
+    "Win32_Graphics_Direct3D",
+    "Win32_Graphics_Direct3D11",
+    "Win32_Graphics_Dwm",
+    "Win32_Graphics_Dxgi",
+    "Win32_Graphics_Dxgi_Common",
+    "Win32_Graphics_Gdi",
+    "Win32_Media_Audio",
+    "Win32_Media_MediaFoundation",
+    "Win32_Security",
+    "Win32_Storage_Xps",
+    "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Diagnostics_ToolHelp",
+    "Win32_System_Threading",
+    "Win32_System_Variant",
+    "Win32_System_WinRT_Direct3D11",
+    "Win32_System_WinRT_Graphics_Capture",
+    "Win32_UI_WindowsAndMessaging",
+] }
+# `windows::core::implement`'s expansion names `windows_core` (the WASAPI activation callback).
+windows-core = "0.62.2"
 
 [build-dependencies]
 cc.workspace = true

@@ -2475,8 +2475,18 @@ export const en = {
     cameraDeniedMacos: "macOS blocks the camera for Mellow. Allow it in System Settings, under Privacy & Security, then Camera, then turn it on again.",
     /** The Camera portal (Linux) refused the camera. */
     cameraDeniedLinux: "Your system refused the camera to Mellow. Allow it in your privacy settings, then turn it on again.",
+    /** Windows' camera privacy setting refused the camera to desktop apps or to Mellow. */
+    cameraDeniedWindows: "Windows blocks the camera for Mellow. In Settings, under Privacy & security, then Camera, allow desktop apps to use it, then turn it on again.",
     /** Opens macOS's camera privacy settings. */
     openCameraSettings: "Open System Settings",
+    /** Opens Windows' camera privacy settings. */
+    openCameraSettingsWindows: "Open Settings",
+    /** A file card's download: the app asks where to save the file, then writes it there. */
+    attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
+    attachmentSaved: (fileName: string) => `${fileName} saved.`,
+    attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
+    /** The enlarged video's way back to the conversation. */
+    closeEnlargedVideo: "Close the video",
   },
 };
 

@@ -1,6 +1,6 @@
 //! Screens and windows to share, behind one trait (ADR-0054): `ScreenCaptureKit` on macOS, the
-//! ScreenCast portal and PipeWire on Wayland, X11 itself on an X11 session, nothing yet on
-//! Windows, and a synthetic screen for tests. A capture starts its picture (and its sound) through
+//! ScreenCast portal and PipeWire on Wayland, X11 itself on an X11 session,
+//! `Windows.Graphics.Capture` on Windows, and a synthetic screen for tests. A capture starts its picture (and its sound) through
 //! the [`ScreenShareContext`] the session hands it, once the person has chosen and the system
 //! delivers: a cancelled picker never turns the share on.
 
@@ -34,7 +34,7 @@ pub enum ScreenPicker {
     /// The system shows its own dialog when the share starts ([`ScreenChoice::SystemPicker`]):
     /// the Wayland portal.
     System,
-    /// This system cannot share a screen yet (Windows, or no display server).
+    /// This system cannot share a screen (no display server, Windows before 10 1903).
     Unavailable,
 }
 
@@ -373,9 +373,8 @@ impl Drop for ScreenShare {
     }
 }
 
-// Windows has no capture yet (ADR-0054).
 #[cfg_attr(
-    not(any(target_os = "macos", target_os = "linux", test)),
+    not(any(target_os = "macos", target_os = "linux", windows, test)),
     allow(dead_code)
 )]
 /// Copies 8-bit RGB rows into a packed BGRA picture (`bytes` is reused), swapping red and blue
@@ -463,12 +462,12 @@ pub(crate) fn thumbnail_of(picture: &CapturedFrame) -> Option<CapturedFrame> {
 }
 
 /// The system's screens and windows: `ScreenCaptureKit` on macOS; on Linux the ScreenCast portal
-/// under Wayland and X11 itself under X11 (chosen at run time, as GPUI does); nothing on Windows
-/// yet (ADR-0054).
+/// under Wayland and X11 itself under X11 (chosen at run time, as GPUI does);
+/// `Windows.Graphics.Capture` on Windows (ADR-0054).
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemScreenSources;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 impl ScreenSources for SystemScreenSources {
     fn picker(&self) -> ScreenPicker {
         ScreenPicker::Unavailable
