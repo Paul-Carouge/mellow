@@ -216,6 +216,7 @@ impl DuskShell {
     ) -> impl IntoElement + use<> {
         let tokens = theme(cx);
         let is_full_bleed = layout == ShellLayout::SheetAlone;
+        let call_view = self.sheet_call_view(cx);
         let subject = self.sheet_subject(cx);
         let header = self.render_chat_header(&subject, is_full_bleed, window, cx);
         let is_friends_space = self.navigation.place()
@@ -251,9 +252,12 @@ impl DuskShell {
                 sheet.rounded(length(COMPONENT_SHEET_RADIUS))
             })
             .overflow_hidden()
-            .child(header)
-            .children(friends_tabs_row)
-            .child(slot)
+            .map(|sheet| match call_view {
+                // The call or a watched screen takes the sheet's place; the conversation keeps
+                // its scroll and draft underneath.
+                Some(call_view) => sheet.child(call_view),
+                None => sheet.child(header).children(friends_tabs_row).child(slot),
+            })
     }
 
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.

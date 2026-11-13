@@ -37,6 +37,10 @@ mod camera;
 pub mod global_push_to_talk;
 pub mod media_settings;
 mod soundboard;
+mod video;
+pub mod video_view;
+
+pub use self::video::ShownPicture;
 
 pub use camera::{
     CameraBlock, CameraPhase, CameraProblem, CamerasFactory, open_camera_system_settings,
@@ -163,6 +167,8 @@ pub struct Voice {
     /// Bumped by each join: a start that finishes after a leave or another join is stopped.
     attempt: u64,
     camera: camera::CameraState,
+    /// Others' cameras and screens: the call view, the watched screen, their pictures.
+    video: video::CallVideo,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -176,6 +182,22 @@ impl std::fmt::Debug for Voice {
             .field("problem", &self.problem)
             .finish_non_exhaustive()
     }
+}
+
+/// Everyone's voice and shared-screen sound settings kept in the preferences, for a new call.
+fn person_settings_from_preferences(cx: &App) -> Arc<InMemoryPersonVoiceSettings> {
+    let store = Arc::new(InMemoryPersonVoiceSettings::default());
+    if let Some(preferences) = preferences(cx) {
+        for (user_id, setting) in &preferences.voice_people {
+            store.write_person_setting(
+                PersonSoundSource::Voice,
+                *user_id,
+                person_setting_of(*setting),
+            );
+        }
+    }
+    video::seed_stream_sound_settings(&store, cx);
+    store
 }
 
 /// The app's voice, as a global.
@@ -399,6 +421,7 @@ impl Voice {
             is_recording_push_to_talk_key: false,
             attempt: 0,
             camera: camera::CameraState::new(system_cameras()),
+            video: video::CallVideo::new(cx),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -651,16 +674,7 @@ impl Voice {
         let attempt = self.attempt;
         let settings = current_settings(cx);
         self.applied_settings = settings.clone();
-        let store = Arc::new(InMemoryPersonVoiceSettings::default());
-        if let Some(preferences) = preferences(cx) {
-            for (user_id, setting) in &preferences.voice_people {
-                store.write_person_setting(
-                    PersonSoundSource::Voice,
-                    *user_id,
-                    person_setting_of(*setting),
-                );
-            }
-        }
+        let store = person_settings_from_preferences(cx);
         let start = spawn_on_network_runtime(
             cx,
             start_engine(EngineStart {
@@ -753,6 +767,9 @@ impl Voice {
             call.devices.is_output_device_missing = started.is_output_device_missing;
             // Settings changed during the start were never applied to it.
             self.applied_settings = call.start_settings.clone();
+        }
+        if let Some(engine) = self.call.as_mut().and_then(|call| call.engine.as_mut()) {
+            self.video.attach(engine, cx);
         }
         // The meter now reads the call's microphone: the test's is let go.
         self.microphone_test = None;
@@ -855,14 +872,15 @@ impl Voice {
             VoiceSessionEvent::VideoRefused(_) | VoiceSessionEvent::VideoStoppedByServer => {
                 self.note_video_stopped_by_server(event, cx);
             }
-            // Cameras and screens come with the call view (M3 step 8).
-            VoiceSessionEvent::VideoPaused { .. } => {}
+            VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
+                self.video.note_paused(*user_id, *is_paused);
+            }
         }
     }
 
     /// The engine stopped by itself (it told the server when it had to).
     fn end_with(&mut self, problem: VoiceProblem, cx: &mut Context<Self>) {
-        self.stop_call(false);
+        self.stop_call(false, cx);
         self.problem = Some(problem);
         cx.notify();
     }
@@ -872,12 +890,12 @@ impl Voice {
         if self.call.is_none() {
             return;
         }
-        self.stop_call(true);
+        self.stop_call(true, cx);
         self.play_cue_outside_a_call(VoiceCue::SelfLeave, cx);
         cx.notify();
     }
 
-    fn stop_call(&mut self, should_tell_the_server: bool) {
+    fn stop_call(&mut self, should_tell_the_server: bool, cx: &mut Context<Self>) {
         self.attempt += 1;
         self.is_push_to_talk_pressed = false;
         // Hearing the call's microphone ends with it; the settings' test keeps its own.
@@ -886,6 +904,7 @@ impl Voice {
         }
         self.announcement = SharedString::default();
         self.camera.end_with_call();
+        self.video.end_call(cx);
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),
@@ -914,7 +933,7 @@ impl Voice {
     fn follow_gateway(&mut self, signal: &VoiceSignal, cx: &mut Context<Self>) {
         if let VoiceSignal::SessionEnded = signal {
             // Signed out: the gateway is gone, so nothing is sent.
-            self.stop_call(false);
+            self.stop_call(false, cx);
             self.abandoned_start = None;
             self.problem = None;
             cx.notify();

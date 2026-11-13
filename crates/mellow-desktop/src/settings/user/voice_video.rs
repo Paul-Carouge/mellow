@@ -16,7 +16,6 @@ use gpui::{
     Render, RenderImage, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     StyledImage as _, Task, Window, div, img, prelude::FluentBuilder as _,
 };
-use image::{Delay, Frame, RgbaImage};
 use mellow_client_core::shared_logic::voice_settings::{DeviceChoice, DeviceChoices};
 use mellow_media::{CameraDescription, DecodedVideoFrame};
 
@@ -31,6 +30,7 @@ use crate::theme::tokens::{
     COMPONENT_VOICE_PANEL_SIGNAL_ICON_SIZE, SPACE_2XS, SPACE_LG, SPACE_MD, SPACE_XS, TYPE_BODY,
 };
 use crate::theme::{color, length, theme};
+use crate::voice::video_view::VideoPicture;
 use crate::voice::{CameraPhase, Voice, current_settings, voice};
 
 /// The preview's redraw rate at most: the camera's 30 frames per second.
@@ -58,11 +58,9 @@ impl std::fmt::Debug for VoiceVideoSection {
     }
 }
 
-/// A BGRA picture as an image GPUI draws (its images are BGRA too).
-fn render_image_of(picture: &DecodedVideoFrame) -> Option<Arc<RenderImage>> {
-    let pixels = RgbaImage::from_raw(picture.width, picture.height, picture.pixels.to_vec())?;
-    let frame = Frame::from_parts(pixels, 0, 0, Delay::from_numer_denom_ms(0, 1));
-    Some(Arc::new(RenderImage::new(vec![frame])))
+/// A BGRA picture as an image GPUI draws, through the call view's conversion.
+fn render_image_of(picture: DecodedVideoFrame) -> Option<Arc<RenderImage>> {
+    VideoPicture::from_decoded(picture).map(VideoPicture::into_render_image)
 }
 
 impl VoiceVideoSection {
@@ -134,7 +132,7 @@ impl VoiceVideoSection {
                     continue;
                 };
                 let image = cx
-                    .background_spawn(async move { render_image_of(&picture) })
+                    .background_spawn(async move { render_image_of(picture) })
                     .await;
                 let is_gone = section
                     .update(cx, |section, cx| {
@@ -347,11 +345,11 @@ mod tests {
     use super::*;
 
     fn picture() -> Option<Arc<RenderImage>> {
-        render_image_of(&DecodedVideoFrame {
+        render_image_of(DecodedVideoFrame {
             width: 2,
             height: 2,
             format: mellow_media::DecodedPixelFormat::Bgra,
-            pixels: vec![0; 16].into(),
+            pixels: vec![0; 16],
         })
     }
 

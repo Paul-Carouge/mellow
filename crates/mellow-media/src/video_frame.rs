@@ -2,8 +2,6 @@
 //! writes, and what the interface draws (BGRA, or NV12 for a macOS `CVPixelBuffer`). Colours are
 //! BT.601 limited range, what VP8 decoders assume without signalling (browsers included).
 
-use std::sync::Arc;
-
 use yuv::{
     BufferStoreMut, YuvConversionMode, YuvPlanarImage, YuvPlanarImageMut, YuvRange,
     YuvStandardMatrix,
@@ -81,7 +79,7 @@ impl CapturedFrame {
             width,
             height,
             format: DecodedPixelFormat::Bgra,
-            pixels: bgra.into(),
+            pixels: bgra,
         })
     }
 
@@ -471,14 +469,14 @@ pub enum DecodedPixelFormat {
     Nv12,
 }
 
-/// A decoded picture of someone's camera or screen, at most the size its tile asked for. Cheap
-/// to clone: the pixels are shared.
+/// A decoded picture of someone's camera or screen, at most the size its tile asked for.
 #[derive(Clone, PartialEq, Eq)]
 pub struct DecodedVideoFrame {
     pub width: u32,
     pub height: u32,
     pub format: DecodedPixelFormat,
-    pub pixels: Arc<[u8]>,
+    /// Owned, so the interface wraps them into its image without copying.
+    pub pixels: Vec<u8>,
 }
 
 impl std::fmt::Debug for DecodedVideoFrame {
