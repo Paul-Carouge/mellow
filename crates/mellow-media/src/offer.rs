@@ -1,6 +1,7 @@
 //! The client's SDP offer, in the exact shape the server validates
 //! (`crates/mellow-server/src/domain/voice_rules.rs`): the voice line and 16 voice slots, the
-//! camera line (VP8, simulcast `h`, `l`, `q`) and 9 camera slots, the screen-sound line and 3
+//! camera line (VP8, simulcast `h`, `l`, `q`; H.264 offered too where the system decodes it,
+//! ADR-0052) and 9 camera slots, the screen-sound line and 3
 //! screen-sound slots. Order is all that tells voice lines from screen-sound lines, so the mids
 //! of each group are kept here.
 
@@ -19,6 +20,11 @@ use str0m::{Candidate, Rtc};
 pub(crate) const OPUS_PAYLOAD_TYPE: u8 = 111;
 /// How often the round trip to the server is reported, as the web samples it.
 const STATS_INTERVAL: Duration = Duration::from_secs(2);
+/// H.264 Constrained Baseline in packetisation mode 1 with its retransmissions, the payload
+/// types the server answers with (ADR-0052).
+const H264_PAYLOAD_TYPE: u8 = 108;
+const H264_RETRANSMISSION_PAYLOAD_TYPE: u8 = 109;
+const H264_CONSTRAINED_BASELINE_PROFILE_LEVEL_ID: u32 = 0x42_e0_1f;
 /// The camera's simulcast RIDs, lowest first, as the web client declares them.
 const SIMULCAST_RIDS: [&str; 3] = ["q", "l", "h"];
 
@@ -96,6 +102,16 @@ pub(crate) fn new_peer(local_address: SocketAddr, now: Instant) -> Result<Pendin
         .clear_codecs()
         .enable_vp8(true)
         .set_stats_interval(Some(STATS_INTERVAL));
+    // Video lines take H.264 too where the system decodes it (ADR-0052): the server then sends
+    // native sharers' pictures here. The camera line sends VP8, which the server picks first.
+    if crate::h264::DECODES_H264 {
+        builder.codec_config().add_h264(
+            Pt::new_with_value(H264_PAYLOAD_TYPE),
+            Some(Pt::new_with_value(H264_RETRANSMISSION_PAYLOAD_TYPE)),
+            true,
+            H264_CONSTRAINED_BASELINE_PROFILE_LEVEL_ID,
+        );
+    }
     builder.codec_config().add_config(
         Pt::new_with_value(OPUS_PAYLOAD_TYPE),
         None,
@@ -236,7 +252,21 @@ mod tests {
             sdp.contains("transport-wide-cc"),
             "the server's allocation needs it"
         );
-        assert!(!sdp.contains("H264") && !sdp.contains("VP9"), "VP8 only");
+        assert!(
+            !sdp.contains("VP9") && !sdp.contains("AV1"),
+            "VP8 and H.264 only"
+        );
+        assert_eq!(
+            sdp.contains("a=rtpmap:108 H264/90000"),
+            crate::h264::DECODES_H264,
+            "{sdp}"
+        );
+        if crate::h264::DECODES_H264 {
+            assert!(
+                sdp.contains("profile-level-id=42e01f") && sdp.contains("packetization-mode=1"),
+                "{sdp}"
+            );
+        }
     }
 
     #[test]
