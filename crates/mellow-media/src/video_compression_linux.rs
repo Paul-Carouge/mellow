@@ -20,6 +20,7 @@ use crate::video_compression::{
     MAXIMUM_OUTPUT_FRAME_RATE, MeasuredVideo, ProgressCallback, SourceAudioCodec,
     VideoCompressionPlan, VideoSource, runs_past_measured_duration,
 };
+use crate::video_file_ffmpeg::display_rotation_degrees;
 
 /// The demuxers allowed to read a picked file: those of the containers the web's compression
 /// reads (MP4 and `QuickTime`, Matroska and `WebM`). Anything else, a DASH or HLS manifest named
@@ -38,8 +39,6 @@ const MAXIMUM_DECODED_PIXELS: i64 = 8_192 * 4_320;
 const AUDIO_SAMPLE_RATE: c_int = 48_000;
 /// The VBR ceiling over the average, so `h264_vaapi` picks VBR (an average alone means CBR).
 const PEAK_BITRATE_RATIO: i64 = 2;
-/// A display matrix is nine 32-bit numbers.
-const DISPLAY_MATRIX_BYTES: usize = 9 * 4;
 
 fn check(status: c_int, what: &str) -> Result<c_int, BackendError> {
     if status < 0 {
@@ -249,23 +248,8 @@ impl Drop for Input<'_> {
 /// # Safety
 /// `parameters` belongs to an opened stream.
 unsafe fn quarter_turns_clockwise(parameters: *const ff::AVCodecParameters) -> u32 {
-    // SAFETY: the stream's own side data list.
-    let side_data = unsafe {
-        ff::av_packet_side_data_get(
-            (*parameters).coded_side_data,
-            (*parameters).nb_coded_side_data,
-            ff::AV_PKT_DATA_DISPLAYMATRIX,
-        )
-    };
-    // SAFETY: checked for null and for the matrix's size before it is read.
-    #[allow(clippy::cast_ptr_alignment)] // Side data comes from `av_malloc`, aligned for any type.
-    let angle = unsafe {
-        if side_data.is_null() || (*side_data).size < DISPLAY_MATRIX_BYTES {
-            return 0;
-        }
-        ff::av_display_rotation_get((*side_data).data.cast::<i32>())
-    };
-    quarter_turns_for_rotation(angle)
+    // SAFETY: as the caller promises.
+    unsafe { display_rotation_degrees(parameters) }.map_or(0, quarter_turns_for_rotation)
 }
 
 /// FFmpeg's matrix angle is counter-clockwise: the picture turns the other way, as `ffmpeg`'s
