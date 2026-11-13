@@ -22,6 +22,7 @@ const LINUX_PACKAGE_SIGNATURE: &[u8] = include_bytes!(
     "../../tests/fixtures/self_update/mellow-desktop-9.0.0-x86_64-unknown-linux-gnu-ffmpeg7.tar.gz.minisig"
 );
 /// What the fixture's `bin/mellow` holds.
+#[cfg(unix)]
 const NEW_BINARY: &[u8] = b"new mellow\n";
 const OLD_BINARY: &[u8] = b"old mellow\n";
 
@@ -118,6 +119,8 @@ fn file_names_in(directory: &Path) -> Vec<String> {
     names
 }
 
+// Runs the package's `install.sh`, which needs a Unix shell.
+#[cfg(unix)]
 #[tokio::test]
 async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
     let base_url = serve_release_host(routes_with(LINUX_PACKAGE, LINUX_PACKAGE_SIGNATURE)).await;
@@ -166,6 +169,8 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
     );
 }
 
+// Runs the package's `install.sh`, which needs a Unix shell.
+#[cfg(unix)]
 #[test]
 fn a_copy_reinstalled_after_staging_is_not_replaced() {
     let (home, executable) = home_with_installed_mellow();
