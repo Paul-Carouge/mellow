@@ -42,6 +42,8 @@ const MACOS_LARGEST_ICON: (&[u8; 4], u32) = (b"ic10", 1024);
 
 const LINUX_ICON_SIZES: [u32; 8] = [16, 24, 32, 48, 64, 128, 256, 512];
 const LINUX_APP_ID: &str = "mellow";
+/// The metainfo standard wants a reverse-DNS component id: the bundle identifier, launching `mellow.desktop`.
+const LINUX_METAINFO_FILE_NAME: &str = "org.mellow.desktop.metainfo.xml";
 
 /// The bundle's `Info.plist`, labelled with `version`.
 pub fn info_plist(template: &str, version: &str) -> Result<String> {
@@ -200,10 +202,8 @@ pub fn build_linux_package(root: &Path, binary: &Path, output_directory: &Path) 
             .join(format!("{LINUX_APP_ID}.desktop")),
     )?;
     copy_file(
-        &packaging.join(format!("{LINUX_APP_ID}.metainfo.xml")),
-        &share
-            .join("metainfo")
-            .join(format!("{LINUX_APP_ID}.metainfo.xml")),
+        &packaging.join(LINUX_METAINFO_FILE_NAME),
+        &share.join("metainfo").join(LINUX_METAINFO_FILE_NAME),
     )?;
     let icons = share.join("icons").join("hicolor");
     let (favicon_text, favicon) = read_favicon(root)?;
@@ -302,7 +302,7 @@ mod tests {
             "install.sh",
             "LICENSE",
             "share/applications/mellow.desktop",
-            "share/metainfo/mellow.metainfo.xml",
+            "share/metainfo/org.mellow.desktop.metainfo.xml",
             "share/icons/hicolor/scalable/apps/mellow.svg",
             "share/icons/hicolor/512x512/apps/mellow.png",
             "share/icons/hicolor/16x16/apps/mellow.png",

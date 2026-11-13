@@ -12,7 +12,7 @@ icon_sizes="16 24 32 48 64 128 256 512"
 installed_files() {
   echo "${bin_directory}/mellow"
   echo "${data_directory}/applications/mellow.desktop"
-  echo "${data_directory}/metainfo/mellow.metainfo.xml"
+  echo "${data_directory}/metainfo/org.mellow.desktop.metainfo.xml"
   echo "${data_directory}/icons/hicolor/scalable/apps/mellow.svg"
   for size in ${icon_sizes}; do
     echo "${data_directory}/icons/hicolor/${size}x${size}/apps/mellow.png"
@@ -84,8 +84,8 @@ case "${bin_directory}" in
     mv -f -- "${desktop_entry}.new" "${desktop_entry}"
     ;;
 esac
-copy_file "${package_directory}/share/metainfo/mellow.metainfo.xml" \
-  "${data_directory}/metainfo/mellow.metainfo.xml"
+copy_file "${package_directory}/share/metainfo/org.mellow.desktop.metainfo.xml" \
+  "${data_directory}/metainfo/org.mellow.desktop.metainfo.xml"
 copy_file "${package_directory}/share/icons/hicolor/scalable/apps/mellow.svg" \
   "${data_directory}/icons/hicolor/scalable/apps/mellow.svg"
 for size in ${icon_sizes}; do

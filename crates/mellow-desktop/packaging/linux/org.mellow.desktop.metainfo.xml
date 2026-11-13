@@ -1,7 +1,7 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<!-- The id is the desktop entry's, which is the window's Wayland app_id (window_chrome.rs). -->
+<!-- The bundle identifier as AppStream id; it launches the entry named after the window's Wayland app_id. -->
 <component type="desktop-application">
-  <id>mellow</id>
+  <id>org.mellow.desktop</id>
   <metadata_license>CC0-1.0</metadata_license>
   <project_license>AGPL-3.0-or-later</project_license>
   <name>Mellow</name>

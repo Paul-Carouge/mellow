@@ -113,7 +113,8 @@ jobs:
   desktop-linux:
     name: Desktop package (Linux, FFmpeg ${{ matrix.ffmpeg }})
     strategy:
-      fail-fast: true
+      # Every distribution reports, so one failure hides nothing; publish needs them all anyway.
+      fail-fast: false
       matrix:
         include:
           # Ubuntu 24.04 and its derivatives (glibc 2.39).
@@ -174,7 +175,7 @@ jobs:
           name="mellow-desktop-${MELLOW_VERSION}-${PACKAGE_TARGET}-ffmpeg${{ matrix.ffmpeg }}"
           cargo xtask linux-package --binary target/release/mellow --output "package/${name}"
           desktop-file-validate "package/${name}/share/applications/mellow.desktop"
-          appstreamcli validate --no-net "package/${name}/share/metainfo/mellow.metainfo.xml"
+          appstreamcli validate --no-net "package/${name}/share/metainfo/org.mellow.desktop.metainfo.xml"
           # The installer, into a throwaway home, then out again.
           trial_home="$(mktemp -d)"
           HOME="${trial_home}" XDG_DATA_HOME='' "package/${name}/install.sh"
