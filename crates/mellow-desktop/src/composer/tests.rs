@@ -630,3 +630,113 @@ fn the_gif_button_shows_with_gifs_and_a_gif_goes_out_with_the_reply_leaving_the_
     );
     assert_eq!(text(&harness, cx), "still writing");
 }
+
+type QueuedCompressions = std::sync::Arc<std::sync::Mutex<Vec<Box<dyn FnOnce() + Send>>>>;
+
+/// A fake encoder whose threads wait until the test runs them: it reports 42 %, then gives a
+/// three-byte MP4, or nothing when "Send the original" or a removal stopped it.
+fn queue_video_compressions(
+    composer: &Entity<Composer>,
+    cx: &mut VisualTestContext,
+) -> QueuedCompressions {
+    let queued = QueuedCompressions::default();
+    let queue = std::sync::Arc::clone(&queued);
+    let compressor = super::video_compression::VideoCompressor {
+        compress: std::sync::Arc::new(|_, _, on_progress, is_cancelled| {
+            on_progress(0.42);
+            if is_cancelled.load(std::sync::atomic::Ordering::Relaxed) {
+                Err(mellow_media::VideoCompressionCancelled)
+            } else {
+                Ok(mellow_media::VideoCompressionOutcome::Compressed(vec![
+                    0;
+                    3
+                ]))
+            }
+        }),
+        start_thread: std::sync::Arc::new(move |work| {
+            queue.lock().unwrap().push(work);
+            Ok(())
+        }),
+    };
+    cx.update(|_, cx| {
+        composer.update(cx, |composer, _| {
+            composer.video_compressor = Some(compressor);
+        });
+    });
+    queued
+}
+
+#[gpui::test]
+fn a_video_compresses_then_uploads_the_compressed_file_or_its_original_and_removal_stops_it(
+    cx: &mut TestAppContext,
+) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let queued = queue_video_compressions(&composer, cx);
+    let directory = tempfile::tempdir().unwrap();
+    // Four bytes: the five-byte originals are refused by size, the three-byte MP4 is not.
+    cx.update(|_, cx| composer.update(cx, |composer, cx| composer.set_uploads(None, Some(4), cx)));
+
+    attach(
+        &composer,
+        vec![
+            temporary_file(&directory, "clip.mov", 5),
+            temporary_file(&directory, "original.MOV", 5),
+            temporary_file(&directory, "removed.webm", 5),
+            temporary_file(&directory, "photo.png", 1),
+        ],
+        cx,
+    );
+    cx.run_until_parked();
+    let statuses = tray_statuses(&composer, cx);
+    assert!(
+        matches!(
+            &statuses[..],
+            [
+                TrayItemStatus::Compressing(0),
+                TrayItemStatus::Compressing(0),
+                TrayItemStatus::Compressing(0),
+                // Pictures upload at once (the instance compresses them).
+                TrayItemStatus::Failed(_),
+            ]
+        ),
+        "{statuses:?}"
+    );
+    // Send waits for compressing files.
+    assert!(composer.read_with(cx, |composer, _| composer.drafts.is_uploading()));
+
+    let keys: Vec<u64> = composer.read_with(cx, |composer, _| {
+        composer.drafts.tray().iter().map(|item| item.key).collect()
+    });
+    cx.update(|window, cx| {
+        composer.update(cx, |composer, cx| {
+            composer.send_original(keys[1], cx);
+            composer.remove_tray_item(keys[2], window, cx);
+        });
+    });
+    let works = std::mem::take(&mut *queued.lock().unwrap());
+    for work in works {
+        work();
+    }
+    cx.run_until_parked();
+
+    let (names, statuses): (Vec<String>, Vec<TrayItemStatus>) =
+        composer.read_with(cx, |composer, _| {
+            composer
+                .drafts
+                .tray()
+                .iter()
+                .map(|item| (item.file_name.clone(), item.status.clone()))
+                .unzip()
+        });
+    // The compressed file went to the upload under its MP4 name (refused here: no instance).
+    assert_eq!(names, ["clip.mp4", "original.MOV", "photo.png"]);
+    assert!(
+        matches!(&statuses[1], TrayItemStatus::Failed(sentence) if sentence.contains("5 bytes, more than")),
+        "the original uploads as it is: {statuses:?}"
+    );
+    assert!(
+        matches!(&statuses[0], TrayItemStatus::Failed(sentence) if !sentence.contains("more than")),
+        "the three-byte MP4 passes the size check: {statuses:?}"
+    );
+}
