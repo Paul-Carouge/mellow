@@ -1,8 +1,12 @@
 //! Screen sharing on an X11 session (ADR-0054): an in-app picker of the `RandR` monitors and the
 //! managed windows (`_NET_CLIENT_LIST`, Mellow's own left out by `_NET_WM_PID`), and pictures
 //! read with MIT-SHM `GetImage` into one shared segment reused for every picture (plain
-//! `GetImage` without MIT-SHM), at 30 frames per second, encoded in VP8. `x11rb` speaks the
-//! protocol in pure Rust; the shared segment is System V shared memory through `libc`.
+//! `GetImage` without MIT-SHM), at 30 frames per second, encoded in VP8. A window is read from
+//! its own off-screen picture (Composite's `NameWindowPixmap`, as OBS's window source does), never
+//! from the screen where it lies: without a compositing manager the screen there shows whatever
+//! covers the window, which the person did not choose to share. Without Composite, windows are
+//! not offered. `x11rb` speaks the protocol in pure Rust; the shared segment is System V shared
+//! memory through `libc`.
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -10,9 +14,12 @@ use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use x11rb::connection::Connection;
+use x11rb::protocol::composite::{ConnectionExt as _, Redirect};
 use x11rb::protocol::randr::ConnectionExt as _;
 use x11rb::protocol::shm::ConnectionExt as _;
-use x11rb::protocol::xproto::{Atom, AtomEnum, ConnectionExt as _, ImageFormat, MapState, Window};
+use x11rb::protocol::xproto::{
+    Atom, AtomEnum, ConnectionExt as _, Drawable, ImageFormat, MapState, Pixmap, Window,
+};
 use x11rb::rust_connection::RustConnection;
 
 use crate::screen_capture::{
@@ -33,6 +40,10 @@ const ALL_PLANES: u32 = u32::MAX;
 const BYTES_PER_PIXEL: usize = 4;
 /// The depths whose `ZPixmap` pictures are 32-bit BGRX on every X server Mellow meets.
 const SUPPORTED_DEPTHS: [u8; 2] = [24, 32];
+/// The Composite version that names a window's off-screen picture (`NameWindowPixmap`).
+const COMPOSITE_VERSION: (u32, u32) = (0, 2);
+/// Where Linux keeps this machine's host name, to compare with a window's `WM_CLIENT_MACHINE`.
+const HOST_NAME_PATH: &str = "/proc/sys/kernel/hostname";
 
 fn system_error(error: impl std::fmt::Display) -> ScreenCaptureError {
     ScreenCaptureError::System(error.to_string())
@@ -184,12 +195,31 @@ fn text_property(
     reply.value8().map(Iterator::collect)
 }
 
+/// Whether the X server names a window's off-screen picture (Composite 0.2).
+fn has_composite(connection: &RustConnection) -> bool {
+    connection
+        .composite_query_version(COMPOSITE_VERSION.0, COMPOSITE_VERSION.1)
+        .ok()
+        .and_then(|cookie| cookie.reply().ok())
+        .is_some_and(|version| (version.major_version, version.minor_version) >= COMPOSITE_VERSION)
+}
+
+/// Whether `client_machine` (a window's `WM_CLIENT_MACHINE`) is this machine, `host_name`: only
+/// then does its `_NET_WM_PID` name a local process (not one of an `ssh -X` client's host).
+fn is_this_machine(client_machine: &[u8], host_name: &str) -> bool {
+    let machine = client_machine.strip_suffix(&[0]).unwrap_or(client_machine);
+    !host_name.is_empty() && machine == host_name.as_bytes()
+}
+
 fn windows(
     connection: &RustConnection,
     root: Window,
     atoms: &Atoms,
 ) -> Result<Vec<WindowDescription>, ScreenCaptureError> {
     let own_process = std::process::id();
+    let host_name = std::fs::read_to_string(HOST_NAME_PATH)
+        .map(|name| name.trim().to_owned())
+        .unwrap_or_default();
     let listed = connection
         .get_property(
             false,
@@ -225,6 +255,14 @@ fn windows(
         if process == Some(own_process) {
             continue;
         }
+        let is_local = text_property(
+            connection,
+            window,
+            AtomEnum::WM_CLIENT_MACHINE,
+            AtomEnum::ANY,
+        )
+        .is_some_and(|machine| is_this_machine(&machine, &host_name));
+        let process = process.filter(|_| is_local);
         let title = text_property(connection, window, atoms.window_name, atoms.utf8_string)
             .or_else(|| text_property(connection, window, AtomEnum::WM_NAME, AtomEnum::STRING))
             .map(|bytes| String::from_utf8_lossy(&bytes).into_owned())
@@ -268,7 +306,7 @@ fn windows(
 /// One picture of `area` of `drawable` through plain `GetImage`, packed BGRA.
 fn read_picture(
     connection: &RustConnection,
-    drawable: Window,
+    drawable: Drawable,
     area: Area,
     bytes: Vec<u8>,
 ) -> Option<CapturedFrame> {
@@ -323,7 +361,13 @@ pub(crate) fn sources(
             thumbnail: thumbnail(root, area),
         })
         .collect();
-    for window in windows(&connection, root, &atoms)? {
+    // Without Composite a window could only be read from the screen, with what covers it.
+    let listed_windows = if has_composite(&connection) {
+        windows(&connection, root, &atoms)?
+    } else {
+        Vec::new()
+    };
+    for window in listed_windows {
         let area = Area {
             x: 0,
             y: 0,
@@ -392,7 +436,7 @@ impl SharedSegment {
     fn read_picture(
         &self,
         connection: &RustConnection,
-        drawable: Window,
+        drawable: Drawable,
         area: Area,
         bytes: Vec<u8>,
     ) -> Option<CapturedFrame> {
@@ -448,27 +492,34 @@ fn window_exists(connection: &RustConnection, window: Window) -> bool {
         .is_ok_and(|cookie| cookie.reply().is_ok())
 }
 
-/// The area to read now: a monitor's, or the window's current size.
-fn current_area(
-    connection: &RustConnection,
-    root: Window,
-    source: Source,
-) -> Option<(Window, Area)> {
+/// The area to read now: a monitor's on the root window, or the window's current size within
+/// its off-screen picture (which includes its border). `None` once the window is gone.
+fn current_area(connection: &RustConnection, source: Source) -> Option<Area> {
     match source {
-        Source::Monitor(area) => Some((root, area)),
+        Source::Monitor(area) => Some(area),
         Source::Window(window) => {
             let geometry = connection.get_geometry(window).ok()?.reply().ok()?;
-            Some((
-                window,
-                Area {
-                    x: 0,
-                    y: 0,
-                    width: geometry.width,
-                    height: geometry.height,
-                },
-            ))
+            let border = i16::try_from(geometry.border_width).ok()?;
+            Some(Area {
+                x: border,
+                y: border,
+                width: geometry.width,
+                height: geometry.height,
+            })
         }
     }
+}
+
+/// The window's current off-screen picture, to free after reading it; `None` while it has none
+/// (unmapped).
+fn name_window_pixmap(connection: &RustConnection, window: Window) -> Option<Pixmap> {
+    let pixmap = connection.generate_id().ok()?;
+    connection
+        .composite_name_window_pixmap(window, pixmap)
+        .ok()?
+        .check()
+        .ok()?;
+    Some(pixmap)
 }
 
 /// Reads pictures at 30 frames per second until the share or the capture stops.
@@ -480,6 +531,15 @@ fn capture_loop(
     should_stop: &AtomicBool,
 ) -> Result<(), ScreenShareEnd> {
     let interval = Duration::from_secs(1) / FRAMES_PER_SECOND;
+    if let Source::Window(window) = source {
+        // Keeps the window's pixels off screen, whatever covers it; undone when this connection
+        // closes, if not below.
+        connection
+            .composite_redirect_window(window, Redirect::AUTOMATIC)
+            .map_err(|error| ScreenShareEnd::Failed(error.to_string()))?
+            .check()
+            .map_err(|error| ScreenShareEnd::Failed(error.to_string()))?;
+    }
     let mut segment: Option<SharedSegment> = None;
     let mut has_shared_memory = true;
     let mut next_picture_at = Instant::now();
@@ -487,7 +547,7 @@ fn capture_loop(
         if should_stop.load(Ordering::Relaxed) || !pictures.is_open() {
             break Ok(());
         }
-        let Some((drawable, area)) = current_area(connection, root, source) else {
+        let Some(area) = current_area(connection, source) else {
             break Err(ScreenShareEnd::SourceClosed);
         };
         let length = usize::from(area.width) * usize::from(area.height) * BYTES_PER_PIXEL;
@@ -499,9 +559,17 @@ fn capture_loop(
             has_shared_memory = segment.is_some();
         }
         let bytes = pictures.recycled_bytes();
-        let picture = match &segment {
+        let read = |drawable: Drawable, bytes: Vec<u8>| match &segment {
             Some(segment) => segment.read_picture(connection, drawable, area, bytes),
             None => read_picture(connection, drawable, area, bytes),
+        };
+        let picture = match source {
+            Source::Monitor(_) => read(root, bytes),
+            Source::Window(window) => name_window_pixmap(connection, window).and_then(|pixmap| {
+                let picture = read(pixmap, bytes);
+                let _ = connection.free_pixmap(pixmap);
+                picture
+            }),
         };
         match picture {
             Some(picture) => pictures.push(picture),
@@ -524,6 +592,10 @@ fn capture_loop(
     };
     if let Some(segment) = segment {
         segment.detach(connection);
+    }
+    if let Source::Window(window) = source {
+        let _ = connection.composite_unredirect_window(window, Redirect::AUTOMATIC);
+        let _ = connection.flush();
     }
     result
 }
@@ -566,6 +638,9 @@ pub(crate) fn start(
     let window_application = match source {
         Source::Monitor(_) => None,
         Source::Window(window) => {
+            if !has_composite(&connection) {
+                return Err(ScreenCaptureError::Unavailable);
+            }
             if !window_exists(&connection, window) {
                 return Err(ScreenCaptureError::SourceGone);
             }
@@ -626,5 +701,13 @@ mod tests {
         );
         assert_eq!(parse_source("monitor:0,0,70000,10"), None);
         assert_eq!(parse_source("display:1"), None);
+    }
+
+    #[test]
+    fn only_a_window_of_this_machine_names_a_local_process() {
+        assert!(is_this_machine(b"cachyos", "cachyos"));
+        assert!(is_this_machine(b"cachyos\0", "cachyos"));
+        assert!(!is_this_machine(b"build-server", "cachyos"));
+        assert!(!is_this_machine(b"", ""));
     }
 }
