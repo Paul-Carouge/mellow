@@ -20,7 +20,10 @@ use mellow_client_core::shared_logic::voice_settings::{
     parse_voice_settings, parse_voice_toggles, person_voice_settings_to_json,
     voice_settings_to_json, voice_toggles_to_json,
 };
+use mellow_media::ScreenShareQuality;
 use mellow_protocol::Snowflake;
+
+use crate::voice::screen_share::{screen_share_quality_label, screen_share_quality_of_label};
 
 const FILE_NAME: &str = "preferences";
 /// Ours stays far below, even with the notification choices of a few accounts at their bound of
@@ -43,6 +46,8 @@ const VOICE_SETTINGS_KEY: &str = "voice-settings";
 const VOICE_TOGGLES_KEY: &str = "voice-toggles";
 const VOICE_PEOPLE_KEY: &str = "voice-people";
 const STREAM_PEOPLE_KEY: &str = "stream-people";
+const SCREEN_SHARE_QUALITY_KEY: &str = "screen-share-quality";
+const SCREEN_SHARE_SOUND_OFF_KEY: &str = "screen-share-sound-off";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -171,6 +176,10 @@ pub struct Preferences {
     /// Each sharer's screen sound volume and local mute (the web's
     /// `mellow.stream-sound-settings`), kept like `voice_people`.
     pub stream_people: Vec<(Snowflake, PersonVoiceSetting)>,
+    /// The quality screens are shared at (the web's `mellow.screen-share-quality`).
+    pub screen_share_quality: ScreenShareQuality,
+    /// Screens are shared without their sound.
+    pub is_screen_share_sound_off: bool,
 }
 
 impl Preferences {
@@ -407,6 +416,13 @@ impl Preferences {
                 SEARCH_WIDTH_KEY => preferences.search_column_width = parse_column_width(value),
                 MEDIA_VOLUME_KEY => preferences.media_volume = parse_media_volume(value),
                 MEDIA_MUTED_KEY => preferences.is_media_muted = value == "true",
+                SCREEN_SHARE_QUALITY_KEY => {
+                    preferences.screen_share_quality =
+                        screen_share_quality_of_label(value).unwrap_or_default();
+                }
+                SCREEN_SHARE_SOUND_OFF_KEY => {
+                    preferences.is_screen_share_sound_off = value == "true";
+                }
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 // The web's JSON, validated field by field as the web reads it.
@@ -496,6 +512,13 @@ impl Preferences {
         }
         if self.is_media_muted {
             let _ = writeln!(text, "{MEDIA_MUTED_KEY}=true");
+        }
+        if self.screen_share_quality != ScreenShareQuality::default() {
+            let quality = screen_share_quality_label(self.screen_share_quality);
+            let _ = writeln!(text, "{SCREEN_SHARE_QUALITY_KEY}={quality}");
+        }
+        if self.is_screen_share_sound_off {
+            let _ = writeln!(text, "{SCREEN_SHARE_SOUND_OFF_KEY}=true");
         }
         if let Some(theme) = self.theme.as_file_text() {
             let _ = writeln!(text, "{THEME_KEY}={theme}");
@@ -647,6 +670,8 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     },
     voice_people: Vec::new(),
     stream_people: Vec::new(),
+    screen_share_quality: ScreenShareQuality::High,
+    is_screen_share_sound_off: false,
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -728,6 +753,8 @@ mod tests {
         preferences.search_column_width = Some(480.0);
         preferences.media_volume = Some(0.25);
         preferences.is_media_muted = true;
+        preferences.screen_share_quality = ScreenShareQuality::Highest;
+        preferences.is_screen_share_sound_off = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
 

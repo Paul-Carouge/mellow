@@ -2416,6 +2416,51 @@ export const en = {
     voicePushToTalkOtherAppsNote: "During a call, it also works in other apps when your system allows it; the voice panel tells you.",
     /** The microphone test found no microphone to open. */
     voiceTestNoMicrophone: "No microphone found. Plug one in, then test again.",
+    /** Screen sharing on the desktop (ADR-0054): the app captures itself, so the web's sentences about the browser's picker do not apply. */
+    screenPickerLoading: "Looking for your screens and windows…",
+    screenPickerEmpty: "No screen or window to share was found.",
+    screenPickerScreens: "Screens",
+    screenPickerWindows: "Windows",
+    /** A display, which macOS does not name, by its place in the list. */
+    screenPickerScreenName: (number: number) => `Screen ${number}`,
+    /** The picker's card: what pressing it does. */
+    screenPickerShareSource: (source: string) => `Share ${source}`,
+    /** Under the picker's title: the quality and sound chosen in the share options. */
+    screenPickerWithSound: (quality: string) => `${quality}, with its sound. Change them in the share options.`,
+    screenPickerWithoutSound: (quality: string) => `${quality}, without sound. Change them in the share options.`,
+    /** Wayland: the desktop's own dialog asks what to share. */
+    screenShareWaitingForSystem: "Choose what to share in your desktop's dialog…",
+    screenShareStarting: "Starting your screen share…",
+    screenSharePermissionDenied:
+      "Mellow isn't allowed to record your screen. Allow it in System Settings, Privacy & Security, Screen & System Audio Recording, then share again.",
+    openSystemSettings: "Open System Settings",
+    screenShareUnavailable: "Your system doesn't let Mellow share the screen. On Linux, install your desktop's xdg-desktop-portal, then share again.",
+    screenShareSourceGone: "That screen or window is gone. Choose another one.",
+    screenShareFailed: "Your screen share couldn't start. Share again, or choose another screen or window.",
+    screenShareCaptureFailed: "Your screen share stopped: capturing the screen failed.",
+    /** Read out: the shared window closed, or the desktop stopped the capture. */
+    screenShareSourceClosed: "Your screen share ended.",
+    /** Linux without a VA-API H.264 encoder: the share is sent, only heavier on the processor. */
+    screenShareSoftwareEncoding: "Encoded by your processor: no hardware H.264 encoder (VA-API) was found.",
+    /** The share options' sound items. */
+    screenShareSound: "Share its sound",
+    screenShareSoundNextShare: "From your next share",
+    screenShareSoundOf: (application: string) => `Sound of ${application}`,
+    screenShareSoundOfHint: "Instead of the window's own sound",
+    /** Under the live line: what the share sends as sound. */
+    screenShareSoundOfApplication: (application: string) => `Sound: ${application}`,
+    screenShareNoSoundOnWayland: "No sound: your desktop doesn't say which app a window belongs to. Choose an app in the share options.",
+    screenShareNoSoundOnThisSystem: "No sound: this system can't capture a share's sound.",
+    /** The help about the share's sound, from the share options. */
+    screenSoundHelpOpen: "About the share's sound",
+    screenSoundHelpTitle: "Your share's sound",
+    screenSoundHelpScreen:
+      "A whole screen sends everything your computer plays, except Mellow's own sounds: the call's voices never come back to the others.",
+    screenSoundHelpWindow: "A window sends the sound of its app only.",
+    screenSoundHelpWayland:
+      "On Wayland, your desktop doesn't say which app a shared window belongs to: choose the app to send in the share options, under Sound.",
+    screenSoundHelpMacos: "Sharing sound needs macOS 13 or later.",
+    screenSoundHelpOff: "Untick “Share its sound” in the share options to send the picture alone.",
   },
 };
 

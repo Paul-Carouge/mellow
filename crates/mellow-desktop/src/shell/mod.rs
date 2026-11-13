@@ -19,6 +19,7 @@ mod place_notifications;
 pub mod quick_switcher;
 mod regions;
 mod resize_handle;
+mod screen_share_host;
 mod server_rail;
 mod settings_screens;
 mod soundboard_host;
@@ -257,6 +258,8 @@ pub struct DuskShell {
     voice: Option<Entity<crate::voice::Voice>>,
     voice_person_popover: Option<voice_panel::VoicePersonPopover>,
     soundboard: soundboard_host::SoundboardHost,
+    /// Your screen share's options menu, picker and sound help.
+    screen_share: screen_share_host::ScreenShareHost,
     /// The call view or the watched screen in the sheet's place, and what had focus before.
     call_view: Option<(Entity<call_view::CallView>, Option<FocusHandle>)>,
     _subscriptions: Vec<Subscription>,
@@ -338,6 +341,7 @@ impl DuskShell {
             voice,
             voice_person_popover: None,
             soundboard: soundboard_host::SoundboardHost::new(cx),
+            screen_share: screen_share_host::ScreenShareHost::new(cx),
             call_view: None,
             _subscriptions: subscriptions,
         };
@@ -1260,6 +1264,7 @@ impl Render for DuskShell {
             .children(self.render_place_menus(window, cx))
             .children(self.render_voice_person_popover(cx))
             .children(self.render_soundboard_popover(window, cx))
+            .children(self.render_screen_share_overlays(window, cx))
             .children(self.render_fullscreen_call_view(cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {

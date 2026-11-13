@@ -33,6 +33,7 @@
 
 pub mod global_push_to_talk;
 pub mod media_settings;
+pub mod screen_share;
 mod soundboard;
 mod video;
 pub mod video_view;
@@ -160,6 +161,8 @@ pub struct Voice {
     attempt: u64,
     /// Others' cameras and screens: the call view, the watched screen, their pictures.
     video: video::CallVideo,
+    /// Your own shared screen.
+    screen: screen_share::ScreenSharing,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -396,6 +399,7 @@ impl Voice {
             is_recording_push_to_talk_key: false,
             attempt: 0,
             video: video::CallVideo::new(cx),
+            screen: screen_share::ScreenSharing::system(),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -848,10 +852,9 @@ impl Voice {
             VoiceSessionEvent::VideoPaused { user_id, is_paused } => {
                 self.video.note_paused(*user_id, *is_paused);
             }
-            // Cameras and screens come with the call view (M3 step 8).
             VoiceSessionEvent::VideoRefused(_)
             | VoiceSessionEvent::VideoStoppedByServer
-            | VoiceSessionEvent::ScreenShareEnded(_) => {}
+            | VoiceSessionEvent::ScreenShareEnded(_) => self.follow_screen_share_event(event, cx),
         }
     }
 
@@ -881,6 +884,7 @@ impl Voice {
         }
         self.announcement = SharedString::default();
         self.video.end_call(cx);
+        self.screen.end_call();
         match self.call.take() {
             Some(Call {
                 engine: Some(engine),
@@ -1377,3 +1381,6 @@ pub struct DeviceNotices {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod screen_share_tests;

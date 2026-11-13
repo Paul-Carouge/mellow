@@ -395,6 +395,7 @@ impl CallView {
         let place = voice.connected_place();
         let toggles = voice.toggles();
         let is_self_speaking = voice.is_self_speaking();
+        let is_sharing_screen = voice.is_sharing_screen();
         let state = self.session.read(cx).state();
         let own_user_id = state.current_user().map(|user| user.id);
         let channel_name = place
@@ -410,7 +411,15 @@ impl CallView {
             .filter(|user_id| state.is_speaking(*user_id))
             .chain(own_user_id.filter(|_| is_self_speaking))
             .collect();
-        let people = call_people(&states, own_user_id);
+        let mut people = call_people(&states, own_user_id);
+        // Your own share shows at once, before the instance's state comes back (`ownVideo`).
+        if is_sharing_screen
+            && let Some(own) = people
+                .iter_mut()
+                .find(|person| Some(person.user_id) == own_user_id)
+        {
+            own.video = Some(CallVideo::Screen);
+        }
         let present: Vec<Snowflake> = people.iter().map(|person| person.user_id).collect();
         self.speaker_user_id = next_speaker(self.speaker_user_id, &speaking, own_user_id, &present);
         let featured = (self.layout == CallLayout::Speaker)
