@@ -2398,6 +2398,8 @@ export const fr: Catalogue = {
     cameraFailed: "Mellow n’a pas pu allumer ta caméra. Rallume-la, ou choisis une autre caméra dans les réglages Voix.",
     cameraDeniedMacos: "macOS bloque la caméra pour Mellow. Autorise-la dans Réglages Système, sous Confidentialité et sécurité, puis Caméra, puis rallume-la.",
     cameraDeniedLinux: "Ton système a refusé la caméra à Mellow. Autorise-la dans tes réglages de confidentialité, puis rallume-la.",
+    cameraDeniedWindows: "Windows bloque la caméra pour Mellow. Dans Paramètres, sous Confidentialité et sécurité, puis Caméra, autorise les applications de bureau à l’utiliser, puis rallume-la.",
     openCameraSettings: "Ouvrir les Réglages Système",
+    openCameraSettingsWindows: "Ouvrir les Paramètres",
   },
 };

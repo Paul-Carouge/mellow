@@ -15184,10 +15184,24 @@ impl DesktopStrings {
         }
     }
 
+    pub fn camera_denied_windows(self) -> &'static str {
+        match self.language {
+            Language::English => "Windows blocks the camera for Mellow. In Settings, under Privacy & security, then Camera, allow desktop apps to use it, then turn it on again.",
+            Language::French => "Windows bloque la caméra pour Mellow. Dans Paramètres, sous Confidentialité et sécurité, puis Caméra, autorise les applications de bureau à l’utiliser, puis rallume-la.",
+        }
+    }
+
     pub fn open_camera_settings(self) -> &'static str {
         match self.language {
             Language::English => "Open System Settings",
             Language::French => "Ouvrir les Réglages Système",
+        }
+    }
+
+    pub fn open_camera_settings_windows(self) -> &'static str {
+        match self.language {
+            Language::English => "Open Settings",
+            Language::French => "Ouvrir les Paramètres",
         }
     }
 }

@@ -21,7 +21,9 @@ use crate::theme::tokens::{
     COMPONENT_VOICE_PANEL_SIGNAL_ICON_SIZE, SPACE_2XS, SPACE_3XS, SPACE_XS, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
-use crate::voice::{CameraBlock, CameraPhase, Voice, open_camera_system_settings};
+use crate::voice::{
+    CameraBlock, CameraPhase, Voice, open_camera_settings_label, open_camera_system_settings,
+};
 
 impl DuskShell {
     /// The camera toggle, in the call's row.
@@ -107,7 +109,7 @@ impl DuskShell {
                                 div().flex().child(
                                     Button::new(
                                         "voice-camera-open-settings",
-                                        strings.desktop().open_camera_settings(),
+                                        open_camera_settings_label(strings),
                                     )
                                     .variant(ButtonVariant::Secondary)
                                     .on_click(|_, cx| open_camera_system_settings(cx)),
