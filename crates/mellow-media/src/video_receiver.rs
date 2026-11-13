@@ -272,7 +272,7 @@ enum SlotDecoder {
     /// again on every frame, until the slot carries another codec.
     Failed(ReceivedCodec),
     Vp8(Vp8Decoder),
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     H264(crate::h264::H264Decoder),
 }
 
@@ -282,7 +282,7 @@ impl SlotDecoder {
     fn prepare(&mut self, codec: ReceivedCodec) -> bool {
         let is_ready = match (&*self, codec) {
             (Self::Vp8(_), ReceivedCodec::Vp8) => true,
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             (Self::H264(_), ReceivedCodec::H264) => true,
             (Self::Failed(failed), _) if *failed == codec => return false,
             _ => false,
@@ -302,7 +302,7 @@ impl SlotDecoder {
         !matches!(self, Self::None | Self::Failed(_))
     }
 
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn new_h264() -> Self {
         match crate::h264::H264Decoder::new() {
             Ok(decoder) => Self::H264(decoder),
@@ -314,7 +314,7 @@ impl SlotDecoder {
     }
 
     /// This platform offers no H.264, so the server sends none; a stray frame is dropped.
-    #[cfg(not(any(target_os = "linux", target_os = "macos")))]
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     fn new_h264() -> Self {
         Self::Failed(ReceivedCodec::H264)
     }
@@ -325,7 +325,7 @@ impl SlotDecoder {
         let picture = match self {
             Self::None | Self::Failed(_) => return true,
             Self::Vp8(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
-            #[cfg(any(target_os = "linux", target_os = "macos"))]
+            #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::H264(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
         };
         match picture {
@@ -485,7 +485,7 @@ mod tests {
 
     /// A slot whose new sender sends H.264 (a native sharer, ADR-0052) waits for its IDR, then
     /// shows its pictures, on the platforms that decode it.
-    #[cfg(any(target_os = "linux", target_os = "macos"))]
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn a_slot_switching_from_vp8_to_h264_shows_the_new_sender_s_pictures() {
         let frames = VideoFrames::new(DecodedPixelFormat::Bgra);

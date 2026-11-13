@@ -76,7 +76,10 @@ pub(super) fn tray(
         .border_color(color(tokens.component_composer_tray_divider))
         .children(items.iter().map(|item| {
             let key = item.key;
-            let is_uploading = item.status == TrayItemStatus::Uploading;
+            let is_uploading = matches!(
+                item.status,
+                TrayItemStatus::Uploading | TrayItemStatus::Compressing(_)
+            );
             let preview = div()
                 .flex()
                 .items_center()
@@ -147,6 +150,46 @@ pub(super) fn tray(
                                 .child(catalogue.messages().retry())
                                 .when(is_retry_ring_shown, |retry| {
                                     retry.child(focus_ring(RADIUS_SM, cx))
+                                }),
+                        )
+                }
+                TrayItemStatus::Compressing(percent) => {
+                    let original_target = composer.clone();
+                    let original_id = ElementId::NamedInteger("tray-send-original".into(), key);
+                    let original_focus = remembered_focus_handle(&original_id, window, cx);
+                    let is_original_ring_shown = is_focus_visible(&original_focus, window);
+                    div()
+                        .flex()
+                        .flex_col()
+                        .gap(length(COMPONENT_COMPOSER_TRAY_ITEM_GAP))
+                        .child(
+                            with_type(div(), TYPE_BODY_SM)
+                                .text_color(color(tokens.component_composer_tray_item_status_text))
+                                .child(labels.compressing(i64::from(*percent))),
+                        )
+                        .child(
+                            // Compressing a long clip can take a while: the original may go
+                            // instead, as the web's Retry-styled link offers.
+                            with_type(div(), TYPE_BODY_SM)
+                                .id(original_id)
+                                .role(Role::Button)
+                                .aria_label(labels.send_original_of(&item.file_name))
+                                .track_focus(&original_focus)
+                                .relative()
+                                .min_h(length(SIZE_HIT_DESKTOP_MIN))
+                                .flex()
+                                .items_center()
+                                .cursor_pointer()
+                                .text_color(color(tokens.component_message_editor_hint_link))
+                                .hover(gpui::Styled::underline)
+                                .on_click(move |_, _, cx| {
+                                    original_target.update(cx, |composer, cx| {
+                                        composer.send_original(key, cx);
+                                    });
+                                })
+                                .child(labels.send_original())
+                                .when(is_original_ring_shown, |link| {
+                                    link.child(focus_ring(RADIUS_SM, cx))
                                 }),
                         )
                 }

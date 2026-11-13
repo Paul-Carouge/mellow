@@ -85,6 +85,7 @@ skip = [
     { crate = "syn@2.0.119", reason = "many proc-macro crates (sqlx, axum, tracing...) not yet on syn 3" },
     { crate = "synstructure@0.13.2", reason = "asn1-rs-derive 0.6, under x509-parser" },
     { crate = "getrandom@0.3.4", reason = "rand_core 0.9 (rand 0.9) and ahash 0.8" },
+    { crate = "pastey@0.1.1", reason = "av-scenechange 0.14 (rav1e); ksni 0.3 is on pastey 0.2" },
     # The voice SFU (str0m's DTLS crate dimpl) and the axum WebSocket upgrade still use the
     # RustCrypto 0.10 generation, rand 0.9 and tungstenite 0.29; sqlx-core 0.9 uses sha2 0.10.
     { crate = "crypto-common@0.1.6", reason = "cipher 0.4, aead 0.5 and digest 0.10" },

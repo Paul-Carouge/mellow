@@ -1,5 +1,5 @@
 //! Cameras behind a trait: the system's (`AVFoundation` on macOS, PipeWire or the xdg Camera
-//! portal on Linux, none on Windows) or a synthetic one for tests and headless use. An open
+//! portal on Linux, Media Foundation on Windows) or a synthetic one for tests and headless use. An open
 //! camera pushes its pictures into a session's [`VideoInput`] (or a [`CameraPreview`]'s) from its
 //! own thread and stops when dropped or when the input closes.
 
@@ -222,13 +222,11 @@ impl CameraFeed {
 }
 
 /// The system's cameras: `AVFoundation` on macOS, PipeWire on Linux (through the Camera portal
-/// when PipeWire shows none). Windows lists none.
-// shortcut: no Windows camera (Media Foundation is a capture graph of its own, not a few calls);
-// add it when the desktop ships there.
+/// when PipeWire shows none), Media Foundation on Windows. Other systems list none.
 #[derive(Debug, Default, Clone, Copy)]
 pub struct SystemCameras;
 
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 impl Cameras for SystemCameras {
     fn cameras(&self) -> Result<Vec<CameraDescription>, CameraError> {
         Ok(Vec::new())
@@ -262,7 +260,7 @@ mod tests {
     #[test]
     fn the_system_s_cameras_exist_on_every_platform() {
         let cameras: Box<dyn Cameras> = Box::new(SystemCameras);
-        if cfg!(not(any(target_os = "macos", target_os = "linux"))) {
+        if cfg!(not(any(target_os = "macos", target_os = "linux", windows))) {
             assert_eq!(cameras.cameras().unwrap(), []);
         }
     }

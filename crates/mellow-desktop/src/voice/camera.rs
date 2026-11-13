@@ -48,6 +48,8 @@ const REPORT_QUEUE_CAPACITY: usize = 4;
 /// macOS's Privacy & Security pane for the camera.
 const MACOS_CAMERA_SETTINGS_URL: &str =
     "x-apple.systempreferences:com.apple.preference.security?Privacy_Camera";
+/// Windows' Privacy & security page for the camera.
+const WINDOWS_CAMERA_SETTINGS_URL: &str = "ms-settings:privacy-webcam";
 
 /// Where the call's camera stands.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -91,6 +93,7 @@ impl CameraProblem {
         let problems = strings.camera().problems();
         match self {
             Self::Denied if cfg!(target_os = "macos") => strings.desktop().camera_denied_macos(),
+            Self::Denied if cfg!(windows) => strings.desktop().camera_denied_windows(),
             Self::Denied => strings.desktop().camera_denied_linux(),
             Self::NotFound => problems.not_found(),
             Self::InUse => problems.in_use(),
@@ -103,16 +106,31 @@ impl CameraProblem {
         }
     }
 
-    /// The system's settings can lift it: macOS's camera privacy pane.
+    /// The system's settings can lift it: macOS's camera privacy pane, Windows' camera privacy
+    /// page.
     #[must_use]
     pub fn can_open_system_settings(self) -> bool {
-        self == Self::Denied && cfg!(target_os = "macos")
+        self == Self::Denied && cfg!(any(target_os = "macos", windows))
     }
 }
 
-/// Opens macOS's camera privacy settings (the Denied problem's button).
+/// Opens the system's camera privacy settings (the Denied problem's button).
 pub fn open_camera_system_settings(cx: &App) {
-    cx.open_url(MACOS_CAMERA_SETTINGS_URL);
+    cx.open_url(if cfg!(windows) {
+        WINDOWS_CAMERA_SETTINGS_URL
+    } else {
+        MACOS_CAMERA_SETTINGS_URL
+    });
+}
+
+/// The label of the Denied problem's button.
+#[must_use]
+pub fn open_camera_settings_label(strings: Strings) -> &'static str {
+    if cfg!(windows) {
+        strings.desktop().open_camera_settings_windows()
+    } else {
+        strings.desktop().open_camera_settings()
+    }
 }
 
 /// Why the camera button cannot turn the camera on now.

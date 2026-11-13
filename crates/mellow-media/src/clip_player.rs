@@ -144,10 +144,38 @@ impl ClipPlayer {
         *self.status.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
+    /// The position of `clip` while it is the loaded sound (the start otherwise), for a video's
+    /// pictures to follow its sound.
+    #[must_use]
+    pub fn clock(&self, clip: u64) -> ClipClock {
+        ClipClock {
+            status: Arc::clone(&self.status),
+            clip,
+        }
+    }
+
     fn send(&self, command: Command) {
         if let Some(commands) = self.commands.as_ref() {
             // A stopped thread only happens on drop.
             let _ = commands.send(command);
+        }
+    }
+}
+
+/// A loaded sound's position, read from another thread: see [`ClipPlayer::clock`].
+#[derive(Debug, Clone)]
+pub struct ClipClock {
+    status: Arc<Mutex<ClipStatus>>,
+    clip: u64,
+}
+
+impl crate::video_file::VideoClock for ClipClock {
+    fn position(&self) -> Duration {
+        let status = *self.status.lock().unwrap_or_else(PoisonError::into_inner);
+        if status.clip == Some(self.clip) {
+            status.position
+        } else {
+            Duration::ZERO
         }
     }
 }

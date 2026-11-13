@@ -132,6 +132,13 @@ impl GatewayHandle {
                 .is_ok()
     }
 
+    /// Whether the connection task has taken every frame sent so far off the queue, so a frame
+    /// sent just before the app exits (`voice_leave`) can be waited for.
+    #[must_use]
+    pub fn has_no_frame_waiting(&self) -> bool {
+        self.frames.capacity() == self.frames.max_capacity()
+    }
+
     /// Whether `Ready` or `Resumed` came back on the current connection.
     #[must_use]
     pub fn is_session_attached(&self) -> bool {
@@ -847,6 +854,17 @@ mod tests {
             commands.frames.try_recv().is_err(),
             "the old session's frame never reaches the new one"
         );
+    }
+
+    #[test]
+    fn a_sent_frame_waits_until_the_connection_task_takes_it() {
+        let (handle, mut commands) = GatewayHandle::new();
+        assert!(handle.has_no_frame_waiting());
+        commands.attach_session();
+        assert!(handle.send(LEAVE.clone()));
+        assert!(!handle.has_no_frame_waiting());
+        assert!(commands.frames.try_recv().is_ok());
+        assert!(handle.has_no_frame_waiting());
     }
 
     #[tokio::test]

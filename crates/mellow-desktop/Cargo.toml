@@ -71,6 +71,14 @@ zeroize.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, features = ["global_shortcuts"] }
 futures-lite.workspace = true
+# The system tray (StatusNotifierItem, ADR-0056), on the async-io zbus already in the tree for the
+# portals; only ksni itself and task-local are new (Unlicense, MIT/Apache-2.0).
+ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
+
+# The notification area icon and the single-instance pipe (ADR-0056): the `windows` version and
+# features GPUI's Windows platform already builds, plus `Win32_System_Pipes`.
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # rav1d's x86-64 assembly builds with nasm (already needed by the server's rav1e); its arm64
 # assembly does not build from the published crate (`src/arm/asm-offsets.h` is left out of the
@@ -81,7 +89,8 @@ rav1d = { workspace = true, features = ["asm"] }
 # The Dock badge and the menu bar item, which GPUI has no API for; the same versions GPUI's macOS
 # platform already builds, so nothing new is built or audited.
 [target.'cfg(target_os = "macos")'.dependencies]
-# `renamex_np` swaps a self-update's app bundle in atomically (already in the tree).
+# `renamex_np` swaps a self-update's app bundle in atomically, and `setxattr` sets the quarantine
+# mark on saved attachments; already in the tree.
 libc.workspace = true
 objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
@@ -93,13 +102,17 @@ gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] 
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
 # Authenticator codes for the two-factor test; already built for the server.
 aws-lc-rs.workspace = true
-# The sign-in tests run a real in-process server, as the client core's do.
-mellow-server = { path = "../mellow-server" }
 # Its local test release host, for the self-update tests.
 mellow-update = { workspace = true, features = ["test-release-host"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "macros", "io-util", "test-util"] }
 zeroize.workspace = true
+
+[target.'cfg(not(windows))'.dev-dependencies]
+# The sign-in tests run a real in-process server, as the client core's do.
+# Not on Windows: the server refuses to run there (ADR-0006) and the tests that start one are
+# compiled out, so building it (and its vendored OpenSSL) would be wasted.
+mellow-server = { path = "../mellow-server" }
 
 [lints]
 workspace = true

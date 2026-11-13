@@ -16,7 +16,7 @@ mod decode;
 pub(crate) mod disk_cache;
 mod limiter;
 mod loader;
-mod lru;
+pub(crate) mod lru;
 
 use std::collections::HashMap;
 use std::sync::Arc;
