@@ -59,6 +59,15 @@ pub const H264_B_FRAMES: c_int = 3;
 /// 89.2 / 85.7 at 1.7 -> 89.4 / 86.2 at 1.5 (Balanced, 1080p60).
 const H264_QUALITY_STEP: u32 = 1;
 
+/// `AV_PROFILE_H264_CONSTRAINED_BASELINE`: Baseline (66) with
+/// `AV_PROFILE_H264_CONSTRAINED` (1 << 9), spelt out because the constant's
+/// name changed between `FFmpeg` 6 and 7.
+const H264_PROFILE_CONSTRAINED_BASELINE: c_int = 66 | (1 << 9);
+
+/// Frames between two unrequested keyframes of a real-time encoder: as long
+/// as libvpx's in Mellow (`kf_max_dist`), so keyframes come on request.
+pub const REAL_TIME_KEYFRAME_INTERVAL_FRAMES: c_int = 3_000;
+
 /// Timestamps go through `FFmpeg` in nanoseconds so `pts` comes back unchanged.
 const TIME_BASE: ff::AVRational = ff::AVRational {
     num: 1,
@@ -339,6 +348,8 @@ pub struct Encoder {
     fast: bool,
     /// [`vcn_load`] of the open encoder.
     load: Option<f64>,
+    /// Opened for a real-time stream ([`Encoder::new_real_time_h264`]).
+    real_time: bool,
 }
 
 // SAFETY: the FFmpeg/VA objects are owned by this struct and only used through
@@ -367,6 +378,55 @@ impl Encoder {
         height: u32,
         fps: u32,
         rate: RateControl,
+    ) -> Result<Self, Error> {
+        Self::new_with(codec, width, height, fps, rate, false)
+    }
+
+    /// An H.264 encoder for a real-time stream (WebRTC, Mellow's ADR-0054):
+    /// Constrained Baseline, no B-frames, parameter sets in the stream before
+    /// every IDR (no global header), one picture in flight, constant bit rate
+    /// with half a second of buffer so a keyframe stays small, and keyframes
+    /// only when forced (or after [`REAL_TIME_KEYFRAME_INTERVAL_FRAMES`]).
+    ///
+    /// # Errors
+    /// When `FFmpeg` or the VAAPI driver fails, or the driver cannot encode
+    /// Constrained Baseline.
+    pub fn new_real_time_h264(
+        width: u32,
+        height: u32,
+        fps: u32,
+        bits_per_second: u64,
+    ) -> Result<Self, Error> {
+        let rate = RateControl::ConstantBitrate(bits_per_second);
+        Self::new_with(Codec::H264, width, height, fps, rate, true)
+    }
+
+    /// [`Encoder::new_real_time_h264`] fed with `self`'s pictures scaled to
+    /// `width`x`height` on the GPU ([`Encoder::encode_scaled`]): a lower
+    /// simulcast layer.
+    ///
+    /// # Errors
+    /// When `FFmpeg` or the VAAPI driver fails.
+    pub fn new_scaled_real_time_h264(
+        &self,
+        width: u32,
+        height: u32,
+        fps: u32,
+        bits_per_second: u64,
+    ) -> Result<Self, Error> {
+        let mut source = self.scaled_source()?;
+        source.real_time = true;
+        let rate = RateControl::ConstantBitrate(bits_per_second);
+        source.open(Codec::H264, width, height, fps, rate)
+    }
+
+    fn new_with(
+        codec: Codec,
+        width: u32,
+        height: u32,
+        fps: u32,
+        rate: RateControl,
+        real_time: bool,
     ) -> Result<Self, Error> {
         if width == 0 || height == 0 || fps == 0 {
             return Err(Error("width, height and fps must be non-zero".into()));
@@ -397,6 +457,7 @@ impl Encoder {
             scaled_from: ptr::null_mut(),
             fast: false,
             load: None,
+            real_time,
         };
         // On error, `e` is dropped and frees whatever was created so far.
         unsafe {
@@ -454,6 +515,7 @@ impl Encoder {
                 width: self.width,
                 height: self.height,
                 fast: false,
+                real_time: false,
             };
             source.frames = not_null(
                 ff::av_buffer_ref(ff::av_buffersink_get_hw_frames_ctx(self.sink)),
@@ -473,6 +535,7 @@ pub struct ScaledSource {
     width: u32,
     height: u32,
     fast: bool,
+    real_time: bool,
 }
 
 // SAFETY: reference-counted FFmpeg buffers (thread-safe counts) and a VA
@@ -554,6 +617,7 @@ impl ScaledSource {
             scaled_from: ptr::null_mut(),
             fast: self.fast,
             load: None,
+            real_time: self.real_time,
         };
         // On error, `e` is dropped and frees whatever was created so far.
         unsafe {
@@ -923,17 +987,38 @@ impl Encoder {
             };
             enc.pix_fmt = ff::AV_PIX_FMT_VAAPI;
             enc.gop_size = (fps * 2) as c_int;
-            // VCN encodes B-frames in H.264 only (HEVC and AV1 stay IPPP).
-            // Closed GOPs: every keyframe is an IDR a file or stream can
-            // start at, with no frame before it referencing it.
-            if codec == Codec::H264 {
+            if self.real_time {
+                // A WebRTC receiver forwards frames as they come: no
+                // reordering, the profile every browser decodes, keyframes on
+                // request. Without a global header, `h264_vaapi` writes the
+                // SPS and PPS before every IDR.
+                if codec != Codec::H264 {
+                    return Err(Error("the real-time mode is H.264 only".into()));
+                }
+                enc.max_b_frames = 0;
+                enc.profile = H264_PROFILE_CONSTRAINED_BASELINE;
+                enc.gop_size = REAL_TIME_KEYFRAME_INTERVAL_FRAMES;
+                check(
+                    ff::av_opt_set(
+                        self.enc.cast(),
+                        c"async_depth".as_ptr(),
+                        c"1".as_ptr(),
+                        ff::AV_OPT_SEARCH_CHILDREN as c_int,
+                    ),
+                    "async_depth",
+                )?;
+            } else if codec == Codec::H264 {
+                // VCN encodes B-frames in H.264 only (HEVC and AV1 stay IPPP).
+                // Closed GOPs: every keyframe is an IDR a file or stream can
+                // start at, with no frame before it referencing it.
                 enc.max_b_frames = H264_B_FRAMES;
                 enc.flags |= ff::AV_CODEC_FLAG_CLOSED_GOP as c_int;
+                // Parameter sets go to `extradata` for containers (see `extradata()`).
+                enc.flags |= ff::AV_CODEC_FLAG_GLOBAL_HEADER as c_int;
             } else {
                 enc.max_b_frames = 0;
+                enc.flags |= ff::AV_CODEC_FLAG_GLOBAL_HEADER as c_int;
             }
-            // Parameter sets go to `extradata` for containers (see `extradata()`).
-            enc.flags |= ff::AV_CODEC_FLAG_GLOBAL_HEADER as c_int;
             enc.color_range = ff::AVCOL_RANGE_MPEG;
             enc.colorspace = ff::AVCOL_SPC_BT709;
             enc.color_primaries = ff::AVCOL_PRI_BT709;
@@ -970,7 +1055,10 @@ impl Encoder {
                 RateControl::ConstantBitrate(bps) => {
                     enc.bit_rate = bps as i64;
                     enc.rc_max_rate = bps as i64;
-                    enc.rc_buffer_size = c_int::try_from(bps).unwrap_or(c_int::MAX);
+                    // A real-time keyframe must fit the receiver's one-second
+                    // byte budget with room to spare.
+                    let buffer = if self.real_time { bps / 2 } else { bps };
+                    enc.rc_buffer_size = c_int::try_from(buffer).unwrap_or(c_int::MAX);
                     c"CBR"
                 }
             };
