@@ -40,6 +40,7 @@ use crate::components::{
     focus_next_inside, focus_previous_inside, focus_ring, icon, is_focus_visible,
     polite_live_region, popover_position_beside_anchor, shadow, with_type,
 };
+use crate::gif_video::{GifVideoPhase, plays_klipy_video, use_gif_video};
 use crate::i18n::{Strings, strings};
 use crate::messages::{TOKEN_PIXELS_PER_REM, picture_animation, picture_for_box};
 use crate::pictures::{Animation, PictureFile};
@@ -57,6 +58,7 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, length, theme, window_width_at_default_zoom};
 use crate::tokio_bridge::spawn_on_network_runtime;
+use crate::voice::video_view::{VideoFit, video_view};
 
 /// Typing pauses this long before Klipy is asked: one request per word, not per letter.
 const GIF_SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
@@ -172,8 +174,15 @@ impl std::fmt::Debug for GifPicker {
 
 impl EventEmitter<GifPickerEvent> for GifPicker {}
 
-/// The tile's picture: the small animated one, or the still JPEG while motion is reduced; the web
-/// plays Klipy's MP4 where it has no small WebP, the desktop takes the animated picture instead.
+/// The tile's clip: Klipy's MP4 where it has no small WebP (the web's tile), played only while
+/// motion is not reduced and where this system decodes it; the picture otherwise.
+fn tile_clip(gif: &KlipyGif, animation: Animation) -> Option<&KlipyMedia> {
+    (gif.tile.is_video && animation == Animation::Animate && plays_klipy_video(&gif.tile.url))
+        .then_some(&gif.tile)
+}
+
+/// The tile's picture: the small animated one, or the still JPEG while motion is reduced; also
+/// what shows when the tile's clip cannot play.
 fn tile_picture(gif: &KlipyGif, animation: Animation) -> Option<&KlipyMedia> {
     let animated = gif.picture_tile.as_ref();
     match animation {
@@ -845,20 +854,44 @@ impl GifPicker {
             || self.hovered_index == Some(gif_index)
             || (is_active && (self.grid_focus.is_focused(window) || is_star_focused));
         let animation = picture_animation(cx);
-        let picture = is_picture_wanted
-            .then(|| tile_picture(gif, animation))
+        // Klipy's MP4 where it has no small WebP, as the web plays it; the picture if the clip
+        // fails.
+        let clip = is_picture_wanted
+            .then(|| tile_clip(gif, animation))
             .flatten()
             .map(|media| {
-                img(picture_for_box(
-                    PictureFile::Klipy(media.url.clone().into()),
-                    bounds.width,
-                    bounds.height,
-                    animation,
-                    window,
-                ))
-                .size_full()
-                .object_fit(ObjectFit::Cover)
+                let url: SharedString = media.url.clone().into();
+                use_gif_video(&ElementId::Name(url.clone()), &url, true, window, cx)
+            })
+            .filter(|video| video.read(cx).phase() != GifVideoPhase::Failed)
+            .map(|video| {
+                div()
+                    .size_full()
+                    .children(
+                        video
+                            .read(cx)
+                            .picture()
+                            .map(|picture| video_view(picture, VideoFit::Cover)),
+                    )
+                    .into_any_element()
             });
+        let picture = clip.or_else(|| {
+            is_picture_wanted
+                .then(|| tile_picture(gif, animation))
+                .flatten()
+                .map(|media| {
+                    img(picture_for_box(
+                        PictureFile::Klipy(media.url.clone().into()),
+                        bounds.width,
+                        bounds.height,
+                        animation,
+                        window,
+                    ))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .into_any_element()
+                })
+        });
         let star_label: SharedString = if is_starred {
             catalogue.gifs().remove_favourite(&title)
         } else {

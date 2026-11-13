@@ -4,9 +4,8 @@
 //! follows the picture's shape once decoded (a square until then), and a picture wider than the
 //! column is letterboxed. It plays as custom emoji do; while reduced motion keeps pictures still it
 //! shows the first frame and a "GIF ▶" key that plays this one. A GIF Klipy no longer serves
-//! gives the link back (`fallback`).
-//!
-//! shortcut: Klipy's MP4 and `WebM` addresses keep their link; video playback comes with step 9.
+//! gives the link back (`fallback`). Klipy's MP4 clips play the same way, muted and looping
+//! (`gif_video`).
 
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
@@ -20,6 +19,7 @@ use super::{picture_animation, picture_request_for_box};
 use crate::components::{
     Tooltip, child_id, icon, is_focus_visible, remembered_focus_handle, with_type,
 };
+use crate::gif_video::{GifVideoPhase, plays_klipy_video, use_gif_video};
 use crate::i18n::strings;
 use crate::pictures::{Animation, PictureFile, PictureStatus, picture_source, picture_status};
 use crate::theme::icons::IconName;
@@ -29,15 +29,17 @@ use crate::theme::tokens::{
     SIZE_FOCUS_RING_OFFSET, SIZE_FOCUS_RING_WIDTH, SPACE_3XS, SPACE_XS, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
+use crate::voice::video_view::{VideoFit, video_view};
 
 /// The GIF a message's text is, when the instance has GIFs (only then does its key let Klipy's
-/// media in, as the web's policy does): a picture address; a clip keeps its link (step 9).
+/// media in, as the web's policy does): a picture address, or a clip this system plays (a
+/// `WebM` clip on macOS keeps its link).
 #[must_use]
 pub fn message_gif_url(content: &str, are_gifs_shown: bool) -> Option<SharedString> {
     are_gifs_shown
         .then(|| message_gif_media_of(content))
         .flatten()
-        .filter(|media| !media.is_video)
+        .filter(|media| !media.is_video || plays_klipy_video(&media.url))
         .map(|media| media.url.into())
 }
 
@@ -86,26 +88,60 @@ impl RenderOnce for MessageGif {
         } else {
             Animation::Animate
         };
-        // Decoded to cover a square of the box's height: enough for any shape it is drawn at.
-        let request = picture_request_for_box(
-            PictureFile::Klipy(self.url),
-            COMPONENT_GIF_MESSAGE_HEIGHT,
-            COMPONENT_GIF_MESSAGE_HEIGHT,
-            animation,
-            window,
-        );
         // The last shape seen holds while another request loads (played after being kept still,
         // another zoom), so the box keeps its width.
         let known_size = window.use_keyed_state(child_id(&id, "size"), cx, |_, _| None);
-        let picture_size = match picture_status(request.clone(), cx) {
-            PictureStatus::Failed => return self.fallback,
-            PictureStatus::Ready { width, height } => {
-                if *known_size.read(cx) != Some((width, height)) {
-                    known_size.update(cx, |size, _| *size = Some((width, height)));
-                }
-                Some((width, height))
+        let is_video = message_gif_media_of(&self.url).is_some_and(|media| media.is_video);
+        let (content, ready_size) = if is_video {
+            let video = use_gif_video(
+                &child_id(&id, "video"),
+                &self.url,
+                animation == Animation::Animate,
+                window,
+                cx,
+            );
+            let video = video.read(cx);
+            if video.phase() == GifVideoPhase::Failed {
+                return self.fallback;
             }
-            PictureStatus::Loading => *known_size.read(cx),
+            let picture = video.picture();
+            (
+                div()
+                    .size_full()
+                    .children(picture.map(|picture| video_view(picture, VideoFit::Contain)))
+                    .into_any_element(),
+                picture.map(|picture| (picture.width, picture.height)),
+            )
+        } else {
+            // Decoded to cover a square of the box's height: enough for any shape it is drawn at.
+            let request = picture_request_for_box(
+                PictureFile::Klipy(self.url),
+                COMPONENT_GIF_MESSAGE_HEIGHT,
+                COMPONENT_GIF_MESSAGE_HEIGHT,
+                animation,
+                window,
+            );
+            let ready_size = match picture_status(request.clone(), cx) {
+                PictureStatus::Failed => return self.fallback,
+                PictureStatus::Ready { width, height } => Some((width, height)),
+                PictureStatus::Loading => None,
+            };
+            (
+                img(picture_source(request))
+                    .size_full()
+                    .object_fit(ObjectFit::Contain)
+                    .into_any_element(),
+                ready_size,
+            )
+        };
+        let picture_size = match ready_size {
+            Some(size) => {
+                if *known_size.read(cx) != Some(size) {
+                    known_size.update(cx, |known, _| *known = Some(size));
+                }
+                Some(size)
+            }
+            None => *known_size.read(cx),
         };
         let tokens = theme(cx);
         let label = strings(cx).gifs().message_gif();
@@ -130,11 +166,7 @@ impl RenderOnce for MessageGif {
             .overflow_hidden()
             .rounded(length(COMPONENT_GIF_MESSAGE_RADIUS))
             .bg(color(tokens.component_gif_message_placeholder))
-            .child(
-                img(picture_source(request))
-                    .size_full()
-                    .object_fit(ObjectFit::Contain),
-            )
+            .child(content)
             .children(play_key)
             .into_any_element()
     }
@@ -217,9 +249,15 @@ mod tests {
         let address = "https://static.klipy.com/ii/a/b/md.webp";
         assert_eq!(message_gif_url(address, true), Some(address.into()));
         assert_eq!(message_gif_url(address, false), None);
+        let clip = "https://static.klipy.com/ii/a/b/md.mp4";
         assert_eq!(
-            message_gif_url("https://static.klipy.com/ii/a/b/md.mp4", true),
-            None
+            message_gif_url(clip, true).is_some(),
+            cfg!(any(target_os = "linux", target_os = "macos")),
+            "a clip plays where the system decodes it"
+        );
+        assert_eq!(
+            message_gif_url("https://static.klipy.com/ii/a/b/md.webm", true).is_some(),
+            cfg!(target_os = "linux")
         );
         assert_eq!(message_gif_url("look at this", true), None);
     }

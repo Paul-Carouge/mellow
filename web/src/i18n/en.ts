@@ -2363,6 +2363,12 @@ export const en = {
     quitMellow: "Quit Mellow",
     /** The menu bar item's entry that brings the window to the front. */
     openMellow: "Open Mellow",
+    /** User settings, Appearance: what the window's close button does (Discord's "Minimise to tray"). */
+    keepRunningInBackground: "Keep running in the background",
+    keepRunningInBackgroundMenuBar: "Closing the window keeps Mellow in the menu bar and the Dock, with your call and notifications. Quit with Cmd+Q.",
+    keepRunningInBackgroundTray: "Closing the window keeps Mellow in the system tray, with your call and notifications. Quit from its menu or with Ctrl+Q.",
+    /** Linux without a StatusNotifierItem host (GNOME without the AppIndicator extension). */
+    keepRunningInBackgroundNoTray: "Your desktop shows no system tray, so closing the window quits Mellow.",
     /** The notification settings dialog's sentence: the choices stay in the app on this computer. */
     notificationsIntro: "While your status is Do not disturb, nothing notifies you. These settings stay on this computer.",
     /** User settings, Appearance: the theme and the language, kept in the app on this computer. */
@@ -2475,6 +2481,12 @@ export const en = {
     openCameraSettings: "Open System Settings",
     /** Opens Windows' camera privacy settings. */
     openCameraSettingsWindows: "Open Settings",
+    /** A file card's download: the app asks where to save the file, then writes it there. */
+    attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
+    attachmentSaved: (fileName: string) => `${fileName} saved.`,
+    attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
+    /** The enlarged video's way back to the conversation. */
+    closeEnlargedVideo: "Close the video",
   },
 };
 

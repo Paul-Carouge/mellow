@@ -23,6 +23,7 @@ mod reply;
 mod rich_text;
 pub(crate) mod samples;
 mod time;
+mod video_attachment;
 
 use gpui::{App, ImageSource, Window};
 

@@ -14681,6 +14681,34 @@ impl DesktopStrings {
         }
     }
 
+    pub fn keep_running_in_background(self) -> &'static str {
+        match self.language {
+            Language::English => "Keep running in the background",
+            Language::French => "Continuer en arrière-plan",
+        }
+    }
+
+    pub fn keep_running_in_background_menu_bar(self) -> &'static str {
+        match self.language {
+            Language::English => "Closing the window keeps Mellow in the menu bar and the Dock, with your call and notifications. Quit with Cmd+Q.",
+            Language::French => "Fermer la fenêtre garde Mellow dans la barre des menus et le Dock, avec ton appel et tes notifications. Quitte avec Cmd+Q.",
+        }
+    }
+
+    pub fn keep_running_in_background_tray(self) -> &'static str {
+        match self.language {
+            Language::English => "Closing the window keeps Mellow in the system tray, with your call and notifications. Quit from its menu or with Ctrl+Q.",
+            Language::French => "Fermer la fenêtre garde Mellow dans la zone de notification, avec ton appel et tes notifications. Quitte depuis son menu ou avec Ctrl+Q.",
+        }
+    }
+
+    pub fn keep_running_in_background_no_tray(self) -> &'static str {
+        match self.language {
+            Language::English => "Your desktop shows no system tray, so closing the window quits Mellow.",
+            Language::French => "Ton bureau n’affiche pas de zone de notification\u{a0}: fermer la fenêtre quitte Mellow.",
+        }
+    }
+
     pub fn notifications_intro(self) -> &'static str {
         match self.language {
             Language::English => "While your status is Do not disturb, nothing notifies you. These settings stay on this computer.",
@@ -15202,6 +15230,34 @@ impl DesktopStrings {
         match self.language {
             Language::English => "Open Settings",
             Language::French => "Ouvrir les Paramètres",
+        }
+    }
+
+    pub fn attachment_saving(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Saving {file_name}…"),
+            Language::French => format!("Enregistrement de {file_name}…"),
+        }
+    }
+
+    pub fn attachment_saved(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("{file_name} saved."),
+            Language::French => format!("{file_name} est enregistré."),
+        }
+    }
+
+    pub fn attachment_save_failed(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Couldn't save {file_name}. Try again, or choose another folder."),
+            Language::French => format!("Impossible d’enregistrer {file_name}. Réessaie, ou choisis un autre dossier."),
+        }
+    }
+
+    pub fn close_enlarged_video(self) -> &'static str {
+        match self.language {
+            Language::English => "Close the video",
+            Language::French => "Fermer la vidéo",
         }
     }
 }

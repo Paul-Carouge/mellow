@@ -906,6 +906,12 @@ impl Session {
         &mut self.state
     }
 
+    /// Signed in over the state a test sets, with no instance behind it.
+    #[cfg(test)]
+    pub(crate) fn pretend_signed_in(&mut self) {
+        self.phase = SessionPhase::SignedIn;
+    }
+
     #[cfg(test)]
     pub(crate) fn apply_gateway_updates_of_this_session(
         &mut self,
