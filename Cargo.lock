@@ -5039,6 +5039,7 @@ dependencies = [
  "rav1d",
  "semver",
  "serde_json",
+ "skrifa 0.44.0",
  "sys-locale",
  "tempfile",
  "thiserror 2.0.21",
