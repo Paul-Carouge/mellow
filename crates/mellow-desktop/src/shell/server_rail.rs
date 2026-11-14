@@ -1,7 +1,8 @@
 //! The server strip of the navigator card (`ServerRail.svelte`, DESIGN.md §5.2, ADR-0022 §1):
-//! Home, a separator, then the servers. Icons morph from circle to squircle on hover, focus and
-//! selection; the pill at the card's edge says unread (short), hover (medium) or selected (tall);
-//! the mention badge sits on the icon's corner. Tooltips name each icon at once.
+//! Home (Melli), a separator, the servers, then "Add a server". Icons morph from circle to
+//! squircle on hover, focus and selection; the pill at the card's edge says unread (short), hover
+//! (medium) or selected (tall); the mention badge sits on the icon's corner. Tooltips name each
+//! icon at once.
 
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ObjectFit,
@@ -13,13 +14,13 @@ use mellow_client_core::shared_logic::format::server_initials;
 use mellow_client_core::shared_logic::notification_settings::NotificationSettings;
 use mellow_client_core::shared_logic::notifications::{NotificationPlace, is_place_muted};
 use mellow_client_core::state::ClientState;
-use mellow_protocol::{Guild, Snowflake};
+use mellow_protocol::{ChosenStatus, Guild, Snowflake};
 
 use super::place_menus::{MenuRow, PlaceMenuTarget, is_target_muted, with_place_menu};
 use super::regions::{Region, RovingTabStop};
 use super::{DuskShell, icon_picture};
 use crate::components::{
-    MentionBadge, Tooltip, child_id, easing, focus_ring, icon, is_focus_visible,
+    Melli, MelliState, MentionBadge, Tooltip, child_id, easing, focus_ring, icon, is_focus_visible,
     remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
@@ -38,8 +39,27 @@ use crate::theme::{animation_duration, color, delay, length, theme};
 
 /// What a rail entry shows.
 enum RailMark<'a> {
-    Home,
-    Server { guild: &'a Guild, is_muted: bool },
+    /// Melli, in the state the Home button gives it (`homeMelliState`).
+    Home(MelliState),
+    Server {
+        guild: &'a Guild,
+        is_muted: bool,
+    },
+    /// "Add a server": the neutral "+", with no pill (`kind === "action"`).
+    AddServer {
+        is_menu_open: bool,
+    },
+}
+
+/// The line between Home and the servers.
+fn rail_separator(cx: &gpui::App) -> AnyElement {
+    div()
+        .flex_none()
+        .h(length(SIZE_RAIL_SEPARATOR_HEIGHT))
+        .w(length(SIZE_RAIL_SEPARATOR_WIDTH))
+        .rounded_full()
+        .bg(color(theme(cx).component_rail_separator_color))
+        .into_any_element()
 }
 
 /// "Rust Lyon, 3 mentions, unread" (DESIGN.md §7.3): the count first, the state last
@@ -83,6 +103,58 @@ pub(super) fn has_unread_server(
 }
 
 impl DuskShell {
+    /// What the Home button shows: whether a conversation is unread, its mention count, and
+    /// Melli (`homeMelliState`): connection trouble, then Do not disturb, then something for the
+    /// reader (an unread conversation, or the web's `attentionCount`: mentions in servers and in
+    /// conversations not muted).
+    fn home_rail_state(
+        &self,
+        settings: &NotificationSettings,
+        now: u64,
+        cx: &gpui::App,
+    ) -> (bool, u32, MelliState) {
+        let session = self.session.read(cx);
+        let state = session.state();
+        // A muted conversation raises nothing at Home: every message of a conversation counts.
+        let audible_conversations: Vec<Snowflake> = state
+            .direct_message_channels()
+            .iter()
+            .map(|conversation| conversation.id)
+            .filter(|channel_id| {
+                let place = NotificationPlace {
+                    guild_id: None,
+                    channel_id: *channel_id,
+                };
+                !is_place_muted(settings, place, now)
+            })
+            .collect();
+        let has_unread_conversation = audible_conversations
+            .iter()
+            .any(|channel_id| state.has_unread(*channel_id));
+        let conversations_mention_count = audible_conversations
+            .iter()
+            .map(|channel_id| state.mention_count(*channel_id))
+            .fold(0, u32::saturating_add);
+        let attention_count = state
+            .guilds()
+            .iter()
+            .map(|guild| state.guild_mention_count(guild.id))
+            .fold(conversations_mention_count, u32::saturating_add);
+        let is_do_not_disturb = state
+            .current_user()
+            .is_some_and(|user| user.status == ChosenStatus::DoNotDisturb);
+        let melli_state = MelliState::for_home(
+            session.status(),
+            is_do_not_disturb,
+            has_unread_conversation || attention_count > 0,
+        );
+        (
+            has_unread_conversation,
+            conversations_mention_count,
+            melli_state,
+        )
+    }
+
     pub(super) fn render_server_rail(
         &mut self,
         window: &mut Window,
@@ -94,26 +166,8 @@ impl DuskShell {
         let is_home_selected = self.navigation.place().is_some() && selected_guild_id.is_none();
         let settings = self.notification_settings(cx);
         let now = now_unix_milliseconds();
-        // A muted conversation raises nothing at Home: every message of a conversation counts.
-        let audible_conversations: Vec<Snowflake> = state
-            .direct_message_channels()
-            .iter()
-            .map(|conversation| conversation.id)
-            .filter(|channel_id| {
-                let place = NotificationPlace {
-                    guild_id: None,
-                    channel_id: *channel_id,
-                };
-                !is_place_muted(&settings, place, now)
-            })
-            .collect();
-        let has_unread_conversation = audible_conversations
-            .iter()
-            .any(|channel_id| state.has_unread(*channel_id));
-        let conversations_mention_count = audible_conversations
-            .iter()
-            .map(|channel_id| state.mention_count(*channel_id))
-            .fold(0, u32::saturating_add);
+        let (has_unread_conversation, conversations_mention_count, home_melli_state) =
+            self.home_rail_state(&settings, now, cx);
         let servers: Vec<(Guild, bool, u32)> = state
             .guilds()
             .iter()
@@ -128,9 +182,9 @@ impl DuskShell {
 
         let has_selected_row = self.navigation.place().is_some();
         let mut tab_stop = self.regions.rail.tab_stop_chooser(has_selected_row, window);
-        let mut items: Vec<AnyElement> = Vec::with_capacity(servers.len() + 2);
+        let mut items: Vec<AnyElement> = Vec::with_capacity(servers.len() + 3);
         items.push(Self::rail_item(
-            &RailMark::Home,
+            &RailMark::Home(home_melli_state),
             &strings.rail().direct_messages().into(),
             is_home_selected,
             has_unread_conversation,
@@ -139,15 +193,7 @@ impl DuskShell {
             window,
             cx,
         ));
-        items.push(
-            div()
-                .flex_none()
-                .h(length(SIZE_RAIL_SEPARATOR_HEIGHT))
-                .w(length(SIZE_RAIL_SEPARATOR_WIDTH))
-                .rounded_full()
-                .bg(color(theme(cx).component_rail_separator_color))
-                .into_any_element(),
-        );
+        items.push(rail_separator(cx));
         for (guild, has_unread, mention_count) in servers {
             let is_selected = selected_guild_id == Some(guild.id);
             let name = SharedString::from(guild.name.clone());
@@ -167,6 +213,19 @@ impl DuskShell {
                 cx,
             ));
         }
+        let add_index = items.len();
+        items.push(Self::rail_item(
+            &RailMark::AddServer {
+                is_menu_open: self.is_add_server_menu_open(),
+            },
+            &strings.rail().add_server().into(),
+            false,
+            false,
+            0,
+            (&mut tab_stop, add_index),
+            window,
+            cx,
+        ));
         self.regions.rail.keep_rows(tab_stop, cx);
 
         div()
@@ -205,12 +264,17 @@ impl DuskShell {
         let tokens = theme(cx);
         let strings = strings(cx);
         let (guild_id, is_muted) = match mark {
-            RailMark::Home => (None, false),
+            RailMark::Home(_) | RailMark::AddServer { .. } => (None, false),
             RailMark::Server { guild, is_muted } => (Some(guild.id), *is_muted),
         };
-        let id = match guild_id {
-            Some(guild_id) => ElementId::from(("rail-server", guild_id.raw())),
-            None => ElementId::from("rail-home"),
+        let (is_add_server, is_menu_open) = match mark {
+            RailMark::AddServer { is_menu_open } => (true, *is_menu_open),
+            RailMark::Home(_) | RailMark::Server { .. } => (false, false),
+        };
+        let id = match (guild_id, is_add_server) {
+            (Some(guild_id), _) => ElementId::from(("rail-server", guild_id.raw())),
+            (None, true) => ElementId::from("rail-add-server"),
+            (None, false) => ElementId::from("rail-home"),
         };
         let focus_handle = tab_stop.row(
             &id,
@@ -220,7 +284,7 @@ impl DuskShell {
         );
         let hover = remembered_hover(&id, window, cx);
         let is_ring_shown = is_focus_visible(&focus_handle, window);
-        let is_active = is_selected || *hover.read(cx) || is_ring_shown;
+        let is_active = is_selected || is_menu_open || *hover.read(cx) || is_ring_shown;
         // Three curves (ADR-0022 §3): the squircle settles, the pill moves on `standard`.
         let radius = transition(
             child_id(&id, "radius"),
@@ -236,7 +300,9 @@ impl DuskShell {
         );
         let pill_height = transition(
             child_id(&id, "pill"),
-            if is_selected {
+            if is_add_server {
+                0.0
+            } else if is_selected {
                 COMPONENT_RAIL_PILL_HEIGHT_SELECTED
             } else if is_active {
                 COMPONENT_RAIL_PILL_HEIGHT_HOVER
@@ -250,24 +316,44 @@ impl DuskShell {
             window,
             cx,
         );
+        // Melli sits on the bare strip at rest; hover, focus and selection fill its button apricot
+        // and switch its marks to ink (DESIGN.md §2.10). A selected server without artwork takes
+        // the selected wash (DESIGN.md §5.2).
         let (fill, ink) = match (mark, is_active) {
-            (RailMark::Home, true) => (tokens.color_accent_fill, tokens.color_text_on_accent),
-            (RailMark::Home | RailMark::Server { .. }, false) => (
+            (RailMark::Home(_), true) => (tokens.color_accent_fill, tokens.color_text_on_accent),
+            (RailMark::Home(_), false) => (0, tokens.component_rail_icon_text_rest),
+            (RailMark::Server { .. }, false) => (
                 tokens.component_rail_icon_background_rest,
                 tokens.component_rail_icon_text_rest,
             ),
-            (RailMark::Server { .. }, true) => (
-                tokens.component_rail_icon_background_active,
+            (RailMark::Server { guild, .. }, true) => (
+                if is_selected && guild.icon.is_none() {
+                    tokens.color_state_selected
+                } else {
+                    tokens.component_rail_icon_background_active
+                },
                 tokens.component_rail_icon_text_active,
+            ),
+            (RailMark::AddServer { .. }, false) => (
+                tokens.component_rail_icon_background_rest,
+                tokens.component_rail_add_icon,
+            ),
+            (RailMark::AddServer { .. }, true) => (
+                tokens.component_rail_add_background_hover,
+                tokens.component_rail_add_icon_hover,
             ),
         };
         let content: AnyElement = match mark {
-            RailMark::Home => icon(
-                IconName::ChatCircle,
-                COMPONENT_RAIL_ITEM_SIZE / 2.0,
-                color(ink),
+            RailMark::Home(melli_state) => Melli::new(
+                child_id(&id, "melli"),
+                *melli_state,
+                COMPONENT_RAIL_ITEM_SIZE,
             )
+            .marks_on_accent(is_active)
             .into_any_element(),
+            RailMark::AddServer { .. } => {
+                icon(IconName::Plus, COMPONENT_RAIL_ITEM_SIZE / 2.0, color(ink)).into_any_element()
+            }
             RailMark::Server { guild, .. } => match guild.icon {
                 Some(picture) => img(icon_picture(picture, COMPONENT_RAIL_ITEM_SIZE, window))
                     .size_full()
@@ -342,8 +428,18 @@ impl DuskShell {
                     cx.notify();
                 });
             })
+            .when(is_add_server, |button| {
+                button.aria_expanded(is_menu_open).on_mouse_down(
+                    gpui::MouseButton::Left,
+                    cx.listener(|shell, _, _, _| shell.note_add_server_press()),
+                )
+            })
             .on_click(cx.listener(move |shell, _, window, cx| {
-                shell.open_place(guild_id, None, window, cx);
+                if is_add_server {
+                    shell.toggle_add_server_menu(child_index, window, cx);
+                } else {
+                    shell.open_place(guild_id, None, window, cx);
+                }
             }))
             // The button clips its picture; the ring sits around it, outside the clip.
             .child(

@@ -8,11 +8,13 @@
 //! Mutes and "Notify me about" are stored per account in the preferences, the web's shape, so the
 //! notifier, the Dock badge and the rows follow them.
 //!
-//! shortcut: the actions whose screens the desktop has not yet (invite people, category settings,
-//! create, move, rename and delete channels and categories: M3 step 6; joining voice: step 7) are
-//! left out of the menus, through facts that say the reader cannot; voice rows have no menu until
-//! voice comes. Add each with its screen. Server and channel settings show once the desktop has a
-//! page the reader may open (`settings::server`, `settings::channel`).
+//! The server's header in the channel list opens the same menu as its icon, in its header form
+//! (create a channel or a category, no copy). Inviting, creating, moving, renaming and deleting
+//! open the dialogs of `server_dialogs`.
+//!
+//! shortcut: joining voice from a voice row's menu is not here yet (voice rows have no menu).
+//! Server and channel settings show once the desktop has a page the reader may open
+//! (`settings::server`, `settings::channel`).
 
 use std::cell::Cell;
 use std::rc::Rc;
@@ -22,6 +24,8 @@ use gpui::{
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, Pixels,
     SharedString, Stateful, Subscription, WeakEntity, Window, div,
 };
+use mellow_client_core::shared_logic::channel_order::Step;
+use mellow_client_core::shared_logic::channel_settings::can_manage_channel;
 use mellow_client_core::shared_logic::context_menus_places::{
     CategoryMenuAction, CategoryMenuFacts, ChannelMenuAction, ChannelMenuFacts,
     ChatHeaderMenuAction, ChatHeaderMenuFacts, MenuLine, NotificationMenuAction, ServerMenuAction,
@@ -46,6 +50,7 @@ use crate::notifier::notification_settings_of;
 use crate::preferences::change_preferences;
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
+use crate::theme::tokens::COMPONENT_SIDEBAR_HEADER_MENU_MARGIN;
 
 /// Go to's shortcut, for screen readers (`aria-keyshortcuts`).
 const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
@@ -58,6 +63,8 @@ const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum PlaceMenuTarget {
     Server(Snowflake),
+    /// The open server's header in the channel list.
+    ServerHeader(Snowflake),
     Channel(Snowflake),
     Category(Snowflake),
     ChatHeader,
@@ -76,6 +83,12 @@ pub(super) struct PlaceMenus {
     leave_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// "Server ID copied", "#general unmuted.": read out, never shown.
     announcement: SharedString,
+    /// Where the server header is drawn, for its menu to open under it.
+    pub(super) server_header_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
+    /// Whether the header's menu was open when it was pressed (see the chat header's).
+    was_server_header_menu_open_at_press: Option<bool>,
+    /// The chat header's width last frame: "Go to…" folds into a compass below a threshold.
+    pub(super) chat_header_width: Rc<Cell<f32>>,
 }
 
 /// The target's own mute (`isTargetMuted`): a channel of a muted server is not "muted" itself.
@@ -239,7 +252,9 @@ impl DuskShell {
     fn has_place(&self, target: PlaceMenuTarget, cx: &gpui::App) -> bool {
         let state = self.state(cx);
         match target {
-            PlaceMenuTarget::Server(guild_id) => state.guild(guild_id).is_some(),
+            PlaceMenuTarget::Server(guild_id) | PlaceMenuTarget::ServerHeader(guild_id) => {
+                state.guild(guild_id).is_some()
+            }
             PlaceMenuTarget::Channel(channel_id) | PlaceMenuTarget::Category(channel_id) => {
                 state.my_channel_permissions(channel_id).is_some()
             }
@@ -248,23 +263,29 @@ impl DuskShell {
     }
 
     /// The menu's accessible name and items.
-    fn place_menu_entries(
+    pub(super) fn place_menu_entries(
         &self,
         target: PlaceMenuTarget,
         cx: &mut Context<Self>,
     ) -> Option<(String, Vec<MenuEntry>)> {
         match target {
-            PlaceMenuTarget::Server(guild_id) => self.server_menu_entries(guild_id, cx),
+            PlaceMenuTarget::Server(guild_id) => {
+                self.server_menu_entries(guild_id, ServerMenuPlace::Strip, cx)
+            }
+            PlaceMenuTarget::ServerHeader(guild_id) => {
+                self.server_menu_entries(guild_id, ServerMenuPlace::Header, cx)
+            }
             PlaceMenuTarget::Channel(channel_id) => self.channel_menu_entries(channel_id, cx),
             PlaceMenuTarget::Category(category_id) => self.category_menu_entries(category_id, cx),
             PlaceMenuTarget::ChatHeader => self.chat_header_menu_entries(cx),
         }
     }
 
-    /// A server's icon in the rail (the strip's menu).
+    /// A server's icon in the rail (the strip's menu) or the open server's header.
     fn server_menu_entries(
         &self,
         guild_id: Snowflake,
+        place: ServerMenuPlace,
         cx: &mut Context<Self>,
     ) -> Option<(String, Vec<MenuEntry>)> {
         let words = strings(cx);
@@ -275,10 +296,7 @@ impl DuskShell {
         let guild = state.guild(guild_id)?;
         let name = guild.name.clone();
         let facts = ServerMenuFacts {
-            // Their screens come with server management (see the module's shortcut).
-            can_invite_people: false,
             can_open_settings: crate::settings::server::has_server_settings_page_for_reader(guild),
-            can_create_channels: false,
             ..server_menu_facts_of(
                 guild,
                 state.current_user().map(|user| user.id),
@@ -286,48 +304,71 @@ impl DuskShell {
             )
         };
         let notification_target = NotificationTarget::Server { guild_id };
-        let items = entries(
-            server_menu_actions(facts, ServerMenuPlace::Strip),
-            |action| match action {
-                ServerMenuAction::CopyServerId => Some(entry(
+        let items = entries(server_menu_actions(facts, place), |action| match action {
+            ServerMenuAction::CopyServerId => Some(entry(
+                &shell,
+                words.context_menu().copy_server_id(),
+                IconName::Copy,
+                move |shell, _, cx| {
+                    let copied = strings(cx).context_menu().server_id_copied();
+                    shell.copy_id(guild_id, copied, cx);
+                },
+            )),
+            ServerMenuAction::LeaveServer => Some(
+                entry(
                     &shell,
-                    words.context_menu().copy_server_id(),
-                    IconName::Copy,
-                    move |shell, _, cx| {
-                        let copied = strings(cx).context_menu().server_id_copied();
-                        shell.copy_id(guild_id, copied, cx);
+                    words.sidebar().leave_server(),
+                    IconName::SignOut,
+                    move |shell, window, cx| {
+                        shell.confirm_leave_server(guild_id, window, cx);
                     },
-                )),
-                ServerMenuAction::LeaveServer => Some(
-                    entry(
-                        &shell,
-                        words.sidebar().leave_server(),
-                        IconName::SignOut,
-                        move |shell, window, cx| {
-                            shell.confirm_leave_server(guild_id, window, cx);
-                        },
-                    )
-                    .tone(MenuItemTone::Danger),
-                ),
-                ServerMenuAction::Notification(action) => Some(notification_item(
+                )
+                .tone(MenuItemTone::Danger),
+            ),
+            ServerMenuAction::Notification(action) => Some(notification_item(
+                &shell,
+                action,
+                notification_target,
+                name.clone(),
+                words,
+            )),
+            ServerMenuAction::ServerSettings => Some(entry(
+                &shell,
+                words.sidebar().server_settings(),
+                IconName::GearSix,
+                move |shell, window, cx| shell.open_server_settings(guild_id, None, window, cx),
+            )),
+            ServerMenuAction::InvitePeople => Some(
+                entry(
                     &shell,
-                    action,
-                    notification_target,
-                    name.clone(),
-                    words,
-                )),
-                ServerMenuAction::ServerSettings => Some(entry(
-                    &shell,
-                    words.sidebar().server_settings(),
-                    IconName::GearSix,
-                    move |shell, window, cx| shell.open_server_settings(guild_id, None, window, cx),
-                )),
-                ServerMenuAction::InvitePeople
-                | ServerMenuAction::CreateChannel
-                | ServerMenuAction::CreateCategory => None,
-            },
-        );
-        Some((words.context_menu().actions_for(&guild.name), items))
+                    words.sidebar().invite_people(),
+                    IconName::UserPlus,
+                    move |shell, window, cx| shell.open_invite_people(guild_id, window, cx),
+                )
+                .tone(MenuItemTone::Accent),
+            ),
+            ServerMenuAction::CreateChannel => Some(entry(
+                &shell,
+                words.sidebar().create_channel(),
+                IconName::PlusCircle,
+                move |shell, window, cx| {
+                    shell.open_create_channel(guild_id, None, ChannelKind::Text, window, cx);
+                },
+            )),
+            ServerMenuAction::CreateCategory => Some(entry(
+                &shell,
+                words.sidebar().create_category(),
+                IconName::List,
+                move |shell, window, cx| {
+                    shell.open_create_channel(guild_id, None, ChannelKind::Category, window, cx);
+                },
+            )),
+        });
+        let label = match place {
+            ServerMenuPlace::Header => words.sidebar().server_menu().to_owned(),
+            ServerMenuPlace::Strip => words.context_menu().actions_for(&guild.name),
+        };
+        Some((label, items))
     }
 
     /// A text channel's row.
@@ -353,15 +394,18 @@ impl DuskShell {
         }
         let guild_id = guild.id;
         let shown_name = format!("#{}", channel.name);
+        let can_manage = can_manage_channel(state.my_channel_permissions(channel_id));
         let facts = ChannelMenuFacts {
             can_edit_channel: crate::settings::channel::has_channel_settings_page_for_reader(
                 state, channel_id,
             ),
             is_muted: is_target_muted(&settings, channel_id, now),
-            can_move_up: false,
-            can_move_down: false,
-            can_move_to_category: false,
-            can_delete: false,
+            can_move_up: self.can_move_channel(guild_id, channel_id, Step::Up, cx),
+            can_move_down: self.can_move_channel(guild_id, channel_id, Step::Down, cx),
+            can_move_to_category: self.can_reorder_now(guild_id, cx)
+                && can_manage
+                && self.has_categories(guild_id, cx),
+            can_delete: can_manage,
             voice: None,
         };
         let notification_target = NotificationTarget::Channel {
@@ -391,12 +435,36 @@ impl DuskShell {
                 IconName::GearSix,
                 move |shell, window, cx| shell.open_channel_settings(channel_id, window, cx),
             )),
-            ChannelMenuAction::JoinVoice
-            | ChannelMenuAction::LeaveVoice
-            | ChannelMenuAction::MoveUp
-            | ChannelMenuAction::MoveDown
-            | ChannelMenuAction::MoveToCategory
-            | ChannelMenuAction::DeleteChannel => None,
+            ChannelMenuAction::MoveUp | ChannelMenuAction::MoveDown => {
+                let (label, icon, step) = if action == ChannelMenuAction::MoveUp {
+                    (words.context_menu().move_up(), IconName::CaretUp, Step::Up)
+                } else {
+                    (
+                        words.context_menu().move_down(),
+                        IconName::CaretDown,
+                        Step::Down,
+                    )
+                };
+                Some(entry(&shell, label, icon, move |shell, _, cx| {
+                    shell.move_channel_step(channel_id, step, cx);
+                }))
+            }
+            ChannelMenuAction::MoveToCategory => Some(entry(
+                &shell,
+                words.context_menu().move_to_category(),
+                IconName::List,
+                move |shell, window, cx| shell.open_move_to_category(channel_id, window, cx),
+            )),
+            ChannelMenuAction::DeleteChannel => Some(
+                entry(
+                    &shell,
+                    words.channel_removal().delete_channel(),
+                    IconName::Trash,
+                    move |shell, window, cx| shell.confirm_delete_channel(channel_id, window, cx),
+                )
+                .tone(MenuItemTone::Danger),
+            ),
+            ChannelMenuAction::JoinVoice | ChannelMenuAction::LeaveVoice => None,
         });
         Some((words.context_menu().actions_for(&shown_name), items))
     }
@@ -411,11 +479,11 @@ impl DuskShell {
         let shell = cx.entity().downgrade();
         let state = self.state(cx);
         let category = state.guild_channel(category_id)?;
+        let guild_id = category.guild_id;
         let facts = CategoryMenuFacts {
-            // Renaming, moving and deleting come with server management.
-            can_manage: false,
-            can_move_up: false,
-            can_move_down: false,
+            can_manage: can_manage_channel(state.my_channel_permissions(category_id)),
+            can_move_up: self.can_move_category(guild_id, category_id, Step::Up, cx),
+            can_move_down: self.can_move_category(guild_id, category_id, Step::Down, cx),
         };
         let items = entries(category_menu_actions(facts), |action| match action {
             CategoryMenuAction::CopyCategoryId => Some(entry(
@@ -427,10 +495,35 @@ impl DuskShell {
                     shell.copy_id(category_id, copied, cx);
                 },
             )),
-            CategoryMenuAction::RenameCategory
-            | CategoryMenuAction::MoveUp
-            | CategoryMenuAction::MoveDown
-            | CategoryMenuAction::DeleteCategory => None,
+            CategoryMenuAction::RenameCategory => Some(entry(
+                &shell,
+                words.channel_removal().rename_category(),
+                IconName::PencilSimple,
+                move |shell, window, cx| shell.open_rename_category(category_id, window, cx),
+            )),
+            CategoryMenuAction::MoveUp | CategoryMenuAction::MoveDown => {
+                let (label, icon, step) = if action == CategoryMenuAction::MoveUp {
+                    (words.context_menu().move_up(), IconName::CaretUp, Step::Up)
+                } else {
+                    (
+                        words.context_menu().move_down(),
+                        IconName::CaretDown,
+                        Step::Down,
+                    )
+                };
+                Some(entry(&shell, label, icon, move |shell, _, cx| {
+                    shell.move_category_step(category_id, step, cx);
+                }))
+            }
+            CategoryMenuAction::DeleteCategory => Some(
+                entry(
+                    &shell,
+                    words.channel_removal().delete_category(),
+                    IconName::Trash,
+                    move |shell, window, cx| shell.confirm_delete_channel(category_id, window, cx),
+                )
+                .tone(MenuItemTone::Danger),
+            ),
         });
         Some((words.context_menu().actions_for(&category.name), items))
     }
@@ -532,6 +625,62 @@ impl DuskShell {
 
     pub(super) fn note_more_options_press(&mut self) {
         self.place_menus.was_chat_header_menu_open_at_press = Some(self.is_chat_header_menu_open());
+    }
+
+    /// The server header's menu, under it, inset by the menu margin; pressed again, it closes.
+    pub(super) fn toggle_server_header_menu(
+        &mut self,
+        guild_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let was_open = self
+            .place_menus
+            .was_server_header_menu_open_at_press
+            .take()
+            .unwrap_or_else(|| self.is_server_header_menu_open());
+        if was_open {
+            self.place_menus.menu = None;
+            cx.notify();
+            return;
+        }
+        let Some(bounds) = self.place_menus.server_header_bounds.get() else {
+            return;
+        };
+        let origin = MenuOrigin::Anchor {
+            bounds: MenuAnchor {
+                top: f32::from(bounds.top()),
+                bottom: f32::from(bounds.bottom()) + COMPONENT_SIDEBAR_HEADER_MENU_MARGIN,
+                left: f32::from(bounds.left()) + COMPONENT_SIDEBAR_HEADER_MENU_MARGIN,
+                right: f32::from(bounds.right()) - COMPONENT_SIDEBAR_HEADER_MENU_MARGIN,
+            },
+            alignment: MenuAlignment::Stretch,
+        };
+        self.open_place_menu(
+            PlaceMenuTarget::ServerHeader(guild_id),
+            origin,
+            None,
+            window,
+            cx,
+        );
+    }
+
+    pub(super) fn is_server_header_menu_open(&self) -> bool {
+        matches!(
+            self.place_menus.menu,
+            Some((_, _, PlaceMenuTarget::ServerHeader(_)))
+        )
+    }
+
+    pub(super) fn note_server_header_press(&mut self) {
+        self.place_menus.was_server_header_menu_open_at_press =
+            Some(self.is_server_header_menu_open());
+    }
+
+    /// Reads `sentence` out ("#general moved up."), never shown.
+    pub(super) fn announce(&mut self, sentence: String, cx: &mut Context<Self>) {
+        self.place_menus.announcement = sentence.into();
+        cx.notify();
     }
 
     fn copy_id(&mut self, id: Snowflake, copied: &'static str, cx: &mut Context<Self>) {

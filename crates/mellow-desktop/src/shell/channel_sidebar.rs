@@ -10,6 +10,9 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::call_view::{LiveBadge, Watcher, live_badge_of};
 use mellow_client_core::shared_logic::channel_order::channel_sections;
+use mellow_client_core::shared_logic::context_menus_places::{
+    ServerMenuPlace, server_menu_actions, server_menu_facts_of,
+};
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
@@ -20,28 +23,32 @@ use super::regions::{Region, RovingTabStop};
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, icon,
-    inset_focus_ring, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, child_id,
+    focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
+    remembered_hover, with_type,
 };
 use crate::home::{conversation_display_name, shown_presence};
 use crate::i18n::strings;
 use crate::session::now_unix_milliseconds;
+use crate::settings::channel::has_channel_settings_page_for_reader;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_CATEGORY_ADD_ICON_SIZE, COMPONENT_CATEGORY_CHEVRON_SIZE, COMPONENT_CATEGORY_HEIGHT,
-    COMPONENT_CATEGORY_MARGIN_TOP, COMPONENT_CATEGORY_PADDING_INLINE, COMPONENT_CHANNEL_ROW_GAP,
-    COMPONENT_CHANNEL_ROW_HEIGHT, COMPONENT_CHANNEL_ROW_ICON_GAP, COMPONENT_CHANNEL_ROW_ICON_SIZE,
+    COMPONENT_CATEGORY_MARGIN_TOP, COMPONENT_CHANNEL_ROW_GAP, COMPONENT_CHANNEL_ROW_HEIGHT,
+    COMPONENT_CHANNEL_ROW_ICON_GAP, COMPONENT_CHANNEL_ROW_ICON_SIZE,
     COMPONENT_CHANNEL_ROW_MARGIN_INLINE, COMPONENT_CHANNEL_ROW_MUTED_ICON_SIZE,
     COMPONENT_CHANNEL_ROW_PADDING_INLINE, COMPONENT_CHANNEL_ROW_RADIUS,
+    COMPONENT_CHANNEL_ROW_SETTINGS_BUTTON_SIZE, COMPONENT_CHANNEL_ROW_SETTINGS_ICON_SIZE,
     COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT, COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET,
-    COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH, COMPONENT_MEMBER_ROW_AVATAR_SIZE,
-    COMPONENT_MEMBER_ROW_HEIGHT, COMPONENT_NAVIGATOR_RADIUS, COMPONENT_NAVIGATOR_STRIP_WIDTH,
-    COMPONENT_SIDEBAR_HEADER_HEIGHT, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE,
-    COMPONENT_VOICE_PARTICIPANT_GAP, COMPONENT_VOICE_PARTICIPANT_INDENT,
-    COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP,
-    COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH, COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
-    SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME,
-    TYPE_HEADING_MD,
+    COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH, COMPONENT_CONVERSATION_ROW_AVATAR_GAP,
+    COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MEMBER_ROW_GAP, COMPONENT_MEMBER_ROW_HEIGHT,
+    COMPONENT_NAVIGATOR_RADIUS, COMPONENT_NAVIGATOR_STRIP_WIDTH,
+    COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE, COMPONENT_SIDEBAR_HEADER_HEIGHT,
+    COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, COMPONENT_VOICE_PARTICIPANT_GAP,
+    COMPONENT_VOICE_PARTICIPANT_INDENT, COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT,
+    COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP, COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH,
+    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY,
+    TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -72,6 +79,13 @@ struct SidebarRow {
     menu: Option<PlaceMenuTarget>,
     /// A voice channel's row: pressing it joins, never opens.
     voice: Option<VoiceRowLook>,
+    /// Space above the row: the rows' gap, more before a list's first row.
+    top_margin: f32,
+    /// From the leading icon or avatar to the name.
+    icon_gap: f32,
+    /// The channel whose settings the trailing gear opens ("Edit channel"): shown on the
+    /// selected row and on hover or focus.
+    gear: Option<Snowflake>,
 }
 
 /// What a voice channel's row adds (`voiceChannelRow` in `ChannelSidebar.svelte`).
@@ -157,6 +171,7 @@ impl DuskShell {
             ),
         };
         let is_home = guild.is_none();
+        let guild_id = guild.as_ref().map(|guild| guild.id);
         let has_selected_row = self.navigation.selected_channel_id().is_some()
             || (guild.is_none() && self.navigation.place().is_some());
         let mut tab_stop = self
@@ -169,6 +184,41 @@ impl DuskShell {
         };
         let entity = cx.entity();
         self.regions.channel_list.keep_rows(tab_stop, cx);
+        let server_menu_guild_id =
+            guild_id.filter(|guild_id| self.has_server_header_menu(*guild_id, cx));
+        let header: AnyElement = match server_menu_guild_id {
+            Some(guild_id) => self
+                .server_header_button(guild_id, heading.clone(), window, cx)
+                .into_any_element(),
+            None => with_type(div(), TYPE_HEADING_MD)
+                .id("sidebar-heading")
+                .role(Role::Heading)
+                .aria_level(2)
+                .size_full()
+                .pl(length(SPACE_XS))
+                .flex()
+                .items_center()
+                .gap(length(SPACE_2XS))
+                .text_color(color(tokens.component_sidebar_header_text))
+                .child(div().flex_1().min_w_0().truncate().child(heading))
+                // Home: Discord's "+" beside "Direct messages" starts a conversation or a
+                // group (ADR-0026).
+                .when(is_home, |header| {
+                    header.child(
+                        IconButton::new(
+                            "new-message",
+                            IconName::Plus,
+                            strings.groups().new_message(),
+                        )
+                        .sizes(COMPONENT_CATEGORY_HEIGHT, COMPONENT_CATEGORY_ADD_ICON_SIZE)
+                        .on_click(move |window, cx| {
+                            entity.update(cx, |shell, cx| shell.open_new_message(window, cx));
+                        }),
+                    )
+                })
+                .into_any_element(),
+        };
+        let reorder_error = self.render_reorder_error(cx);
 
         div()
             .debug_selector(|| "channel-column".to_owned())
@@ -178,36 +228,14 @@ impl DuskShell {
             .flex()
             .flex_col()
             .child(
-                with_type(div(), TYPE_HEADING_MD)
-                    .id("sidebar-heading")
-                    .role(Role::Heading)
-                    .aria_level(2)
+                div()
                     .flex_none()
                     .h(length(COMPONENT_SIDEBAR_HEADER_HEIGHT))
                     .mt(length(SPACE_XS))
                     .mr(length(SPACE_XS))
-                    .px(length(SPACE_XS))
-                    .flex()
-                    .items_center()
-                    .gap(length(SPACE_2XS))
-                    .text_color(color(tokens.component_sidebar_header_text))
-                    .child(div().flex_1().min_w_0().truncate().child(heading))
-                    // Home: Discord's "+" beside "Direct messages" starts a conversation or a
-                    // group (ADR-0026).
-                    .when(is_home, |header| {
-                        header.child(
-                            IconButton::new(
-                                "new-message",
-                                IconName::Plus,
-                                strings.groups().new_message(),
-                            )
-                            .sizes(COMPONENT_CATEGORY_HEIGHT, COMPONENT_CATEGORY_ADD_ICON_SIZE)
-                            .on_click(move |window, cx| {
-                                entity.update(cx, |shell, cx| shell.open_new_message(window, cx));
-                            }),
-                        )
-                    }),
+                    .child(header),
             )
+            .children(reorder_error)
             .child(
                 // The negative margin lets the unread pills sit in the strip's margin, unclipped.
                 div()
@@ -229,6 +257,111 @@ impl DuskShell {
             )
     }
 
+    /// Whether the open server's header opens a menu: it offers the reader something.
+    fn has_server_header_menu(&self, guild_id: Snowflake, cx: &gpui::App) -> bool {
+        let state = self.state(cx);
+        state.guild(guild_id).is_some_and(|guild| {
+            !server_menu_actions(
+                server_menu_facts_of(guild, state.current_user().map(|user| user.id), false),
+                ServerMenuPlace::Header,
+            )
+            .is_empty()
+        })
+    }
+
+    /// The server's name as the button of its menu (`ChannelSidebar.svelte`'s header): a caret
+    /// that becomes a close while the menu is open, and the hover wash.
+    fn server_header_button(
+        &mut self,
+        guild_id: Snowflake,
+        name: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
+        let tokens = theme(cx);
+        let strings = strings(cx);
+        let id = ElementId::from("server-header");
+        let focus_handle = remembered_focus_handle(&id, window, cx);
+        let hover = remembered_hover(&id, window, cx);
+        let is_open = self.is_server_header_menu_open();
+        let is_washed = is_open || *hover.read(cx);
+        let is_ring_shown = is_focus_visible(&focus_handle, window);
+        let bounds = self.place_menus.server_header_bounds.clone();
+        let presser = cx.entity().downgrade();
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(SharedString::from(format!(
+                "{name}, {}",
+                strings.sidebar().server_menu()
+            )))
+            .aria_expanded(is_open)
+            .track_focus(&focus_handle)
+            .relative()
+            .size_full()
+            .px(length(SPACE_XS))
+            .flex()
+            .items_center()
+            .gap(length(SPACE_XS))
+            .rounded(length(crate::theme::tokens::RADIUS_SM))
+            .when(is_washed, |button| {
+                button.bg(color(tokens.component_sidebar_header_background_hover))
+            })
+            .text_color(color(tokens.component_sidebar_header_text))
+            .cursor_pointer()
+            .on_hover(move |is_hovered, _, cx| {
+                hover.update(cx, |remembered, cx| {
+                    *remembered = *is_hovered;
+                    cx.notify();
+                });
+            })
+            .on_mouse_down(gpui::MouseButton::Left, move |_, _, cx| {
+                let _ = presser.update(cx, |shell, _| shell.note_server_header_press());
+            })
+            .on_click(cx.listener(move |shell, _, window, cx| {
+                shell.toggle_server_header_menu(guild_id, window, cx);
+            }))
+            .on_key_down(cx.listener(move |shell, event: &KeyDownEvent, window, cx| {
+                if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                    cx.stop_propagation();
+                    shell.toggle_server_header_menu(guild_id, window, cx);
+                }
+            }))
+            .child(
+                with_type(div(), TYPE_HEADING_MD)
+                    .id("sidebar-heading")
+                    .role(Role::Heading)
+                    .aria_level(2)
+                    .flex_1()
+                    .min_w_0()
+                    .truncate()
+                    .child(name),
+            )
+            .child(icon(
+                if is_open {
+                    IconName::X
+                } else {
+                    IconName::CaretDown
+                },
+                COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE,
+                color(tokens.color_text_secondary),
+            ))
+            .when(is_ring_shown, |button| {
+                button.child(focus_ring(crate::theme::tokens::RADIUS_SM, cx))
+            })
+            // Records where the header is, for its menu to open under it.
+            .child(
+                gpui::canvas(
+                    move |header_bounds, _, _| bounds.set(Some(header_bounds)),
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
+    }
+
     #[allow(clippy::too_many_lines)] // One list, in the order it is drawn.
     fn guild_rows(
         &mut self,
@@ -247,14 +380,43 @@ impl DuskShell {
                 .state()
                 .guild(guild_id)
                 .is_some_and(|guild| guild.my_permissions.contains(Permissions::MANAGE_CHANNELS));
-            // shortcut: the web's "Create a channel" button opens its dialog, which comes with
-            // server management (M3 step 6).
-            let note = if can_create_channels {
-                strings.sidebar().no_channels_yet()
-            } else {
-                strings.sidebar().no_visible_channels_yet()
-            };
-            return vec![empty_note(note, cx).into_any_element()];
+            if !can_create_channels {
+                return vec![
+                    empty_note(strings.sidebar().no_visible_channels_yet(), cx).into_any_element(),
+                ];
+            }
+            let entity = cx.entity().downgrade();
+            return vec![
+                div()
+                    .mt(length(SPACE_XS))
+                    .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
+                    .px(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
+                    .flex()
+                    .flex_col()
+                    .items_start()
+                    .gap(length(SPACE_XS))
+                    .child(
+                        with_type(div(), TYPE_BODY)
+                            .text_color(color(theme(cx).color_text_muted))
+                            .child(strings.sidebar().no_channels_yet()),
+                    )
+                    .child(
+                        Button::new("empty-create-channel", strings.sidebar().create_a_channel())
+                            .variant(ButtonVariant::Primary)
+                            .on_click(move |window, cx| {
+                                let _ = entity.update(cx, |shell, cx| {
+                                    shell.open_create_channel(
+                                        guild_id,
+                                        None,
+                                        ChannelKind::Text,
+                                        window,
+                                        cx,
+                                    );
+                                });
+                            }),
+                    )
+                    .into_any_element(),
+            ];
         }
         let selected_channel_id = self.navigation.selected_channel_id();
         let settings = self.notification_settings(cx);
@@ -266,9 +428,11 @@ impl DuskShell {
                 .as_ref()
                 .is_some_and(|category| self.collapsed_category_ids.contains(&category.id));
             if let Some(category) = &section.category {
+                let can_create_in = self.can_manage_server_channels(guild_id, cx);
                 rows.push(Self::category_row(
                     category,
                     is_collapsed,
+                    can_create_in.then_some(guild_id),
                     (tab_stop, rows.len()),
                     window,
                     cx,
@@ -357,6 +521,10 @@ impl DuskShell {
                         is_muted,
                         menu: Some(PlaceMenuTarget::Channel(channel.id)),
                         voice: None,
+                        top_margin: COMPONENT_CHANNEL_ROW_GAP,
+                        icon_gap: COMPONENT_CHANNEL_ROW_ICON_GAP,
+                        gear: has_channel_settings_page_for_reader(state, channel.id)
+                            .then_some(channel.id),
                     },
                     (tab_stop, rows.len()),
                     window,
@@ -367,9 +535,39 @@ impl DuskShell {
         rows
     }
 
+    /// "Create a channel in Talk", at the category header's trailing end.
+    fn category_add_button(
+        guild_id: Snowflake,
+        category: &Channel,
+        cx: &mut Context<Self>,
+    ) -> IconButton {
+        let category_id = category.id;
+        let entity = cx.entity().downgrade();
+        IconButton::new(
+            ElementId::from(("category-add", category_id.raw())),
+            IconName::Plus,
+            strings(cx).sidebar().create_channel_in(&category.name),
+        )
+        .sizes(COMPONENT_CATEGORY_HEIGHT, COMPONENT_CATEGORY_ADD_ICON_SIZE)
+        .on_click(move |window, cx| {
+            let _ = entity.update(cx, |shell, cx| {
+                shell.open_create_channel(
+                    guild_id,
+                    Some(category_id),
+                    ChannelKind::Text,
+                    window,
+                    cx,
+                );
+            });
+        })
+    }
+
+    /// A category's header: its button folds it; `create_in` (the server, for a manager) adds
+    /// the "+" that creates a channel inside it.
     fn category_row(
         category: &Channel,
         is_collapsed: bool,
+        create_in: Option<Snowflake>,
         (tab_stop, child_index): (&mut RovingTabStop, usize),
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -400,11 +598,19 @@ impl DuskShell {
             focus_handle.clone(),
             cx,
         );
+        let add_button =
+            create_in.map(|guild_id| Self::category_add_button(guild_id, category, cx));
+        // The caret starts at the list's edge, as the web's category button has no padding.
         div()
             .mt(length(COMPONENT_CATEGORY_MARGIN_TOP))
             .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
+            .flex()
+            .items_center()
+            .gap(length(SPACE_2XS))
             .child(
                 header
+                    .flex_1()
+                    .min_w_0()
                     .role(Role::Button)
                     .aria_label(SharedString::from(category.name.clone()))
                     .aria_expanded(!is_collapsed)
@@ -414,7 +620,6 @@ impl DuskShell {
                     .items_center()
                     .gap(length(SPACE_2XS))
                     .h(length(COMPONENT_CATEGORY_HEIGHT))
-                    .px(length(COMPONENT_CATEGORY_PADDING_INLINE))
                     .rounded(length(crate::theme::tokens::RADIUS_XS))
                     .text_color(color(ink))
                     .cursor_pointer()
@@ -449,6 +654,7 @@ impl DuskShell {
                         row.child(inset_focus_ring(crate::theme::tokens::RADIUS_XS, cx))
                     }),
             )
+            .children(add_button)
             .into_any_element()
     }
 
@@ -513,6 +719,9 @@ impl DuskShell {
                     is_here,
                     count_and_limit: limit.map(|limit| format!("{people}/{limit}")),
                 }),
+                top_margin: COMPONENT_CHANNEL_ROW_GAP,
+                icon_gap: COMPONENT_CHANNEL_ROW_ICON_GAP,
+                gear: has_channel_settings_page_for_reader(state, channel.id).then_some(channel.id),
             },
             tab_stop,
             window,
@@ -905,6 +1114,10 @@ impl DuskShell {
                 is_muted: false,
                 menu: None,
                 voice: None,
+                // The Friends row stands apart from the header, as on the web.
+                top_margin: SPACE_XS,
+                icon_gap: COMPONENT_CONVERSATION_ROW_AVATAR_GAP,
+                gear: None,
             },
             (tab_stop, 0),
             window,
@@ -1029,6 +1242,15 @@ impl DuskShell {
                     is_muted,
                     menu: None,
                     voice: None,
+                    // The list opens a step below the Friends row (`ul.mt-xs`, which the first
+                    // row's own gap collapses into).
+                    top_margin: if child_index == 1 {
+                        SPACE_XS
+                    } else {
+                        COMPONENT_MEMBER_ROW_GAP
+                    },
+                    icon_gap: COMPONENT_CONVERSATION_ROW_AVATAR_GAP,
+                    gear: None,
                 },
                 (tab_stop, child_index),
                 window,
@@ -1085,6 +1307,49 @@ impl DuskShell {
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let channel_id = row.channel_id;
         let menu_focus = focus_handle.clone();
+        // Shown on hover, on focus within the row and on the selected text row; the gear takes
+        // the badge's (or the limit's) place while it shows.
+        let item_id = child_id(&row.id, "item");
+        let gear_id = child_id(&item_id, "gear");
+        let gear_focus = remembered_focus_handle(&gear_id, window, cx);
+        let is_gear_shown = row.gear.is_some()
+            && (is_hovered
+                || focus_handle.is_focused(window)
+                || gear_focus.is_focused(window)
+                || (row.is_selected && !joins_voice));
+        let has_trailing_count = row.mention_count > 0 || count_and_limit.is_some();
+        let gear = row.gear.map(|gear_channel_id| {
+            let entity = cx.entity().downgrade();
+            div()
+                .absolute()
+                .top_0()
+                .bottom_0()
+                .right(length(SPACE_2XS))
+                .flex()
+                .items_center()
+                .when(!is_gear_shown, gpui::Styled::invisible)
+                .child(
+                    IconButton::new(
+                        gear_id,
+                        IconName::GearSix,
+                        strings(cx).sidebar().edit_channel(&row.name),
+                    )
+                    .track_focus(&gear_focus)
+                    .sizes(
+                        COMPONENT_CHANNEL_ROW_SETTINGS_BUTTON_SIZE,
+                        COMPONENT_CHANNEL_ROW_SETTINGS_ICON_SIZE,
+                    )
+                    .on_click(move |window, cx| {
+                        let _ = entity.update(cx, |shell, cx| {
+                            shell.open_channel_settings(gear_channel_id, window, cx);
+                        });
+                    }),
+                )
+        });
+        // Room for the gear, so a long name never runs under it; a badge already keeps it.
+        let gear_room = (row.gear.is_some() && !has_trailing_count).then_some(
+            COMPONENT_CHANNEL_ROW_SETTINGS_BUTTON_SIZE + COMPONENT_CHANNEL_ROW_PADDING_INLINE,
+        );
         let button = div()
             .id(row.id)
             .role(if joins_voice {
@@ -1109,9 +1374,16 @@ impl DuskShell {
             None => button,
         };
         div()
+            .id(item_id)
             .relative()
-            .mt(length(COMPONENT_CHANNEL_ROW_GAP))
+            .mt(length(row.top_margin))
             .mr(length(COMPONENT_CHANNEL_ROW_MARGIN_INLINE))
+            .on_hover(move |is_hovered, _, cx| {
+                hover.update(cx, |remembered, cx| {
+                    *remembered = *is_hovered;
+                    cx.notify();
+                });
+            })
             .when(row.has_unread, |item| {
                 item.child(
                     div()
@@ -1131,19 +1403,14 @@ impl DuskShell {
                     .relative()
                     .flex()
                     .items_center()
-                    .gap(length(COMPONENT_CHANNEL_ROW_ICON_GAP))
+                    .gap(length(row.icon_gap))
                     .h(length(row.height))
                     .px(length(COMPONENT_CHANNEL_ROW_PADDING_INLINE))
+                    .when_some(gear_room, |button, room| button.pr(length(room)))
                     .rounded(length(COMPONENT_CHANNEL_ROW_RADIUS))
                     .when_some(fill, |button, fill| button.bg(color(fill)))
                     .text_color(ink)
                     .cursor_pointer()
-                    .on_hover(move |is_hovered, _, cx| {
-                        hover.update(cx, |remembered, cx| {
-                            *remembered = *is_hovered;
-                            cx.notify();
-                        });
-                    })
                     .on_click(cx.listener(move |shell, _, window, cx| match channel_id {
                         Some(channel_id) if joins_voice => shell.join_voice(channel_id, cx),
                         Some(channel_id) => shell.open_channel(channel_id, window, cx),
@@ -1180,12 +1447,17 @@ impl DuskShell {
                         ))
                     })
                     .when(row.mention_count > 0, |button| {
-                        button.child(MentionBadge::new(row.mention_count))
+                        button.child(
+                            div()
+                                .when(is_gear_shown, gpui::Styled::invisible)
+                                .child(MentionBadge::new(row.mention_count)),
+                        )
                     })
                     .when_some(count_and_limit, |button, count_and_limit| {
                         button.child(
                             with_type(div(), TYPE_BODY_SM)
                                 .flex_none()
+                                .when(is_gear_shown, gpui::Styled::invisible)
                                 .text_color(color(tokens.component_voice_participant_limit_text))
                                 .child(count_and_limit),
                         )
@@ -1194,6 +1466,7 @@ impl DuskShell {
                         button.child(inset_focus_ring(COMPONENT_CHANNEL_ROW_RADIUS, cx))
                     }),
             )
+            .children(gear)
             .into_any_element()
     }
 }

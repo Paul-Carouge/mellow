@@ -4,16 +4,19 @@
 //! the sentence a place without one opens with.
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, canvas, div,
-    prelude::FluentBuilder as _,
+    AnyElement, AnyView, Context, InteractiveElement as _, IntoElement, MouseButton,
+    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, StyleRefinement,
+    Styled as _, Window, canvas, div, prelude::FluentBuilder as _,
 };
 
 use mellow_client_core::shared_logic::format::display_name;
 
 use super::channel_sidebar::can_send_in;
 use super::{DuskShell, ShellLayout};
-use crate::components::{IconButton, icon, with_type};
+use crate::components::{
+    IconButton, focus_ring, icon, is_focus_visible, remembered_focus_handle, remembered_hover,
+    with_type,
+};
 use crate::conversation::OpenConversation;
 use crate::home::FriendsPane;
 use crate::home::conversation_display_name;
@@ -25,10 +28,130 @@ use crate::theme::tokens::{
     COMPONENT_CHAT_HEADER_HEIGHT, COMPONENT_CHAT_HEADER_ICON_SIZE,
     COMPONENT_CHAT_HEADER_PADDING_INLINE, COMPONENT_COMPOSER_MARGIN_BOTTOM,
     COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_MIN_HEIGHT, COMPONENT_COMPOSER_RADIUS,
-    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_XS,
-    TYPE_BODY, TYPE_HEADING_MD, TYPE_HEADING_XL,
+    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_QUICK_SWITCHER_TRIGGER_ICON_SIZE,
+    COMPONENT_QUICK_SWITCHER_TRIGGER_WIDTH, COMPONENT_SEARCH_FIELD_WIDTH, COMPONENT_SHEET_RADIUS,
+    RADIUS_SM, RADIUS_XS, SIZE_CHAT_MIN_WIDTH, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY,
+    TYPE_BODY_SM, TYPE_HEADING_MD, TYPE_HEADING_XL,
 };
 use crate::theme::{color, length, theme};
+
+/// Below this header width, "Go to…" beside the search field would cut the topic: the chat's
+/// minimum width plus the trigger and the search field at rest (`QuickSwitcherTrigger.svelte`).
+const GO_TO_FOLD_WIDTH: f32 =
+    SIZE_CHAT_MIN_WIDTH + COMPONENT_QUICK_SWITCHER_TRIGGER_WIDTH + COMPONENT_SEARCH_FIELD_WIDTH;
+
+/// Whether a header `width` wide folds "Go to…"; 0 is a header not measured yet (the first frame),
+/// which shows it whole.
+fn is_narrower_than_go_to(width: f32) -> bool {
+    width > 0.0 && width < GO_TO_FOLD_WIDTH
+}
+
+/// Go to's shortcut as the trigger shows it, and for screen readers.
+const GO_TO_KEY_HINT: &str = if cfg!(target_os = "macos") {
+    "⌘ K"
+} else {
+    "Ctrl K"
+};
+const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
+    "Meta+K"
+} else {
+    "Control+K"
+};
+
+/// "Go to… Ctrl K" (`QuickSwitcherTrigger.svelte`): reads as a field, but is a button; the field
+/// itself lives in the quick switcher, so typing starts there.
+fn go_to_trigger(
+    window: &mut Window,
+    cx: &mut gpui::App,
+    on_click: impl Fn(&mut Window, &mut gpui::App) + 'static,
+) -> gpui::AnyElement {
+    let tokens = theme(cx);
+    let strings = strings(cx);
+    let id = gpui::ElementId::from("go-to");
+    let focus_handle = remembered_focus_handle(&id, window, cx);
+    let hover = remembered_hover(&id, window, cx);
+    let is_hovered = *hover.read(cx);
+    let is_ring_shown = is_focus_visible(&focus_handle, window);
+    let on_click = std::rc::Rc::new(on_click);
+    let on_key = on_click.clone();
+    with_type(div(), TYPE_BODY)
+        .id(id)
+        .role(Role::Button)
+        .aria_label(SharedString::from(strings.chat().go_to_label()))
+        .aria_keyshortcuts(GO_TO_KEY_SHORTCUTS)
+        .track_focus(&focus_handle)
+        .relative()
+        .flex_none()
+        .h(length(COMPONENT_CHAT_HEADER_BUTTON_SIZE))
+        .flex()
+        .items_center()
+        .gap(length(SPACE_XS))
+        .pl(length(SPACE_XS))
+        .pr(length(SPACE_2XS))
+        .rounded(length(RADIUS_SM))
+        .bg(color(tokens.color_surface_input))
+        .text_color(color(if is_hovered {
+            tokens.color_text_heading
+        } else {
+            tokens.color_text_secondary
+        }))
+        .cursor_pointer()
+        .on_hover(move |is_hovered, _, cx| {
+            hover.update(cx, |remembered, cx| {
+                *remembered = *is_hovered;
+                cx.notify();
+            });
+        })
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .on_key_down(move |event, window, cx| {
+            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
+                cx.stop_propagation();
+                on_key(window, cx);
+            }
+        })
+        .child(icon(
+            IconName::MagnifyingGlass,
+            COMPONENT_QUICK_SWITCHER_TRIGGER_ICON_SIZE,
+            color(if is_hovered {
+                tokens.component_quick_switcher_trigger_icon_hover
+            } else {
+                tokens.component_quick_switcher_trigger_icon
+            }),
+        ))
+        .child(div().mr_auto().child(strings.chat().go_to()))
+        .child(
+            with_type(div(), TYPE_BODY_SM)
+                .px(length(SPACE_2XS))
+                .rounded(length(RADIUS_XS))
+                .border_1()
+                .border_color(color(tokens.color_border_divider))
+                .text_color(color(tokens.color_text_muted))
+                .child(GO_TO_KEY_HINT),
+        )
+        .when(is_ring_shown, |trigger| {
+            trigger.child(focus_ring(RADIUS_SM, cx))
+        })
+        .into_any_element()
+}
+
+/// A pane drawn as a cached view at its slot's whole size. A cached view's root is laid out on
+/// its own, so a pane whose root grows with `flex_1` would shrink to its content: this root fills
+/// the slot and holds the pane. The pane notifying itself redraws it (and this slot) alone.
+pub(super) struct FilledSlot {
+    pane: AnyView,
+}
+
+impl FilledSlot {
+    pub(super) fn new(pane: impl Into<AnyView>) -> Self {
+        Self { pane: pane.into() }
+    }
+}
+
+impl gpui::Render for FilledSlot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().flex().flex_col().child(self.pane.clone())
+    }
+}
 
 /// What the sheet shows for the current place.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -232,10 +355,16 @@ impl DuskShell {
                 .pb(length(SPACE_XS))
                 .child(FriendsPane::tab_list(&friends_pane, window, cx))
         });
+        // Cached: the message list and the Friends space redraw when they change, not with every
+        // frame of the shell around them (Melli's frames in the rail, a hover in the channel list).
         let slot = if self.navigation.selected_channel_id().is_some() {
-            self.conversation.clone().into_any_element()
+            AnyView::from(self.conversation_slot.clone())
+                .cached(StyleRefinement::default().flex_1().min_h_0())
+                .into_any_element()
         } else if is_friends_space {
-            friends_pane.into_any_element()
+            AnyView::from(self.friends_slot.clone())
+                .cached(StyleRefinement::default().flex_1().min_h_0())
+                .into_any_element()
         } else {
             Self::conversation_slot(&subject, cx)
         };
@@ -308,9 +437,31 @@ impl DuskShell {
                 .h(length(COMPONENT_CHAT_HEADER_DIVIDER_HEIGHT))
                 .bg(color(tokens.color_border_divider))
         };
+        // The header's width last frame decides the trigger's form; crossing the threshold draws
+        // again, once.
+        let header_width = self.place_menus.chat_header_width.clone();
+        let is_go_to_folded = is_narrower_than_go_to(header_width.get());
         // No line under the header: the sheet's tone and space separate it (ADR-0022 §2).
         div()
             .debug_selector(|| "chat-header".to_owned())
+            .relative()
+            .child(
+                canvas(
+                    move |bounds, window, _| {
+                        let width = f32::from(bounds.size.width);
+                        let was_folded = is_narrower_than_go_to(header_width.get());
+                        header_width.set(width);
+                        if was_folded != is_narrower_than_go_to(width) {
+                            window.refresh();
+                        }
+                    },
+                    |_, (), _, _| {},
+                )
+                .absolute()
+                .top_0()
+                .left_0()
+                .size_full(),
+            )
             .flex_none()
             .h(length(COMPONENT_CHAT_HEADER_HEIGHT))
             .pl(length(COMPONENT_CHAT_HEADER_PADDING_INLINE))
@@ -389,19 +540,24 @@ impl DuskShell {
                 |header| header.child(div().flex_1()),
             )
             // In a narrow window Go to and the pins fold into "More options", as on phones.
+            // "Go to… Ctrl K" reads as a field beside message search; where the header is too
+            // narrow for both and the chat's minimum width, it folds into a compass.
             .when(!folds_keys, |header| {
                 let entity = entity.clone();
-                header.child(
-                    header_button(
-                        "go-to",
-                        IconName::MagnifyingGlass,
-                        strings.chat().go_to_label(),
+                let open = move |window: &mut Window, cx: &mut gpui::App| {
+                    entity.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
+                };
+                if is_go_to_folded {
+                    header.child(
+                        header_button("go-to", IconName::Compass, strings.chat().go_to_label())
+                            .key_shortcuts(GO_TO_KEY_SHORTCUTS)
+                            .on_click(open),
                     )
-                    .on_click(move |window, cx| {
-                        entity.update(cx, |shell, cx| shell.toggle_quick_switcher(window, cx));
-                    }),
-                )
+                } else {
+                    header.child(go_to_trigger(window, cx, open))
+                }
             })
+            .child(search_control)
             .when_some(
                 editable_channel_id.filter(|_| !folds_keys),
                 |header, channel_id| {
@@ -420,7 +576,6 @@ impl DuskShell {
                     )
                 },
             )
-            .child(search_control)
             .when(is_conversation_open && !folds_keys, |header| {
                 let conversation = self.conversation.clone();
                 let is_open = conversation.read(cx).is_pins_panel_open();

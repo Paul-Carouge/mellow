@@ -11,11 +11,11 @@ use std::time::Duration;
 use mellow_protocol::{
     AcknowledgeRequest, ApiErrorBody, AuditLogEntry, AuditLogQuery, Ban, ChangePasswordRequest,
     Channel, CreateBanRequest, CreateChannelRequest, CreateGuildRequest, CreateInviteRequest,
-    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild, Invite,
-    LoginRequest, Member, Message, MessageHistoryQuery, OpenDirectMessageRequest, RegisterRequest,
-    ReorderRolesRequest, Role, SendMessageRequest, SessionCreated, SetPermissionOverwriteRequest,
-    Snowflake, TwoFactorChallenge, UpdateChannelRequest, UpdateCurrentUserRequest,
-    UpdateRoleRequest,
+    CreateRoleRequest, CurrentUser, DirectMessageChannel, EditMessageRequest, Guild,
+    InitialCategory, Invite, LoginRequest, Member, Message, MessageHistoryQuery,
+    OpenDirectMessageRequest, RegisterRequest, ReorderRolesRequest, Role, SendMessageRequest,
+    SessionCreated, SetPermissionOverwriteRequest, Snowflake, TwoFactorChallenge,
+    UpdateChannelRequest, UpdateCurrentUserRequest, UpdateRoleRequest,
 };
 use reqwest::{Method, RequestBuilder, StatusCode};
 use serde::Serialize;
@@ -325,11 +325,25 @@ impl RestClient {
     /// # Errors
     /// Network or API errors.
     pub async fn create_guild(&self, name: &str) -> Result<Guild, ClientError> {
+        self.create_guild_with_categories(name, None).await
+    }
+
+    /// A server starting with `initial_categories` (a template in the reader's language);
+    /// `None` lets the instance give it one category holding `general`.
+    ///
+    /// # Errors
+    /// Network or API errors; `MissingPermissions` when the instance keeps server creation to
+    /// its administrators.
+    pub async fn create_guild_with_categories(
+        &self,
+        name: &str,
+        initial_categories: Option<Vec<InitialCategory>>,
+    ) -> Result<Guild, ClientError> {
         self.post_json(
             "api/v1/guilds",
             &CreateGuildRequest {
                 name: name.to_owned(),
-                initial_categories: None,
+                initial_categories,
             },
             true,
         )

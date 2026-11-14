@@ -708,11 +708,16 @@ impl PeoplePicker {
                                     .min_w(length(COMPONENT_PEOPLE_PICKER_SEARCH_MIN_WIDTH))
                                     .h(length(COMPONENT_PEOPLE_PICKER_CHIP_HEIGHT))
                                     .text_color(color(tokens.component_text_field_text))
-                                    .child(Input::new(&self.search).appearance(false).aria_label(
-                                        SharedString::from(format!(
-                                            "{}, {room_sentence}",
-                                            words.search()
-                                        )),
+                                    // On the input itself: gpui-component sets its own 14 px
+                                    // otherwise.
+                                    .child(with_type(
+                                        Input::new(&self.search).appearance(false).aria_label(
+                                            SharedString::from(format!(
+                                                "{}, {room_sentence}",
+                                                words.search()
+                                            )),
+                                        ),
+                                        TYPE_BODY_LG,
                                     )),
                             )
                             .when(is_search_focused, |field| {

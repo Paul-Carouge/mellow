@@ -310,17 +310,24 @@ impl DuskShell {
                                     }
                                 })
                                 .child(bounds_recorder(row_bounds))
-                                .child(
-                                    Avatar::new(
+                                .child({
+                                    let is_offline = presence == PresenceStatus::Offline;
+                                    let avatar = Avatar::new(
                                         AvatarPerson::from_user(user, picture),
                                         COMPONENT_MEMBER_ROW_AVATAR_SIZE,
                                     )
-                                    .presence(
-                                        shown_presence(presence),
-                                        color(tokens.component_side_sheet_background),
-                                    )
-                                    .dimmed(presence == PresenceStatus::Offline),
-                                )
+                                    .dimmed(is_offline);
+                                    // Offline rows show no shape (DESIGN.md §5.7): the dimmed
+                                    // avatar and the Offline group say it.
+                                    if is_offline {
+                                        avatar
+                                    } else {
+                                        avatar.presence(
+                                            shown_presence(presence),
+                                            color(tokens.component_side_sheet_background),
+                                        )
+                                    }
+                                })
                                 .child(
                                     div()
                                         .flex_1()
