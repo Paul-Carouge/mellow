@@ -221,6 +221,41 @@ mod tests {
     }
 
     #[test]
+    fn a_name_made_readable_on_its_hovered_row_keeps_4_5_to_1_on_the_plain_sheet_too() {
+        // The backgrounds a name sits on (DESIGN.md §2.3), in dark then light: a hovered member
+        // row and the side sheet; a hovered message and the chat sheet. Colours are worked out
+        // on the hover, the least contrasting.
+        let backgrounds_by_hover = [
+            (0x0022_1B23, 0x001B_151C),
+            (0x00EC_E6ED, 0x00FF_FFFF),
+            (0x0028_2129, 0x0022_1B23),
+            (0x00FB_F9FC, 0x00FF_FFFF),
+        ];
+        for (hover, sheet) in backgrounds_by_hover {
+            for colour in [
+                0x0001_0101,
+                0x00FF_FFFF,
+                0x00FF_FF00,
+                0x0000_00FF,
+                0x003A_1F6B,
+                0x00F1_C40F,
+                0x00E7_4C3C,
+                0x0034_98DB,
+                0x004F_B39A,
+                0x0099_AAB5,
+            ] {
+                let shown = readable_role_colour(colour, hover);
+                for background in [hover, sheet] {
+                    assert!(
+                        contrast_ratio_of_colours(shown, background) >= 4.5,
+                        "{colour:06X} on {background:06X}"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
     fn a_chip_washes_the_sheet_and_keeps_4_5_to_1_for_its_text_in_both_themes() {
         for sheet in [DARK_SHEET, WHITE_SHEET] {
             for colour in [

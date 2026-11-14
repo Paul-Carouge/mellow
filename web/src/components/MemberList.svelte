@@ -32,8 +32,11 @@
   let { client, guild, isDocked, isFullWindow = false, onclose, onopenedconversation }: Props = $props();
 
   const members = $derived(client.membersByGuild.get(guild.id) ?? null);
-  // Role colours on names, readable on the side sheet in the current theme (DESIGN.md §2.3).
-  const nameColors = $derived(nameColorsByUserId(guild, members ?? undefined, "component-side-sheet-background"));
+  // Role colours on names, readable on a hovered row, the sheet's least contrasting background,
+  // in the current theme (DESIGN.md §2.3).
+  const nameColors = $derived(
+    nameColorsByUserId(guild, members ?? undefined, "component-member-row-background-hover"),
+  );
   // Each member's highest role with an icon, beside their name (ADR-0050).
   const roleIcons = $derived(roleIconsByUserId(guild, members ?? undefined));
   const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
@@ -45,6 +48,8 @@
       key: group.kind === "role" ? group.role.id : group.kind,
       label:
         group.kind === "role" ? group.role.name : group.kind === "online" ? strings.common.online : strings.common.offline,
+      /** Its icon goes before its name (ADR-0050). */
+      role: group.kind === "role" ? group.role : null,
       isOnline: group.kind !== "offline",
       members: group.members,
     })),
@@ -93,7 +98,13 @@
         aria-label={strings.members.groupLabel(group.label, group.members.length)}
         class="flex h-(--mw-component-member-list-group-height) items-end justify-between px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
       >
-        <span>{group.label}</span>
+        <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
+          {#if group.role}<RoleIcon
+              role={group.role}
+              sizeToken="--mw-component-role-icon-group-size"
+              isDecorative
+            />{/if}<span class="truncate">{group.label}</span>
+        </span>
         <span aria-hidden="true">{group.members.length}</span>
       </h3>
       <ul>

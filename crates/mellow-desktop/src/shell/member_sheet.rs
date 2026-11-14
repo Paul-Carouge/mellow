@@ -5,21 +5,23 @@
 
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, ParentElement as _, Role, StatefulInteractiveElement as _, Styled as _, Window,
-    div, prelude::FluentBuilder as _,
+    MouseButton, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::member_order::{
     MemberListGroupKind, member_list_groups, members_sorted_by_display_name,
 };
-use mellow_protocol::PresenceStatus;
+use mellow_client_core::shared_logic::role_colors::{highest_coloured_role, readable_role_colour};
+use mellow_client_core::shared_logic::role_icons::highest_role_with_icon;
+use mellow_protocol::{PresenceStatus, PublicUser, Role as GuildRole};
 
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, IconButton, LiveRegion as _, bounds_recorder, inset_focus_ring,
-    is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
+    Avatar, AvatarPerson, Button, IconButton, LiveRegion as _, Tooltip, bounds_recorder,
+    inset_focus_ring, is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, remembered_bounds, remembered_focus_handle, remembered_hover,
-    with_type,
+    role_icon, with_type,
 };
 use crate::home::group_sheet::group_sheet_rows;
 use crate::home::{PersonMenuRequest, conversation_display_name, presence_name, shown_presence};
@@ -31,10 +33,23 @@ use crate::theme::tokens::{
     COMPONENT_CHAT_HEADER_ICON_SIZE, COMPONENT_MEMBER_LIST_GROUP_HEIGHT,
     COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MEMBER_ROW_GAP, COMPONENT_MEMBER_ROW_HEIGHT,
     COMPONENT_MEMBER_ROW_MARGIN_INLINE, COMPONENT_MEMBER_ROW_PADDING_INLINE,
-    COMPONENT_MEMBER_ROW_RADIUS, COMPONENT_SIDE_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_SM,
+    COMPONENT_MEMBER_ROW_RADIUS, COMPONENT_ROLE_ICON_GAP, COMPONENT_ROLE_ICON_GROUP_SIZE,
+    COMPONENT_ROLE_ICON_MEMBER_SIZE, COMPONENT_SIDE_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_SM,
     SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_HEADING_MD, TYPE_MEMBER_NAME,
 };
 use crate::theme::{color, length, theme, window_width_at_default_zoom};
+
+/// What a member row shows, read out of the state before drawing (which needs the context
+/// mutably).
+struct MemberRowFacts<'g> {
+    user: PublicUser,
+    presence: PresenceStatus,
+    custom_status: Option<String>,
+    /// `0xRRGGBB`, readable on a hovered row; `None` keeps the text colour.
+    name_colour: Option<u32>,
+    /// The member's highest role with an icon, from the open server's roles.
+    icon_role: Option<&'g GuildRole>,
+}
 
 impl DuskShell {
     /// "Members of Rust", or of the open group.
@@ -158,6 +173,10 @@ impl DuskShell {
                     let guild_id = guild.id;
                     let sorted = members_sorted_by_display_name(members);
                     let is_online = |user_id| state.presence_of(user_id) != PresenceStatus::Offline;
+                    // Role colours on names, readable on a hovered row, the sheet's least
+                    // contrasting background, in this theme (DESIGN.md §2.3).
+                    let surface = tokens.component_member_row_background_hover >> 8;
+                    let readable_role_colours = &mut self.readable_role_colours;
                     // Read out of the state first: drawing a row needs the context mutably.
                     let groups: Vec<_> = member_list_groups(&sorted, &guild.roles, is_online)
                         .into_iter()
@@ -167,16 +186,38 @@ impl DuskShell {
                                 .iter()
                                 .map(|member| {
                                     let user_id = member.user.id;
-                                    (
-                                        member.user.clone(),
-                                        state.presence_of(user_id),
-                                        state.custom_status_of(user_id).map(str::to_owned),
-                                    )
+                                    MemberRowFacts {
+                                        user: member.user.clone(),
+                                        presence: state.presence_of(user_id),
+                                        custom_status: state
+                                            .custom_status_of(user_id)
+                                            .map(str::to_owned),
+                                        name_colour: highest_coloured_role(
+                                            &guild.roles,
+                                            &member.role_ids,
+                                        )
+                                        .map(|role| {
+                                            *readable_role_colours
+                                                .entry((role.color, surface))
+                                                .or_insert_with(|| {
+                                                    readable_role_colour(role.color, surface)
+                                                })
+                                        }),
+                                        // Beside the name (ADR-0050).
+                                        icon_role: highest_role_with_icon(
+                                            &guild.roles,
+                                            &member.role_ids,
+                                        ),
+                                    }
                                 })
                                 .collect();
                             (group.kind, people)
                         })
                         .collect();
+                    // shortcut: every row is built and its pictures loaded, off-screen ones too,
+                    // so an animated role icon or avatar keeps redrawing the shell; move to a
+                    // virtualised `list` (rows and headings differ in height) when large servers
+                    // or animated icons show in profiling.
                     let mut rows = Vec::new();
                     for (kind, people) in groups {
                         // The id follows the group, not its heading: two roles may share a name.
@@ -212,18 +253,46 @@ impl DuskShell {
                                 .items_end()
                                 .justify_between()
                                 .text_color(color(tokens.component_member_list_group_text))
-                                .child(heading)
+                                .child(
+                                    // "[icon] Administrateur": the role's icon before its name,
+                                    // at the heading's text size; nothing when it has none.
+                                    div()
+                                        .min_w_0()
+                                        .flex()
+                                        .items_center()
+                                        .gap(length(COMPONENT_ROLE_ICON_GAP))
+                                        .children(match kind {
+                                            MemberListGroupKind::Role(role) => role_icon(
+                                                role,
+                                                COMPONENT_ROLE_ICON_GROUP_SIZE,
+                                                window,
+                                                cx,
+                                            ),
+                                            _ => None,
+                                        })
+                                        .child(div().truncate().child(heading)),
+                                )
                                 .child(count.to_string())
                                 .into_any_element(),
                         );
-                        for (user, presence, custom_status) in people {
+                        for MemberRowFacts {
+                            user,
+                            presence,
+                            custom_status,
+                            name_colour,
+                            icon_role,
+                        } in people
+                        {
                             let user = &user;
                             let name = display_name(user).to_owned();
-                            let label = strings.members().member_label(
+                            let mut label = strings.members().member_label(
                                 &name,
                                 presence_name(strings, presence),
                                 custom_status.as_deref(),
                             );
+                            if let Some(role) = icon_role {
+                                label = format!("{label}, {}", role.name);
+                            }
                             let row_id = ElementId::from(("member-row", user.id.raw()));
                             let focus_handle = remembered_focus_handle(&row_id, window, cx);
                             if self.member_profile.take_row_to_focus(user.id) {
@@ -341,14 +410,54 @@ impl DuskShell {
                                         .flex()
                                         .flex_col()
                                         .child(
-                                            with_type(div(), TYPE_MEMBER_NAME)
-                                                .truncate()
-                                                .text_color(color(if is_hovered {
-                                                    tokens.component_member_row_name_text_hover
-                                                } else {
-                                                    tokens.component_member_row_name_text
-                                                }))
-                                                .child(name),
+                                            div()
+                                                .min_w_0()
+                                                .flex()
+                                                .items_center()
+                                                .gap(length(COMPONENT_ROLE_ICON_GAP))
+                                                .child(
+                                                    with_type(div(), TYPE_MEMBER_NAME)
+                                                        .min_w_0()
+                                                        .truncate()
+                                                        // A role colour stays on hover, as on
+                                                        // the web.
+                                                        .text_color(match name_colour {
+                                                            Some(rgb) => color((rgb << 8) | 0xFF),
+                                                            None => color(if is_hovered {
+                                                                tokens
+                                                                    .component_member_row_name_text_hover
+                                                            } else {
+                                                                tokens.component_member_row_name_text
+                                                            }),
+                                                        })
+                                                        .child(name),
+                                                )
+                                                .children(icon_role.and_then(|role| {
+                                                    let name: SharedString =
+                                                        role.name.clone().into();
+                                                    // The row's label names the role; the
+                                                    // tooltip names it to the pointer.
+                                                    role_icon(
+                                                        role,
+                                                        COMPONENT_ROLE_ICON_MEMBER_SIZE,
+                                                        window,
+                                                        cx,
+                                                    )
+                                                    .map(|icon| {
+                                                        div()
+                                                            .id((
+                                                                "member-role-icon",
+                                                                user_id.raw(),
+                                                            ))
+                                                            .tooltip(move |_, cx| {
+                                                                Tooltip::view(name.clone(), cx)
+                                                            })
+                                                            .tooltip_show_delay(
+                                                                Tooltip::show_delay(),
+                                                            )
+                                                            .child(icon)
+                                                    })
+                                                })),
                                         )
                                         .when_some(custom_status, |lines, status| {
                                             lines.child(

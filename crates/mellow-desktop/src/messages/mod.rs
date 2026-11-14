@@ -35,7 +35,7 @@ pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
 pub use forward::{ForwardFrame, ForwardOrigin};
 pub use gif::{MessageGif, message_gif_url};
-pub use item::{MessageAuthor, MessageItem, MessageItemContent};
+pub use item::{MessageAuthor, MessageItem, MessageItemContent, ShownRoleIcon};
 pub use link_previews::MessageLinkPreviews;
 pub use markdown_view::{EditedMarker, MessageMarkdown};
 pub use reactions::{
