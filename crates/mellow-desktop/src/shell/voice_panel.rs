@@ -801,6 +801,7 @@ impl DuskShell {
                     setting.is_locally_muted,
                     strings.voice().mute_for_me(),
                 )
+                .without_divider()
                 .on_change(move |_, _, cx| {
                     let _ =
                         mute_voice.update(cx, |voice, cx| voice.toggle_person_muted(user_id, cx));

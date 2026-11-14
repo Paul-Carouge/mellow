@@ -38,8 +38,8 @@ use mellow_media::{AudioDeviceDescription, AudioDeviceError};
 
 use super::parts::{body_text, section_label};
 use crate::components::{
-    Button, ButtonVariant, ChoiceGroup, ChoiceOption, RangeBounds, RangeField, Switch, icon,
-    polite_live_region, with_type,
+    Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, RangeBounds, RangeField,
+    Switch, icon, polite_live_region, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::preferences::PreferencesStore;
@@ -895,6 +895,7 @@ impl Render for VoicePage {
                     ],
                     noise_index,
                 )
+                .legend(ChoiceLegend::Subheading)
                 .on_select(|index, _, cx| {
                     if let Some(mode) = NOISE_SUPPRESSION_CHOICES.get(index).copied() {
                         change_voice_settings(cx, move |settings| {

@@ -16,7 +16,7 @@ use mellow_client_core::shared_logic::notifications::{
     default_notify_level, notification_target_id, place_settings_from_dialog, server_notify_level,
 };
 
-use crate::components::{ChoiceGroup, ChoiceOption, with_type};
+use crate::components::{ChoiceGroup, ChoiceLegend, ChoiceOption, with_type};
 use crate::i18n::{Strings, strings};
 use crate::messages::{local_date_time, upcoming_time_label};
 use crate::theme::tokens::{
@@ -237,6 +237,8 @@ impl Render for PlaceNotificationsBody {
                             mute_options,
                             mute_index,
                         )
+                        // The dialog draws the legend and its sentence itself.
+                        .legend(ChoiceLegend::Hidden)
                         .description(notifications.mute_description())
                         .focus_checked(initial_group == Some(InitialGroup::Mute))
                         .on_select({
@@ -264,6 +266,7 @@ impl Render for PlaceNotificationsBody {
                             level_options,
                             level_index,
                         )
+                        .legend(ChoiceLegend::Hidden)
                         .focus_checked(initial_group == Some(InitialGroup::Level))
                         .on_select(move |index, _, cx| {
                             entity.update(cx, |body, cx| {

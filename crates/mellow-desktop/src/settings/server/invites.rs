@@ -24,7 +24,8 @@ use super::list_rows::{
     text_column,
 };
 use crate::components::{
-    Button, ButtonVariant, ChoiceGroup, ChoiceOption, ModalDialog, ModalDialogEvent, with_type,
+    Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, ModalDialog, ModalDialogEvent,
+    with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::locale;
@@ -96,6 +97,7 @@ impl Render for InviteLimitsFields {
                             .collect(),
                         lifetime_index,
                     )
+                    .legend(ChoiceLegend::Field)
                     .focus_checked(should_focus_lifetime)
                     .on_select(move |index, _, cx| {
                         let _ = lifetime_fields.update(cx, |fields, cx| {
@@ -118,6 +120,7 @@ impl Render for InviteLimitsFields {
                             .collect(),
                         uses_index,
                     )
+                    .legend(ChoiceLegend::Field)
                     .on_select(move |index, _, cx| {
                         let _ = uses_fields.update(cx, |fields, cx| {
                             if let Some(preset) = INVITE_MAXIMUM_USES_PRESETS.get(index) {
