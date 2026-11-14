@@ -8,7 +8,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, PoisonError};
 use std::time::Duration;
 
-use axum::extract::ws::{Message as WebSocketMessage, WebSocket, WebSocketUpgrade};
+use axum::extract::ws::{
+    CloseFrame, Message as WebSocketMessage, WebSocket, WebSocketUpgrade, close_code,
+};
 use axum::extract::{ConnectInfo, State};
 use axum::http::HeaderMap;
 use axum::response::Response;
@@ -47,8 +49,28 @@ const IDENTIFY_TIMEOUT: Duration = Duration::from_secs(10);
 /// A write that cannot be flushed in this time means the client stopped reading: drop it, so a
 /// non-reading peer cannot pin a task and its queue forever.
 const SOCKET_WRITE_TIMEOUT: Duration = Duration::from_secs(10);
-/// Bytes buffered towards one socket before writes wait on the network.
-const MAXIMUM_WRITE_BUFFER_BYTES: usize = 256 * 1024;
+/// The largest frame the server sends: in practice a `READY`, about 180 B per visible channel and
+/// 70 B per online member of a shared guild. Online members are at most the 10 000 connections
+/// (0.7 MB) and a heavy account sees about 100 guilds of 50 channels (0.9 MB), so a realistic worst
+/// `READY` is about 2 MB; this leaves four times that, and matches what the desktop client accepts
+/// (`MAXIMUM_GATEWAY_MESSAGE_BYTES` in `mellow-client-core`). Each send waits for its flush, so a
+/// socket buffers one frame at a time: the backlog stays bounded by the session queue.
+const MAXIMUM_SERVER_FRAME_BYTES: usize = 8 * 1024 * 1024;
+/// Room for the frame's header and the control frames (pongs) tungstenite queues itself.
+const WRITE_BUFFER_SLACK_BYTES: usize = 1024;
+/// tungstenite never shrinks a socket's output buffer, so each socket keeps the capacity of the
+/// largest frame it sent until it closes. Up to this much per socket (the former write limit) is
+/// not counted; beyond it, see `MAXIMUM_RETAINED_LARGE_FRAME_BYTES`.
+const FRAME_BYTES_WITHOUT_BUDGET: usize = 256 * 1024;
+/// Output buffer kept by all sockets together beyond `FRAME_BYTES_WITHOUT_BUDGET` each. Without a
+/// bound, a hundred accounts with ten sessions and a 4 MB `READY` each would pin 4 GB while only
+/// exchanging heartbeats. A socket that needs more than what is left is closed with 1013 (try
+/// again later), and clients reconnect with backoff.
+const MAXIMUM_RETAINED_LARGE_FRAME_BYTES: usize = 512 * 1024 * 1024;
+/// tungstenite zero-fills its whole read buffer before each read, so its default of 128 KiB stayed
+/// resident for every connection. Client frames are small (heartbeats; 4 KB before identify), and
+/// larger ones (a voice offer) still arrive, over several reads.
+const READ_BUFFER_BYTES: usize = 8 * 1024;
 /// Before `identify`, a client sends only `identify` or `resume`: anything bigger is abuse.
 const MAXIMUM_FRAME_BYTES_BEFORE_IDENTIFY: usize = 4_096;
 /// Once identified, `voice_join` is the largest frame: its offer of at most
@@ -76,25 +98,33 @@ struct ResumableSession {
     commands: mpsc::Sender<SessionCommand>,
 }
 
-/// Live sessions by id, so a reconnecting client can resume, and the connection budget.
+/// Live sessions by id, so a reconnecting client can resume, and the connection and memory
+/// budgets.
 #[derive(Debug)]
 pub(crate) struct SessionRegistry {
     sessions: Mutex<HashMap<String, ResumableSession>>,
     next_attachment_id: AtomicU64,
     connection_permits: Arc<Semaphore>,
+    /// One permit per byte of `MAXIMUM_RETAINED_LARGE_FRAME_BYTES`.
+    retained_large_frame_bytes: Arc<Semaphore>,
 }
 
 impl Default for SessionRegistry {
     fn default() -> Self {
-        Self {
-            sessions: Mutex::default(),
-            next_attachment_id: AtomicU64::default(),
-            connection_permits: Arc::new(Semaphore::new(MAXIMUM_GATEWAY_CONNECTIONS)),
-        }
+        Self::with_retained_large_frame_budget(MAXIMUM_RETAINED_LARGE_FRAME_BYTES)
     }
 }
 
 impl SessionRegistry {
+    fn with_retained_large_frame_budget(bytes: usize) -> Self {
+        Self {
+            sessions: Mutex::default(),
+            next_attachment_id: AtomicU64::default(),
+            connection_permits: Arc::new(Semaphore::new(MAXIMUM_GATEWAY_CONNECTIONS)),
+            retained_large_frame_bytes: Arc::new(Semaphore::new(bytes)),
+        }
+    }
+
     fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, ResumableSession>> {
         self.sessions.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -146,44 +176,113 @@ pub(crate) async fn upgrade(
         return Err(ApiError::server_busy());
     };
     Ok(upgrade
+        .read_buffer_size(READ_BUFFER_BYTES)
         .max_message_size(MAXIMUM_CLIENT_FRAME_BYTES)
         .max_frame_size(MAXIMUM_CLIENT_FRAME_BYTES)
-        .max_write_buffer_size(MAXIMUM_WRITE_BUFFER_BYTES)
+        .max_write_buffer_size(MAXIMUM_SERVER_FRAME_BYTES + WRITE_BUFFER_SLACK_BYTES)
         .on_upgrade(move |socket| run_connection(socket, state, permit, cookie_token, host_header)))
 }
 
+/// A client's WebSocket and its share of `MAXIMUM_RETAINED_LARGE_FRAME_BYTES`, held until it closes.
+struct GatewaySocket {
+    socket: WebSocket,
+    /// Output buffer this socket may keep: `FRAME_BYTES_WITHOUT_BUDGET` plus what it holds.
+    covered_frame_bytes: usize,
+    held_frame_bytes: Option<OwnedSemaphorePermit>,
+    budget: Arc<Semaphore>,
+}
+
+impl GatewaySocket {
+    fn new(socket: WebSocket, budget: Arc<Semaphore>) -> Self {
+        Self {
+            socket,
+            covered_frame_bytes: FRAME_BYTES_WITHOUT_BUDGET,
+            held_frame_bytes: None,
+            budget,
+        }
+    }
+
+    /// Takes from the budget what a frame of `frame_bytes` adds to the largest this socket sent;
+    /// `false` when the budget cannot cover it.
+    fn cover_frame(&mut self, frame_bytes: usize) -> bool {
+        if frame_bytes <= self.covered_frame_bytes {
+            return true;
+        }
+        let Ok(missing_bytes) = u32::try_from(frame_bytes - self.covered_frame_bytes) else {
+            return false;
+        };
+        let Ok(permit) = self.budget.clone().try_acquire_many_owned(missing_bytes) else {
+            return false;
+        };
+        match &mut self.held_frame_bytes {
+            Some(held) => held.merge(permit),
+            None => self.held_frame_bytes = Some(permit),
+        }
+        self.covered_frame_bytes = frame_bytes;
+        true
+    }
+}
+
 /// Every write goes through here: it fails rather than wait on a client that stopped reading.
-async fn send_text(socket: &mut WebSocket, text: FrameText) -> bool {
+async fn send_text(socket: &mut GatewaySocket, text: FrameText) -> bool {
+    if text.len() > MAXIMUM_SERVER_FRAME_BYTES {
+        // The socket would refuse it anyway; say so, or the client loops on `invalid_session`.
+        tracing::warn!(
+            frame_bytes = text.len(),
+            maximum_bytes = MAXIMUM_SERVER_FRAME_BYTES,
+            "gateway frame over the size limit was not sent"
+        );
+        return false;
+    }
+    if !socket.cover_frame(text.len()) {
+        tracing::warn!(
+            frame_bytes = text.len(),
+            "gateway memory budget for large frames spent: the connection is closed as busy"
+        );
+        let busy = CloseFrame {
+            code: close_code::AGAIN,
+            reason: "server_busy".into(),
+        };
+        let _ = tokio::time::timeout(
+            SOCKET_WRITE_TIMEOUT,
+            socket.socket.send(WebSocketMessage::Close(Some(busy))),
+        )
+        .await;
+        return false;
+    }
     matches!(
         tokio::time::timeout(
             SOCKET_WRITE_TIMEOUT,
-            socket.send(WebSocketMessage::Text(text))
+            socket.socket.send(WebSocketMessage::Text(text))
         )
         .await,
         Ok(Ok(()))
     )
 }
 
-async fn send_frame(socket: &mut WebSocket, frame: &ServerFrame) -> bool {
+async fn send_frame(socket: &mut GatewaySocket, frame: &ServerFrame) -> bool {
     match frame_text(frame) {
         Some(text) => send_text(socket, text).await,
         None => false,
     }
 }
 
-async fn close(mut socket: WebSocket) {
+async fn close(mut socket: GatewaySocket) {
     let _ = tokio::time::timeout(
         SOCKET_WRITE_TIMEOUT,
-        socket.send(WebSocketMessage::Close(None)),
+        socket.socket.send(WebSocketMessage::Close(None)),
     )
     .await;
 }
 
 /// The next client frame, or `None` on close, error, binary data, malformed JSON or a text larger
 /// than `maximum_bytes` (the socket itself accepts `MAXIMUM_CLIENT_FRAME_BYTES`).
-async fn next_client_frame(socket: &mut WebSocket, maximum_bytes: usize) -> Option<ClientFrame> {
+async fn next_client_frame(
+    socket: &mut GatewaySocket,
+    maximum_bytes: usize,
+) -> Option<ClientFrame> {
     loop {
-        match socket.recv().await? {
+        match socket.socket.recv().await? {
             Ok(WebSocketMessage::Text(text)) => {
                 return (text.len() <= maximum_bytes)
                     .then(|| serde_json::from_str(&text).ok())
@@ -195,19 +294,23 @@ async fn next_client_frame(socket: &mut WebSocket, maximum_bytes: usize) -> Opti
     }
 }
 
-async fn refuse(mut socket: WebSocket) {
+async fn refuse(mut socket: GatewaySocket) {
     send_frame(&mut socket, &ServerFrame::InvalidSession).await;
     close(socket).await;
 }
 
 /// Holds one of the `MAXIMUM_GATEWAY_CONNECTIONS` permits for its whole life.
 async fn run_connection(
-    mut socket: WebSocket,
+    socket: WebSocket,
     state: AppState,
     _permit: OwnedSemaphorePermit,
     cookie_token: Option<Zeroizing<String>>,
     host_header: Option<String>,
 ) {
+    let mut socket = GatewaySocket::new(
+        socket,
+        state.gateway_sessions.retained_large_frame_bytes.clone(),
+    );
     let session_token = |token: String| match cookie_token.as_ref() {
         Some(cookie_token) if token.is_empty() => cookie_token.clone(),
         _ => Zeroizing::new(token),
@@ -291,7 +394,7 @@ async fn run_connection(
 
 /// Authenticates, starts a session and sends `Ready`. Returns `None` to refuse the client.
 async fn identify(
-    socket: &mut WebSocket,
+    socket: &mut GatewaySocket,
     state: &AppState,
     token: &str,
 ) -> Option<(CurrentUser, mpsc::Sender<SessionCommand>, SessionKey)> {
@@ -659,7 +762,7 @@ async fn handle_voice_frame(state: &AppState, attached: &AttachedSession<'_>, fr
 
 /// Pumps frames to the socket and answers heartbeats until the client goes away.
 async fn run_attached(
-    mut socket: WebSocket,
+    mut socket: GatewaySocket,
     state: &AppState,
     attached: &AttachedSession<'_>,
     mut outgoing_frames: mpsc::Receiver<FrameText>,
@@ -752,8 +855,13 @@ pub(crate) mod tests {
     }
 
     async fn fixture() -> Fixture {
+        fixture_with_sessions(SessionRegistry::default()).await
+    }
+
+    async fn fixture_with_sessions(sessions: SessionRegistry) -> Fixture {
         let (directory, database) = migrated_database().await;
         let mut state = test_state(database, RegistrationMode::Open);
+        state.gateway_sessions = Arc::new(sessions);
         // Lets a test stand for several clients (`connect_from`) under the per-address limit.
         state.trusted_proxy_networks =
             crate::http::client_address::build_trusted_proxy_networks(true, &[]).into();
@@ -1492,6 +1600,123 @@ pub(crate) mod tests {
 
         assert!(cross_site.is_err(), "the upgrade is refused");
         assert!(matches!(ready, ServerFrame::Ready { .. }));
+    }
+
+    /// Six servers of 50 channels with the longest topics: about 360 KB of the owner's `READY`.
+    async fn give_the_owner_a_large_ready(fixture: &Fixture) {
+        let owner = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.owner_token, now())
+            .await
+            .unwrap();
+        let channels = (0..crate::domain::guild_rules::MAXIMUM_INITIAL_TEXT_CHANNELS)
+            .map(|index| mellow_protocol::InitialTextChannel {
+                name: format!("channel-{index}"),
+                topic: "t".repeat(crate::domain::guild_rules::MAXIMUM_CHANNEL_TOPIC_LENGTH),
+            })
+            .collect::<Vec<_>>();
+        for index in 0..6 {
+            fixture
+                .state
+                .guilds
+                .create_guild(
+                    owner.id,
+                    false,
+                    CreateGuildRequest {
+                        name: format!("Large {index}"),
+                        initial_categories: Some(vec![mellow_protocol::InitialCategory {
+                            name: "Text".into(),
+                            channels: channels.clone(),
+                        }]),
+                    },
+                    now(),
+                )
+                .await
+                .unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn a_ready_larger_than_the_former_256_kib_write_buffer_still_arrives() {
+        const FORMER_WRITE_BUFFER_BYTES: usize = 256 * 1024;
+        let fixture = fixture().await;
+        give_the_owner_a_large_ready(&fixture).await;
+
+        let (_socket, ready) = identified(fixture.address, &fixture.owner_token).await;
+        fixture.close().await;
+
+        assert_eq!(ready.guilds.len(), 7);
+        let ready_bytes = serde_json::to_string(&ServerFrame::Ready { d: Box::new(ready) })
+            .unwrap()
+            .len();
+        assert!(
+            ready_bytes > FORMER_WRITE_BUFFER_BYTES,
+            "the fixture must exceed the former limit, got {ready_bytes} bytes"
+        );
+    }
+
+    #[tokio::test]
+    async fn large_frames_share_a_memory_budget_that_closing_sockets_give_back() {
+        // A `READY` of about 360 KB keeps about 100 KB beyond the uncounted 256 KiB: room for
+        // one such socket, not two.
+        const BUDGET_BYTES: usize = 150 * 1024;
+        let fixture = fixture_with_sessions(SessionRegistry::with_retained_large_frame_budget(
+            BUDGET_BYTES,
+        ))
+        .await;
+        give_the_owner_a_large_ready(&fixture).await;
+        let budget = fixture
+            .state
+            .gateway_sessions
+            .retained_large_frame_bytes
+            .clone();
+
+        let (first, _) = identified(fixture.address, &fixture.owner_token).await;
+        assert!(budget.available_permits() < BUDGET_BYTES / 2);
+
+        let mut second = connect(fixture.address).await;
+        assert!(matches!(
+            receive(&mut second).await,
+            ServerFrame::Hello { .. }
+        ));
+        send(
+            &mut second,
+            &ClientFrame::Identify {
+                token: fixture.owner_token.clone(),
+            },
+        )
+        .await;
+        let close_code = loop {
+            match tokio::time::timeout(RECEIVE_TIMEOUT, second.next())
+                .await
+                .expect("no frame within the timeout")
+            {
+                Some(Ok(ClientMessage::Close(frame))) => break frame.map(|frame| frame.code),
+                Some(Ok(ClientMessage::Text(text))) => panic!("expected a close, got {text}"),
+                Some(Ok(_)) => {}
+                other => panic!("expected a close, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            close_code,
+            Some(tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again)
+        );
+
+        // The first socket closing gives its share back.
+        drop(first);
+        let mut checks = 0;
+        while budget.available_permits() < BUDGET_BYTES {
+            checks += 1;
+            assert!(
+                checks < 500,
+                "the closed socket kept its share of the budget"
+            );
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        let (_third, ready) = identified(fixture.address, &fixture.owner_token).await;
+        fixture.close().await;
+        assert_eq!(ready.guilds.len(), 7);
     }
 
     #[tokio::test]
