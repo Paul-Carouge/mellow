@@ -56,9 +56,13 @@ if [[ -z "${identity}" ]]; then
 fi
 
 # --timestamp=none: Apple's timestamp service only vouches for Apple-issued certificates.
+# The YouTube player window (ADR-0061) is a second executable in Contents/MacOS: signed first, on
+# its own and without the app's entitlements, so the bundle's signature seals it.
+codesign --force --options runtime --timestamp=none \
+  --keychain "${keychain}" --sign "${identity}" "${app}/Contents/MacOS/mellow-player"
 codesign --force --options runtime --timestamp=none --entitlements "${entitlements}" \
   --keychain "${keychain}" --sign "${identity}" "${app}"
-codesign --verify --strict --verbose=2 "${app}"
+codesign --verify --deep --strict --verbose=2 "${app}"
 # The designated requirement names the certificate: TCC keeps the camera, microphone and screen
 # permissions across updates as long as it stays the same.
 codesign --display --requirements - "${app}"
