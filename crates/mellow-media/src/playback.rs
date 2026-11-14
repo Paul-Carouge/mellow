@@ -9,7 +9,8 @@ use crate::resampling::{Interpolation, ResamplingError, StreamResampler};
 
 /// How much mixed audio waits in the output ring buffer: enough to ride over the thread's
 /// scheduling, little enough to keep the delay low.
-const OUTPUT_QUEUE_MILLISECONDS: u32 = 30;
+/// Longer when the device's period is (see [`PlaybackStream::queue_target_milliseconds`]).
+const OUTPUT_QUEUE_MILLISECONDS: u64 = 30;
 
 /// The open output, if any.
 #[derive(Debug, Default)]
@@ -75,7 +76,10 @@ impl Playback {
 
     /// Whether the device wants another frame now.
     pub(crate) fn wants_frame(&self) -> bool {
-        self.is_open() && self.queued_milliseconds() < OUTPUT_QUEUE_MILLISECONDS
+        self.stream.as_ref().is_some_and(|stream| {
+            u64::from(self.queued_milliseconds())
+                < stream.queue_target_milliseconds(OUTPUT_QUEUE_MILLISECONDS)
+        })
     }
 
     /// Queues one frame. Returns whether the ring buffer still has room for more.
@@ -96,5 +100,81 @@ impl Playback {
             }
         }
         Ok(stream.samples.slots() >= channels)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicBool, AtomicUsize};
+
+    use super::*;
+    use crate::devices::{RunningStream, StreamFormat, ring_buffer_capacity};
+
+    struct IdleStream;
+    impl RunningStream for IdleStream {}
+
+    /// A 48 kHz stereo output whose callbacks take `period_frames` frames each.
+    fn playback_with_period(period_frames: usize) -> Playback {
+        let format = StreamFormat {
+            sample_rate: VOICE_SAMPLE_RATE,
+            channels: 2,
+        };
+        // The consumer is dropped unread: the queue only grows, as between two callbacks.
+        let (samples, _) = rtrb::RingBuffer::new(ring_buffer_capacity(format));
+        let resampler = StreamResampler::new(
+            VOICE_SAMPLE_RATE,
+            format.sample_rate,
+            SAMPLES_PER_FRAME,
+            Interpolation::Sinc,
+            1.0,
+        )
+        .unwrap();
+        Playback {
+            stream: Some(PlaybackStream {
+                format,
+                samples,
+                has_failed: Arc::new(AtomicBool::new(false)),
+                period_samples: Arc::new(AtomicUsize::new(period_frames * 2)),
+                running: Box::new(IdleStream),
+            }),
+            resampler: Some(resampler),
+            at_device_rate: VecDeque::new(),
+        }
+    }
+
+    fn fill(playback: &mut Playback) -> u32 {
+        let frame = [0.25; SAMPLES_PER_FRAME];
+        for _ in 0..100 {
+            if !playback.wants_frame() {
+                break;
+            }
+            playback.write(&frame).unwrap();
+        }
+        playback.queued_milliseconds()
+    }
+
+    #[test]
+    fn a_device_period_longer_than_the_queue_gets_a_whole_period_queued() {
+        // PipeWire's largest quantum: 2048 frames, 42.7 ms. A 30 ms queue left 12.7 ms of
+        // silence in every callback (measured on a PipeWire graph forced to that quantum).
+        let queued = fill(&mut playback_with_period(2_048));
+        assert!(queued >= 43, "{queued} ms queued for a 42.7 ms period");
+        // A short period keeps the short queue and its low delay.
+        let queued = fill(&mut playback_with_period(256));
+        assert!(
+            (30..=40).contains(&queued),
+            "{queued} ms queued for a 5 ms period"
+        );
+    }
+
+    #[test]
+    fn a_period_longer_than_the_ring_buffer_still_lets_the_queue_fill() {
+        // 250 ms, a driver's wrong value: the target stops below the ring buffer's 250 ms, so
+        // the engine stops writing instead of pushing into a full ring forever.
+        let mut playback = playback_with_period(12_000);
+        let queued = fill(&mut playback);
+        assert!(!playback.wants_frame(), "{queued} ms queued");
+        assert!((240..250).contains(&queued), "{queued} ms queued");
     }
 }

@@ -257,6 +257,7 @@ mod tests {
                 },
                 samples,
                 has_failed: self.has_failed.clone(),
+                period_samples: Arc::default(),
                 running: Box::new(CountedStream {
                     _samples: consumer,
                     closed_streams: self.closed_streams.clone(),

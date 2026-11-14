@@ -254,7 +254,10 @@ impl ClipOutput {
     fn wants_more(&self) -> bool {
         let queued_milliseconds =
             self.queued_device_frames() * 1_000 / u64::from(self.stream.format.sample_rate).max(1);
-        queued_milliseconds < OUTPUT_QUEUE_MILLISECONDS
+        queued_milliseconds
+            < self
+                .stream
+                .queue_target_milliseconds(OUTPUT_QUEUE_MILLISECONDS)
     }
 
     /// Resamples interleaved source samples into the channel queues.

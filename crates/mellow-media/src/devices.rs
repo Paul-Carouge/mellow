@@ -3,7 +3,7 @@
 //! real-time callback never allocates, locks or blocks.
 
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 /// One device as the settings list it.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -48,7 +48,32 @@ pub struct PlaybackStream {
     pub format: StreamFormat,
     pub samples: rtrb::Producer<f32>,
     pub has_failed: Arc<AtomicBool>,
+    /// Interleaved samples the device took in its latest callback: its period, which a
+    /// PipeWire graph sets to its quantum (2048 frames, 43 ms, by default at most; 8192 at
+    /// the limit). Written by the device.
+    pub period_samples: Arc<AtomicUsize>,
     pub running: Box<dyn RunningStream>,
+}
+
+/// Queued beyond one device period, so the engine's next 10 ms frame always lands in time.
+const QUEUE_MARGIN_BEYOND_PERIOD_MILLISECONDS: u64 = 10;
+
+impl PlaybackStream {
+    /// How much audio to keep queued for the device: `minimum_milliseconds`, or more when the
+    /// device's period is longer. A queue shorter than one period leaves the rest of every
+    /// callback silent: 13 ms of each 43 ms with a 30 ms queue and a 2048-frame quantum.
+    /// Never more than the ring buffer holds: a longer period (a driver's wrong value) would
+    /// otherwise keep the engine writing into a full ring.
+    #[must_use]
+    pub fn queue_target_milliseconds(&self, minimum_milliseconds: u64) -> u64 {
+        let samples_per_millisecond =
+            u64::from(self.format.sample_rate) * u64::from(self.format.channels) / 1_000;
+        let period = u64::try_from(self.period_samples.load(Ordering::Relaxed)).unwrap_or(0);
+        let period_milliseconds = period.div_ceil(samples_per_millisecond.max(1));
+        minimum_milliseconds
+            .max(period_milliseconds + QUEUE_MARGIN_BEYOND_PERIOD_MILLISECONDS)
+            .min(u64::from(RING_BUFFER_MILLISECONDS) - QUEUE_MARGIN_BEYOND_PERIOD_MILLISECONDS)
+    }
 }
 
 impl std::fmt::Debug for CaptureStream {
@@ -100,7 +125,7 @@ pub trait AudioDevices: Send {
 /// Ring buffers hold this much audio: room for scheduling hiccups of the engine's thread.
 const RING_BUFFER_MILLISECONDS: u32 = 250;
 
-fn ring_buffer_capacity(format: StreamFormat) -> usize {
+pub(crate) fn ring_buffer_capacity(format: StreamFormat) -> usize {
     let samples = u64::from(format.sample_rate)
         * u64::from(format.channels)
         * u64::from(RING_BUFFER_MILLISECONDS)
@@ -153,7 +178,7 @@ pub use system::SystemAudioDevices;
 
 mod system {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     use cpal::traits::{DeviceTrait as _, HostTrait as _, StreamTrait as _};
     use cpal::{FromSample, SampleFormat, SizedSample};
@@ -298,11 +323,14 @@ mod system {
         };
         let (producer, mut consumer) = rtrb::RingBuffer::new(ring_buffer_capacity(format));
         let (has_failed, on_error) = error_flag();
+        let period_samples = Arc::new(AtomicUsize::new(0));
+        let device_period = period_samples.clone();
         let stream = device
             .build_output_stream(
                 *config,
                 move |data: &mut [T], _: &cpal::OutputCallbackInfo| {
                     // Real time: no allocation, no lock. Missing samples play as silence.
+                    device_period.store(data.len(), Ordering::Relaxed);
                     let count = data.len().min(consumer.slots());
                     let (played, missing) = data.split_at_mut(count);
                     if let Ok(chunk) = consumer.read_chunk(count) {
@@ -321,6 +349,7 @@ mod system {
             format,
             samples: producer,
             has_failed,
+            period_samples,
             running: Box::new(CpalStream(stream)),
         })
     }
@@ -398,7 +427,7 @@ pub use synthetic::{PlaybackProbe, SyntheticAudioDevices, SyntheticSound};
 
 mod synthetic {
     use std::sync::Arc;
-    use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
     use std::thread::JoinHandle;
     use std::time::{Duration, Instant};
 
@@ -595,6 +624,7 @@ mod synthetic {
                 format,
                 samples: producer,
                 has_failed: Arc::new(AtomicBool::new(false)),
+                period_samples: Arc::new(AtomicUsize::new(samples_per_period)),
                 running: Box::new(running),
             })
         }
