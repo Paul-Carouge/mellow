@@ -59,6 +59,14 @@ impl Composer {
         *self.gif_button.bounds.read(cx)
     }
 
+    /// Where the GIF picker opens from: the button's columns from the composer's top edge, so it
+    /// opens above the composer.
+    #[must_use]
+    pub fn gif_picker_anchor(&self, cx: &App) -> Option<Bounds<Pixels>> {
+        self.gif_button_bounds(cx)
+            .map(|button| self.picker_anchor(button, cx))
+    }
+
     /// Focus back on the GIF button, after the picker closed with focus inside it.
     pub fn focus_gif_button(&self, window: &mut Window, cx: &mut App) {
         window.focus(&self.gif_button.focus, cx);

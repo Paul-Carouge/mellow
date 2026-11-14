@@ -21,13 +21,14 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    AnyWindowHandle, App, AppContext as _, ClipboardEntry, Context, Entity, EventEmitter,
-    ExternalPaths, Focusable as _, InteractiveElement as _, IntoElement, KeyBinding,
-    ParentElement as _, PathPromptOptions, Render, Role, SharedString,
+    AnyWindowHandle, App, AppContext as _, Bounds, ClipboardEntry, Context, Entity, EventEmitter,
+    ExternalPaths, Focusable as _, InteractiveElement as _, IntoElement, KeyBinding, MouseButton,
+    MouseDownEvent, ParentElement as _, PathPromptOptions, Pixels, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, actions, deferred,
     div, prelude::FluentBuilder as _, relative,
 };
 use gpui_component::input::{InputEvent, Textarea, TextareaState};
+use gpui_component::{Sizable as _, Size};
 use mellow_client_core::shared_logic::emoji_suggestions::replace_in_draft;
 use mellow_client_core::shared_logic::format::{FileSize, FileSizeUnit, Locale, human_file_size};
 use mellow_client_core::shared_logic::message_length::{
@@ -39,7 +40,7 @@ use mellow_client_core::{ClientError, RestClient};
 use mellow_protocol::{ApiErrorCode, Attachment, PublicUser, Role as ServerRole, Snowflake};
 
 use crate::components::{
-    Button, IconButton, LiveRegion as _, focus_ring, is_focus_visible, with_type,
+    Button, IconButton, LiveRegion as _, bounds_recorder, focus_ring, is_focus_visible, with_type,
 };
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{Language, Strings, strings};
@@ -49,8 +50,8 @@ use crate::theme::tokens::{
     COMPONENT_COMPOSER_ICON_SIZE, COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_RADIUS,
     COMPONENT_COMPOSER_REPLY_BAR_BUTTON_SIZE, COMPONENT_COMPOSER_REPLY_BAR_ICON_SIZE,
     COMPONENT_COMPOSER_REPLY_BAR_MIN_HEIGHT, COMPONENT_COMPOSER_REPLY_BAR_PADDING_INLINE,
-    COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT, SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_SM,
-    SPACE_XS, TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
+    COMPONENT_COMPOSER_TYPING_HEIGHT, COMPONENT_MESSAGE_EDITOR_HINT_GAP, SIZE_DOCK_HEIGHT,
+    SIZE_DOCK_MARGIN, SPACE_2XS, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_MESSAGE, TYPE_MESSAGE_SUBTEXT,
 };
 use crate::theme::{color, length, theme};
 use crate::tokio_bridge::spawn_on_network_runtime;
@@ -251,15 +252,31 @@ pub struct Composer {
     gif_button: gif_button::GifButton,
     emoji_button_bounds: emoji_button::EmojiButtonBounds,
     is_emoji_picker_open: bool,
+    /// Where the composer's card was drawn: the pickers open above its top edge.
+    card_bounds: Entity<Option<Bounds<Pixels>>>,
+    /// The field took focus from the keyboard (Tab, F6) and no pointer was pressed since: only
+    /// then does its ring show, as the web's input modality does (DESIGN.md §7.2). Typing in a
+    /// clicked field draws no ring.
+    is_field_focus_from_keyboard: bool,
     _subscriptions: Vec<Subscription>,
 }
+
+/// Room above and below the field's text: one line of `type.message` sits centred in a row as
+/// tall as the user card (`size.dock.height`), as the web textarea's block padding.
+const FIELD_PADDING_BLOCK: f32 =
+    (SIZE_DOCK_HEIGHT - TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height) / 2.0;
 
 impl EventEmitter<ComposerEvent> for Composer {}
 
 impl Composer {
     pub fn new(window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| TextareaState::new(window, cx).auto_grow(1, 1));
+        let input_focus = input.read(cx).focus_handle(cx);
         let subscriptions = vec![
+            cx.on_focus_in(&input_focus, window, |composer, window, cx| {
+                composer.is_field_focus_from_keyboard = window.last_input_was_keyboard();
+                cx.notify();
+            }),
             cx.subscribe_in(&input, window, Self::on_input_event),
             // Caret moves (arrows, clicks) change the word the suggestions read.
             cx.observe(&input, |composer, _, cx| composer.refresh_suggestions(cx)),
@@ -318,6 +335,8 @@ impl Composer {
             gif_button: gif_button::GifButton::new(cx),
             emoji_button_bounds: cx.new(|_| None),
             is_emoji_picker_open: false,
+            card_bounds: cx.new(|_| None),
+            is_field_focus_from_keyboard: false,
             _subscriptions: subscriptions,
         }
     }
@@ -1231,13 +1250,34 @@ impl Composer {
         true
     }
 
+    fn end_keyboard_modality(
+        &mut self,
+        _: &MouseDownEvent,
+        _: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.is_field_focus_from_keyboard {
+            self.is_field_focus_from_keyboard = false;
+            cx.notify();
+        }
+    }
+
+    /// Where a picker opened from the button at `button` is anchored: the button's columns, from
+    /// the composer's top edge down, so the picker opens above the composer (its own gap away)
+    /// and never over it (DESIGN.md §5.5). The button alone until the composer is drawn.
+    pub(crate) fn picker_anchor(&self, button: Bounds<Pixels>, cx: &App) -> Bounds<Pixels> {
+        picker_anchor_on_composer_edge(button, *self.card_bounds.read(cx))
+    }
+
     /// As many rows as fit in half the window (DESIGN.md, desktop: "up to half the smallest
     /// window"), then the field scrolls.
     fn follow_window_height(&mut self, window: &Window, cx: &mut Context<Self>) {
+        let rem_size = window.rem_size();
         let line_height =
-            length(TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height).to_pixels(window.rem_size());
-        let half_window = window.viewport_size().height / 2.0;
-        let rows = (half_window / line_height).floor().max(1.0);
+            length(TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height).to_pixels(rem_size);
+        let room = window.viewport_size().height / 2.0
+            - length(2.0 * FIELD_PADDING_BLOCK).to_pixels(rem_size);
+        let rows = (room / line_height).floor().max(1.0);
         // A window height in rows is a small positive number.
         #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
         let rows = rows as usize;
@@ -1247,6 +1287,18 @@ impl Composer {
                 .update(cx, |input, cx| input.set_auto_grow(1, rows, cx));
         }
     }
+}
+
+/// `button` stretched up to the composer's top edge.
+fn picker_anchor_on_composer_edge(
+    button: Bounds<Pixels>,
+    composer_box: Option<Bounds<Pixels>>,
+) -> Bounds<Pixels> {
+    let Some(composer_box) = composer_box else {
+        return button;
+    };
+    let top = composer_box.top().min(button.top());
+    Bounds::from_corners(gpui::point(button.left(), top), button.bottom_right())
 }
 
 /// The file's bytes, or `None` when it holds more than `maximum_bytes`: reads at most one byte
@@ -1345,7 +1397,7 @@ impl Composer {
                 .left_0()
                 .right_0()
                 .bottom(relative(1.0))
-                .pb(length(SPACE_XS))
+                .pb(length(COMPONENT_COMPOSER_TYPING_HEIGHT))
                 .child(SlashMenuList {
                     title: chat.slash_command_suggestions_title(&query).into(),
                     count_sentence: chat.slash_command_suggestions_count(count).into(),
@@ -1393,7 +1445,8 @@ impl Render for Composer {
         };
         let is_counter_shown = characters_left <= MESSAGE_LENGTH_COUNTER_THRESHOLD;
         let input_focus = self.input.read(cx).focus_handle(cx);
-        let is_ring_shown = is_focus_visible(&input_focus, window);
+        let is_ring_shown =
+            self.is_field_focus_from_keyboard && is_focus_visible(&input_focus, window);
 
         // The field's name, then what describes it: the reply and the characters left.
         let mut field_label = self.channel_label.to_string();
@@ -1456,7 +1509,7 @@ impl Render for Composer {
                     .left_0()
                     .right_0()
                     .bottom(relative(1.0))
-                    .pb(length(SPACE_XS))
+                    .pb(length(COMPONENT_COMPOSER_TYPING_HEIGHT))
                     .child(SuggestionList {
                         title: title.into(),
                         suggestions: suggestion_rows,
@@ -1616,23 +1669,26 @@ impl Render for Composer {
                     with_type(div(), TYPE_MESSAGE)
                         .flex_1()
                         .min_w_0()
-                        // Centred in a row as tall as the user card: the field's own line
-                        // height is the text input's, not the message type's.
-                        .min_h(length(SIZE_DOCK_HEIGHT))
-                        .flex()
-                        .flex_col()
-                        .justify_center()
-                        .px(length(SPACE_2XS))
+                        // One line sits centred in a row as tall as the user card; more lines
+                        // keep that room above and below, as the web field's padding does.
+                        .py(length(FIELD_PADDING_BLOCK))
                         .text_color(color(tokens.component_composer_text))
                         .child(
-                            Textarea::new(&self.input)
-                                .appearance(false)
-                                .aria_label(SharedString::from(field_label))
-                                .on_paste(move |item, window, cx| {
-                                    paste.update(cx, |composer, cx| {
-                                        composer.paste_files(item, window, cx)
-                                    })
-                                }),
+                            // The extra-small size pads the text by 4 px (`space.2xs`) each side,
+                            // the web field's `px-2xs`: the text starts 12 px after the attach
+                            // button. The message type replaces the size's own text size.
+                            with_type(
+                                Textarea::new(&self.input)
+                                    .appearance(false)
+                                    .with_size(Size::XSmall),
+                                TYPE_MESSAGE,
+                            )
+                            .aria_label(SharedString::from(field_label))
+                            .on_paste(move |item, window, cx| {
+                                paste.update(cx, |composer, cx| {
+                                    composer.paste_files(item, window, cx)
+                                })
+                            }),
                         ),
                 )
                 .when(is_counter_shown, |row| {
@@ -1723,8 +1779,15 @@ impl Render for Composer {
             )
             .children(suggestion_list)
             .children(command_list)
+            .child(bounds_recorder(self.card_bounds.clone()))
             .when(is_ring_shown, |composer_box| {
-                composer_box.child(focus_ring(COMPONENT_COMPOSER_RADIUS, cx))
+                composer_box.child(
+                    div()
+                        .debug_selector(|| "composer-focus-ring".to_owned())
+                        .absolute()
+                        .inset_0()
+                        .child(focus_ring(COMPONENT_COMPOSER_RADIUS, cx)),
+                )
             });
 
         div()
@@ -1737,6 +1800,9 @@ impl Render for Composer {
             .on_action(|_: &ShiftTabInComposer, window, cx| window.focus_prev(cx))
             .on_action(cx.listener(Self::escape))
             .on_action(cx.listener(Self::open_emoji_picker))
+            // Any pointer press, here or elsewhere, ends keyboard modality: the ring goes.
+            .on_mouse_down(MouseButton::Left, cx.listener(Self::end_keyboard_modality))
+            .on_mouse_down_out(cx.listener(Self::end_keyboard_modality))
             .flex_none()
             .flex()
             .flex_col()

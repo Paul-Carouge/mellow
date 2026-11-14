@@ -15,7 +15,7 @@ use mellow_client_core::shared_logic::markdown::{BlockNode, InlineNode, Markdown
 
 use super::body::MessageBody;
 use super::code_block::MessageCodeBlock;
-use super::rich_text::{RichText, RichTextContext, RichTextElement};
+use super::rich_text::{EmojiRangesByText, RichText, RichTextContext, RichTextElement};
 use crate::components::{child_id, with_type};
 use crate::i18n;
 use crate::theme::tokens::{
@@ -30,8 +30,10 @@ use crate::theme::{color, length, theme};
 const DIGIT_SHARE_OF_EM: f32 = 0.6;
 /// Headings sit at aria levels 4 to 6, below the page's and the channel's (the web's `3 + level`).
 const HEADING_LEVEL_OFFSET: usize = super::item::MESSAGE_HEADER_HEADING_LEVEL;
-const BULLET: &str = "•";
-const HOLLOW_BULLET: &str = "◦";
+/// Chrome draws a list's disc a third of the font's ascent wide: 5 px at the message's 16 px.
+const MARKER_DISC_SHARE_OF_EM: f32 = 0.32;
+/// A hollow (nested) disc's ring.
+const MARKER_CIRCLE_BORDER_WIDTH: f32 = 1.0;
 
 /// "(edited)" at the end of the body, as Discord places it.
 #[derive(Debug, Clone)]
@@ -84,6 +86,7 @@ struct BlockContext<'a> {
     revealed_spoilers: &'a Entity<HashSet<u32>>,
     revealed: &'a HashSet<u32>,
     is_jumbo: bool,
+    emoji_ranges: &'a EmojiRangesByText,
     /// Numbers the texts and code blocks, so each keeps its own state between frames.
     next_index: usize,
     selection_order: u64,
@@ -114,6 +117,7 @@ impl BlockContext<'_> {
                 strings: self.strings,
                 revealed_spoilers: self.revealed,
                 picture_em: picture_side / font_size,
+                emoji_ranges: Some(self.emoji_ranges),
             },
         )
     }
@@ -250,15 +254,42 @@ impl MessageMarkdown {
         #[allow(clippy::cast_precision_loss)] // A handful of digits.
         let marker_width =
             SPACE_MD + extra_digits as f32 * DIGIT_SHARE_OF_EM * TYPE_MESSAGE.font_size;
+        let marker_colour = color(tokens.component_message_body_text);
+        let line_height = TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height;
+        let disc_side = MARKER_DISC_SHARE_OF_EM * TYPE_MESSAGE.font_size;
         let items: Vec<AnyElement> = list
             .items
             .iter()
             .enumerate()
             .map(|(index, item)| {
-                let marker: SharedString = match list.start {
-                    Some(start) => format!("{}.", u64::from(start) + index as u64).into(),
-                    None if is_nested => HOLLOW_BULLET.into(),
-                    None => BULLET.into(),
+                // The web's outside markers: a number ends a space before the text; a disc sits
+                // centred on the first line, `space.sm` before the text, as Chrome draws it.
+                let marker = match list.start {
+                    Some(start) => div()
+                        .size_full()
+                        .flex()
+                        .justify_end()
+                        .pr(length(SPACE_2XS))
+                        .child(SharedString::from(format!(
+                            "{}.",
+                            u64::from(start) + index as u64
+                        )))
+                        .into_any_element(),
+                    None => div()
+                        .absolute()
+                        .right(length(SPACE_SM))
+                        .top(length((line_height - disc_side) / 2.0))
+                        .size(length(disc_side))
+                        .rounded_full()
+                        .map(|disc| {
+                            if is_nested {
+                                disc.border(length(MARKER_CIRCLE_BORDER_WIDTH))
+                                    .border_color(marker_colour)
+                            } else {
+                                disc.bg(marker_colour)
+                            }
+                        })
+                        .into_any_element(),
                 };
                 let rich_text = context.rich_text(&item.children);
                 let text = context.text_element(rich_text, window);
@@ -271,12 +302,10 @@ impl MessageMarkdown {
                     .flex()
                     .child(
                         div()
+                            .relative()
                             .flex_none()
                             .w(length(marker_width))
-                            .pr(length(SPACE_2XS))
-                            .flex()
-                            .justify_end()
-                            .text_color(color(tokens.color_text_muted))
+                            .h(length(line_height))
                             .child(marker),
                     )
                     .child(
@@ -301,6 +330,34 @@ impl MessageMarkdown {
     }
 }
 
+/// A body and its emoji, found when the row first drew this version of it.
+type FoundEmoji = Option<(Rc<MessageBody>, Rc<EmojiRangesByText>)>;
+
+impl MessageMarkdown {
+    /// The body's emoji, found once per version of the body the row shows, not at every frame.
+    fn emoji_ranges(
+        id: &ElementId,
+        body: &Rc<MessageBody>,
+        window: &mut Window,
+        cx: &mut App,
+    ) -> Rc<EmojiRangesByText> {
+        let state =
+            window.use_keyed_state(child_id(id, "emoji-ranges"), cx, |_, _| -> FoundEmoji {
+                None
+            });
+        if let Some((found_for, found)) = state.read(cx).as_ref()
+            && Rc::ptr_eq(found_for, body)
+        {
+            return Rc::clone(found);
+        }
+        let found = Rc::new(EmojiRangesByText::of_blocks(&body.blocks));
+        state.update(cx, |state, _| {
+            *state = Some((Rc::clone(body), Rc::clone(&found)));
+        });
+        found
+    }
+}
+
 impl RenderOnce for MessageMarkdown {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let revealed_spoilers =
@@ -308,6 +365,7 @@ impl RenderOnce for MessageMarkdown {
                 HashSet::new()
             });
         let revealed = revealed_spoilers.read(cx).clone();
+        let emoji_ranges = Self::emoji_ranges(&self.id, &self.body, window, cx);
         let mut context = BlockContext {
             id: &self.id,
             tokens: theme(cx),
@@ -315,6 +373,7 @@ impl RenderOnce for MessageMarkdown {
             revealed_spoilers: &revealed_spoilers,
             revealed: &revealed,
             is_jumbo: self.body.is_jumbo,
+            emoji_ranges: &emoji_ranges,
             next_index: 0,
             selection_order: self.selection_order,
         };

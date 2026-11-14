@@ -71,12 +71,9 @@ impl MessageMenuFacts {
     }
 }
 
-/// A message menu item. Copy message ID joins the everyday section.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// A message menu item, as the web's `MessageMenuAction`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MessageMenuAction {
-    /// A quick reaction: adds or takes back the reader's reaction with this emoji. The web shows
-    /// them as the first row of its phone sheet; here they are items, so the keys reach them.
-    ToggleReaction(String),
     /// Opens the emoji picker to react with any emoji.
     AddReaction,
     Reply,
@@ -88,7 +85,6 @@ pub enum MessageMenuAction {
     Unpin,
     /// Who reacted with what, in a dialog.
     ViewReactions,
-    CopyMessageId,
     /// Its author stops the votes now, after a confirmation.
     EndPoll,
     /// A moderator takes every reaction off the message, after a confirmation.
@@ -96,25 +92,14 @@ pub enum MessageMenuAction {
     Delete,
 }
 
-/// The More button, a right-click and Shift+F10 open the same menu, as on Discord: the quick
-/// reactions and Add reaction, then the everyday actions, then Delete.
+/// The More button, a right-click and Shift+F10 open the same menu, as on Discord and the web
+/// (`messageMenuActions`): Add reaction, then the everyday actions, then the irreversible ones.
+/// The message's ID is not offered: neither client has a developer mode yet.
 #[must_use]
-pub fn message_menu_actions(
-    facts: MessageMenuFacts,
-    quick_reactions: &[String],
-) -> Vec<MenuLine<MessageMenuAction>> {
+pub fn message_menu_actions(facts: MessageMenuFacts) -> Vec<MenuLine<MessageMenuAction>> {
     use MessageMenuAction as Action;
-    let reactions: Vec<Option<Action>> = if facts.can_add_reactions {
-        quick_reactions
-            .iter()
-            .map(|emoji| Some(Action::ToggleReaction(emoji.clone())))
-            .chain([Some(Action::AddReaction)])
-            .collect()
-    } else {
-        Vec::new()
-    };
     join_sections(vec![
-        reactions,
+        vec![facts.can_add_reactions.then_some(Action::AddReaction)],
         vec![
             facts.can_send_messages.then_some(Action::Reply),
             // Forwarding needs somewhere else to send to, which the dialog finds; reading is enough.
@@ -127,7 +112,6 @@ pub fn message_menu_actions(
                 Action::Pin
             }),
             (facts.has_reactions && facts.can_join_reactions).then_some(Action::ViewReactions),
-            Some(Action::CopyMessageId),
         ],
         vec![
             (facts.is_own && facts.is_poll_open).then_some(Action::EndPoll),
@@ -136,6 +120,20 @@ pub fn message_menu_actions(
             facts.can_delete().then_some(Action::Delete),
         ],
     ])
+}
+
+/// The quick reactions the menu shows as one row of emoji keys above its items (the web phone
+/// sheet's header row, `MessageMenuQuickReactions.svelte`): none where the reader may not react.
+#[must_use]
+pub fn message_menu_quick_reactions(
+    facts: MessageMenuFacts,
+    quick_reactions: &[String],
+) -> Vec<String> {
+    if facts.can_add_reactions {
+        quick_reactions.to_vec()
+    } else {
+        Vec::new()
+    }
 }
 
 // ---- A person (a member, a message's author, a friend, a one-to-one conversation) ----
@@ -285,35 +283,43 @@ mod tests {
 
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
-        use MessageMenuAction::{
-            AddReaction, CopyMessageId, CopyText, Forward, Reply, ToggleReaction, ViewReactions,
-        };
+        use MessageMenuAction::{AddReaction, CopyText, Forward, Reply, ViewReactions};
         let reacted = MessageMenuFacts {
             has_reactions: true,
             ..OTHERS_TEXT
         };
         assert_eq!(
-            actions(&message_menu_actions(reacted, &["👍".to_owned()])),
+            actions(&message_menu_actions(reacted)),
             [
-                Some(ToggleReaction("👍".to_owned())),
                 Some(AddReaction),
                 None,
                 Some(Reply),
                 Some(Forward),
                 Some(CopyText),
-                Some(ViewReactions),
-                Some(CopyMessageId)
+                Some(ViewReactions)
             ]
         );
     }
 
     #[test]
-    fn your_own_message_adds_edit_and_delete_last_and_separated() {
-        use MessageMenuAction::{
-            AddReaction, CopyMessageId, CopyText, Delete, Edit, Forward, Reply,
+    fn the_quick_reactions_head_the_menu_only_for_a_reader_who_may_react() {
+        let quick = ["👍".to_owned(), "❤️".to_owned(), "😂".to_owned()];
+        assert_eq!(message_menu_quick_reactions(OTHERS_TEXT, &quick), quick);
+        let cannot_react = MessageMenuFacts {
+            can_add_reactions: false,
+            ..OTHERS_TEXT
         };
         assert_eq!(
-            actions(&message_menu_actions(OWN_TEXT, &[])),
+            message_menu_quick_reactions(cannot_react, &quick),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn your_own_message_adds_edit_and_delete_last_and_separated() {
+        use MessageMenuAction::{AddReaction, CopyText, Delete, Edit, Forward, Reply};
+        assert_eq!(
+            actions(&message_menu_actions(OWN_TEXT)),
             [
                 Some(AddReaction),
                 None,
@@ -321,7 +327,6 @@ mod tests {
                 Some(Forward),
                 Some(Edit),
                 Some(CopyText),
-                Some(CopyMessageId),
                 None,
                 Some(Delete)
             ]
@@ -334,14 +339,14 @@ mod tests {
             is_forward: true,
             ..OWN_TEXT
         };
-        let lines = message_menu_actions(forward, &[]);
+        let lines = message_menu_actions(forward);
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Edit)));
         let poll = MessageMenuFacts {
             is_rich: true,
             has_text: false,
             ..OWN_TEXT
         };
-        let lines = message_menu_actions(poll, &[]);
+        let lines = message_menu_actions(poll);
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Edit)));
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::CopyText)));
         assert!(!lines.contains(&MenuLine::Action(MessageMenuAction::Forward)));
@@ -351,14 +356,13 @@ mod tests {
             ..OTHERS_TEXT
         };
         assert!(
-            message_menu_actions(read_only, &[])
-                .contains(&MenuLine::Action(MessageMenuAction::Forward))
+            message_menu_actions(read_only).contains(&MenuLine::Action(MessageMenuAction::Forward))
         );
     }
 
     #[test]
     fn the_author_of_an_open_poll_ends_it_from_the_danger_section() {
-        use MessageMenuAction::{AddReaction, CopyMessageId, Delete, EndPoll, Reply};
+        use MessageMenuAction::{AddReaction, Delete, EndPoll, Reply};
         let open_poll = MessageMenuFacts {
             is_rich: true,
             is_poll_open: true,
@@ -366,12 +370,11 @@ mod tests {
             ..OWN_TEXT
         };
         assert_eq!(
-            actions(&message_menu_actions(open_poll, &[])),
+            actions(&message_menu_actions(open_poll)),
             [
                 Some(AddReaction),
                 None,
                 Some(Reply),
-                Some(CopyMessageId),
                 None,
                 Some(EndPoll),
                 Some(Delete)
@@ -382,7 +385,7 @@ mod tests {
             ..open_poll
         };
         assert!(
-            !message_menu_actions(someone_elses, &[])
+            !message_menu_actions(someone_elses)
                 .contains(&MenuLine::Action(MessageMenuAction::EndPoll))
         );
     }
@@ -394,16 +397,14 @@ mod tests {
             can_manage_pins: true,
             ..OTHERS_TEXT
         };
-        let lines = message_menu_actions(moderator, &[]);
+        let lines = message_menu_actions(moderator);
         assert!(lines.contains(&MenuLine::Action(MessageMenuAction::Pin)));
         assert!(lines.contains(&MenuLine::Action(MessageMenuAction::Delete)));
         let pinned = MessageMenuFacts {
             is_pinned: true,
             ..moderator
         };
-        assert!(
-            message_menu_actions(pinned, &[]).contains(&MenuLine::Action(MessageMenuAction::Unpin))
-        );
+        assert!(message_menu_actions(pinned).contains(&MenuLine::Action(MessageMenuAction::Unpin)));
     }
 
     #[test]
@@ -415,7 +416,7 @@ mod tests {
             has_reactions: true,
             ..OTHERS_TEXT
         };
-        let lines = actions(&message_menu_actions(moderator, &[]));
+        let lines = actions(&message_menu_actions(moderator));
         assert_eq!(
             lines[lines.len() - 2..],
             [Some(RemoveAllReactions), Some(Delete)]
@@ -425,19 +426,19 @@ mod tests {
             ..moderator
         };
         assert!(
-            !message_menu_actions(without_reactions, &[])
+            !message_menu_actions(without_reactions)
                 .contains(&MenuLine::Action(RemoveAllReactions))
         );
         let member = MessageMenuFacts {
             has_reactions: true,
             ..OTHERS_TEXT
         };
-        assert!(!message_menu_actions(member, &[]).contains(&MenuLine::Action(RemoveAllReactions)));
+        assert!(!message_menu_actions(member).contains(&MenuLine::Action(RemoveAllReactions)));
     }
 
     #[test]
     fn a_read_only_channel_leaves_out_reply_edit_and_reactions_without_the_permission() {
-        use MessageMenuAction::{CopyMessageId, CopyText, Delete, Forward};
+        use MessageMenuAction::{CopyText, Delete, Forward};
         let read_only = MessageMenuFacts {
             can_send_messages: false,
             has_reactions: true,
@@ -446,14 +447,13 @@ mod tests {
             ..OWN_TEXT
         };
         assert_eq!(
-            actions(&message_menu_actions(read_only, &["👍".to_owned()])),
-            [
-                Some(Forward),
-                Some(CopyText),
-                Some(CopyMessageId),
-                None,
-                Some(Delete)
-            ]
+            actions(&message_menu_actions(read_only)),
+            [Some(Forward), Some(CopyText), None, Some(Delete)]
+        );
+        assert_eq!(
+            message_menu_quick_reactions(read_only, &["👍".to_owned()]),
+            Vec::<String>::new(),
+            "no quick reactions without the permission to react"
         );
     }
 

@@ -21,6 +21,7 @@ use super::{
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
+    COMPONENT_ACTION_BAR_BUTTON_SIZE, COMPONENT_ACTION_BAR_ICON_SIZE,
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_CONTEXT_MENU_BORDER_WIDTH,
     COMPONENT_CONTEXT_MENU_ITEM_HEIGHT, COMPONENT_CONTEXT_MENU_ITEM_ICON_SIZE,
     COMPONENT_CONTEXT_MENU_ITEM_PADDING_INLINE, COMPONENT_CONTEXT_MENU_ITEM_RADIUS,
@@ -28,8 +29,8 @@ use crate::theme::tokens::{
     COMPONENT_CONTEXT_MENU_PADDING, COMPONENT_CONTEXT_MENU_RADIUS,
     COMPONENT_CONTEXT_MENU_SEPARATOR_HEIGHT, COMPONENT_CONTEXT_MENU_SEPARATOR_MARGIN_BLOCK,
     COMPONENT_CONTEXT_MENU_SEPARATOR_MARGIN_INLINE, COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN,
-    COMPONENT_STATUS_SIZE_MENU, MOTION_DURATION_FAST, MOTION_EASING_ENTER, SPACE_2XS, SPACE_XS,
-    TYPE_MENU_ITEM, ThemeTokens,
+    COMPONENT_REACTION_BORDER_WIDTH, COMPONENT_REACTION_RADIUS, COMPONENT_STATUS_SIZE_MENU,
+    MOTION_DURATION_FAST, MOTION_EASING_ENTER, SPACE_2XS, SPACE_XS, TYPE_MENU_ITEM, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
 
@@ -339,8 +340,39 @@ pub enum MenuEntry {
     Separator,
 }
 
+/// A key of the row above a menu's items (a message's quick reactions, DESIGN.md §5.4): a glyph
+/// drawn like a reaction chip, on or off, heard as a checkable item.
+#[derive(Clone)]
+pub struct MenuKey {
+    /// The emoji drawn on the key.
+    pub glyph: SharedString,
+    /// What screen readers hear ("React with 👍").
+    pub label: SharedString,
+    /// Already given: drawn as the reader's own reaction, and a press takes it back.
+    pub is_checked: bool,
+    /// Runs after the menu closed and gave focus back.
+    pub on_select: ActivationHandler,
+}
+
+/// The row of keys above a menu's items, and the name screen readers hear for it ("Add
+/// reaction").
+#[derive(Debug, Clone, Default)]
+pub struct MenuKeys {
+    pub label: SharedString,
+    pub keys: Vec<MenuKey>,
+}
+
+/// The row of keys, with the room the row takes around its keys.
+fn quick_keys_height(keys: &[MenuKey]) -> f32 {
+    if keys.is_empty() {
+        0.0
+    } else {
+        COMPONENT_ACTION_BAR_BUTTON_SIZE + 2.0 * SPACE_2XS
+    }
+}
+
 /// The menu's height from its tokens: every row has a fixed height, so it is known before layout.
-fn estimated_menu_height(entries: &[MenuEntry]) -> f32 {
+fn estimated_menu_height(keys: &[MenuKey], entries: &[MenuEntry]) -> f32 {
     let rows: f32 = entries
         .iter()
         .map(|entry| match entry {
@@ -351,13 +383,18 @@ fn estimated_menu_height(entries: &[MenuEntry]) -> f32 {
             }
         })
         .sum();
-    rows + 2.0 * (COMPONENT_CONTEXT_MENU_PADDING + COMPONENT_CONTEXT_MENU_BORDER_WIDTH)
+    quick_keys_height(keys)
+        + rows
+        + 2.0 * (COMPONENT_CONTEXT_MENU_PADDING + COMPONENT_CONTEXT_MENU_BORDER_WIDTH)
 }
 
 /// An open menu. The host keeps the entity while it is open, renders it anywhere (it draws itself
 /// above everything, at its place) and drops it on `DismissEvent`.
 pub struct ContextMenu {
     label: SharedString,
+    /// The row of keys above the items; empty for most menus.
+    keys: Vec<MenuKey>,
+    keys_label: SharedString,
     entries: Vec<MenuEntry>,
     focus_handle: FocusHandle,
     opener: Option<FocusHandle>,
@@ -365,6 +402,9 @@ pub struct ContextMenu {
     /// The item keyboard focus is on, drawn with the ring.
     highlighted_index: Option<usize>,
     hovered_index: Option<usize>,
+    /// The key keyboard focus is on; when set, no item is highlighted.
+    highlighted_key: Option<usize>,
+    hovered_key: Option<usize>,
 }
 
 impl EventEmitter<DismissEvent> for ContextMenu {}
@@ -387,6 +427,29 @@ impl ContextMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
+        Self::open_with_quick_keys(
+            label,
+            MenuKeys::default(),
+            entries,
+            origin,
+            opener,
+            window,
+            cx,
+        )
+    }
+
+    /// As [`Self::open`], with a row of `keys` above the items (a message's quick reactions).
+    /// Left and Right move between the keys, Down goes to the first item and Up from the first
+    /// item comes back to the keys.
+    pub fn open_with_quick_keys(
+        label: impl Into<SharedString>,
+        keys: MenuKeys,
+        entries: Vec<MenuEntry>,
+        origin: MenuOrigin,
+        opener: Option<FocusHandle>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let viewport = window.viewport_size();
         let rem_size = window.rem_size();
         let in_window = |pixels: f32| f32::from(length(pixels).to_pixels(rem_size));
@@ -394,7 +457,7 @@ impl ContextMenu {
             origin,
             (
                 in_window(COMPONENT_CONTEXT_MENU_MIN_WIDTH),
-                in_window(estimated_menu_height(&entries)),
+                in_window(estimated_menu_height(&keys.keys, &entries)),
             ),
             (f32::from(viewport.width), f32::from(viewport.height)),
             0.0,
@@ -408,12 +471,16 @@ impl ContextMenu {
         };
         Self {
             label: label.into(),
+            keys: keys.keys,
+            keys_label: keys.label,
             entries,
             focus_handle,
             opener,
             placement,
             highlighted_index,
             hovered_index: None,
+            highlighted_key: None,
+            hovered_key: None,
         }
     }
 
@@ -428,6 +495,12 @@ impl ContextMenu {
     #[must_use]
     pub fn highlighted_index(&self) -> Option<usize> {
         self.highlighted_index
+    }
+
+    /// The key of the row above the items that keyboard focus is on.
+    #[must_use]
+    pub fn highlighted_key(&self) -> Option<usize> {
+        self.highlighted_key
     }
 
     /// Closes, giving focus back to the opener first.
@@ -449,18 +522,71 @@ impl ContextMenu {
         (item.on_select)(window, cx);
     }
 
+    fn choose_key(&mut self, key_index: usize, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(key) = self.keys.get(key_index).cloned() else {
+            return;
+        };
+        self.dismiss(window, cx);
+        (key.on_select)(window, cx);
+    }
+
+    /// Keys while focus is on the row of keys: `true` when handled.
+    fn on_key_in_quick_keys(
+        &mut self,
+        key: &str,
+        key_index: usize,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        let key_count = self.keys.len();
+        match key {
+            "left" => self.highlighted_key = Some((key_index + key_count - 1) % key_count),
+            "right" => self.highlighted_key = Some((key_index + 1) % key_count),
+            "home" => self.highlighted_key = Some(0),
+            "end" => self.highlighted_key = Some(key_count - 1),
+            "down" if self.items().next().is_some() => {
+                self.highlighted_key = None;
+                self.highlighted_index = Some(0);
+            }
+            "enter" | "space" => {
+                self.choose_key(key_index, window, cx);
+                return true;
+            }
+            _ => return false,
+        }
+        cx.notify();
+        true
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
         let keystroke = &event.keystroke;
         let item_count = self.items().count();
         if keystroke.modifiers.modified() && !keystroke.modifiers.shift {
             return;
         }
+        if keystroke.key == "escape" {
+            cx.stop_propagation();
+            self.dismiss(window, cx);
+            return;
+        }
+        if let Some(key_index) = self.highlighted_key
+            && self.on_key_in_quick_keys(&keystroke.key, key_index, window, cx)
+        {
+            cx.stop_propagation();
+            return;
+        }
+        // Up from the first item, or Left or Right before any item, reaches the row of keys.
+        let is_up_from_first_item = keystroke.key == "up" && self.highlighted_index == Some(0);
+        let is_sideways_from_nowhere =
+            matches!(keystroke.key.as_str(), "left" | "right") && self.highlighted_index.is_none();
+        if !self.keys.is_empty() && (is_up_from_first_item || is_sideways_from_nowhere) {
+            cx.stop_propagation();
+            self.highlighted_index = None;
+            self.highlighted_key = Some(0);
+            cx.notify();
+            return;
+        }
         match keystroke.key.as_str() {
-            "escape" => {
-                cx.stop_propagation();
-                self.dismiss(window, cx);
-                return;
-            }
             "enter" | "space" => {
                 cx.stop_propagation();
                 if let Some(index) = self.highlighted_index {
@@ -480,6 +606,8 @@ impl ContextMenu {
             });
         if let Some(next) = next {
             cx.stop_propagation();
+            // A letter typed on the row of keys moves to its item too.
+            self.highlighted_key = None;
             self.highlighted_index = Some(next);
             cx.notify();
         }
@@ -500,6 +628,87 @@ fn item_colours(tone: MenuItemTone, is_active: bool, tokens: &ThemeTokens) -> (H
         ),
         (MenuItemTone::Accent, false) => (color(tokens.component_context_menu_accent_text), None),
         (MenuItemTone::Normal, false) => (color(tokens.component_context_menu_item_text), None),
+    }
+}
+
+impl ContextMenu {
+    /// The row of keys above the items, drawn as the message's reaction chips (the web phone
+    /// sheet's `MessageMenuQuickReactions.svelte`, at the desktop's 32 px).
+    fn render_quick_keys(&self, window: &Window, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let tokens = theme(cx);
+        let is_keyboard_focus = window.last_input_was_keyboard();
+        let keys = self.keys.iter().enumerate().map(|(index, key)| {
+            let is_highlighted = self.highlighted_key == Some(index);
+            let is_lit = is_highlighted || self.hovered_key == Some(index);
+            let (background, border) = if key.is_checked {
+                (
+                    tokens.component_reaction_background_me,
+                    tokens.component_reaction_border_me,
+                )
+            } else if is_lit {
+                (
+                    tokens.component_reaction_background_hover,
+                    tokens.component_reaction_border_hover,
+                )
+            } else {
+                (
+                    tokens.component_reaction_background,
+                    tokens.component_reaction_border,
+                )
+            };
+            div()
+                .id(ElementId::named_usize("menu-key", index))
+                .role(Role::MenuItemCheckBox)
+                .aria_label(key.label.clone())
+                .aria_toggled(if key.is_checked {
+                    Toggled::True
+                } else {
+                    Toggled::False
+                })
+                .when(
+                    is_highlighted,
+                    gpui::StatefulInteractiveElement::aria_active_descendant,
+                )
+                .relative()
+                .flex()
+                .flex_none()
+                .items_center()
+                .justify_center()
+                .size(length(COMPONENT_ACTION_BAR_BUTTON_SIZE))
+                .rounded(length(COMPONENT_REACTION_RADIUS))
+                .border(length(COMPONENT_REACTION_BORDER_WIDTH))
+                .border_color(color(border))
+                .bg(color(background))
+                .text_size(length(COMPONENT_ACTION_BAR_ICON_SIZE))
+                .line_height(length(COMPONENT_ACTION_BAR_ICON_SIZE))
+                .font_weight(crate::emoji_picker::emoji_glyph_weight())
+                .cursor_pointer()
+                .on_hover(cx.listener(move |menu, is_hovered: &bool, _, cx| {
+                    menu.hovered_key = if *is_hovered {
+                        Some(index)
+                    } else {
+                        menu.hovered_key.filter(|hovered| *hovered != index)
+                    };
+                    cx.notify();
+                }))
+                .on_click(cx.listener(move |menu, _, window, cx| {
+                    menu.choose_key(index, window, cx);
+                }))
+                .child(key.glyph.clone())
+                .when(is_highlighted && is_keyboard_focus, |key| {
+                    key.child(inset_focus_ring(COMPONENT_REACTION_RADIUS, cx))
+                })
+        });
+        div()
+            .id("menu-keys")
+            .role(Role::Group)
+            .aria_label(self.keys_label.clone())
+            .flex()
+            .gap(length(SPACE_XS))
+            .px(length(COMPONENT_CONTEXT_MENU_ITEM_PADDING_INLINE))
+            .py(length(SPACE_2XS))
+            .children(keys)
+            .into_any_element()
     }
 }
 
@@ -620,6 +829,8 @@ impl Render for ContextMenu {
             })
             .collect();
 
+        let quick_keys = (!self.keys.is_empty()).then(|| self.render_quick_keys(window, cx));
+
         let is_above = self.placement.is_above;
         let drop_distance = SPACE_2XS;
         let card = div()
@@ -655,6 +866,7 @@ impl Render for ContextMenu {
             .border_color(color(tokens.component_context_menu_border))
             .bg(color(tokens.component_context_menu_background))
             .shadow(shadow(tokens.component_context_menu_shadow))
+            .children(quick_keys)
             .children(rows)
             .with_animation(
                 "context-menu-enter",
@@ -681,6 +893,7 @@ impl Render for ContextMenu {
 }
 
 debug_without_callbacks!(MenuItem, label);
+debug_without_callbacks!(MenuKey, glyph);
 debug_without_callbacks!(MenuEntry);
 debug_without_callbacks!(ContextMenu, label);
 
@@ -804,6 +1017,17 @@ mod tests {
             MenuEntry::Separator,
             MenuEntry::Item(noop),
         ];
-        assert!((estimated_menu_height(&entries) - (32.0 * 2.0 + 9.0 + 14.0)).abs() < 1e-4);
+        assert!((estimated_menu_height(&[], &entries) - (32.0 * 2.0 + 9.0 + 14.0)).abs() < 1e-4);
+        let key = MenuKey {
+            glyph: "👍".into(),
+            label: "React with 👍".into(),
+            is_checked: false,
+            on_select: Arc::new(|_, _| {}),
+        };
+        assert!(
+            (estimated_menu_height(&[key], &entries) - (40.0 + 32.0 * 2.0 + 9.0 + 14.0)).abs()
+                < 1e-4,
+            "the row of keys: a 32 px key and `space.2xs` above and below"
+        );
     }
 }

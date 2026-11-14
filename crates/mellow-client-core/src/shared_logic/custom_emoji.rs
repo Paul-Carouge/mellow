@@ -4,6 +4,7 @@
 
 use std::collections::HashMap;
 use std::hash::BuildHasher;
+use std::ops::Range;
 use std::sync::LazyLock;
 
 use icu_properties::CodePointSetData;
@@ -44,6 +45,20 @@ fn is_emoji_grapheme(grapheme: &str) -> bool {
             || CodePointSetData::new::<EmojiPresentation>().contains(character)
             || CodePointSetData::new::<RegionalIndicator>().contains(character)
     })
+}
+
+/// Where `text`'s emoji are, in bytes, one range per emoji grapheme (a ZWJ family, a flag or a
+/// keycap is one): a client draws them from its colour emoji font.
+#[must_use]
+pub fn emoji_grapheme_ranges(text: &str) -> Vec<Range<usize>> {
+    // Every emoji grapheme holds a code point past ASCII, even a keycap (U+20E3).
+    if text.is_ascii() {
+        return Vec::new();
+    }
+    text.grapheme_indices(true)
+        .filter(|(_, grapheme)| is_emoji_grapheme(grapheme))
+        .map(|(start, grapheme)| start..start + grapheme.len())
+        .collect()
 }
 
 /// How many emoji `text` holds; `None` if it holds anything but emoji and spaces.
@@ -183,6 +198,21 @@ mod tests {
             },
         );
         is_jumbo_emoji_message(&blocks)
+    }
+
+    #[test]
+    fn emoji_ranges_cover_whole_graphemes_and_leave_text_and_symbols_alone() {
+        let text = "Salut 😐 et ❤️ puis 👩‍👩‍👧, ☺ et #️⃣ !";
+        let emoji: Vec<&str> = emoji_grapheme_ranges(text)
+            .into_iter()
+            .map(|range| &text[range])
+            .collect();
+        // ☺ without a selector is text presentation: browsers draw it from a text font too.
+        assert_eq!(emoji, ["😐", "❤️", "👩‍👩‍👧", "#️⃣"]);
+        assert_eq!(
+            emoji_grapheme_ranges("plain ASCII # 1"),
+            Vec::<Range<usize>>::new()
+        );
     }
 
     #[test]

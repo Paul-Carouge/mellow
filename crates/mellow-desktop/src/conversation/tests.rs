@@ -13,6 +13,7 @@ use crate::composer::bind_composer_keys;
 use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person, sample_state};
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
+use mellow_client_core::shared_logic::context_menus_people::message_menu_quick_reactions;
 
 mod forwards;
 
@@ -345,30 +346,6 @@ fn a_refused_send_stays_failed_when_the_composer_holds_another_message(cx: &mut 
     assert!(
         is_still_queued,
         "nothing typed is lost: Retry and Delete stay"
-    );
-}
-
-#[gpui::test]
-fn copy_message_id_puts_the_id_on_the_clipboard_and_says_so(cx: &mut TestAppContext) {
-    let (view, _session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
-    cx.update(|window, cx| {
-        view.update(cx, |view, cx| {
-            view.run_menu_action(
-                Snowflake::from_raw(10_001),
-                MessageMenuAction::CopyMessageId,
-                window,
-                cx,
-            );
-        });
-    });
-    let copied = cx
-        .read_from_clipboard()
-        .and_then(|item| item.text())
-        .unwrap_or_default();
-    assert_eq!(copied, "10001");
-    assert_eq!(
-        view.read_with(cx, |view, _| view.announcement.to_string()),
-        "Message ID copied."
     );
 }
 
@@ -850,7 +827,7 @@ fn menu_actions(
         let message = view
             .cached_message(Snowflake::from_raw(message_id), cx)
             .expect("a loaded message");
-        message_menu_actions(view.message_facts(&message, cx), &view.quick_reactions(cx))
+        message_menu_actions(view.message_facts(&message, cx))
     })
 }
 
@@ -891,14 +868,21 @@ fn add_reaction_and_quick_reactions_need_add_reactions_and_the_picker_holds_the_
     allow_new_reactions(&session, cx);
     let lines = menu_actions(&view, 10_001, cx);
     assert_eq!(
-        lines[..4],
+        lines[..2],
         [
-            MenuLine::Action(MessageMenuAction::ToggleReaction("👍".to_owned())),
-            MenuLine::Action(MessageMenuAction::ToggleReaction("❤️".to_owned())),
-            MenuLine::Action(MessageMenuAction::ToggleReaction("😂".to_owned())),
             MenuLine::Action(MessageMenuAction::AddReaction),
-        ]
+            MenuLine::Separator,
+        ],
+        "the quick reactions are not items: they are the menu's row of keys"
     );
+    let quick = cx.update(|_, cx| {
+        let view = view.read(cx);
+        let message = view
+            .cached_message(Snowflake::from_raw(10_001), cx)
+            .expect("a loaded message");
+        message_menu_quick_reactions(view.message_facts(&message, cx), &view.quick_reactions(cx))
+    });
+    assert_eq!(quick, ["👍", "❤️", "😂"]);
     let message_id = Snowflake::from_raw(10_001);
     cx.update(|window, cx| {
         view.update(cx, |view, cx| {
@@ -920,17 +904,12 @@ fn add_reaction_and_quick_reactions_need_add_reactions_and_the_picker_holds_the_
 }
 
 #[gpui::test]
-fn a_quick_reaction_from_the_menu_becomes_the_first_quick_reaction(cx: &mut TestAppContext) {
+fn a_quick_reaction_becomes_the_first_quick_reaction(cx: &mut TestAppContext) {
     let (view, session, cx) = open_general(cx, vec![message(10_001, &ana(), "hi")], None);
     allow_new_reactions(&session, cx);
-    cx.update(|window, cx| {
+    cx.update(|_, cx| {
         view.update(cx, |view, cx| {
-            view.run_menu_action(
-                Snowflake::from_raw(10_001),
-                MessageMenuAction::ToggleReaction("😂".to_owned()),
-                window,
-                cx,
-            );
+            view.react_with_quick_reaction(Snowflake::from_raw(10_001), "😂", cx);
         });
     });
     let quick = view.read_with(cx, ConversationView::quick_reactions);
@@ -1081,4 +1060,32 @@ fn only_a_moderator_removes_all_reactions_and_is_asked_first(cx: &mut TestAppCon
     assert!(view.read_with(cx, |view, _| view.confirmation.is_some()));
     press(cx, "escape");
     assert!(view.read_with(cx, |view, _| view.confirmation.is_none()));
+}
+
+#[gpui::test]
+fn the_menus_quick_reaction_keys_are_checked_for_reactions_already_given(cx: &mut TestAppContext) {
+    let mut reacted = message(10_001, &ana(), "hi");
+    reacted.reactions = vec![mellow_protocol::ReactionSummary {
+        emoji: "👍".to_owned(),
+        count: 2,
+        me: true,
+    }];
+    let (view, session, cx) = open_general(cx, vec![reacted], None);
+    allow_new_reactions(&session, cx);
+    let keys = cx.update(|_, cx| {
+        view.update(cx, |view, cx| {
+            let message = view
+                .cached_message(Snowflake::from_raw(10_001), cx)
+                .expect("a loaded message");
+            let facts = view.message_facts(&message, cx);
+            view.message_menu_keys(&message, facts, cx)
+        })
+    });
+    assert_eq!(keys.label.as_ref(), "Add reaction");
+    let checked: Vec<(&str, bool)> = keys
+        .keys
+        .iter()
+        .map(|key| (key.glyph.as_ref(), key.is_checked))
+        .collect();
+    assert_eq!(checked, [("👍", true), ("❤️", false), ("😂", false)]);
 }

@@ -28,7 +28,7 @@ impl ConversationView {
         let Some(settings) = self.session.read(cx).gif_settings().cloned() else {
             return;
         };
-        let Some(anchor) = self.composer.read(cx).gif_button_bounds(cx) else {
+        let Some(anchor) = self.composer.read(cx).gif_picker_anchor(cx) else {
             return;
         };
         let session = self.session.clone();
