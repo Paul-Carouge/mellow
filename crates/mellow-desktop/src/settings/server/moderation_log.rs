@@ -6,8 +6,8 @@
 use std::collections::HashMap;
 
 use gpui::{
-    Context, Entity, EventEmitter, InteractiveElement as _, IntoElement, ParentElement as _,
-    Render, Role, StatefulInteractiveElement as _, Styled as _, Window, div,
+    Context, ElementId, Entity, EventEmitter, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, StatefulInteractiveElement as _, Styled as _, Window, div,
     prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::moderation_log::{
@@ -20,7 +20,7 @@ use mellow_protocol::{AuditLogEntry, AuditLogQuery, Permissions, PublicUser, Sno
 use super::list_rows::{
     empty_sentence, list_row, list_status, person_avatar, secondary_line, text_column,
 };
-use crate::components::{Button, with_type};
+use crate::components::{Button, is_picture_row_pointed_at, track_picture_row_pointer, with_type};
 use crate::i18n::catalogue::PermissionsOrAllowOrDeny;
 use crate::i18n::{Strings, strings};
 use crate::messages::{full_timestamp_label, local_date_time};
@@ -330,8 +330,12 @@ impl Render for ServerModerationLogPage {
         let body_color = color(tokens.component_settings_body_text);
         let mut rows = Vec::with_capacity(entries.len());
         for (index, entry) in entries.iter().enumerate() {
+            let row_id = ElementId::from(("audit-entry", index));
+            let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
             let avatar = match context.actor_of(entry) {
-                Some(actor) => person_avatar(actor, window, cx).into_any_element(),
+                Some(actor) => {
+                    person_avatar(actor, is_row_pointed_at, window, cx).into_any_element()
+                }
                 None => div()
                     .flex_none()
                     .size(length(COMPONENT_SERVER_SETTINGS_AVATAR_SIZE))
@@ -350,9 +354,8 @@ impl Render for ServerModerationLogPage {
                 })
                 .collect();
             rows.push(
-                list_row(cx)
+                track_picture_row_pointer(list_row(cx).id(row_id.clone()), row_id, window)
                     .items_start()
-                    .id(("audit-entry", index))
                     .role(Role::ListItem)
                     .aria_position_in_set(index + 1)
                     .aria_size_of_set(entries.len())

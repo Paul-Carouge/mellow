@@ -121,10 +121,15 @@ pub fn start(
         cx.activate(true);
         return Ok(());
     }
-    // The theme and language chosen in User settings, once the preferences are read and at
-    // each change; most changes are of something else, so each applies only what differs.
-    cx.observe_global::<preferences::PreferencesStore>(|cx| {
-        if theme::apply_chosen_theme(cx) {
+    // The theme, language and picture animation chosen in User settings, once the preferences
+    // are read and at each change; most changes are of something else, so each applies only what
+    // differs.
+    let mut shown_picture_animation = None;
+    cx.observe_global::<preferences::PreferencesStore>(move |cx| {
+        let picture_animation = preferences::preferences(cx).map(|chosen| chosen.picture_animation);
+        let has_picture_animation_changed = picture_animation != shown_picture_animation;
+        shown_picture_animation = picture_animation;
+        if theme::apply_chosen_theme(cx) || has_picture_animation_changed {
             cx.refresh_windows();
         }
         if i18n::apply_chosen_language(cx) {

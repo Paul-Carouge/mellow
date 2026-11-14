@@ -1102,8 +1102,10 @@ impl MelliTicker {
 impl Render for MelliView {
     fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        // Melli is animated while it can be seen, focused or not (the owner's choice, §2.10).
-        let is_still = self.look.is_still || cx.reduce_motion();
+        // Melli is animated while it can be seen, focused or not (the owner's choice, §2.10),
+        // under reduced motion only with "Always animate" (User settings, Accessibility).
+        let is_still =
+            self.look.is_still || !crate::pictures::is_picture_animation_wanted(true, cx);
         // The executor's clock, which tests can drive.
         let now = cx.background_executor().now();
         let frame = self.clock.frame(self.look.state, now, is_still);
@@ -1371,6 +1373,23 @@ mod tests {
         assert!(
             cx.update(|_, cx| cx.global::<MelliTicker>().timer.is_none()),
             "the timer stops by itself"
+        );
+
+        // "Always animate" wins over the system's reduced motion.
+        cx.update(|_, cx| {
+            crate::preferences::change_preferences(cx, |preferences| {
+                preferences.picture_animation = crate::preferences::PictureAnimationChoice::Always;
+            });
+            // As `start` does when the choice changes.
+            cx.refresh_windows();
+        });
+        cx.run_until_parked();
+        let always = drawn_frames();
+        run_one_second(cx);
+        assert_eq!(
+            drawn_frames() - always,
+            SMALL_FRAMES_PER_SECOND + FRAMES_PER_SECOND,
+            "Melli plays again under reduced motion"
         );
     }
 

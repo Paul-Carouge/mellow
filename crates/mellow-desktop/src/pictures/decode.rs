@@ -9,11 +9,13 @@ use image::codecs::webp::WebPDecoder;
 use image::imageops::{self, FilterType};
 use image::{
     AnimationDecoder, Delay, DynamicImage, Frame, ImageDecoder, ImageFormat, ImageReader, Limits,
-    Rgba, RgbaImage, metadata::Orientation,
+    Rgba, RgbaImage,
+    metadata::{LoopCount, Orientation},
 };
 
 use super::avif::{decode_avif, looks_like_avif};
 use super::colour::convert_rgba_to_srgb_with_profile;
+use super::playback::PlayCount;
 use super::{Animation, DisplaySize, PictureDecodeError};
 
 /// The server decodes uploads up to 24 MP (ADR-0033) and keeps larger attachments as uploaded;
@@ -195,10 +197,29 @@ pub(crate) fn decode_frames(
     animation: Animation,
     display: DisplaySize,
 ) -> Result<Vec<Frame>, PictureDecodeError> {
+    decode_animation(bytes, animation, display).map(|(frames, _)| frames)
+}
+
+/// How many times browsers play an animation with this loop count: GIF's counts the repeats
+/// after the first play, WebP's the plays.
+fn play_count_of(loop_count: LoopCount, is_gif: bool) -> PlayCount {
+    match loop_count {
+        LoopCount::Infinite => None,
+        LoopCount::Finite(count) if is_gif => Some(count.get().saturating_add(1)),
+        LoopCount::Finite(count) => Some(count.get()),
+    }
+}
+
+/// [`decode_frames`], with how many times the animation plays.
+pub(crate) fn decode_animation(
+    bytes: &[u8],
+    animation: Animation,
+    display: DisplaySize,
+) -> Result<(Vec<Frame>, PlayCount), PictureDecodeError> {
     if looks_like_avif(bytes) {
-        return Ok(still_frame(
-            decode_avif(bytes, MAXIMUM_DECODED_PIXELS)?,
-            display,
+        return Ok((
+            still_frame(decode_avif(bytes, MAXIMUM_DECODED_PIXELS)?, display),
+            None,
         ));
     }
     match image::guess_format(bytes) {
@@ -212,13 +233,17 @@ pub(crate) fn decode_frames(
             if u64::from(width) * u64::from(height) > u64::from(MAXIMUM_DECODED_PIXELS) {
                 return Err(PictureDecodeError::TooLarge);
             }
-            animation_frames(decoder.into_frames(), animation, display)
+            let play_count = play_count_of(decoder.loop_count(), true);
+            Ok((
+                animation_frames(decoder.into_frames(), animation, display)?,
+                play_count,
+            ))
         }
         Ok(ImageFormat::WebP) => {
             let mut decoder = WebPDecoder::new(Cursor::new(bytes))
                 .map_err(|_| PictureDecodeError::Undecodable)?;
             if !decoder.has_animation() {
-                return Ok(still_frame(decode_still_raster(bytes)?, display));
+                return Ok((still_frame(decode_still_raster(bytes)?, display), None));
             }
             decoder
                 .set_limits(decoder_limits())
@@ -231,10 +256,14 @@ pub(crate) fn decode_frames(
             decoder
                 .set_background_color(Rgba([0, 0, 0, 0]))
                 .map_err(|_| PictureDecodeError::Undecodable)?;
-            animation_frames(decoder.into_frames(), animation, display)
+            let play_count = play_count_of(decoder.loop_count(), false);
+            Ok((
+                animation_frames(decoder.into_frames(), animation, display)?,
+                play_count,
+            ))
         }
         Ok(ImageFormat::Png | ImageFormat::Jpeg) => {
-            Ok(still_frame(decode_still_raster(bytes)?, display))
+            Ok((still_frame(decode_still_raster(bytes)?, display), None))
         }
         _ => Err(PictureDecodeError::Undecodable),
     }
@@ -253,10 +282,14 @@ mod tests {
     };
 
     fn gif_of(frame_count: u8, side: u32) -> Vec<u8> {
+        gif_repeating(frame_count, side, Repeat::Infinite)
+    }
+
+    fn gif_repeating(frame_count: u8, side: u32, repeat: Repeat) -> Vec<u8> {
         let mut bytes = Vec::new();
         {
             let mut encoder = GifEncoder::new(&mut bytes);
-            encoder.set_repeat(Repeat::Infinite).unwrap();
+            encoder.set_repeat(repeat).unwrap();
             for index in 0..frame_count {
                 let picture = RgbaImage::from_pixel(side, side, Rgba([index, 0, 200, 255]));
                 encoder
@@ -270,6 +303,24 @@ mod tests {
             }
         }
         bytes
+    }
+
+    #[test]
+    fn a_gif_plays_its_repeats_after_the_first_play_or_forever() {
+        let (_, forever) =
+            decode_animation(&gif_of(3, 8), Animation::Animate, LARGE_DISPLAY).unwrap();
+        assert_eq!(forever, None);
+        let (_, three_plays) = decode_animation(
+            &gif_repeating(3, 8, Repeat::Finite(2)),
+            Animation::Animate,
+            LARGE_DISPLAY,
+        )
+        .unwrap();
+        assert_eq!(
+            three_plays,
+            Some(3),
+            "browsers play a GIF repeated twice three times"
+        );
     }
 
     fn png_of(picture: &RgbaImage) -> Vec<u8> {

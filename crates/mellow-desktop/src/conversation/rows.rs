@@ -37,8 +37,9 @@ use crate::i18n::strings;
 use crate::messages::{
     DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, UnreadDivider,
     day_divider_label, local_date_time, local_day_of, message_gif_url, message_summary,
-    picture_animation, picture_for_box, reaction_pills, reply_reference, time_of_day_label,
+    picture_for_box, reaction_pills, reply_reference, time_of_day_label,
 };
+use crate::pictures::chosen_profile_image_animation;
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -614,10 +615,12 @@ impl ConversationView {
             .into_any_element()
     }
 
-    /// A user's picture at `side` token pixels, when they have one.
+    /// A user's picture at `side` token pixels, when they have one; animated while
+    /// `is_row_active` (the message is pointed at or focused), as `Avatar.svelte`.
     fn author_picture(
         user: &PublicUser,
         side: f32,
+        is_row_active: bool,
         window: &Window,
         cx: &App,
     ) -> Option<gpui::ImageSource> {
@@ -626,7 +629,7 @@ impl ConversationView {
                 DownloadableFile::ProfileImage(avatar.id),
                 side,
                 side,
-                picture_animation(cx),
+                chosen_profile_image_animation(avatar, is_row_active, cx),
                 window,
             )
         })
@@ -715,6 +718,9 @@ impl ConversationView {
                     .map(|original| (original.id, original))
                     .into_iter()
                     .collect();
+                let is_row_active = self.hovered_message_id == Some(message.id)
+                    || (self.focused_row_key.as_deref() == Some(row.key.as_str())
+                        && self.list_focus.contains_focused(window, cx));
                 let reply = reply_reference(
                     message,
                     &originals,
@@ -728,6 +734,7 @@ impl ConversationView {
                         Self::author_picture(
                             author,
                             COMPONENT_MESSAGE_REPLY_AVATAR_SIZE,
+                            is_row_active,
                             window,
                             cx,
                         )
@@ -745,9 +752,6 @@ impl ConversationView {
                     || message.checklist.is_some()
                     || message.progress_bar.is_some())
                 .then(|| message.clone());
-                let is_row_active = self.hovered_message_id == Some(message_id)
-                    || (self.focused_row_key.as_deref() == Some(row.key.as_str())
-                        && self.list_focus.contains_focused(window, cx));
                 let add_reaction = self.reactions_add_button(
                     message_id,
                     rights.can_add_reactions,
@@ -763,6 +767,7 @@ impl ConversationView {
                             picture: Self::author_picture(
                                 &message.author,
                                 COMPONENT_MESSAGE_AVATAR_SIZE,
+                                is_row_active,
                                 window,
                                 cx,
                             ),
@@ -845,7 +850,8 @@ impl ConversationView {
                 let retry_view = view.clone();
                 let discard_view = view.clone();
                 let picture =
-                    Self::author_picture(&author, COMPONENT_MESSAGE_AVATAR_SIZE, window, cx);
+                    // A message on its way is not in the hover tracking: its avatar stays still.
+                    Self::author_picture(&author, COMPONENT_MESSAGE_AVATAR_SIZE, false, window, cx);
                 let item = MessageItem::new(
                     row_id.clone(),
                     MessageItemContent {

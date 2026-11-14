@@ -224,9 +224,6 @@ impl DuskShell {
                                 presence_name(strings, presence),
                                 custom_status.as_deref(),
                             );
-                            let picture = user.avatar.map(|image| {
-                                profile_picture(image, COMPONENT_MEMBER_ROW_AVATAR_SIZE, window)
-                            });
                             let row_id = ElementId::from(("member-row", user.id.raw()));
                             let focus_handle = remembered_focus_handle(&row_id, window, cx);
                             if self.member_profile.take_row_to_focus(user.id) {
@@ -236,6 +233,15 @@ impl DuskShell {
                             let hover = remembered_hover(&row_id, window, cx);
                             let is_hovered = *hover.read(cx);
                             let is_ring_shown = is_focus_visible(&focus_handle, window);
+                            let picture = user.avatar.map(|image| {
+                                profile_picture(
+                                    image,
+                                    COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                                    is_hovered || focus_handle.contains_focused(window, cx),
+                                    window,
+                                    cx,
+                                )
+                            });
                             let user_id = user.id;
                             let row_entity = entity.clone();
                             let row_bounds = remembered_bounds(&row_id, window, cx);

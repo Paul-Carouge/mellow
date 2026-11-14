@@ -28,7 +28,7 @@ use crate::components::{
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, strings};
-use crate::messages::{local_day_of, picture_animation, picture_for_box};
+use crate::messages::{local_day_of, picture_for_box};
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -696,7 +696,8 @@ impl MessageSearchView {
                         mellow_client_core::DownloadableFile::ProfileImage(avatar.id),
                         COMPONENT_SEARCH_SUGGESTION_AVATAR_SIZE,
                         COMPONENT_SEARCH_SUGGESTION_AVATAR_SIZE,
-                        picture_animation(cx),
+                        // The highlighted suggestion, by pointer or arrow keys, is its hover area.
+                        crate::pictures::chosen_profile_image_animation(avatar, is_active, cx),
                         window,
                     )
                 });

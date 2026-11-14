@@ -180,7 +180,17 @@ pub fn group_sheet_rows(
             .child(count.to_string())
             .into_any_element(),
     );
-    for person in people {
+    // The pointer over a row plays its animated avatar (`Avatar.svelte`'s hover area).
+    let row_hovers: Vec<_> = people
+        .iter()
+        .map(|person| {
+            let row_id = ElementId::from(("group-member", person.id.raw()));
+            let row_hover = remembered_hover(&row_id, window, cx);
+            (row_id, row_hover)
+        })
+        .collect();
+    let state = session.read(cx).state();
+    for (person, (row_id, row_hover)) in people.into_iter().zip(row_hovers) {
         let presence = state.presence_of(person.id);
         let is_online = presence != PresenceStatus::Offline;
         let is_person_owner = Some(person.id) == group.owner_id;
@@ -197,9 +207,15 @@ pub fn group_sheet_rows(
         } else {
             custom_status
         };
-        let picture = person
-            .avatar
-            .map(|image| profile_picture(image, COMPONENT_MEMBER_ROW_AVATAR_SIZE, window));
+        let picture = person.avatar.map(|image| {
+            profile_picture(
+                image,
+                COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                *row_hover.read(cx),
+                window,
+                cx,
+            )
+        });
         let mut avatar = Avatar::new(
             AvatarPerson::from_user(&person, picture),
             COMPONENT_MEMBER_ROW_AVATAR_SIZE,
@@ -234,7 +250,13 @@ pub fn group_sheet_rows(
         let menu_person = person.clone();
         rows.push(
             div()
-                .id(ElementId::from(("group-member", person.id.raw())))
+                .id(row_id)
+                .on_hover(move |is_hovered, _, cx| {
+                    row_hover.update(cx, |remembered, cx| {
+                        *remembered = *is_hovered;
+                        cx.notify();
+                    });
+                })
                 .role(Role::ListItem)
                 // One sentence for screen readers; the owner is said in words, never by a mark.
                 .aria_label(label)

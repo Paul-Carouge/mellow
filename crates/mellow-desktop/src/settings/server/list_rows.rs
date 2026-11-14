@@ -13,7 +13,7 @@ use crate::components::{
     Avatar, AvatarPerson, LiveRegion as _, SettingsListStatus, SettingsListStatusKind, with_type,
 };
 use crate::i18n::strings;
-use crate::messages::{picture_animation, picture_for_box};
+use crate::messages::picture_for_box;
 use crate::theme::tokens::{
     COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, COMPONENT_SERVER_SETTINGS_ROW_GAP,
     COMPONENT_SERVER_SETTINGS_ROW_MIN_HEIGHT, COMPONENT_SERVER_SETTINGS_ROW_PADDING_BLOCK,
@@ -57,13 +57,19 @@ pub(super) fn empty_sentence(text: impl Into<SharedString>, cx: &App) -> Div {
         .child(text.into())
 }
 
-pub(super) fn person_avatar(user: &PublicUser, window: &Window, cx: &App) -> impl IntoElement {
+/// A person's avatar in a list row, playing while `is_row_pointed_at`.
+pub(super) fn person_avatar(
+    user: &PublicUser,
+    is_row_pointed_at: bool,
+    window: &Window,
+    cx: &App,
+) -> impl IntoElement {
     let picture = user.avatar.as_ref().map(|avatar| {
         picture_for_box(
             DownloadableFile::ProfileImage(avatar.id),
             COMPONENT_SERVER_SETTINGS_AVATAR_SIZE,
             COMPONENT_SERVER_SETTINGS_AVATAR_SIZE,
-            picture_animation(cx),
+            crate::pictures::chosen_profile_image_animation(avatar, is_row_pointed_at, cx),
             window,
         )
     });

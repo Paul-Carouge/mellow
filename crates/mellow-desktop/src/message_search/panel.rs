@@ -37,14 +37,15 @@ use super::MessageSearchView;
 use super::field::FieldPlacement;
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonSize, ButtonVariant, IconButton, LiveRegion as _,
-    focus_ring, icon, is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
+    focus_ring, icon, is_focus_visible, is_picture_row_pointed_at, polite_live_region,
+    remembered_focus_handle, track_picture_row_pointer, with_type,
 };
 use crate::home::conversation_display_name;
 use crate::i18n::{Strings, format_count, strings};
 use crate::messages::{
     ForwardFrame, ForwardOrigin, MessageAttachments, MessageBody, MessageMarkdown,
     full_timestamp_label, local_date_time, locale, message_summary, message_timestamp_label,
-    picture_animation, picture_for_box,
+    picture_for_box,
 };
 use crate::session::now_unix_milliseconds;
 use crate::sign_in_form::describe_error;
@@ -1109,12 +1110,14 @@ impl MessageSearchView {
         let author_name = display_name(&message.author).to_owned();
         let sent = local_date_time(message_id.unix_milliseconds());
         let full_time: SharedString = full_timestamp_label(sent, catalogue).into();
+        let slip_id = ElementId::Name(format!("search-result-{}", message_id.raw()).into());
+        let is_slip_pointed_at = is_picture_row_pointed_at(&slip_id, cx);
         let picture = message.author.avatar.as_ref().map(|avatar| {
             picture_for_box(
                 mellow_client_core::DownloadableFile::ProfileImage(avatar.id),
                 COMPONENT_SEARCH_RESULT_AVATAR_SIZE,
                 COMPONENT_SEARCH_RESULT_AVATAR_SIZE,
-                picture_animation(cx),
+                crate::pictures::chosen_profile_image_animation(avatar, is_slip_pointed_at, cx),
                 window,
             )
         });
@@ -1149,14 +1152,12 @@ impl MessageSearchView {
         };
         let jump_view = cx.entity().downgrade();
         let slip_view = cx.entity().downgrade();
-        let slip_id = SharedString::from(format!("search-result-{}", message_id.raw()));
         let jump_id = ElementId::Name(format!("search-jump-{}", message_id.raw()).into());
         let jump_focus = remembered_focus_handle(&jump_id, window, cx);
         // "Voir" waits for the pointer on the slip or keyboard focus, as on the web: at rest the
         // results read as messages, not as a column of buttons.
         let is_jump_shown = is_focus_visible(&jump_focus, window);
-        div()
-            .id(ElementId::Name(slip_id))
+        track_picture_row_pointer(div().id(slip_id.clone()), slip_id, window)
             .group(SEARCH_SLIP_GROUP)
             .role(Role::Article)
             .aria_label(catalogue.messages().author_said(&author_name, ""))

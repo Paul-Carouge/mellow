@@ -6,6 +6,7 @@
 //! navigator becomes a drawer and the member sheet an overlay. Every length and colour is a token.
 
 mod call_view;
+mod channel_marks;
 mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;
@@ -54,7 +55,9 @@ use crate::home::{Home, HomeEvent, OpenPersonMenu};
 use crate::local_widgets::error_line;
 use crate::message_search::MessageSearchView;
 use crate::navigation::{Direction, Navigation, Place};
-use crate::pictures::{Animation, DisplaySize, PictureRequest, picture_source};
+use crate::pictures::{
+    Animation, DisplaySize, PictureRequest, chosen_profile_image_animation, picture_source,
+};
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
 use crate::session::{Session, StateChanged};
 use crate::theme::tokens::{
@@ -1026,31 +1029,68 @@ fn logical_x(x: Pixels, window: &Window) -> f32 {
     crate::theme::pixels_at_default_zoom(x, window)
 }
 
-/// A picture drawn `size` logical pixels wide, as its still frame.
-/// shortcut: animated avatars and icons play on hover on the web (`isPictureAnimationWanted`);
-/// the desktop shows their still frame until the picture-animation setting lands.
-fn picture(file: DownloadableFile, logical_side: f32, window: &Window) -> ImageSource {
+/// A square picture drawn `size` logical pixels wide.
+fn picture(
+    file: DownloadableFile,
+    logical_side: f32,
+    animation: Animation,
+    window: &Window,
+) -> ImageSource {
+    picture_source(square_picture_request(
+        file,
+        logical_side,
+        animation,
+        window,
+    ))
+}
+
+/// The request of a square picture drawn `logical_side` logical pixels wide.
+pub(crate) fn square_picture_request(
+    file: DownloadableFile,
+    logical_side: f32,
+    animation: Animation,
+    window: &Window,
+) -> PictureRequest {
     let device_side =
         f32::from(length(logical_side).to_pixels(window.rem_size())) * window.scale_factor();
     // A picture side is a few hundred device pixels: the cast keeps whole pixels, at least one.
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let side = device_side.ceil().max(1.0) as u32;
-    picture_source(PictureRequest {
+    PictureRequest {
         file: file.into(),
-        animation: Animation::StillFrame,
+        animation,
         display_size: DisplaySize {
             width: side,
             height: side,
         },
-    })
+    }
 }
 
-pub(crate) fn profile_picture(image: ProfileImage, size: f32, window: &Window) -> ImageSource {
-    picture(DownloadableFile::ProfileImage(image.id), size, window)
+/// Avatars play while the row holding them is pointed at or focused (`Avatar.svelte`'s hover
+/// area), or always with "Always animate": `is_hover_area_active` says whether that row is.
+pub(crate) fn profile_picture(
+    image: ProfileImage,
+    size: f32,
+    is_hover_area_active: bool,
+    window: &Window,
+    cx: &App,
+) -> ImageSource {
+    picture(
+        DownloadableFile::ProfileImage(image.id),
+        size,
+        chosen_profile_image_animation(&image, is_hover_area_active, cx),
+        window,
+    )
 }
 
-fn icon_picture(image: ProfileImage, size: f32, window: &Window) -> ImageSource {
-    picture(DownloadableFile::Icon(image.id), size, window)
+/// A server or channel icon; `animation` from [`chosen_profile_image_animation`].
+pub(crate) fn icon_picture(
+    image: ProfileImage,
+    size: f32,
+    animation: Animation,
+    window: &Window,
+) -> ImageSource {
+    picture(DownloadableFile::Icon(image.id), size, animation, window)
 }
 
 impl Render for DuskShell {

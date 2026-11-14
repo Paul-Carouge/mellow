@@ -4,7 +4,7 @@
 use std::collections::HashMap;
 
 use gpui::{
-    Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
+    Context, ElementId, Entity, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     Window, div,
 };
@@ -16,7 +16,7 @@ use super::list_rows::{
     empty_sentence, list_row, list_status, person_avatar, secondary_line, status_notice,
     text_column,
 };
-use crate::components::{Button, with_type};
+use crate::components::{Button, is_picture_row_pointed_at, track_picture_row_pointer, with_type};
 use crate::i18n::strings;
 use crate::messages::{full_timestamp_label, local_date_time};
 use crate::session::Session;
@@ -236,13 +236,14 @@ impl Render for ServerBansPage {
                 local_date_time(ban.created_at_unix_milliseconds),
                 catalogue,
             ));
+            let row_id = ElementId::from(("ban", index));
+            let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
             rows.push(
-                list_row(cx)
-                    .id(("ban", index))
+                track_picture_row_pointer(list_row(cx).id(row_id.clone()), row_id, window)
                     .role(Role::ListItem)
                     .aria_position_in_set(index + 1)
                     .aria_size_of_set(bans.len())
-                    .child(person_avatar(&ban.user, window, cx))
+                    .child(person_avatar(&ban.user, is_row_pointed_at, window, cx))
                     .child(
                         text_column()
                             .child(

@@ -112,9 +112,15 @@ impl DuskShell {
         } else {
             tokens.component_user_panel_background
         });
-        let picture = user
-            .avatar
-            .map(|image| profile_picture(image, COMPONENT_USER_PANEL_AVATAR_SIZE, window));
+        let picture = user.avatar.map(|image| {
+            profile_picture(
+                image,
+                COMPONENT_USER_PANEL_AVATAR_SIZE,
+                is_active,
+                window,
+                cx,
+            )
+        });
         let second_line = if self.is_user_id_copied {
             Some((strings.user_card().user_id_copied().to_owned(), true))
         } else {

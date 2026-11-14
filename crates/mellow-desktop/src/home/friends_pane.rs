@@ -751,9 +751,17 @@ impl FriendsPane {
         };
         let row_id = ElementId::from(("friend-row", user.id.raw()));
         let hover = remembered_hover(&row_id, window, cx);
-        let picture = user
-            .avatar
-            .map(|image| profile_picture(image, COMPONENT_FRIENDS_AVATAR_SIZE, window));
+        // The row itself takes no focus (its actions do): the pointer is its hover area.
+        let is_row_active = *hover.read(cx);
+        let picture = user.avatar.map(|image| {
+            profile_picture(
+                image,
+                COMPONENT_FRIENDS_AVATAR_SIZE,
+                is_row_active,
+                window,
+                cx,
+            )
+        });
         let mut avatar = Avatar::new(
             AvatarPerson::from_user(&user, picture),
             COMPONENT_FRIENDS_AVATAR_SIZE,

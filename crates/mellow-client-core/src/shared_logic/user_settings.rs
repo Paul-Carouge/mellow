@@ -14,6 +14,8 @@ pub enum UserSettingsSection {
     MyAccount,
     Profile,
     Security,
+    /// When animated pictures and Melli play (`AccessibilitySettings.svelte`).
+    Accessibility,
     /// The desktop's theme and language (the web follows the browser for both).
     Appearance,
     Voice,
@@ -23,7 +25,8 @@ pub enum UserSettingsSection {
 
 impl UserSettingsSection {
     pub const ACCOUNT_GROUP: [Self; 3] = [Self::MyAccount, Self::Profile, Self::Security];
-    pub const APP_GROUP: [Self; 4] = [
+    pub const APP_GROUP: [Self; 5] = [
+        Self::Accessibility,
         Self::Appearance,
         Self::Voice,
         Self::Notifications,

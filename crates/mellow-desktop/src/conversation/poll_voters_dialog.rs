@@ -2,16 +2,20 @@
 //! reacted is: avatar and name, a page at a time, "Show more" while pages come full.
 
 use gpui::{
-    Context, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render, Role,
-    StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
+    Context, ElementId, Entity, InteractiveElement as _, IntoElement, ParentElement as _, Render,
+    Role, StatefulInteractiveElement as _, Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{PublicUser, Snowflake};
 
-use crate::components::{Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, with_type};
+use crate::components::{
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, is_picture_row_pointed_at,
+    track_picture_row_pointer, with_type,
+};
 use crate::i18n::strings;
-use crate::messages::{picture_animation, picture_for_box};
+use crate::messages::picture_for_box;
+use crate::pictures::chosen_profile_image_animation;
 use crate::session::{POLL_VOTERS_PAGE_SIZE, Session};
 use crate::theme::tokens::{
     COMPONENT_DIALOG_SECTION_GAP, COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MEMBER_ROW_HEIGHT,
@@ -131,18 +135,19 @@ impl Render for PollVotersBody {
         }
         let count = self.voters.len();
         let people = self.voters.iter().enumerate().map(|(index, user)| {
+            let row_id = ElementId::from(("poll-voter", index));
+            let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
             let picture = user.avatar.as_ref().map(|avatar| {
                 picture_for_box(
                     DownloadableFile::ProfileImage(avatar.id),
                     COMPONENT_MEMBER_ROW_AVATAR_SIZE,
                     COMPONENT_MEMBER_ROW_AVATAR_SIZE,
-                    picture_animation(cx),
+                    chosen_profile_image_animation(avatar, is_row_pointed_at, cx),
                     window,
                 )
             });
             let name = display_name(user).to_owned();
-            div()
-                .id(("poll-voter", index))
+            track_picture_row_pointer(div().id(row_id.clone()), row_id, window)
                 .role(Role::ListItem)
                 .aria_label(name.clone())
                 .aria_position_in_set(index + 1)

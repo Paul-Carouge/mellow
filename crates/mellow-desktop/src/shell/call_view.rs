@@ -17,7 +17,7 @@ use std::rc::Rc;
 use std::time::Duration;
 
 use gpui::{
-    AnyElement, App, AppContext as _, Bounds, Context, Entity, FocusHandle, Focusable,
+    AnyElement, App, AppContext as _, Bounds, Context, ElementId, Entity, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Toggled,
     Window, canvas, div, prelude::FluentBuilder as _,
@@ -35,7 +35,8 @@ use mellow_protocol::{PublicUser, Snowflake, VideoTileSize, VoiceState};
 use super::profile_picture;
 use crate::components::{
     Avatar, AvatarPerson, IconButton, RangeBounds, RangeField, focus_ring, icon, inset_focus_ring,
-    is_focus_visible, polite_live_region, remembered_focus_handle, with_type,
+    is_focus_visible, is_picture_row_pointed_at, polite_live_region, remembered_focus_handle,
+    track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
 use crate::session::Session;
@@ -637,12 +638,19 @@ impl CallView {
             .iter()
             .map(|person| {
                 let shown = self.person_of(person.user_id, guild_id, cx);
+                let row_id = ElementId::from(("call-overflow", person.user_id.raw()));
+                let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
                 let picture = shown.avatar.map(|image| {
-                    profile_picture(image, COMPONENT_CALL_VIEW_OVERFLOW_AVATAR_SIZE, window)
+                    profile_picture(
+                        image,
+                        COMPONENT_CALL_VIEW_OVERFLOW_AVATAR_SIZE,
+                        is_row_pointed_at,
+                        window,
+                        cx,
+                    )
                 });
                 let is_speaking = speaking.contains(&person.user_id);
-                div()
-                    .id(("call-overflow", person.user_id.raw()))
+                track_picture_row_pointer(div().id(row_id.clone()), row_id, window)
                     .role(Role::ListItem)
                     .aria_label(SharedString::from(display_name(&shown).to_owned()))
                     .rounded_full()
@@ -1003,17 +1011,18 @@ impl CallView {
         } else {
             COMPONENT_CALL_VIEW_AVATAR_SIZE_LARGE
         };
+        let is_tile_active =
+            is_picture_row_pointed_at(&id, cx) || focus_handle.contains_focused(window, cx);
         let avatar_picture = look
             .person
             .avatar
-            .map(|image| profile_picture(image, avatar_size, window));
+            .map(|image| profile_picture(image, avatar_size, is_tile_active, window, cx));
         let is_screen = look.video == Some(CallVideo::Screen);
         let entity = cx.entity();
         let voice = self.voice.downgrade();
         let watches_screen = is_screen && !look.is_own;
         let label_ink = color(tokens.component_call_view_tile_text);
-        div()
-            .id(id)
+        track_picture_row_pointer(div().id(id.clone()), id, window)
             .debug_selector(move || format!("call-tile-{}", user_id.raw()))
             .role(Role::Button)
             .aria_label(look.action_label.clone())
@@ -1224,15 +1233,17 @@ impl CallView {
                 });
             }
         }
-        let avatar_picture = person
-            .avatar
-            .map(|image| profile_picture(image, COMPONENT_STREAM_VIEW_AVATAR_SIZE, window));
+        // shortcut: the watched stream's avatars (placeholder and header) stay still unless
+        // "Always animate"; give them a hover area if the web's stream view gets one.
+        let avatar_picture = person.avatar.map(|image| {
+            profile_picture(image, COMPONENT_STREAM_VIEW_AVATAR_SIZE, false, window, cx)
+        });
         let leading = Avatar::new(
             AvatarPerson::from_user(
                 &person,
-                person
-                    .avatar
-                    .map(|image| profile_picture(image, COMPONENT_CHAT_HEADER_ICON_SIZE, window)),
+                person.avatar.map(|image| {
+                    profile_picture(image, COMPONENT_CHAT_HEADER_ICON_SIZE, false, window, cx)
+                }),
             ),
             COMPONENT_CHAT_HEADER_ICON_SIZE,
         )

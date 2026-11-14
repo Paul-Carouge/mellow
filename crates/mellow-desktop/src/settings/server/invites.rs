@@ -8,9 +8,9 @@
 use std::time::Duration;
 
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, Window, div,
+    AppContext as _, Context, ElementId, Entity, EventEmitter, FocusHandle,
+    InteractiveElement as _, IntoElement, ParentElement as _, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::invites::{
@@ -25,7 +25,7 @@ use super::list_rows::{
 };
 use crate::components::{
     Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, ModalDialog, ModalDialogEvent,
-    with_type,
+    is_picture_row_pointed_at, track_picture_row_pointer, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::locale;
@@ -462,12 +462,18 @@ impl ServerInvitesPage {
                 words.uses(i64::from(invite.uses), invite.max_uses.map(i64::from)),
                 self.expiry_label(invite, catalogue)
             );
-            list_row(cx)
-                .id(("invite", index))
+            let row_id = ElementId::from(("invite", index));
+            let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
+            track_picture_row_pointer(list_row(cx).id(row_id.clone()), row_id, window)
                 .role(Role::ListItem)
                 .aria_position_in_set(index + 1)
                 .aria_size_of_set(invites.len())
-                .child(person_avatar(&invite.creator, window, cx))
+                .child(person_avatar(
+                    &invite.creator,
+                    is_row_pointed_at,
+                    window,
+                    cx,
+                ))
                 .child(
                     text_column()
                         .child(

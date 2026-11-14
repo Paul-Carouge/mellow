@@ -17,21 +17,25 @@ pub(crate) mod disk_cache;
 mod limiter;
 mod loader;
 pub(crate) mod lru;
+mod playback;
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use gpui::{
-    App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, SharedString, Window,
+    App, EntityId, Global, ImageCacheError, ImageSource, RenderImage, SharedString, Task, Window,
 };
 use mellow_client_core::{DownloadableFile, KlipyClient, RestClient};
+use mellow_protocol::ProfileImage;
 use tokio::sync::oneshot;
 
 pub(crate) use self::decode::decode_frames;
 use self::disk_cache::{DISK_CACHE_CAPACITY_BYTES, DiskCache, instance_directory_name};
 use self::loader::PictureLoader;
 use self::lru::ByteBoundedLru;
+use self::playback::{DecodedPicture, on_frame_change_beat};
+use crate::preferences::{PictureAnimationChoice, preferences};
 use crate::tokio_bridge::spawn_on_network_runtime;
 
 /// Decoded pictures kept for views to draw again; each also holds a slot in GPUI's atlas until it
@@ -50,6 +54,55 @@ const DISPLAY_SIZE_STEPS_PER_DOUBLING: u32 = 8;
 pub enum Animation {
     Animate,
     StillFrame,
+}
+
+/// Whether a picture plays (`shouldPictureAnimate` on the web, DESIGN.md v0.34).
+/// `is_playing_without_choice` is what the picture does by itself: true for those that always
+/// play (custom emoji, banners, the profile card, GIFs, Melli), hover or focus of their row for
+/// avatars and server icons. "Always animate" is the reader's own decision, so it wins over the
+/// system's reduced motion; otherwise reduced motion keeps every picture still, hovered or not.
+#[must_use]
+pub fn should_picture_animate(
+    choice: PictureAnimationChoice,
+    is_reduced_motion_preferred: bool,
+    is_playing_without_choice: bool,
+) -> bool {
+    choice == PictureAnimationChoice::Always
+        || (!is_reduced_motion_preferred && is_playing_without_choice)
+}
+
+/// [`should_picture_animate`] with the reader's stored choice and the system's reduced motion.
+#[must_use]
+pub fn is_picture_animation_wanted(is_playing_without_choice: bool, cx: &App) -> bool {
+    let choice = preferences(cx)
+        .map(|preferences| preferences.picture_animation)
+        .unwrap_or_default();
+    should_picture_animate(choice, cx.reduce_motion(), is_playing_without_choice)
+}
+
+/// The animation to ask for a picture: see [`is_picture_animation_wanted`].
+#[must_use]
+pub fn chosen_picture_animation(is_playing_without_choice: bool, cx: &App) -> Animation {
+    if is_picture_animation_wanted(is_playing_without_choice, cx) {
+        Animation::Animate
+    } else {
+        Animation::StillFrame
+    }
+}
+
+/// [`chosen_picture_animation`] for an avatar or an icon: one that is not animated is always asked
+/// still, so pointing at it never downloads and decodes the same picture a second time.
+#[must_use]
+pub fn chosen_profile_image_animation(
+    image: &ProfileImage,
+    is_playing_without_choice: bool,
+    cx: &App,
+) -> Animation {
+    if image.is_animated {
+        chosen_picture_animation(is_playing_without_choice, cx)
+    } else {
+        Animation::StillFrame
+    }
 }
 
 /// The box a picture is drawn in, in device pixels (the layout size times the scale factor): the
@@ -167,7 +220,7 @@ pub struct PictureStore {
     loader: Option<Arc<PictureLoader>>,
     /// Bumped when a session starts or ends, so answers for the previous one are dropped.
     session: u64,
-    pictures: Option<ByteBoundedLru<PictureRequest, Arc<RenderImage>>>,
+    pictures: Option<ByteBoundedLru<PictureRequest, DecodedPicture>>,
     /// Pictures being fetched or decoded, with the views to notify when they are ready.
     loading: HashMap<PictureRequest, Vec<EntityId>>,
     /// Pictures that failed after their retry, shown as failed until the failure expires.
@@ -177,6 +230,13 @@ pub struct PictureStore {
     disk_cache_removal: Option<oneshot::Receiver<()>>,
     /// Evicted pictures whose atlas slots the next window that draws a picture frees.
     released: Vec<Arc<RenderImage>>,
+    /// Where the shared beat of frame changes is counted from (`on_frame_change_beat`).
+    frame_beat_origin: Option<Instant>,
+    /// The views showing an animation, each with its next frame change, on the beat.
+    frame_wake_ups: Vec<(EntityId, Instant)>,
+    /// The one timer that draws those views again, with when it fires; replacing it cancels the
+    /// previous one.
+    frame_timer: Option<(Instant, Task<()>)>,
 }
 
 impl std::fmt::Debug for PictureStore {
@@ -192,25 +252,39 @@ impl std::fmt::Debug for PictureStore {
 
 impl Global for PictureStore {}
 
-fn frames_byte_count(picture: &RenderImage) -> usize {
-    (0..picture.frame_count())
-        .filter_map(|frame_index| picture.as_bytes(frame_index))
-        .map(<[u8]>::len)
-        .sum()
-}
-
 impl PictureStore {
-    fn pictures(&mut self) -> &mut ByteBoundedLru<PictureRequest, Arc<RenderImage>> {
+    fn pictures(&mut self) -> &mut ByteBoundedLru<PictureRequest, DecodedPicture> {
         self.pictures
             .get_or_insert_with(|| ByteBoundedLru::new(DECODED_PICTURES_CAPACITY_BYTES))
     }
 
     /// Keeps a decoded picture; the ones it pushes out wait for a window to free their slots.
-    fn keep_decoded(&mut self, request: PictureRequest, picture: Arc<RenderImage>) {
-        let byte_count = frames_byte_count(&picture);
+    fn keep_decoded(&mut self, request: PictureRequest, picture: DecodedPicture) {
+        let byte_count = picture.byte_count();
         let evicted = self.pictures().insert(request, picture, byte_count);
-        self.released
-            .extend(evicted.into_iter().map(|(_, picture)| picture));
+        self.release(evicted.into_iter().map(|(_, picture)| picture));
+    }
+
+    fn release(&mut self, pictures: impl IntoIterator<Item = DecodedPicture>) {
+        for picture in pictures {
+            self.released.extend(picture.frames().iter().cloned());
+        }
+    }
+
+    /// The frame of `request` to draw at `now`, once decoded, and when the next one is due
+    /// when the picture is animated.
+    fn frame_shown_at(
+        &mut self,
+        request: &PictureRequest,
+        now: Instant,
+    ) -> Option<(Arc<RenderImage>, Option<Instant>)> {
+        let picture = self.pictures().get(request)?;
+        let (frame_index, next_due) = picture.frame_drawn_at(now);
+        let frame = picture
+            .frames()
+            .get(frame_index)
+            .or_else(|| picture.first_frame())?;
+        Some((Arc::clone(frame), next_due))
     }
 
     /// Whether `request` still shows as failed at `now`; an expired failure is forgotten so the
@@ -238,8 +312,9 @@ impl PictureStore {
         let loader = self.loader.take();
         self.failed.clear();
         let released = self.pictures().take_all();
-        self.released
-            .extend(released.into_iter().map(|(_, picture)| picture));
+        self.release(released.into_iter().map(|(_, picture)| picture));
+        self.frame_wake_ups.clear();
+        self.frame_timer = None;
         let waiting_views = self.loading.drain().flat_map(|(_, views)| views).collect();
         (waiting_views, loader)
     }
@@ -379,7 +454,11 @@ pub enum PictureStatus {
 pub fn picture_status(request: PictureRequest, cx: &mut App) -> PictureStatus {
     let request = request.rounded_up_to_display_step();
     let store = cx.default_global::<PictureStore>();
-    if let Some(picture) = store.pictures().get(&request) {
+    if let Some(picture) = store
+        .pictures()
+        .get(&request)
+        .and_then(DecodedPicture::first_frame)
+    {
         let size = picture.size(0);
         return PictureStatus::Ready {
             width: u32::try_from(size.width.0).unwrap_or(0),
@@ -403,24 +482,97 @@ fn picture(
         // Only fails for a window without an atlas, which holds nothing to free.
         let _ = window.drop_image(released);
     }
-    if let Some(picture) = store.pictures().get(request) {
-        return Some(Ok(Arc::clone(picture)));
+    // The executor's clock, which tests can drive.
+    let now = cx.background_executor().now();
+    let store = cx.default_global::<PictureStore>();
+    if let Some((frame, next_due)) = store.frame_shown_at(request, now) {
+        if let Some(next_due) = next_due {
+            draw_again_for_next_frame(window.current_view(), next_due, cx);
+        }
+        return Some(Ok(frame));
     }
+    // An avatar pointed at starts playing: its still frame stays while the animation loads, or
+    // if it fails, rather than a blank or the initial.
+    let still_meanwhile = (request.animation == Animation::Animate)
+        .then(|| PictureRequest {
+            animation: Animation::StillFrame,
+            ..request.clone()
+        })
+        .and_then(|still| store.frame_shown_at(&still, now))
+        .map(|(frame, _)| Ok(frame));
     if store.has_standing_failure(request, Instant::now()) {
-        return Some(Err(ImageCacheError::Asset("picture unavailable".into())));
+        return still_meanwhile
+            .or_else(|| Some(Err(ImageCacheError::Asset("picture unavailable".into()))));
     }
     let view = window.current_view();
     if let Some(waiting_views) = store.loading.get_mut(request) {
         if !waiting_views.contains(&view) {
             waiting_views.push(view);
         }
-        return None;
+        return still_meanwhile;
     }
-    let loader = Arc::clone(store.loader.as_ref()?);
+    let Some(loader) = store.loader.as_ref().map(Arc::clone) else {
+        return still_meanwhile;
+    };
     store.loading.insert(request.clone(), vec![view]);
     let session = store.session;
     load(request.clone(), loader, session, cx);
-    None
+    still_meanwhile
+}
+
+/// Draws `view` again at its next frame change, on the shared beat so every animation changes in
+/// the same redraw. One timer serves every view, as `MelliTicker` does; a view that stops drawing
+/// its animations is not woken again.
+fn draw_again_for_next_frame(view: EntityId, due: Instant, cx: &mut App) {
+    let store = cx.default_global::<PictureStore>();
+    let origin = *store.frame_beat_origin.get_or_insert(due);
+    let due = on_frame_change_beat(due, origin);
+    match store
+        .frame_wake_ups
+        .iter_mut()
+        .find(|(waiting, _)| *waiting == view)
+    {
+        Some((_, wake_up)) if *wake_up <= due => {}
+        Some((_, wake_up)) => *wake_up = due,
+        None => store.frame_wake_ups.push((view, due)),
+    }
+    schedule_frame_timer(cx);
+}
+
+/// Keeps the one timer set for the earliest wake-up; none once nothing waits.
+fn schedule_frame_timer(cx: &mut App) {
+    let store = cx.default_global::<PictureStore>();
+    let Some(next) = store.frame_wake_ups.iter().map(|(_, due)| *due).min() else {
+        store.frame_timer = None;
+        return;
+    };
+    if store
+        .frame_timer
+        .as_ref()
+        .is_some_and(|(fires_at, _)| *fires_at <= next)
+    {
+        return;
+    }
+    let executor = cx.background_executor().clone();
+    let wait = next.saturating_duration_since(executor.now());
+    let timer = cx.spawn(async move |cx| {
+        executor.timer(wait).await;
+        cx.update(|cx| {
+            let now = cx.background_executor().now();
+            let store = cx.default_global::<PictureStore>();
+            store.frame_timer = None;
+            let (due, later): (Vec<_>, Vec<_>) = std::mem::take(&mut store.frame_wake_ups)
+                .into_iter()
+                .partition(|(_, due)| *due <= now);
+            store.frame_wake_ups = later;
+            for (view, _) in due {
+                // Drawn again, the view asks for its next frame change if it still shows one.
+                cx.notify(view);
+            }
+            schedule_frame_timer(cx);
+        });
+    });
+    cx.default_global::<PictureStore>().frame_timer = Some((next, timer));
 }
 
 fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &mut App) {
@@ -437,9 +589,9 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
     cx.spawn(async move |cx| {
         let decoded: Result<_, PictureFailure> = match download.await {
             Ok(Ok(bytes)) => {
-                let decoding = cx
-                    .background_executor()
-                    .spawn(async move { decode::decode_frames(&bytes, animation, display_size) });
+                let decoding = cx.background_executor().spawn(async move {
+                    decode::decode_animation(&bytes, animation, display_size)
+                });
                 let decoded = decoding.await;
                 if decoded.is_err() {
                     // A cached copy that does not decode is fetched again next time.
@@ -461,7 +613,9 @@ fn load(request: PictureRequest, loader: Arc<PictureLoader>, session: u64, cx: &
             }
             let waiting_views = store.loading.remove(&request).unwrap_or_default();
             match decoded {
-                Ok(frames) => store.keep_decoded(request, Arc::new(RenderImage::new(frames))),
+                Ok((frames, play_count)) => {
+                    store.keep_decoded(request, DecodedPicture::new(frames, play_count));
+                }
                 Err(failure) => {
                     store.failed.insert(request, failure);
                 }
@@ -492,14 +646,166 @@ mod tests {
         }
     }
 
-    fn picture_of_bytes(byte_count: u32) -> Arc<RenderImage> {
+    fn picture_of_bytes(byte_count: u32) -> DecodedPicture {
         let frame = Frame::from_parts(
             RgbaImage::new(byte_count / 4, 1),
             0,
             0,
             Delay::from_numer_denom_ms(0, 1),
         );
-        Arc::new(RenderImage::new(vec![frame]))
+        DecodedPicture::new(vec![frame], None)
+    }
+
+    /// Three frames of 100 ms, each its own colour.
+    fn animated_picture() -> DecodedPicture {
+        DecodedPicture::new(
+            [10_u8, 20, 30]
+                .into_iter()
+                .map(|shade| {
+                    Frame::from_parts(
+                        RgbaImage::from_pixel(1, 1, image::Rgba([shade, shade, shade, 255])),
+                        0,
+                        0,
+                        Delay::from_numer_denom_ms(100, 1),
+                    )
+                })
+                .collect(),
+            None,
+        )
+    }
+
+    /// A window that draws one picture while `is_showing`, as `img` asks for it, and remembers
+    /// which image it was handed.
+    struct PictureViewer {
+        source: ImageSource,
+        is_showing: bool,
+        render_count: usize,
+        drawn_image: Option<gpui::ImageId>,
+    }
+
+    impl gpui::Render for PictureViewer {
+        fn render(
+            &mut self,
+            window: &mut Window,
+            cx: &mut gpui::Context<Self>,
+        ) -> impl gpui::IntoElement {
+            self.render_count += 1;
+            if self.is_showing
+                && let ImageSource::Custom(load) = &self.source
+            {
+                self.drawn_image = load(window, cx).and_then(Result::ok).map(|image| image.id);
+            }
+            gpui::div()
+        }
+    }
+
+    #[gpui::test]
+    fn the_view_is_drawn_again_for_each_frame_and_no_more_once_it_hides_the_picture(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        let decoded = animated_picture();
+        let frame_ids: Vec<gpui::ImageId> = decoded.frames().iter().map(|frame| frame.id).collect();
+        cx.update(|cx| {
+            cx.default_global::<PictureStore>()
+                .keep_decoded(request(1), decoded);
+        });
+        let (viewer, cx) = cx.add_window_view(|_, _| PictureViewer {
+            source: picture_source(request(1)),
+            is_showing: true,
+            render_count: 0,
+            drawn_image: None,
+        });
+        cx.run_until_parked();
+        let drawn =
+            |cx: &mut gpui::VisualTestContext| viewer.read_with(cx, |viewer, _| viewer.drawn_image);
+        assert_eq!(drawn(cx), Some(frame_ids[0]));
+
+        cx.executor().advance_clock(Duration::from_millis(110));
+        cx.run_until_parked();
+        assert_eq!(drawn(cx), Some(frame_ids[1]), "woken for its next frame");
+        // Its change at 200 ms waits for the shared beat (33 ms steps from the first one, 100 ms).
+        cx.executor().advance_clock(Duration::from_millis(130));
+        cx.run_until_parked();
+        assert_eq!(drawn(cx), Some(frame_ids[2]));
+
+        viewer.update(cx, |viewer, cx| {
+            viewer.is_showing = false;
+            cx.notify();
+        });
+        cx.run_until_parked();
+        // The wake-up already asked for runs once more, then nothing.
+        cx.executor().advance_clock(Duration::from_millis(200));
+        cx.run_until_parked();
+        let renders = viewer.read_with(cx, |viewer, _| viewer.render_count);
+        cx.executor().advance_clock(Duration::from_secs(5));
+        cx.run_until_parked();
+        assert_eq!(
+            viewer.read_with(cx, |viewer, _| viewer.render_count),
+            renders
+        );
+        assert!(
+            cx.update(|_, cx| cx.global::<PictureStore>().frame_timer.is_none()),
+            "the timer stops by itself"
+        );
+    }
+
+    // The owner's report: animated avatars, emoji and GIFs stayed on their first frame, as GPUI's
+    // `img` advanced frames only for an element with an id. The store now picks the frame.
+    #[test]
+    fn an_animated_picture_shows_the_frame_due_at_each_moment() {
+        let mut store = PictureStore::default();
+        store.keep_decoded(request(1), animated_picture());
+        let start = Instant::now();
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        let shade_at = |store: &mut PictureStore, milliseconds| {
+            let (frame, next_due) = store.frame_shown_at(&request(1), at(milliseconds)).unwrap();
+            assert_eq!(frame.frame_count(), 1, "GPUI never plays it on its own");
+            (frame.as_bytes(0).unwrap()[0], next_due)
+        };
+        assert_eq!(shade_at(&mut store, 0), (10, Some(at(100))));
+        assert_eq!(shade_at(&mut store, 150), (20, Some(at(200))));
+        assert_eq!(shade_at(&mut store, 250), (30, Some(at(300))));
+        assert_eq!(shade_at(&mut store, 300), (10, Some(at(400))));
+
+        store.keep_decoded(request(2), picture_of_bytes(400));
+        let (_, next_due) = store.frame_shown_at(&request(2), start).unwrap();
+        assert_eq!(next_due, None, "a still picture asks for no other frame");
+    }
+
+    #[test]
+    fn always_animate_wins_over_reduced_motion_and_hover_only_without_it() {
+        use PictureAnimationChoice::{Always, OnHover};
+        // (choice, reduced motion, playing without a choice) -> plays
+        for (choice, is_reduced, is_playing_by_itself, expected) in [
+            (OnHover, false, true, true),
+            (OnHover, false, false, false),
+            (OnHover, true, true, false),
+            (OnHover, true, false, false),
+            (Always, false, true, true),
+            (Always, false, false, true),
+            (Always, true, true, true),
+            (Always, true, false, true),
+        ] {
+            assert_eq!(
+                should_picture_animate(choice, is_reduced, is_playing_by_itself),
+                expected,
+                "{choice:?}, reduced motion {is_reduced}, by itself {is_playing_by_itself}"
+            );
+        }
+    }
+
+    #[gpui::test]
+    fn the_stored_choice_and_the_system_decide_the_animation(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            assert_eq!(chosen_picture_animation(true, cx), Animation::Animate);
+            assert_eq!(chosen_picture_animation(false, cx), Animation::StillFrame);
+            cx.set_reduce_motion(true);
+            assert_eq!(chosen_picture_animation(true, cx), Animation::StillFrame);
+            crate::preferences::change_preferences(cx, |preferences| {
+                preferences.picture_animation = PictureAnimationChoice::Always;
+            });
+            assert_eq!(chosen_picture_animation(false, cx), Animation::Animate);
+        });
     }
 
     #[test]
@@ -550,11 +856,12 @@ mod tests {
             ..PictureStore::default()
         };
         let first = picture_of_bytes(600);
-        store.keep_decoded(request(1), Arc::clone(&first));
+        let first_id = first.frames()[0].id;
+        store.keep_decoded(request(1), first);
         assert_eq!(store.released.len(), 0);
         store.keep_decoded(request(2), picture_of_bytes(600));
         assert_eq!(store.released.len(), 1);
-        assert_eq!(store.released[0].id, first.id);
+        assert_eq!(store.released[0].id, first_id);
         assert!(store.pictures().get(&request(1)).is_none());
         assert!(store.pictures().get(&request(2)).is_some());
     }

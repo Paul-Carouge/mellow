@@ -42,6 +42,7 @@ const MEDIA_MUTED_KEY: &str = "media-muted";
 const RECENT_EMOJI_KEY: &str = "recent-emoji";
 const THEME_KEY: &str = "theme";
 const LANGUAGE_KEY: &str = "language";
+const PICTURE_ANIMATION_KEY: &str = "picture-animation";
 const VOICE_SETTINGS_KEY: &str = "voice-settings";
 const VOICE_TOGGLES_KEY: &str = "voice-toggles";
 const VOICE_PEOPLE_KEY: &str = "voice-people";
@@ -139,6 +140,34 @@ impl LanguageChoice {
     }
 }
 
+/// When animated pictures play, chosen in User settings, Accessibility (the web's
+/// `mellow.picture-animation`, `picture-animation.ts`).
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum PictureAnimationChoice {
+    /// Avatars and server icons play while their row is pointed at or focused; custom emoji,
+    /// banners, the profile card and Melli play all the time. Reduced motion keeps all still.
+    #[default]
+    OnHover,
+    /// Everything plays all the time, even when the system asks to reduce motion.
+    Always,
+}
+
+impl PictureAnimationChoice {
+    fn parse(text: &str) -> Self {
+        match text {
+            "always" => Self::Always,
+            _ => Self::OnHover,
+        }
+    }
+
+    fn as_file_text(self) -> Option<&'static str> {
+        match self {
+            Self::OnHover => None,
+            Self::Always => Some("always"),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 // Independent on/off settings, each its own line in the file; no state machine hides in them.
 #[allow(clippy::struct_excessive_bools)]
@@ -169,6 +198,7 @@ pub struct Preferences {
     pub recent_emoji_by_user: Vec<(Snowflake, Vec<String>)>,
     pub theme: ThemeChoice,
     pub language: LanguageChoice,
+    pub picture_animation: PictureAnimationChoice,
     /// Devices, input mode, processing and volumes (the web's `mellow.voice-settings`); change
     /// them through `voice::change_voice_settings`, which applies them to a call.
     pub voice_settings: VoiceSettings,
@@ -436,6 +466,9 @@ impl Preferences {
                 CLOSE_QUITS_KEY => preferences.does_closing_the_window_quit = value == "true",
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
+                PICTURE_ANIMATION_KEY => {
+                    preferences.picture_animation = PictureAnimationChoice::parse(value);
+                }
                 // The web's JSON, validated field by field as the web reads it.
                 VOICE_SETTINGS_KEY | VOICE_TOGGLES_KEY | VOICE_PEOPLE_KEY | STREAM_PEOPLE_KEY => {
                     let stored = serde_json::from_str(value).unwrap_or(serde_json::Value::Null);
@@ -542,6 +575,9 @@ impl Preferences {
         }
         if let Some(language) = self.language.as_file_text() {
             let _ = writeln!(text, "{LANGUAGE_KEY}={language}");
+        }
+        if let Some(picture_animation) = self.picture_animation.as_file_text() {
+            let _ = writeln!(text, "{PICTURE_ANIMATION_KEY}={picture_animation}");
         }
         // Compact JSON escapes line breaks, so each account stays on one line.
         if self.voice_settings != VoiceSettings::DEFAULT {
@@ -679,6 +715,7 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     recent_emoji_by_user: Vec::new(),
     theme: ThemeChoice::System,
     language: LanguageChoice::System,
+    picture_animation: PictureAnimationChoice::OnHover,
     voice_settings: VoiceSettings::DEFAULT,
     voice_toggles: StoredVoiceToggles {
         is_microphone_muted: false,
@@ -781,6 +818,7 @@ mod tests {
         preferences.does_closing_the_window_quit = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
+        preferences.picture_animation = PictureAnimationChoice::Always;
 
         write_atomically(&path, &preferences.to_file_text()).unwrap();
         assert_eq!(Preferences::load_from(&path), preferences);
@@ -831,6 +869,7 @@ mod tests {
             "instance-address=ftp://chat.example.org\n",
             "instance-address=https://user:secret@chat.example.org\n",
             "noise\ntheme=sepia\n",
+            "picture-animation=sometimes\n",
         ] {
             assert_eq!(
                 Preferences::from_file_text(text),
