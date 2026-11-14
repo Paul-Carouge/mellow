@@ -8,9 +8,10 @@ use gpui::{
 };
 
 use super::{
-    Button, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuOrigin, ModalDialog,
-    ModalDialogEvent, RangeBounds, RangeField, SettingsNavEntry, SettingsNavItem, SettingsSheet,
-    SettingsSheetLabels, Switch, Tabs, bind_tab_navigation, with_tab_navigation,
+    Button, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuKey, MenuKeys,
+    MenuOrigin, ModalDialog, ModalDialogEvent, RangeBounds, RangeField, SettingsNavEntry,
+    SettingsNavItem, SettingsSheet, SettingsSheetLabels, Switch, Tabs, bind_tab_navigation,
+    with_tab_navigation,
 };
 use crate::theme::ActiveTheme;
 use crate::theme::icons::IconName;
@@ -146,6 +147,8 @@ struct MenuHarness {
     opener: FocusHandle,
     menu: Option<(Entity<ContextMenu>, Subscription)>,
     chosen: Vec<SharedString>,
+    /// Quick reaction keys above the items.
+    key_glyphs: Vec<&'static str>,
 }
 
 impl MenuHarness {
@@ -169,8 +172,36 @@ impl MenuHarness {
             },
             alignment: MenuAlignment::Start,
         };
+        let keys = self
+            .key_glyphs
+            .iter()
+            .map(|&glyph| {
+                let entity = entity.clone();
+                MenuKey {
+                    glyph: glyph.into(),
+                    label: format!("React with {glyph}").into(),
+                    is_checked: false,
+                    on_select: std::sync::Arc::new(move |_, cx| {
+                        entity.update(cx, |harness, _| harness.chosen.push(glyph.into()));
+                    }),
+                }
+            })
+            .collect();
         let opener = Some(self.opener.clone());
-        let menu = cx.new(|cx| ContextMenu::open("Message", entries, origin, opener, window, cx));
+        let menu = cx.new(|cx| {
+            ContextMenu::open_with_quick_keys(
+                "Message",
+                MenuKeys {
+                    label: "Add reaction".into(),
+                    keys,
+                },
+                entries,
+                origin,
+                opener,
+                window,
+                cx,
+            )
+        });
         let subscription = cx.subscribe(&menu, |harness, _, _: &DismissEvent, cx| {
             harness.menu = None;
             cx.notify();
@@ -183,6 +214,12 @@ impl MenuHarness {
         self.menu
             .as_ref()
             .and_then(|(menu, _)| menu.read(cx).highlighted_index())
+    }
+
+    fn highlighted_key(&self, cx: &gpui::App) -> Option<usize> {
+        self.menu
+            .as_ref()
+            .and_then(|(menu, _)| menu.read(cx).highlighted_key())
     }
 }
 
@@ -202,6 +239,7 @@ fn a_menu_wraps_jumps_types_ahead_chooses_and_gives_focus_back(cx: &mut TestAppC
         opener: cx.focus_handle(),
         menu: None,
         chosen: Vec::new(),
+        key_glyphs: Vec::new(),
     });
     let opener = harness.read_with(cx, |harness, _| harness.opener.clone());
     cx.update(|window, cx| window.focus(&opener, cx));
@@ -257,6 +295,64 @@ fn a_menu_wraps_jumps_types_ahead_chooses_and_gives_focus_back(cx: &mut TestAppC
             "{key} gives focus back to the opener"
         );
     }
+}
+
+#[gpui::test]
+fn the_row_of_quick_keys_takes_left_right_and_down_and_chooses_with_enter(cx: &mut TestAppContext) {
+    set_up(cx);
+    let (harness, cx) = cx.add_window_view(|_, cx| MenuHarness {
+        root: cx.focus_handle(),
+        opener: cx.focus_handle(),
+        menu: None,
+        chosen: Vec::new(),
+        key_glyphs: vec!["👍", "❤️", "😂"],
+    });
+    let opener = harness.read_with(cx, |harness, _| harness.opener.clone());
+    cx.update(|window, cx| window.focus(&opener, cx));
+    cx.update(|window, cx| harness.update(cx, |harness, cx| harness.open(window, cx)));
+    cx.run_until_parked();
+    let focus = |cx: &mut VisualTestContext| {
+        harness.read_with(cx, |harness, cx| {
+            (harness.highlighted_key(cx), harness.highlighted(cx))
+        })
+    };
+
+    assert_eq!(
+        focus(cx),
+        (None, Some(0)),
+        "the first item, as without keys"
+    );
+    press(cx, "up");
+    assert_eq!(
+        focus(cx),
+        (Some(0), None),
+        "Up from the first item reaches the keys"
+    );
+    press(cx, "right");
+    press(cx, "right");
+    assert_eq!(focus(cx), (Some(2), None));
+    press(cx, "right");
+    assert_eq!(focus(cx), (Some(0), None), "Right wraps");
+    press(cx, "left");
+    assert_eq!(focus(cx), (Some(2), None), "Left wraps");
+    press(cx, "down");
+    assert_eq!(focus(cx), (None, Some(0)), "Down goes to the first item");
+    press(cx, "up");
+    press(cx, "s");
+    assert_eq!(
+        focus(cx),
+        (None, Some(3)),
+        "a letter typed on the keys moves to its item"
+    );
+    press(cx, "home");
+    press(cx, "up");
+    press(cx, "right");
+    press(cx, "enter");
+    harness.read_with(cx, |harness, _| {
+        assert!(harness.menu.is_none(), "a key closes the menu");
+        assert_eq!(harness.chosen, vec![SharedString::from("❤️")]);
+    });
+    assert!(cx.update(|window, _| opener.is_focused(window)));
 }
 
 struct DialogHarness {

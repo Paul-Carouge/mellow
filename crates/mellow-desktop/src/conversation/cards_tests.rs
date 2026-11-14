@@ -77,7 +77,7 @@ fn the_author_ends_an_open_poll_after_confirming(cx: &mut TestAppContext) {
         let poll = view
             .cached_message(Snowflake::from_raw(POLL_ID), cx)
             .expect("the poll is cached");
-        message_menu_actions(view.message_facts(&poll, cx), &[])
+        message_menu_actions(view.message_facts(&poll, cx))
     });
     assert!(actions.contains(&MenuLine::Action(MessageMenuAction::EndPoll)));
     assert!(!actions.contains(&MenuLine::Action(MessageMenuAction::Edit)));

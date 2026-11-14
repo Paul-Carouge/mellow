@@ -78,7 +78,8 @@ impl Composer {
 
     fn ask_for_emoji_picker(&mut self, cx: &mut Context<Self>) {
         // Drawn already: the shortcut works only where the button shows.
-        if let Some(anchor) = *self.emoji_button_bounds.read(cx) {
+        if let Some(button) = *self.emoji_button_bounds.read(cx) {
+            let anchor = self.picker_anchor(button, cx);
             cx.emit(ComposerEvent::OpenEmojiPicker { anchor });
         }
     }

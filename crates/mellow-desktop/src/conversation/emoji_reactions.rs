@@ -380,7 +380,11 @@ fn quick_reaction_button(
             });
         })
         .on_click(move |_, _, cx| on_click(cx))
-        .child(emoji)
+        .child(
+            div()
+                .font_weight(crate::emoji_picker::emoji_glyph_weight())
+                .child(emoji),
+        )
         .when(is_ring_shown, |button| {
             button.child(focus_ring(RADIUS_SM, cx))
         })

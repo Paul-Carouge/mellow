@@ -34,6 +34,7 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::context_menus_people::{
     MenuLine, MessageMenuAction, MessageMenuFacts, message_menu_actions,
+    message_menu_quick_reactions,
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::mentions::MentionablePeople;
@@ -46,8 +47,8 @@ use mellow_client_core::state::{
 use mellow_protocol::{CustomEmoji, Message, Permissions, Role, Snowflake};
 
 use crate::components::{
-    ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent, Tooltip, is_context_menu_keystroke,
+    ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone, MenuKey, MenuKeys,
+    MenuOrigin, ModalDialog, ModalDialogEvent, Tooltip, is_context_menu_keystroke,
 };
 use crate::composer::{
     BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
@@ -1270,38 +1271,31 @@ impl ConversationView {
         };
         let catalogue = strings(cx);
         let facts = self.message_facts(&message, cx);
-        let quick_reactions = self.quick_reactions(cx);
         let view = cx.entity().downgrade();
-        let entries = message_menu_actions(facts, &quick_reactions)
+        let entries = message_menu_actions(facts)
             .into_iter()
             .map(|line| {
                 let MenuLine::Action(action) = line else {
                     return MenuEntry::Separator;
                 };
                 let view = view.clone();
-                // A quick reaction says whether it is given, as its menuitemcheckbox does on the web.
-                let is_given = match &action {
-                    MessageMenuAction::ToggleReaction(emoji) => {
-                        Some(is_reaction_given(&message, emoji))
-                    }
-                    _ => None,
-                };
-                let (label, icon, tone) = message_menu_item_look(&action, catalogue);
+                let (label, icon, tone) = message_menu_item_look(action, catalogue);
                 MenuEntry::Item(
                     MenuItem::new(label, icon, move |window, cx| {
                         let _ = view.update(cx, |view, cx| {
-                            view.run_menu_action(message_id, action.clone(), window, cx);
+                            view.run_menu_action(message_id, action, window, cx);
                         });
                     })
-                    .tone(tone)
-                    .checked(is_given),
+                    .tone(tone),
                 )
             })
             .collect();
+        let keys = self.message_menu_keys(&message, facts, cx);
         let opener = window.focused(cx);
         let menu = cx.new(|cx| {
-            ContextMenu::open(
+            ContextMenu::open_with_quick_keys(
                 catalogue.messages().actions(),
+                keys,
                 entries,
                 origin,
                 opener,
@@ -1317,6 +1311,39 @@ impl ConversationView {
         cx.notify();
     }
 
+    /// The quick reactions heading the message's menu as one row of keys (DESIGN.md §5.4, the
+    /// web phone sheet's): a given one is checked, and a press takes it back.
+    fn message_menu_keys(
+        &self,
+        message: &Message,
+        facts: MessageMenuFacts,
+        cx: &mut Context<Self>,
+    ) -> MenuKeys {
+        let catalogue = strings(cx);
+        let view = cx.entity().downgrade();
+        let message_id = message.id;
+        let keys = message_menu_quick_reactions(facts, &self.quick_reactions(cx))
+            .into_iter()
+            .map(|emoji| {
+                let view = view.clone();
+                MenuKey {
+                    glyph: emoji.clone().into(),
+                    label: catalogue.reactions().react_with(&emoji).into(),
+                    is_checked: is_reaction_given(message, &emoji),
+                    on_select: std::sync::Arc::new(move |_, cx| {
+                        let _ = view.update(cx, |view, cx| {
+                            view.react_with_quick_reaction(message_id, &emoji, cx);
+                        });
+                    }),
+                }
+            })
+            .collect();
+        MenuKeys {
+            label: catalogue.reactions().add_reaction().into(),
+            keys,
+        }
+    }
+
     fn run_menu_action(
         &mut self,
         message_id: Snowflake,
@@ -1325,9 +1352,6 @@ impl ConversationView {
         cx: &mut Context<Self>,
     ) {
         match action {
-            MessageMenuAction::ToggleReaction(emoji) => {
-                self.react_with_quick_reaction(message_id, &emoji, cx);
-            }
             MessageMenuAction::AddReaction => {
                 self.open_reaction_picker_beside_row(message_id, window, cx);
             }
@@ -1346,10 +1370,6 @@ impl ConversationView {
                 }
             }
             MessageMenuAction::ViewReactions => self.open_reactions_dialog(message_id, window, cx),
-            MessageMenuAction::CopyMessageId => {
-                let copied = strings(cx).context_menu().message_id_copied();
-                self.copy_to_clipboard(message_id.to_string(), Some(copied), cx);
-            }
             MessageMenuAction::EndPoll => self.ask_to_end_poll(message_id, window, cx),
             MessageMenuAction::RemoveAllReactions => {
                 if let Some(message) = self.cached_message(message_id, cx) {
@@ -1741,15 +1761,10 @@ fn reaction_label(
 
 /// The label, icon and tone of a message menu item.
 fn message_menu_item_look(
-    action: &MessageMenuAction,
+    action: MessageMenuAction,
     catalogue: crate::i18n::Strings,
 ) -> (String, IconName, MenuItemTone) {
     match action {
-        MessageMenuAction::ToggleReaction(emoji) => (
-            catalogue.reactions().react_with(emoji),
-            IconName::Smiley,
-            MenuItemTone::Normal,
-        ),
         MessageMenuAction::AddReaction => (
             catalogue.reactions().add_reaction().to_owned(),
             IconName::Smiley,
@@ -1788,11 +1803,6 @@ fn message_menu_item_look(
         MessageMenuAction::ViewReactions => (
             catalogue.reactions().reactions().to_owned(),
             IconName::Users,
-            MenuItemTone::Normal,
-        ),
-        MessageMenuAction::CopyMessageId => (
-            catalogue.context_menu().copy_message_id().to_owned(),
-            IconName::Copy,
             MenuItemTone::Normal,
         ),
         MessageMenuAction::EndPoll => (

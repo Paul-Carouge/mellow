@@ -59,7 +59,11 @@ pub fn bounds_recorder(bounds: Entity<Option<Bounds<Pixels>>>) -> impl IntoEleme
         move |drawn, _, cx| bounds.update(cx, |remembered, _| *remembered = Some(drawn)),
         |_, (), _, _| {},
     )
+    // Pinned to the parent's corner: without insets, an absolute element sits where the flow
+    // would put it, below the content of a block parent.
     .absolute()
+    .top_0()
+    .left_0()
     .size_full()
 }
 
