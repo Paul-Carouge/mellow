@@ -265,6 +265,10 @@ impl Strings {
         SecurityStrings { language: self.language }
     }
 
+    pub fn profile_card(self) -> ProfileCardStrings {
+        ProfileCardStrings { language: self.language }
+    }
+
     pub fn profile_details(self) -> ProfileDetailsStrings {
         ProfileDetailsStrings { language: self.language }
     }
@@ -14367,6 +14371,88 @@ impl SecuritySignInStrings {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileCardStrings {
+    language: Language,
+}
+
+impl ProfileCardStrings {
+    pub fn more_actions_for(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("More actions for {person}"),
+            Language::French => format!("Plus d’actions pour {person}"),
+        }
+    }
+
+    pub fn edit_profile(self) -> &'static str {
+        match self.language {
+            Language::English => "Edit profile",
+            Language::French => "Modifier le profil",
+        }
+    }
+
+    pub fn no_details_yet(self) -> &'static str {
+        match self.language {
+            Language::English => "You have no About me or links yet.",
+            Language::French => "Tu n’as pas encore de présentation ni de liens.",
+        }
+    }
+
+    pub fn roles(self) -> &'static str {
+        match self.language {
+            Language::English => "Roles",
+            Language::French => "Rôles",
+        }
+    }
+
+    pub fn roles_of(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("Roles of {person}"),
+            Language::French => format!("Rôles de {person}"),
+        }
+    }
+
+    pub fn member_since(self) -> &'static str {
+        match self.language {
+            Language::English => "Member since",
+            Language::French => "Membre depuis",
+        }
+    }
+
+    pub fn mellow(self) -> &'static str {
+        "Mellow"
+    }
+
+    pub fn member_since_date(self, date: &str) -> String {
+        match self.language {
+            Language::English => format!("Member since {date}"),
+            Language::French => format!("Membre depuis le {date}"),
+        }
+    }
+
+    pub fn view_profile(self) -> &'static str {
+        match self.language {
+            Language::English => "View profile",
+            Language::French => "Voir le profil",
+        }
+    }
+
+    pub fn view_profile_of(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("View {person}'s profile"),
+            Language::French => format!("Voir le profil de {person}"),
+        }
+    }
+
+    pub fn more_roles(self, roles: i64) -> String {
+        let roles = roles as f64;
+        match self.language {
+            Language::English => format!("{} more {}", super::format_count(Language::English, roles), if super::is_plural_one(Language::English, roles) { "role" } else { "roles" }),
+            Language::French => format!("{} {}", super::format_count(Language::French, roles), if super::is_plural_one(Language::French, roles) { "autre rôle" } else { "autres rôles" }),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct ProfileDetailsStrings {
     language: Language,
 }
@@ -15496,6 +15582,20 @@ impl DesktopStrings {
         match self.language {
             Language::English => format!("Couldn't open {file_name}. Try again, or download it."),
             Language::French => format!("Impossible d’ouvrir {file_name}. Réessaie, ou télécharge-le."),
+        }
+    }
+
+    pub fn you_tube_playing_in_player_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Playing in the player window",
+            Language::French => "En lecture dans le lecteur",
+        }
+    }
+
+    pub fn you_tube_player_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "The player window couldn't open, so the video opened in your browser.",
+            Language::French => "La fenêtre du lecteur n’a pas pu s’ouvrir\u{a0}: la vidéo s’est ouverte dans ton navigateur.",
         }
     }
 }

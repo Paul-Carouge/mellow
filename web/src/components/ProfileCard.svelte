@@ -1,18 +1,28 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
 
-  import { type PublicUser, profileImageUrl } from "../lib/protocol";
+  import { type PublicUser, type Role, profileImageUrl } from "../lib/protocol";
   import { isPictureAnimationWanted } from "../lib/motion.svelte";
   import Avatar from "./Avatar.svelte";
   import { avatarTintToken, displayName } from "./format";
+  import RoleIcon from "./RoleIcon.svelte";
+  import type { ShownStatus } from "./StatusIndicator.svelte";
 
   // A member's profile (DESIGN.md §5.7, ADR-0022 §1), in the side sheet and as the live preview in
   // Profile settings (§5.9): the banner picture, or the plain strip, with the avatar overlapping
   // it; both play animated, as in Discord's popout, unless reduced motion keeps pictures still.
   interface Props {
     user: Pick<PublicUser, "id" | "display_name" | "username" | "avatar" | "banner">;
-    /** A heading in the side sheet; plain text in the settings preview, under its own heading. */
-    nameElement?: "h3" | "p";
+    /** The modal's heading (it names the dialog); plain text in the settings preview, under its own heading. */
+    nameElement?: "h2" | "h3" | "p";
+    /** Gives the name (without the role icon) an id, for the dialog that it names. */
+    nameId?: string;
+    /** The presence shape on the avatar (the profile modal); the preview shows none. */
+    presence?: ShownStatus | null;
+    /** The person's highest role with an icon here, after their name (ADR-0050). */
+    roleIcon?: Role | null;
+    /** The banner across a wider card (the phone sheet) keeps its 5:2 framing instead of 120 px. */
+    isBannerProportional?: boolean;
     /** The surface behind the card: the avatar's ring is cut from it. */
     surfaceToken?: string;
     /** Actions under the name, such as "Send message". */
@@ -24,6 +34,10 @@
   let {
     user,
     nameElement = "h3",
+    nameId,
+    presence = null,
+    roleIcon = null,
+    isBannerProportional = false,
     surfaceToken = "--mw-component-profile-popover-background",
     children,
     bannerPicture,
@@ -44,7 +58,10 @@
     alt=""
     decoding="async"
     draggable="false"
-    class="block h-(--mw-component-profile-popover-banner-image-height) w-full bg-(--mw-component-profile-popover-banner) object-cover select-none"
+    class={[
+      "block w-full bg-(--mw-component-profile-popover-banner) object-cover select-none",
+      isBannerProportional ? "aspect-5/2" : "h-(--mw-component-profile-popover-banner-image-height)",
+    ]}
     onerror={() => (failedBannerId = bannerId)}
   />
 {:else}
@@ -63,10 +80,24 @@
     style:background-color="var({surfaceToken})"
     style:box-shadow="0 0 0 var(--mw-component-profile-popover-avatar-ring-width) var({surfaceToken})"
   >
-    <Avatar {user} sizeToken="--mw-component-profile-popover-avatar-size" animation="always" />
+    <Avatar
+      {user}
+      sizeToken="--mw-component-profile-popover-avatar-size"
+      animation="always"
+      {presence}
+      ringColorToken={surfaceToken}
+      statusSizeToken="--mw-component-status-size-large"
+    />
   </span>
   <svelte:element this={nameElement} class="mt-xs type-heading-lg break-words text-(--mw-component-profile-popover-name-text)">
-    {displayName(user)}
+    <!-- The name alone names the dialog; the role icon after it keeps its own label. -->
+    <span id={nameId}>{displayName(user)}</span>
+    {#if roleIcon}
+      <!-- After the name, as in messages; the role's name is its label. -->
+      <span class="ms-(--mw-component-role-icon-gap) inline-flex align-middle"
+        ><RoleIcon role={roleIcon} sizeToken="--mw-component-role-icon-message-size" /></span
+      >
+    {/if}
   </svelte:element>
   {@render children?.()}
 </div>

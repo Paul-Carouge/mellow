@@ -1157,6 +1157,7 @@ export const fr: Catalogue = {
   members: {
     members: "Membres",
     profile: "Profil",
+    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
     profileOf: (person) => `Profil de ${person}`,
     backToMembers: "Retour aux membres",
     sendMessage: "Envoyer un message",
@@ -2273,6 +2274,20 @@ export const fr: Catalogue = {
     },
   },
 
+  profileCard: {
+    moreActionsFor: (person) => `Plus d’actions pour ${person}`,
+    editProfile: "Modifier le profil",
+    noDetailsYet: "Tu n’as pas encore de présentation ni de liens.",
+    roles: "Rôles",
+    rolesOf: (person) => `Rôles de ${person}`,
+    memberSince: "Membre depuis",
+    mellow: "Mellow",
+    memberSinceDate: (date) => `Membre depuis le ${date}`,
+    viewProfile: "Voir le profil",
+    viewProfileOf: (person) => `Voir le profil de ${person}`,
+    moreRoles: (roles) => `${count(roles)} ${plural(roles, { one: "autre rôle", other: "autres rôles" })}`,
+  },
+
   profileDetails: {
     aboutMe: "À propos de moi",
     links: "Liens",
@@ -2445,5 +2460,7 @@ export const fr: Catalogue = {
     openWithDefaultApp: "Ouvrir avec l’application par défaut",
     attachmentOpening: (fileName) => `Ouverture de ${fileName}…`,
     attachmentOpenFailed: (fileName) => `Impossible d’ouvrir ${fileName}. Réessaie, ou télécharge-le.`,
+    youTubePlayingInPlayerWindow: "En lecture dans le lecteur",
+    youTubePlayerUnavailable: `La fenêtre du lecteur n’a pas pu s’ouvrir${NO_BREAK_SPACE}: la vidéo s’est ouverte dans ton navigateur.`,
   },
 };

@@ -21,6 +21,7 @@ use mellow_client_core::shared_logic::voice_settings::{
     voice_settings_to_json, voice_toggles_to_json,
 };
 use mellow_media::ScreenShareQuality;
+use mellow_player::WindowPlacement;
 use mellow_protocol::Snowflake;
 
 use crate::voice::screen_share::{screen_share_quality_label, screen_share_quality_of_label};
@@ -51,6 +52,8 @@ const SCREEN_SHARE_QUALITY_KEY: &str = "screen-share-quality";
 const SCREEN_SHARE_SOUND_OFF_KEY: &str = "screen-share-sound-off";
 const AUTOMATIC_UPDATES_OFF_KEY: &str = "automatic-updates-off";
 const CLOSE_QUITS_KEY: &str = "close-quits";
+const YOUTUBE_PLAYER_WINDOW_KEY: &str = "youtube-player-window";
+const YOUTUBE_PLAYER_ON_TOP_KEY: &str = "youtube-player-on-top";
 const HOME_PLACE: &str = "home";
 const SERVER_PLACE_PREFIX: &str = "server:";
 /// The latest servers and places only (the web's `MAXIMUM_REMEMBERED_MEMBER_SHEET_PLACES`), so a
@@ -219,6 +222,10 @@ pub struct Preferences {
     /// The window's close button quits Mellow instead of leaving it running in the background
     /// (Discord's "Minimise to tray" turned off).
     pub does_closing_the_window_quit: bool,
+    /// Where the YouTube player window was and its size when it last closed (ADR-0061).
+    pub youtube_player_placement: Option<WindowPlacement>,
+    /// The YouTube player window stays above the others.
+    pub does_youtube_player_keep_on_top: bool,
 }
 
 impl Preferences {
@@ -464,6 +471,12 @@ impl Preferences {
                 }
                 AUTOMATIC_UPDATES_OFF_KEY => preferences.is_automatic_update_off = value == "true",
                 CLOSE_QUITS_KEY => preferences.does_closing_the_window_quit = value == "true",
+                YOUTUBE_PLAYER_WINDOW_KEY => {
+                    preferences.youtube_player_placement = WindowPlacement::from_text(value);
+                }
+                YOUTUBE_PLAYER_ON_TOP_KEY => {
+                    preferences.does_youtube_player_keep_on_top = value == "true";
+                }
                 THEME_KEY => preferences.theme = ThemeChoice::parse(value),
                 LANGUAGE_KEY => preferences.language = LanguageChoice::parse(value),
                 PICTURE_ANIMATION_KEY => {
@@ -569,6 +582,12 @@ impl Preferences {
         }
         if self.does_closing_the_window_quit {
             let _ = writeln!(text, "{CLOSE_QUITS_KEY}=true");
+        }
+        if let Some(placement) = &self.youtube_player_placement {
+            let _ = writeln!(text, "{YOUTUBE_PLAYER_WINDOW_KEY}={}", placement.to_text());
+        }
+        if self.does_youtube_player_keep_on_top {
+            let _ = writeln!(text, "{YOUTUBE_PLAYER_ON_TOP_KEY}=true");
         }
         if let Some(theme) = self.theme.as_file_text() {
             let _ = writeln!(text, "{THEME_KEY}={theme}");
@@ -728,6 +747,8 @@ static DEFAULT_PREFERENCES: Preferences = Preferences {
     is_screen_share_sound_off: false,
     is_automatic_update_off: false,
     does_closing_the_window_quit: false,
+    youtube_player_placement: None,
+    does_youtube_player_keep_on_top: false,
 };
 
 /// Changes the preferences and saves them; a change asked for while the file is still read is
@@ -745,6 +766,26 @@ pub fn change_preferences(cx: &mut App, change: impl FnOnce(&mut Preferences) + 
         }
         None => store.pending_changes.push(Box::new(change)),
     });
+}
+
+/// Writes the preferences now, on this thread, for a quitting app whose background save might not
+/// run before the process ends.
+pub fn save_preferences_now(cx: &App) {
+    let Some(store) = cx.try_global::<PreferencesStore>() else {
+        return;
+    };
+    let (Some(preferences), Some(path)) = (store.loaded.as_ref(), preferences_file_path()) else {
+        return;
+    };
+    if !store.is_saved_to_disk {
+        return;
+    }
+    let text = preferences.to_file_text();
+    LATEST_SAVE_REQUEST.fetch_add(1, Ordering::SeqCst);
+    let _write = WRITE_LOCK.lock().unwrap_or_else(PoisonError::into_inner);
+    if let Err(error) = write_atomically(&path, &text) {
+        tracing::warn!(error = %error.kind(), "cannot save the preferences");
+    }
 }
 
 /// A crash or a full disk mid-write leaves the previous file, never half of the new one.
@@ -816,6 +857,9 @@ mod tests {
         preferences.is_screen_share_sound_off = true;
         preferences.is_automatic_update_off = true;
         preferences.does_closing_the_window_quit = true;
+        preferences.youtube_player_placement = WindowPlacement::from_text("960x540@-1280,30");
+        assert!(preferences.youtube_player_placement.is_some());
+        preferences.does_youtube_player_keep_on_top = true;
         preferences.theme = ThemeChoice::Light;
         preferences.language = LanguageChoice::French;
         preferences.picture_animation = PictureAnimationChoice::Always;
