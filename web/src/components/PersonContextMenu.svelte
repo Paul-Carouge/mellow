@@ -13,25 +13,26 @@
   import { displayName } from "./format";
   import type { MenuOrigin } from "./menu-placement";
   import { isTargetMuted, notificationMenuHandler } from "./notification-preferences.svelte";
+  import { openProfileModal } from "./profile-surfaces.svelte";
   import Icon from "./Icon.svelte";
   import RangeField from "./RangeField.svelte";
   import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
   import { MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT } from "../lib/voice-settings";
 
   // A person's context menu (DESIGN.md §6.33): a member row, a message's author, a friend row, a
-  // one-to-one conversation's row. Friend requests and Unblock wait in the menu; Remove friend and
+  // one-to-one conversation's row, the profile modal's More button. Friend requests and Unblock wait in the menu; Remove friend and
   // Block ask first in the destructive dialog of DESIGN.md §8, as in the Friends space.
   interface Props {
     client: MellowClient;
-    /** The member list shows profiles: "Profile" opens one there. */
-    onshowprofile?: (user: PublicUser, invoker: HTMLElement) => void;
+    /** The profile modal's More menu: no "Profile", and nothing its buttons already do (DESIGN.md §5.7.1). */
+    isInProfile?: boolean;
     /** After "Message" opened the conversation (the composer takes focus, an overlay closes). */
     onopenedconversation: () => void;
     /** Where focus goes when the person's row left meanwhile (a friend removed or blocked). */
     fallbackFocus?: () => void;
   }
 
-  let { client, onshowprofile, onopenedconversation, fallbackFocus }: Props = $props();
+  let { client, isInProfile = false, onopenedconversation, fallbackFocus }: Props = $props();
 
   let menu = $state<ContextMenu | null>(null);
   let target = $state<{
@@ -52,7 +53,8 @@
     const lines = personMenuActions({
       isSelf: user.id === client.user?.id,
       relationship: client.relationshipByUserId.get(user.id)?.kind ?? null,
-      canShowProfile: onshowprofile !== undefined,
+      canShowProfile: !isInProfile,
+      isInProfile,
       canOpenConversation: target.canOpenConversation,
       conversationChannel: conversationChannelId !== null,
       isConversationMuted:
@@ -97,7 +99,7 @@
     const person = displayName(user);
     switch (action) {
       case "profile":
-        return { onselect: () => onshowprofile?.(user, invoker) };
+        return { onselect: () => openProfileModal(user, invoker) };
       case "message":
         return {
           onselectAndWait: async () => {
