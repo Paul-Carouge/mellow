@@ -195,6 +195,18 @@ same scenario.
   refresh timer stops for hidden windows, and Wayland).
 
 ### Lot 3: one frame per event (gain: -50 % frames per incoming message, -80 % per typing notice)
+- Done. Frames counted with the probe of "Method" (debug build, X11, `#perf` open, 5 messages or
+  3 notices each, identical on every run): a message in the open channel 2 to 1 per message
+  (-50 %), in another channel 1 to 1, a typing notice in the open channel 9 to 2 (-78 %), in
+  another channel 1 to 0, opening a channel with 30 unread messages 5 to 3. The second frame per
+  message was not `note_reader_scrolled` (GPUI's list calls its scroll handler only on wheel input,
+  and notifies the view itself right after): it was the read mark, deferred after the draw. The
+  conversation now marks the channel read from the `StateChanged` handler, before the frame; rows
+  ignore `ReadStates` (their divider is the visit's marker); the session, the shell and the
+  conversation do not notify for typing, which the conversation redraws itself when the line's
+  names change, with one timer to the next notice's end (`ClientState::next_typing_notice_end`).
+  `note_reader_scrolled` and the conversation's `observe` were left as they are: their notifies
+  never cost a frame of their own. Tests count frames through a counting window root.
 - `note_reader_scrolled`: notify only when something it owns changed (the at-latest flag, the unread
   marker, `latest_id_when_leaving_present`) (`conversation/mod.rs:624`).
 - `ReadStates`: rebuild rows only when the open channel's read position moved
@@ -207,6 +219,10 @@ same scenario.
   `MESSAGE_CREATE` to the open channel and asserts one render of the conversation.
 
 ### Lot 4: release profile (gain: -15.5 MB shipped binary, -18 %)
+- Done: the desktop jobs of `release.yml` build with the server's `[profile.dist]` (`target/dist/`);
+  `release` is unchanged and `panic` stays "unwind". Measured on 2026-11-14 (`CARGO_BUILD_JOBS=2`,
+  `nice`): stripped 87.2 to 71.7 MB (-17.8 %), gzip 32.6 to 30.3 MB (-7.0 %), cold build 8 min 32 s
+  to 9 min 59 s with two jobs (more on CI's runners, where `release` builds 16 units in parallel).
 - Add a `[profile.dist]` inheriting `release` with `lto = "fat"`, `codegen-units = 1`,
   `strip = true`, used by `release.yml` (`cargo build --profile dist`), so everyday release builds
   stay at about 4 minutes. Keep `panic = "unwind"`.
