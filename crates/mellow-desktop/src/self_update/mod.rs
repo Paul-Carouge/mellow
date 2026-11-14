@@ -1,7 +1,8 @@
 //! The desktop app's signed self-update (ADR-0057): a check soon after start and then about once
 //! a day (with jitter, without the user's Mellow token), the package downloaded and its minisign
-//! signature verified by `mellow-update`, unpacked into a private staging directory, and swapped
-//! in when the user restarts from the interface or quits the app, never during a voice call.
+//! signature verified by `mellow-update`, unpacked into a staging directory, and swapped
+//! in when the user restarts from the interface or quits the app, never during a voice call. On
+//! Windows the staged installer does the swap once the app has exited (ADR-0060).
 
 pub mod package;
 #[cfg(test)]
@@ -15,7 +16,7 @@ use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task, We
 use mellow_update::{Release, UpdateClient};
 use semver::Version;
 
-use self::package::{Installation, StagedUpdate};
+use self::package::{Installation, Relaunch, StagedUpdate};
 use crate::preferences::preferences;
 use crate::tokio_bridge::spawn_on_network_runtime;
 
@@ -42,8 +43,10 @@ pub enum UpdateProblem {
     NotWritable,
     /// macOS: run from the read-only copy macOS makes of an app opened where it was downloaded.
     Translocated,
-    /// Windows, or a Linux processor the release has no package for.
+    /// A system or processor the release has no package for.
     UnsupportedSystem,
+    /// Windows: Mellow runs as administrator, and an elevated app never updates itself.
+    Elevated,
     /// Linux: no FFmpeg the packages are built for.
     NoFfmpeg,
     Network,
@@ -167,7 +170,7 @@ impl SelfUpdate {
         // it. Blocking, but the window is already closing and the swap is a rename or two.
         let quit_subscription = cx.on_app_quit(|this, _| {
             if let Some(mut staged) = this.staged.take() {
-                match package::apply_staged_update(&mut staged) {
+                match package::apply_staged_update(&mut staged, false) {
                     Ok(_) => this.applied = Some(staged),
                     Err(problem) => {
                         tracing::warn!(?problem, "the update could not be installed at quit");
@@ -313,16 +316,16 @@ impl SelfUpdate {
         self.status = UpdateStatus::Installing(staged.version.clone());
         cx.notify();
         let apply = cx.background_spawn(async move {
-            let applied = package::apply_staged_update(&mut staged);
+            let applied = package::apply_staged_update(&mut staged, true);
             (staged, applied)
         });
         self.work = Some(cx.spawn(async move |this, cx| {
             let (staged, applied) = apply.await;
-            let restart_path = this
+            let relaunch = this
                 .update(cx, |this, cx| match applied {
-                    Ok(restart_path) => {
+                    Ok(relaunch) => {
                         this.applied = Some(staged);
-                        Some(restart_path)
+                        Some(relaunch)
                     }
                     Err(problem) => {
                         this.finish(UpdateStatus::Failed(problem), cx);
@@ -331,8 +334,15 @@ impl SelfUpdate {
                 })
                 .ok()
                 .flatten();
-            if let Some(restart_path) = restart_path {
-                cx.update(|cx| restart_unless_in_call(&this, restart_path, cx));
+            match relaunch {
+                Some(Relaunch::ThisApp(restart_path)) => {
+                    cx.update(|cx| restart_unless_in_call(&this, restart_path, cx));
+                }
+                // The installer started and waits for this process to exit, then opens the new
+                // version. A call joined in the moments since the button was pressed ends with
+                // the quit, as at any quit.
+                Some(Relaunch::ByInstaller) => cx.update(|cx| cx.quit()),
+                None => {}
             }
         }));
     }

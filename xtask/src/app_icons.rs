@@ -77,6 +77,101 @@ pub fn render_png_with_margin(
         .with_context(|| format!("cannot encode the {size} px icon"))
 }
 
+/// The Windows executable's and installer's icon (`packaging/windows/mellow.ico`): the sizes
+/// Explorer, the taskbar, the Start menu and "Installed apps" ask for at 100 % to 200 % scaling.
+pub const WINDOWS_ICON_SIZES: [u32; 9] = [16, 20, 24, 32, 40, 48, 64, 128, 256];
+
+/// A Windows icon file holding PNG pictures (Windows Vista and later read PNG entries), each
+/// `(size, png)` square and at most 256 pixels.
+pub fn ico(entries: &[(u32, Vec<u8>)]) -> Result<Vec<u8>> {
+    const HEADER_LENGTH: usize = 6;
+    const ENTRY_LENGTH: usize = 16;
+    const MAXIMUM_SIZE: u32 = 256;
+    let mut file = Vec::new();
+    file.extend_from_slice(&0_u16.to_le_bytes());
+    // Type 1: an icon, not a cursor.
+    file.extend_from_slice(&1_u16.to_le_bytes());
+    file.extend_from_slice(&u16::try_from(entries.len())?.to_le_bytes());
+    let mut offset = HEADER_LENGTH + ENTRY_LENGTH * entries.len();
+    for (size, png) in entries {
+        if *size == 0 || *size > MAXIMUM_SIZE {
+            return Err(anyhow!(
+                "an icon entry of {size} px does not fit an ICO file"
+            ));
+        }
+        // 256 is written as 0: the field is one byte.
+        let side = u8::try_from(*size % MAXIMUM_SIZE)?;
+        file.extend_from_slice(&[side, side, 0, 0]);
+        // One plane, 32 bits per pixel.
+        file.extend_from_slice(&1_u16.to_le_bytes());
+        file.extend_from_slice(&32_u16.to_le_bytes());
+        file.extend_from_slice(&u32::try_from(png.len())?.to_le_bytes());
+        file.extend_from_slice(&u32::try_from(offset)?.to_le_bytes());
+        offset += png.len();
+    }
+    for (_, png) in entries {
+        file.extend_from_slice(png);
+    }
+    Ok(file)
+}
+
+/// The PNG pictures of an ICO file written by [`ico`]; `None` if it is not one.
+fn ico_pictures(file: &[u8]) -> Option<Vec<&[u8]>> {
+    const HEADER_LENGTH: usize = 6;
+    const ENTRY_LENGTH: usize = 16;
+    let header = file.get(..HEADER_LENGTH)?;
+    if header[..4] != [0, 0, 1, 0] {
+        return None;
+    }
+    let count = usize::from(u16::from_le_bytes([header[4], header[5]]));
+    let mut pictures = Vec::with_capacity(count);
+    for index in 0..count {
+        let start = HEADER_LENGTH + index * ENTRY_LENGTH;
+        let entry = file.get(start..start + ENTRY_LENGTH)?;
+        let length = usize::try_from(u32::from_le_bytes(entry[8..12].try_into().ok()?)).ok()?;
+        let offset = usize::try_from(u32::from_le_bytes(entry[12..16].try_into().ok()?)).ok()?;
+        pictures.push(file.get(offset..offset.checked_add(length)?)?);
+    }
+    Some(pictures)
+}
+
+/// The Windows icon file, rendered from the favicon.
+pub fn generate_windows_icon(favicon_svg: &str) -> Result<Vec<u8>> {
+    let favicon = usvg::Tree::from_str(favicon_svg, &usvg::Options::default())
+        .context("the favicon is not valid SVG")?;
+    let mut entries = Vec::new();
+    for size in WINDOWS_ICON_SIZES {
+        entries.push((size, render_png(&favicon, size)?));
+    }
+    ico(&entries)
+}
+
+/// [`is_icon_up_to_date`] for each picture of an ICO file, which must hold the same sizes.
+pub fn is_ico_up_to_date(committed: &[u8], generated: &[u8]) -> Result<bool> {
+    if committed == generated {
+        return Ok(true);
+    }
+    let generated_pictures =
+        ico_pictures(generated).context("the generated Windows icon is not an ICO file")?;
+    let Some(committed_pictures) = ico_pictures(committed) else {
+        return Ok(false);
+    };
+    // Sizes are compared through the pictures; the directory must not hide anything either.
+    let directory_length = 6 + 16 * committed_pictures.len();
+    let pictures_length: usize = committed_pictures.iter().map(|png| png.len()).sum();
+    if committed_pictures.len() != generated_pictures.len()
+        || committed.len() != directory_length + pictures_length
+    {
+        return Ok(false);
+    }
+    for (committed_png, generated_png) in committed_pictures.iter().zip(&generated_pictures) {
+        if !is_icon_up_to_date(committed_png, generated_png)? {
+            return Ok(false);
+        }
+    }
+    Ok(true)
+}
+
 /// Whether a PNG holds only what the encoder writes (`IHDR`, `IDAT`, `IEND`) and nothing after
 /// its end: pixels within tolerance must not let other bytes hide in a committed icon.
 fn has_only_image_chunks(png: &[u8]) -> bool {
@@ -172,6 +267,38 @@ mod tests {
         assert!(!is_icon_up_to_date(png, &other[0].1).unwrap());
         assert!(!is_icon_up_to_date(&[], png).unwrap());
         assert!(!is_icon_up_to_date(b"not a picture", png).unwrap());
+    }
+
+    #[test]
+    fn an_ico_file_lists_each_png_with_its_size_and_offset() {
+        let file = ico(&[(16, vec![1, 2]), (256, vec![3])]).unwrap();
+        assert_eq!(&file[..6], &[0, 0, 1, 0, 2, 0]);
+        // First entry: 16 px, 2 bytes, after the 6-byte header and two 16-byte entries.
+        assert_eq!(&file[6..10], &[16, 16, 0, 0]);
+        assert_eq!(u32::from_le_bytes(file[14..18].try_into().unwrap()), 2);
+        assert_eq!(u32::from_le_bytes(file[18..22].try_into().unwrap()), 38);
+        // 256 px is written as 0.
+        assert_eq!(&file[22..26], &[0, 0, 0, 0]);
+        assert_eq!(u32::from_le_bytes(file[34..38].try_into().unwrap()), 40);
+        assert_eq!(&file[38..], &[1, 2, 3]);
+        assert_eq!(ico_pictures(&file).unwrap(), [&[1, 2][..], &[3][..]]);
+        assert!(ico(&[(257, vec![1])]).is_err());
+    }
+
+    #[test]
+    fn the_windows_icon_check_compares_pictures_and_refuses_extra_bytes() {
+        let windows_icon = generate_windows_icon(SQUARE).unwrap();
+        let pictures = ico_pictures(&windows_icon).unwrap();
+        assert_eq!(pictures.len(), WINDOWS_ICON_SIZES.len());
+        assert_eq!(Pixmap::decode_png(pictures[0]).unwrap().width(), 16);
+        assert!(is_ico_up_to_date(&windows_icon, &windows_icon).unwrap());
+
+        let mut appended = windows_icon.clone();
+        appended.extend_from_slice(b"hidden");
+        assert!(!is_ico_up_to_date(&appended, &windows_icon).unwrap());
+        let other = generate_windows_icon(&SQUARE.replace("#3F332D", "#FFFAF3")).unwrap();
+        assert!(!is_ico_up_to_date(&other, &windows_icon).unwrap());
+        assert!(!is_ico_up_to_date(b"not an icon", &windows_icon).unwrap());
     }
 
     #[test]

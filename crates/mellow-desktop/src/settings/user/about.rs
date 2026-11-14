@@ -80,6 +80,7 @@ fn problem_sentence(problem: UpdateProblem, catalogue: Strings) -> &'static str 
         UpdateProblem::NotWritable => words.update_not_writable(),
         UpdateProblem::Translocated => words.update_translocated(),
         UpdateProblem::UnsupportedSystem => words.update_unsupported_system(),
+        UpdateProblem::Elevated => words.update_elevated(),
         UpdateProblem::NoFfmpeg => words.update_no_ffmpeg(),
         UpdateProblem::Network => words.update_network(),
         UpdateProblem::NoPackage => words.update_no_package(),

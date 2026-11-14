@@ -24,7 +24,13 @@ const FAVICON_TEMPLATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
   <rect width="256" height="256" rx="{tile-radius}" fill="url(#sky)"/>
   <rect width="256" height="256" rx="{tile-radius}" fill="url(#glow)"/>
   <g transform="translate(128 128) scale(0.9) translate(-128 -124)">
-    <g fill="{outline}">
+{melli}  </g>
+</svg>
+"#;
+
+/// Melli itself on the 256 grid, centred on (128, 124): outline, puffs and eyes. Shared by the
+/// favicon and the Windows installer's picture (`windows_installer.rs`).
+pub const MELLI_DRAWING: &str = r#"    <g fill="{outline}">
       <circle cx="128" cy="124" r="68"/><circle cx="128" cy="78" r="36"/><circle cx="167.8" cy="101" r="36"/><circle cx="167.8" cy="147" r="36"/><circle cx="128" cy="170" r="36"/><circle cx="88.2" cy="147" r="36"/><circle cx="88.2" cy="101" r="36"/>
     </g>
     <g fill="{body}">
@@ -33,8 +39,6 @@ const FAVICON_TEMPLATE: &str = r#"<svg xmlns="http://www.w3.org/2000/svg" viewBo
     <g fill="{ink}">
       <rect x="110" y="112" width="12" height="24" rx="6"/><rect x="134" y="112" width="12" height="24" rx="6"/>
     </g>
-  </g>
-</svg>
 "#;
 
 /// The favicon's own rounded corners, on the 256 grid.
@@ -63,7 +67,18 @@ pub fn generate_maskable_icon(tokens: &DesignTokens) -> Result<String> {
 }
 
 fn generate_tile(tokens: &DesignTokens, tile_radius: &str) -> Result<String> {
-    let mut svg = FAVICON_TEMPLATE.replace("{tile-radius}", tile_radius);
+    fill_mascot_colours(
+        &FAVICON_TEMPLATE
+            .replace("{melli}", MELLI_DRAWING)
+            .replace("{tile-radius}", tile_radius),
+        tokens,
+    )
+}
+
+/// Replaces the mascot placeholders (`{outline}`, `{body}`, `{ink}`, `{tile-top}`,
+/// `{tile-bottom}`, `{glow}` and `{glow-opacity}`) with their token colours.
+pub fn fill_mascot_colours(template: &str, tokens: &DesignTokens) -> Result<String> {
+    let mut svg = template.to_owned();
     for (placeholder, path) in PLACEHOLDER_TO_TOKEN {
         let colour = mascot_colour(tokens, path)?;
         if colour.alpha != u8::MAX {
@@ -88,7 +103,7 @@ fn mascot_colour(tokens: &DesignTokens, path: &str) -> Result<Rgba> {
     Rgba::parse_hex(text)
 }
 
-fn rgb_hex(colour: Rgba) -> String {
+pub fn rgb_hex(colour: Rgba) -> String {
     format!("#{:02X}{:02X}{:02X}", colour.red, colour.green, colour.blue)
 }
 

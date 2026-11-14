@@ -1,7 +1,7 @@
 name: Release
 
 # Builds, signs and publishes a release for a pushed tag `vX.Y.Z` (ADR-0016): the server, and the
-# desktop app's packages (ADR-0055).
+# desktop app's packages (ADR-0055, ADR-0060).
 on:
   push:
     tags: ["v*"]
@@ -326,9 +326,165 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+  # The Windows installer (ADR-0060): Inno Setup, per user, without administrator rights. Built,
+  # then installed, replaced over a running copy and uninstalled silently on the runner.
+  desktop-windows:
+    name: Desktop installer (Windows)
+    runs-on: windows-2025
+    env:
+      # Downloaded from Inno Setup's GitHub release and checked against this digest (GitHub's
+      # asset digest), so a changed download fails instead of building the installer.
+      INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
+      INNO_SETUP_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+      # The assemblers, by exact Chocolatey package version (each package checks its download's
+      # digest): nasm assembles rav1d and aws-lc, yasm libvpx. Upstream's yasm 1.3.0 win64 binary
+      # needs the MSVC 2010 runtime, which the runner lacks.
+      NASM_CHOCOLATEY_VERSION: 3.2.0
+      YASM_CHOCOLATEY_VERSION: 1.2.0
+      # MSYS2's packages by exact version; pacman checks their MSYS2 signatures.
+      MSYS2_PACKAGES: >-
+        https://repo.msys2.org/msys/x86_64/make-4.4.1-3-x86_64.pkg.tar.zst
+        https://repo.msys2.org/msys/x86_64/diffutils-3.12-1-x86_64.pkg.tar.zst
+      # Inno Setup's `AppId` in packaging/windows/mellow.iss.
+      UNINSTALL_KEY: HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{CAD4F275-B047-40C0-A309-245EBA2DE460}_is1
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          fetch-depth: 0
+      - name: The tag is a released version of main
+        shell: bash
+        run: .github/release-version.sh
+      # As ci.yml's Windows job, pinned: libvpx is built by MSBuild driven by MSYS2's sh and make
+      # and assembled by yasm; nasm assembles rav1d and aws-lc; cmake (on the runner) builds libopus.
+      - name: Install the C build tools
+        shell: pwsh
+        run: |
+          choco install --no-progress --yes nasm --version=$env:NASM_CHOCOLATEY_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "choco exited with $LASTEXITCODE" }
+          choco install --no-progress --yes yasm --version=$env:YASM_CHOCOLATEY_VERSION
+          if ($LASTEXITCODE -ne 0) { throw "choco exited with $LASTEXITCODE" }
+          'C:\Program Files\NASM' | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          C:\msys64\usr\bin\pacman.exe --upgrade --noconfirm --needed $env:MSYS2_PACKAGES.Split(' ')
+          if ($LASTEXITCODE -ne 0) { throw "pacman exited with $LASTEXITCODE" }
+          # Part of the runner's MSYS2 base: installed only if missing, so nothing moves under it.
+          C:\msys64\usr\bin\pacman.exe --sync --noconfirm --needed perl
+          if ($LASTEXITCODE -ne 0) { throw "pacman exited with $LASTEXITCODE" }
+      - name: Build
+        shell: pwsh
+        run: |
+          # rustc and cc find MSVC's link.exe by its full path, so MSYS2's link does not matter.
+          $env:PATH = "C:\msys64\usr\bin;$env:PATH"
+          cargo build --profile dist --locked -p mellow-desktop
+      - name: The executable is a windowed app carrying its version
+        shell: pwsh
+        run: |
+          $exe = "target\dist\mellow.exe"
+          $version = (Get-Item $exe).VersionInfo
+          if ($version.ProductVersion -ne $env:MELLOW_VERSION -or $version.ProductName -ne 'Mellow') {
+            throw "version resource: '$($version.ProductName)' '$($version.ProductVersion)'"
+          }
+          # IMAGE_SUBSYSTEM_WINDOWS_GUI (2): no console window opens behind the app.
+          $bytes = [System.IO.File]::ReadAllBytes((Resolve-Path $exe))
+          $peHeader = [BitConverter]::ToInt32($bytes, 0x3C)
+          $subsystem = [BitConverter]::ToUInt16($bytes, $peHeader + 24 + 68)
+          if ($subsystem -ne 2) { throw "subsystem $subsystem instead of 2 (windows)" }
+      # Code signing goes here once there is a certificate (ADR-0060): sign mellow.exe before it
+      # is packed, then let Inno Setup sign the installer and its uninstaller (SignTool).
+      - name: Install Inno Setup
+        shell: pwsh
+        run: |
+          $download = Join-Path $env:RUNNER_TEMP 'innosetup.exe'
+          Invoke-WebRequest -Uri $env:INNO_SETUP_URL -OutFile $download
+          $digest = (Get-FileHash -Algorithm SHA256 $download).Hash
+          if ($digest -ne $env:INNO_SETUP_SHA256) { throw "Inno Setup's digest is $digest" }
+          $directory = Join-Path $env:RUNNER_TEMP 'inno-setup'
+          $setup = Start-Process -FilePath $download -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART', '/SP-', "/DIR=$directory"
+          if ($setup.ExitCode -ne 0) { throw "Inno Setup's installer exited with $($setup.ExitCode)" }
+          "ISCC=$(Join-Path $directory 'ISCC.exe')" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+      - name: Lay out and compile the installer
+        shell: pwsh
+        run: |
+          cargo xtask windows-package --binary target\dist\mellow.exe --output installer
+          if ($LASTEXITCODE -ne 0) { throw "cargo xtask exited with $LASTEXITCODE" }
+          & $env:ISCC /Qp installer\mellow.iss
+          if ($LASTEXITCODE -ne 0) { throw "ISCC exited with $LASTEXITCODE" }
+          New-Item -ItemType Directory dist | Out-Null
+          Move-Item "installer\output\mellow-desktop-$env:MELLOW_VERSION-x86_64-pc-windows-msvc-setup.exe" dist\
+      - name: Install, replace a running copy, uninstall
+        shell: pwsh
+        run: |
+          $setup = (Resolve-Path "dist\mellow-desktop-$env:MELLOW_VERSION-x86_64-pc-windows-msvc-setup.exe").Path
+          $folder = Join-Path $env:LOCALAPPDATA 'Programs\Mellow'
+          $exe = Join-Path $folder 'mellow.exe'
+          $shortcut = Join-Path $env:APPDATA 'Microsoft\Windows\Start Menu\Programs\Mellow.lnk'
+          function Invoke-Setup([string[]] $Arguments) {
+            $run = Start-Process -FilePath $setup -Wait -PassThru `
+              -ArgumentList (@('/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART') + $Arguments)
+            if ($run.ExitCode -ne 0) { throw "the installer exited with $($run.ExitCode)" }
+          }
+          function Assert-Installed {
+            foreach ($path in @($exe, (Join-Path $folder 'LICENSE.txt'), (Join-Path $folder 'unins000.exe'), $shortcut)) {
+              if (-not (Test-Path $path)) { throw "$path is missing" }
+            }
+            if ((Get-Item $exe).VersionInfo.ProductVersion -ne $env:MELLOW_VERSION) { throw 'another mellow.exe is installed' }
+            $displayVersion = (Get-ItemProperty -Path $env:UNINSTALL_KEY).DisplayVersion
+            if ($displayVersion -ne $env:MELLOW_VERSION) { throw "Installed apps lists $displayVersion" }
+          }
+
+          $logs = $env:RUNNER_TEMP
+          Invoke-Setup @("/LOG=$logs\install.log")
+          Assert-Installed
+          $output = Join-Path $env:RUNNER_TEMP 'version.txt'
+          $run = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $output
+          $printed = (Get-Content $output -Raw).Trim()
+          if ($run.ExitCode -ne 0 -or $printed -ne "mellow $env:MELLOW_VERSION") { throw "--version printed '$printed'" }
+
+          # A running copy (ping.exe standing in for Mellow, which needs a signed-in desktop):
+          # the installer stops it and installs over it without a question.
+          Copy-Item "$env:SystemRoot\System32\PING.EXE" $exe -Force
+          $running = Start-Process -FilePath $exe -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
+          Invoke-Setup @("/LOG=$logs\reinstall.log")
+          if (-not $running.HasExited) { throw 'the running copy was not stopped' }
+          Assert-Installed
+
+          # An update: the installer waits for the app that started it to quit by itself.
+          Copy-Item "$env:SystemRoot\System32\PING.EXE" $exe -Force
+          # About 19 seconds: well past the installer's start, so its wait is what is tested.
+          $quitting = Start-Process -FilePath $exe -ArgumentList '-n', '20', '127.0.0.1' -WindowStyle Hidden -PassThru
+          # Holding the handle keeps the exit code readable after the process ends.
+          $null = $quitting.Handle
+          Invoke-Setup @('/UPDATE', "/LOG=$logs\update.log")
+          if (-not $quitting.HasExited -or $quitting.ExitCode -ne 0) { throw 'the quitting copy was stopped instead of awaited' }
+          Assert-Installed
+
+          $run = Start-Process -FilePath (Join-Path $folder 'unins000.exe') -Wait -PassThru `
+            -ArgumentList '/VERYSILENT', '/SUPPRESSMSGBOXES', '/NORESTART'
+          if ($run.ExitCode -ne 0) { throw "the uninstaller exited with $($run.ExitCode)" }
+          # The uninstaller finishes from a copy of itself in the temporary folder.
+          $deadline = (Get-Date).AddMinutes(2)
+          while ((Test-Path $exe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
+          foreach ($path in @($exe, $shortcut, $env:UNINSTALL_KEY)) {
+            if (Test-Path $path) { throw "$path is left after uninstalling" }
+          }
+      - name: Keep the installer logs
+        if: failure()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-installer-logs
+          path: ${{ runner.temp }}/*.log
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: unsigned-desktop-windows
+          path: dist/
+          if-no-files-found: error
+          retention-days: 7
+
   publish:
     name: Sign and publish
-    needs: [build, desktop-linux, desktop-macos-sign]
+    needs: [build, desktop-linux, desktop-macos-sign, desktop-windows]
     if: github.ref_type == 'tag'
     runs-on: ubuntu-24.04
     # Waits for the maintainer's approval; the signing key exists only in this environment.
@@ -354,6 +510,7 @@ jobs:
             expected+="mellow-desktop-${version}-x86_64-unknown-linux-gnu-ffmpeg${ffmpeg}.tar.gz"$'\n'
           done
           expected+="mellow-desktop-${version}-universal-apple-darwin.zip"$'\n'
+          expected+="mellow-desktop-${version}-x86_64-pc-windows-msvc-setup.exe"$'\n'
           diff <(printf '%s' "${expected}" | sort) <(find . -maxdepth 1 -type f -printf '%f\n' | sort)
       - name: Sign every asset and the digests
         env:
