@@ -29,6 +29,12 @@ RUN apt-get update \
  && apt-get install --yes --no-install-recommends curl \
  && rm -rf /var/lib/apt/lists/*
 COPY --from=download /usr/local/bin/mellow-server /usr/local/bin/mellow-server
+# glibc otherwise raises its mmap threshold to the largest block freed so far, so the 19 MiB
+# Argon2 blocks of each sign-in are kept by its arenas instead of going back to the system
+# (docs/server-performance-audit.md). Fixing the mmap threshold also fixes the trim threshold at
+# the same value unless it is set: 2 MiB keeps gzip's few hundred KiB of state per answer out of
+# mmap and munmap on every request.
+ENV MALLOC_MMAP_THRESHOLD_=1048576 MALLOC_TRIM_THRESHOLD_=2097152
 # A dedicated id rather than 1000, usually the host's first login user.
 USER 10001:10001
 EXPOSE 8080
