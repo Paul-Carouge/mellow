@@ -11,7 +11,6 @@ use gpui::{
 use mellow_protocol::{Attachment, Snowflake};
 
 use super::*;
-use crate::attachment_audio::{AudioPlayback, attachment_audio_view};
 use crate::components::{bind_tab_navigation, with_tab_navigation};
 use crate::messages::MessageAttachments;
 use crate::theme::ActiveTheme;
@@ -238,78 +237,87 @@ fn a_click_on_the_room_closes_it(cx: &mut TestAppContext) {
     assert!(viewer(&mut cx).is_none());
 }
 
-fn video_and_picture() -> Vec<Attachment> {
-    vec![
-        Attachment {
-            id: Snowflake::from_raw(7),
-            file_name: "clip.mp4".to_owned(),
-            content_type: "video/mp4".to_owned(),
-            size_bytes: 2_000_000,
-            width: Some(1280),
-            height: Some(720),
-        },
-        picture(8, "après.png", 480, 270),
-    ]
-}
+/// Videos open in the viewer only where this system plays them: Windows decodes no video
+/// attachment yet (ROADMAP M3, "the Media Foundation H.264 decoder is not yet wired into
+/// `VideoStream`"), so a video there is a file card and stays out of the viewer's set.
+#[cfg(any(target_os = "linux", target_os = "macos"))]
+mod playable_videos {
+    use super::*;
+    use crate::attachment_audio::{AudioPlayback, attachment_audio_view};
 
-fn open_on(attachment_id: u64, attachments: &[Attachment], cx: &mut VisualTestContext) {
-    let set = ViewerSet::of_message(attachments, "Ana", SENT_AT);
-    cx.update(|window, cx| {
-        open_media_viewer(
-            &set,
-            Snowflake::from_raw(attachment_id),
-            None,
-            false,
-            window,
-            cx,
+    fn video_and_picture() -> Vec<Attachment> {
+        vec![
+            Attachment {
+                id: Snowflake::from_raw(7),
+                file_name: "clip.mp4".to_owned(),
+                content_type: "video/mp4".to_owned(),
+                size_bytes: 2_000_000,
+                width: Some(1280),
+                height: Some(720),
+            },
+            picture(8, "après.png", 480, 270),
+        ]
+    }
+
+    fn open_on(attachment_id: u64, attachments: &[Attachment], cx: &mut VisualTestContext) {
+        let set = ViewerSet::of_message(attachments, "Ana", SENT_AT);
+        cx.update(|window, cx| {
+            open_media_viewer(
+                &set,
+                Snowflake::from_raw(attachment_id),
+                None,
+                false,
+                window,
+                cx,
+            );
+        });
+        cx.run_until_parked();
+    }
+
+    fn playback_of(attachment_id: u64, cx: &mut VisualTestContext) -> AudioPlayback {
+        cx.update(|_, cx| attachment_audio_view(Snowflake::from_raw(attachment_id), cx).playback)
+    }
+
+    #[gpui::test]
+    fn a_video_still_loading_never_plays_once_the_viewer_moved_on(cx: &mut TestAppContext) {
+        let attachments = video_and_picture();
+        let mut cx = set_up_with(attachments.clone(), cx);
+        open_on(7, &attachments, &mut cx);
+        cx.update(|_, cx| {
+            crate::attachment_audio::pretend_fetching_for_tests(Snowflake::from_raw(7), cx);
+        });
+        // "Next picture" (the focused video's own Right seeks).
+        let open = viewer(&mut cx).expect("open");
+        open.update_in(&mut cx, |viewer, window, cx| viewer.step(true, window, cx));
+        cx.run_until_parked();
+        assert_eq!(playback_of(7, &mut cx), AudioPlayback::Idle, "next picture");
+
+        open.update_in(&mut cx, |viewer, window, cx| viewer.step(false, window, cx));
+        cx.run_until_parked();
+        cx.update(|_, cx| {
+            crate::attachment_audio::pretend_fetching_for_tests(Snowflake::from_raw(7), cx);
+        });
+        press(&mut cx, "escape");
+        assert!(viewer(&mut cx).is_none());
+        assert_eq!(playback_of(7, &mut cx), AudioPlayback::Idle, "closed");
+    }
+
+    #[gpui::test]
+    fn after_a_click_on_the_video_a_click_on_the_room_closes(cx: &mut TestAppContext) {
+        let attachments = video_and_picture();
+        let mut cx = set_up_with(attachments.clone(), cx);
+        open_on(7, &attachments, &mut cx);
+        settle(&mut cx);
+        click_centre_of(&mut cx, "video-screen");
+        assert!(viewer(&mut cx).is_some(), "the video is not the room");
+        let room = cx.debug_bounds("media-viewer").expect("open");
+        cx.simulate_click(
+            room.origin + gpui::point(px(4.0), px(4.0)),
+            Modifiers::default(),
         );
-    });
-    cx.run_until_parked();
-}
-
-fn playback_of(attachment_id: u64, cx: &mut VisualTestContext) -> AudioPlayback {
-    cx.update(|_, cx| attachment_audio_view(Snowflake::from_raw(attachment_id), cx).playback)
-}
-
-#[gpui::test]
-fn a_video_still_loading_never_plays_once_the_viewer_moved_on(cx: &mut TestAppContext) {
-    let attachments = video_and_picture();
-    let mut cx = set_up_with(attachments.clone(), cx);
-    open_on(7, &attachments, &mut cx);
-    cx.update(|_, cx| {
-        crate::attachment_audio::pretend_fetching_for_tests(Snowflake::from_raw(7), cx);
-    });
-    // "Next picture" (the focused video's own Right seeks).
-    let open = viewer(&mut cx).expect("open");
-    open.update_in(&mut cx, |viewer, window, cx| viewer.step(true, window, cx));
-    cx.run_until_parked();
-    assert_eq!(playback_of(7, &mut cx), AudioPlayback::Idle, "next picture");
-
-    open.update_in(&mut cx, |viewer, window, cx| viewer.step(false, window, cx));
-    cx.run_until_parked();
-    cx.update(|_, cx| {
-        crate::attachment_audio::pretend_fetching_for_tests(Snowflake::from_raw(7), cx);
-    });
-    press(&mut cx, "escape");
-    assert!(viewer(&mut cx).is_none());
-    assert_eq!(playback_of(7, &mut cx), AudioPlayback::Idle, "closed");
-}
-
-#[gpui::test]
-fn after_a_click_on_the_video_a_click_on_the_room_closes(cx: &mut TestAppContext) {
-    let attachments = video_and_picture();
-    let mut cx = set_up_with(attachments.clone(), cx);
-    open_on(7, &attachments, &mut cx);
-    settle(&mut cx);
-    click_centre_of(&mut cx, "video-screen");
-    assert!(viewer(&mut cx).is_some(), "the video is not the room");
-    let room = cx.debug_bounds("media-viewer").expect("open");
-    cx.simulate_click(
-        room.origin + gpui::point(px(4.0), px(4.0)),
-        Modifiers::default(),
-    );
-    cx.run_until_parked();
-    assert!(viewer(&mut cx).is_none());
+        cx.run_until_parked();
+        assert!(viewer(&mut cx).is_none());
+    }
 }
 
 #[gpui::test]
