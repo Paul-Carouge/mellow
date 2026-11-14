@@ -247,6 +247,15 @@ impl PlayerLife {
         }
     }
 
+    fn link(&self) -> Option<&str> {
+        match &self.phase {
+            WindowPhase::Closed => None,
+            WindowPhase::Starting { video, .. } | WindowPhase::Open { video, .. } => {
+                Some(&video.link)
+            }
+        }
+    }
+
     fn video_id(&self) -> Option<&str> {
         match &self.phase {
             WindowPhase::Closed => None,
@@ -316,6 +325,13 @@ pub fn play_in_youtube_player(link: &str, video: &YouTubeEmbed, title: &str, cx:
 pub fn youtube_player_video(cx: &App) -> Option<&str> {
     cx.try_global::<YouTubePlayer>()
         .and_then(|player| player.life.video_id())
+}
+
+/// The link (with its start and playlist) the player window shows, if it is open.
+#[must_use]
+pub fn youtube_player_link(cx: &App) -> Option<&str> {
+    cx.try_global::<YouTubePlayer>()
+        .and_then(|player| player.life.link())
 }
 
 /// Whether the player window could not open for `video_id`, which the browser showed instead.

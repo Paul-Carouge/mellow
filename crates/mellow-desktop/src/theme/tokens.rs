@@ -363,7 +363,6 @@ pub struct ThemeTokens {
     pub component_key_chip_empty_text: u32,
     pub component_key_chip_text: u32,
     pub component_link_preview_background: u32,
-    pub component_link_preview_bar_fallback: u32,
     pub component_link_preview_border: u32,
     pub component_link_preview_brand_mark_color: u32,
     pub component_link_preview_card_background_hover: u32,
@@ -1085,7 +1084,6 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_key_chip_empty_text: 0xC5BE_C6FF,
     component_key_chip_text: 0xF8F4_F8FF,
     component_link_preview_background: 0x110B_11FF,
-    component_link_preview_bar_fallback: 0x554C_56FF,
     component_link_preview_border: 0x3C35_3EFF,
     component_link_preview_brand_mark_color: 0xFFFF_FFFF,
     component_link_preview_card_background_hover: 0x221B_23FF,
@@ -1807,7 +1805,6 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_key_chip_empty_text: 0x594E_5BFF,
     component_key_chip_text: 0x221B_23FF,
     component_link_preview_background: 0xF5F1_F6FF,
-    component_link_preview_bar_fallback: 0xCBC5_CCFF,
     component_link_preview_border: 0xE3DD_E4FF,
     component_link_preview_brand_mark_color: 0xFFFF_FFFF,
     component_link_preview_card_background_hover: 0xECE6_EDFF,
@@ -2492,7 +2489,6 @@ pub const COMPONENT_KEY_CHIP_MIN_WIDTH: f32 = 32.0;
 pub const COMPONENT_KEY_CHIP_PADDING_INLINE: f32 = 8.0;
 pub const COMPONENT_KEY_CHIP_RADIUS: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_ACTION_ICON_SIZE: f32 = 16.0;
-pub const COMPONENT_LINK_PREVIEW_BAR_WIDTH: f32 = 4.0;
 pub const COMPONENT_LINK_PREVIEW_BORDER_WIDTH: f32 = 1.0;
 pub const COMPONENT_LINK_PREVIEW_BRAND_MARK_HEIGHT: f32 = 20.0;
 pub const COMPONENT_LINK_PREVIEW_COVER_RADIUS: f32 = 8.0;

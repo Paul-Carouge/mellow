@@ -9,15 +9,16 @@
 //! `mellow.media-volume`. Sounds play on the voice output chosen in the settings and move there
 //! when it changes ([`follow_voice_output_device`]), as the web's elements follow `setSinkId`.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use gpui::{App, ElementId, Global, Task, Window};
 use mellow_client_core::{DownloadableFile, RestClient};
 use mellow_media::{
-    ClipPhase, ClipPlayer, PLAYABLE_ATTACHMENT_AUDIO_TYPES, SystemAudioDevices, VideoStream,
-    VideoStreamPhase, VideoTiming, plays_video_type,
+    ClipPhase, ClipPlayer, ClipStart, MAXIMUM_WAVEFORM_SOURCE_BYTES,
+    PLAYABLE_ATTACHMENT_AUDIO_TYPES, SystemAudioDevices, VideoStream, VideoStreamPhase,
+    VideoTiming, plays_video_type, sound_waveform,
 };
 use mellow_protocol::{Attachment, Snowflake};
 
@@ -36,6 +37,8 @@ const PLAYING_REDRAW_PERIOD: Duration = Duration::from_millis(250);
 const SETTLING_REDRAWS: u8 = 4;
 /// The file's own loudness, when nothing is remembered.
 const DEFAULT_VOLUME: f32 = 1.0;
+/// A long session's worth of sounds whose shape is remembered; the oldest is forgotten first.
+const MAXIMUM_REMEMBERED_SOUNDS: usize = 200;
 
 /// What a sound's player shows.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -44,6 +47,8 @@ pub enum AudioPlayback {
     Idle,
     /// Its file is being fetched.
     Loading,
+    /// Its download stopped part way: pressing play fetches it again.
+    Stopped,
     Playing,
     Paused,
     Ended,
@@ -52,11 +57,79 @@ pub enum AudioPlayback {
     CannotPlay,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioView {
     pub playback: AudioPlayback,
     pub position: Duration,
     pub duration: Option<Duration>,
+    /// When the file started loading, for the "Loading…" notice that waits a moment.
+    pub loading_since: Option<Instant>,
+    /// Where a press on the waveform asked to start before the sound was loaded, 0 to 1.
+    pub pending_start: Option<f32>,
+}
+
+/// What the list knows of a sound's shape: learnt the first time it plays, kept for the session.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct SoundShape {
+    /// One level per bar, 0 to 1, or `None` while unknown.
+    pub levels: Option<Vec<f32>>,
+    pub duration: Option<Duration>,
+}
+
+/// The shapes of the sounds played this session, and those that could not be read: bounded,
+/// oldest first out, in memory only, so a shared computer keeps no trace of what was heard.
+#[derive(Debug, Default)]
+struct SoundShapes {
+    shapes: HashMap<Snowflake, SoundShape>,
+    order: VecDeque<Snowflake>,
+    failed: VecDeque<Snowflake>,
+    being_read: HashSet<Snowflake>,
+}
+
+impl SoundShapes {
+    fn get(&self, attachment_id: Snowflake) -> Option<&SoundShape> {
+        self.shapes.get(&attachment_id)
+    }
+
+    fn remember(&mut self, attachment_id: Snowflake, shape: SoundShape) {
+        self.order.retain(|id| *id != attachment_id);
+        self.order.push_back(attachment_id);
+        self.shapes.insert(attachment_id, shape);
+        while self.order.len() > MAXIMUM_REMEMBERED_SOUNDS {
+            if let Some(oldest) = self.order.pop_front() {
+                self.shapes.remove(&oldest);
+            }
+        }
+    }
+
+    fn remember_duration(&mut self, attachment_id: Snowflake, duration: Duration) {
+        let known = self.get(attachment_id);
+        if known.and_then(|shape| shape.duration) != Some(duration) {
+            let levels = known.and_then(|shape| shape.levels.clone());
+            self.remember(
+                attachment_id,
+                SoundShape {
+                    levels,
+                    duration: Some(duration),
+                },
+            );
+        }
+    }
+
+    fn remember_failure(&mut self, attachment_id: Snowflake) {
+        self.failed.push_back(attachment_id);
+        if self.failed.len() > MAXIMUM_REMEMBERED_SOUNDS {
+            self.failed.pop_front();
+        }
+    }
+
+    /// Whether this sound's shape is still worth reading: never read, not failing, not being read.
+    fn should_read(&self, attachment_id: Snowflake) -> bool {
+        self.get(attachment_id)
+            .is_none_or(|shape| shape.levels.is_none())
+            && !self.failed.contains(&attachment_id)
+            && !self.being_read.contains(&attachment_id)
+    }
 }
 
 /// The volume every sound plays at.
@@ -83,10 +156,17 @@ struct AttachmentAudio {
     player: Option<ClipPlayer>,
     /// The loaded attachment's pictures, when it is a video.
     video: Option<PlayingVideo>,
-    /// The attachment whose file is on its way, and the download.
-    fetching: Option<(Snowflake, Task<()>)>,
+    /// The attachment whose file is on its way, the download, and when it started.
+    fetching: Option<(Snowflake, Task<()>, Instant)>,
     /// Refused before any download (type or size), or by a decoder.
     unplayable: HashSet<Snowflake>,
+    /// Whose download stopped part way; pressing play tries again.
+    stopped: HashSet<Snowflake>,
+    /// A press on a waveform before its sound was loaded: where it starts once played.
+    pending_start: Option<(Snowflake, f32)>,
+    /// The speeds chosen for sounds other than 1×, kept while their card is used.
+    speeds: HashMap<Snowflake, f32>,
+    shapes: SoundShapes,
     /// Redraws the windows while something plays or loads.
     redraw: Option<Task<()>>,
     /// Redraws left after the last command, so its answer shows even once nothing plays.
@@ -121,7 +201,7 @@ impl AttachmentAudio {
     fn holds(&self, attachment_id: Snowflake) -> bool {
         self.fetching
             .as_ref()
-            .is_some_and(|(id, _)| *id == attachment_id)
+            .is_some_and(|(id, _, _)| *id == attachment_id)
             || self
                 .player
                 .as_ref()
@@ -144,7 +224,7 @@ fn stop_playback(cx: &mut App) {
 pub fn start_attachment_audio_session(rest: RestClient, cx: &mut App) {
     stop_playback(cx);
     let store = cx.default_global::<AttachmentAudio>();
-    store.unplayable.clear();
+    forget_session_sounds(store);
     store.session += 1;
     store.rest = Some(rest);
 }
@@ -153,9 +233,18 @@ pub fn start_attachment_audio_session(rest: RestClient, cx: &mut App) {
 pub fn end_attachment_audio_session(cx: &mut App) {
     stop_playback(cx);
     let store = cx.default_global::<AttachmentAudio>();
-    store.unplayable.clear();
+    forget_session_sounds(store);
     store.session += 1;
     store.rest = None;
+}
+
+/// What a session learnt of its sounds goes with it.
+fn forget_session_sounds(store: &mut AttachmentAudio) {
+    store.unplayable.clear();
+    store.stopped.clear();
+    store.pending_start = None;
+    store.speeds.clear();
+    store.shapes = SoundShapes::default();
 }
 
 /// The signed-in session's client, for saving an attachment.
@@ -209,13 +298,27 @@ pub(crate) fn keep_player_while_shown(
 /// Where `attachment_id`'s player stands.
 #[must_use]
 pub fn attachment_audio_view(attachment_id: Snowflake, cx: &App) -> AudioView {
+    let Some(store) = cx.try_global::<AttachmentAudio>() else {
+        return AudioView {
+            playback: AudioPlayback::Idle,
+            position: Duration::ZERO,
+            duration: None,
+            loading_since: None,
+            pending_start: None,
+        };
+    };
     let idle = AudioView {
         playback: AudioPlayback::Idle,
         position: Duration::ZERO,
-        duration: None,
-    };
-    let Some(store) = cx.try_global::<AttachmentAudio>() else {
-        return idle;
+        duration: store
+            .shapes
+            .get(attachment_id)
+            .and_then(|shape| shape.duration),
+        loading_since: None,
+        pending_start: store
+            .pending_start
+            .filter(|(id, _)| *id == attachment_id)
+            .map(|(_, fraction)| fraction),
     };
     if store.unplayable.contains(&attachment_id) {
         return AudioView {
@@ -223,13 +326,14 @@ pub fn attachment_audio_view(attachment_id: Snowflake, cx: &App) -> AudioView {
             ..idle
         };
     }
-    if store
+    if let Some((_, _, since)) = store
         .fetching
         .as_ref()
-        .is_some_and(|(id, _)| *id == attachment_id)
+        .filter(|(id, _, _)| *id == attachment_id)
     {
         return AudioView {
             playback: AudioPlayback::Loading,
+            loading_since: Some(*since),
             ..idle
         };
     }
@@ -239,7 +343,14 @@ pub fn attachment_audio_view(attachment_id: Snowflake, cx: &App) -> AudioView {
         .map(ClipPlayer::status)
         .filter(|status| status.clip == Some(attachment_id.raw()))
     else {
-        return idle;
+        return if store.stopped.contains(&attachment_id) {
+            AudioView {
+                playback: AudioPlayback::Stopped,
+                ..idle
+            }
+        } else {
+            idle
+        };
     };
     AudioView {
         playback: match status.phase {
@@ -250,8 +361,62 @@ pub fn attachment_audio_view(attachment_id: Snowflake, cx: &App) -> AudioView {
             ClipPhase::CannotPlay(_) => AudioPlayback::CannotPlay,
         },
         position: status.position,
-        duration: status.duration,
+        duration: status.duration.or(idle.duration),
+        loading_since: None,
+        pending_start: None,
     }
+}
+
+/// The shape of `attachment_id` as far as it is known this session.
+#[must_use]
+pub fn attachment_sound_shape(attachment_id: Snowflake, cx: &App) -> Option<&SoundShape> {
+    cx.try_global::<AttachmentAudio>()?
+        .shapes
+        .get(attachment_id)
+}
+
+/// The speed `attachment_id` plays at, 1 unless its card chose another.
+#[must_use]
+pub fn attachment_speed(attachment_id: Snowflake, cx: &App) -> f32 {
+    cx.try_global::<AttachmentAudio>()
+        .and_then(|store| store.speeds.get(&attachment_id).copied())
+        .unwrap_or(1.0)
+}
+
+/// Plays `attachment_id` at `speed` from now on, and whenever it plays again this session.
+pub fn set_attachment_speed(attachment_id: Snowflake, speed: f32, cx: &mut App) {
+    let store = cx.default_global::<AttachmentAudio>();
+    #[allow(clippy::float_cmp)] // 1 is set exactly, from the speed list.
+    if speed == 1.0 {
+        store.speeds.remove(&attachment_id);
+    } else {
+        store.speeds.insert(attachment_id, speed);
+    }
+    if let Some(player) = store.player.as_ref()
+        && player.status().clip == Some(attachment_id.raw())
+    {
+        player.set_speed(speed);
+    }
+    cx.refresh_windows();
+}
+
+/// A press or a key on the waveform: the loaded sound moves to `fraction` of its length; one not
+/// loaded yet keeps it and starts there when played.
+pub fn seek_attachment_audio_to_fraction(attachment_id: Snowflake, fraction: f32, cx: &mut App) {
+    let fraction = fraction.clamp(0.0, 1.0);
+    let known_duration = attachment_audio_view(attachment_id, cx).duration;
+    let store = cx.default_global::<AttachmentAudio>();
+    match store.player.as_ref() {
+        Some(player) if player.status().clip == Some(attachment_id.raw()) => {
+            match start_of(Some(fraction), known_duration) {
+                ClipStart::At(position) => player.seek(position),
+                _ => player.seek_to_fraction(fraction),
+            }
+            keep_redrawing(cx);
+        }
+        _ => store.pending_start = Some((attachment_id, fraction)),
+    }
+    cx.refresh_windows();
 }
 
 /// The newest picture of `attachment_id`, while it is the loaded video.
@@ -291,8 +456,11 @@ pub fn toggle_attachment_audio(attachment: &Attachment, cx: &mut App) {
                 player.play();
             }
         }
-        AudioPlayback::Idle => fetch_and_play(attachment, cx),
-        AudioPlayback::Loading | AudioPlayback::CannotPlay => return,
+        AudioPlayback::Idle | AudioPlayback::Stopped => fetch_and_play(attachment, cx),
+        // Pause while it loads: the download is dropped and the card is back to play, as the
+        // web's pause before the sound could start.
+        AudioPlayback::Loading => cx.global_mut::<AttachmentAudio>().fetching = None,
+        AudioPlayback::CannotPlay => return,
     }
     keep_redrawing(cx);
     cx.refresh_windows();
@@ -363,6 +531,7 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
     let Some(rest) = store.rest.clone() else {
         return;
     };
+    store.stopped.remove(&attachment_id);
     // The sound the player refused stays refused: pressing play again would fetch it again only
     // to fail the same way.
     if let Some(status) = store.player.as_ref().map(ClipPlayer::status)
@@ -386,7 +555,14 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
         }
     }
     let session = store.session;
-    let content_type = attachment.content_type.clone();
+    let fetched = Fetched {
+        attachment_id,
+        content_type: attachment.content_type.clone(),
+        is_video,
+        reads_shape: !is_video
+            && attachment.size_bytes <= MAXIMUM_WAVEFORM_SOURCE_BYTES
+            && store.shapes.should_read(attachment_id),
+    };
     let download = spawn_on_network_runtime(cx, async move {
         rest.download_in_ranges(
             DownloadableFile::Attachment(attachment_id),
@@ -404,34 +580,140 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
                 && store
                     .fetching
                     .as_ref()
-                    .is_some_and(|(id, _)| *id == attachment_id);
+                    .is_some_and(|(id, _, _)| *id == attachment_id);
             if !is_still_wanted {
                 return;
             }
             store.fetching = None;
             match answer {
-                Ok(Ok(bytes)) => {
-                    // The volume as it is now (it may have moved during the download), set
-                    // before the sound starts.
-                    apply_volume(attachment_volume(cx), cx);
-                    if is_video {
-                        start_video(attachment_id, Arc::clone(&bytes), &content_type, cx);
-                    }
-                    if let Some(player) = cx.global::<AttachmentAudio>().player.as_ref() {
-                        player.load_and_play(attachment_id.raw(), bytes, &content_type);
-                    }
-                }
+                Ok(Ok(bytes)) => play_fetched(&fetched, bytes, cx),
                 // The player stays: pressing play again tries again, as on the web, rather than
                 // retrying alone, since each try costs the instance one whole decryption per
                 // 8 MiB range.
-                Ok(Err(error)) => tracing::warn!(%error, "cannot download a sound to play"),
-                Err(_) => tracing::warn!("the sound download stopped"),
+                Ok(Err(error)) => {
+                    tracing::warn!(%error, "cannot download a sound to play");
+                    cx.global_mut::<AttachmentAudio>()
+                        .stopped
+                        .insert(attachment_id);
+                }
+                Err(_) => {
+                    tracing::warn!("the sound download stopped");
+                    cx.global_mut::<AttachmentAudio>()
+                        .stopped
+                        .insert(attachment_id);
+                }
             }
             keep_redrawing(cx);
             cx.refresh_windows();
         });
     });
-    cx.global_mut::<AttachmentAudio>().fetching = Some((attachment_id, task));
+    cx.global_mut::<AttachmentAudio>().fetching = Some((attachment_id, task, Instant::now()));
+}
+
+/// Where a sound starts for a press at `fraction` of it: a time when its length is known here
+/// (some files do not tell the decoder theirs), else the share of the length the file says.
+fn start_of(fraction: Option<f32>, known_duration: Option<Duration>) -> ClipStart {
+    match (fraction.filter(|fraction| *fraction > 0.0), known_duration) {
+        (None, _) => ClipStart::Beginning,
+        (Some(fraction), Some(duration)) => ClipStart::At(duration.mul_f32(fraction.min(1.0))),
+        (Some(fraction), None) => ClipStart::Fraction(fraction),
+    }
+}
+
+/// A file being fetched to play, and how it plays once here.
+struct Fetched {
+    attachment_id: Snowflake,
+    content_type: String,
+    is_video: bool,
+    /// Whether its shape is read from the same bytes.
+    reads_shape: bool,
+}
+
+/// Where `attachment_id` starts and how fast, as its card says once its file is here: a press
+/// on the waveform or a speed chosen while it loaded counts. Another sound's press stays.
+fn take_start_and_speed(store: &mut AttachmentAudio, attachment_id: Snowflake) -> (ClipStart, f32) {
+    let fraction = match store.pending_start {
+        Some((id, fraction)) if id == attachment_id => {
+            store.pending_start = None;
+            Some(fraction)
+        }
+        _ => None,
+    };
+    let known_duration = store
+        .shapes
+        .get(attachment_id)
+        .and_then(|shape| shape.duration);
+    (
+        start_of(fraction, known_duration),
+        store.speeds.get(&attachment_id).copied().unwrap_or(1.0),
+    )
+}
+
+/// Plays a fetched file: its pictures too for a video, its shape read for a sound.
+fn play_fetched(fetched: &Fetched, bytes: Arc<[u8]>, cx: &mut App) {
+    let attachment_id = fetched.attachment_id;
+    // The volume as it is now (it may have moved during the download), set before it starts.
+    apply_volume(attachment_volume(cx), cx);
+    if fetched.is_video {
+        start_video(attachment_id, Arc::clone(&bytes), &fetched.content_type, cx);
+    }
+    if fetched.reads_shape {
+        read_sound_shape(attachment_id, Arc::clone(&bytes), &fetched.content_type, cx);
+    }
+    let store = cx.global_mut::<AttachmentAudio>();
+    let (start, speed) = take_start_and_speed(store, attachment_id);
+    if let Some(player) = store.player.as_ref() {
+        player.load_and_play_from(attachment_id.raw(), bytes, &fetched.content_type, start);
+        #[allow(clippy::float_cmp)] // A new sound starts at exactly 1.
+        if speed != 1.0 {
+            player.set_speed(speed);
+        }
+    }
+}
+
+/// Reads the shape of a sound just fetched to play, off the interface thread: the same bytes,
+/// decoded by `mellow-media` (DESIGN.md 5.4, "Sound player"). A sound it cannot read keeps the
+/// flat line and is not read again this session.
+fn read_sound_shape(attachment_id: Snowflake, bytes: Arc<[u8]>, content_type: &str, cx: &mut App) {
+    // A token number, a few dozen at most.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let bar_count = crate::theme::tokens::COMPONENT_AUDIO_PLAYER_WAVE_BAR_COUNT as usize;
+    let content_type = content_type.to_owned();
+    let session = cx.global::<AttachmentAudio>().session;
+    cx.global_mut::<AttachmentAudio>()
+        .shapes
+        .being_read
+        .insert(attachment_id);
+    let reading = cx
+        .background_executor()
+        .spawn(async move { sound_waveform(bytes, &content_type, bar_count) });
+    cx.spawn(async move |cx| {
+        let waveform = reading.await;
+        cx.update(|cx| {
+            let store = cx.global_mut::<AttachmentAudio>();
+            if store.session != session {
+                return;
+            }
+            let shapes = &mut store.shapes;
+            shapes.being_read.remove(&attachment_id);
+            match waveform {
+                Ok(waveform) => shapes.remember(
+                    attachment_id,
+                    SoundShape {
+                        levels: Some(waveform.levels),
+                        duration: Some(waveform.duration),
+                    },
+                ),
+                Err(error) => {
+                    // Without the file's name (logs never hold attachment names).
+                    tracing::debug!(%error, "cannot read a sound's waveform");
+                    shapes.remember_failure(attachment_id);
+                }
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
 }
 
 /// Starts decoding a fetched video's pictures, timed by the player's position of its sound.
@@ -522,6 +804,14 @@ fn keep_redrawing(cx: &mut App) {
             let is_active = cx.update(|cx| {
                 cx.refresh_windows();
                 let store = cx.global_mut::<AttachmentAudio>();
+                // The length stays known for the card once another sound plays.
+                if let Some(status) = store.player.as_ref().map(ClipPlayer::status)
+                    && let (Some(clip), Some(duration)) = (status.clip, status.duration)
+                {
+                    store
+                        .shapes
+                        .remember_duration(Snowflake::from_raw(clip), duration);
+                }
                 let is_active = store.is_active();
                 store.settling_redraws = store.settling_redraws.saturating_sub(1);
                 if !is_active {
@@ -579,6 +869,136 @@ mod tests {
     }
 
     #[test]
+    fn shapes_are_bounded_oldest_first_and_failures_are_not_read_again() {
+        let mut shapes = SoundShapes::default();
+        let shape = |level: f32| SoundShape {
+            levels: Some(vec![level]),
+            duration: Some(Duration::from_secs(1)),
+        };
+        for raw in 0..=200 {
+            shapes.remember(Snowflake::from_raw(raw), shape(0.5));
+        }
+        assert!(
+            shapes.get(Snowflake::from_raw(0)).is_none(),
+            "the oldest went"
+        );
+        assert!(shapes.get(Snowflake::from_raw(200)).is_some());
+        assert_eq!(shapes.shapes.len(), MAXIMUM_REMEMBERED_SOUNDS);
+        assert!(!shapes.should_read(Snowflake::from_raw(200)));
+
+        // A length learnt from the player keeps the shape already read.
+        shapes.remember_duration(Snowflake::from_raw(200), Duration::from_secs(9));
+        assert_eq!(
+            shapes.get(Snowflake::from_raw(200)),
+            Some(&SoundShape {
+                levels: Some(vec![0.5]),
+                duration: Some(Duration::from_secs(9)),
+            })
+        );
+        // A length alone still asks for the shape.
+        shapes.remember_duration(Snowflake::from_raw(500), Duration::from_secs(3));
+        assert!(shapes.should_read(Snowflake::from_raw(500)));
+
+        let unreadable = Snowflake::from_raw(900);
+        shapes.remember_failure(unreadable);
+        assert!(!shapes.should_read(unreadable));
+        for raw in 1_000..1_200 {
+            shapes.remember_failure(Snowflake::from_raw(raw));
+        }
+        assert!(
+            shapes.should_read(unreadable),
+            "forgotten once 200 others failed"
+        );
+        assert_eq!(shapes.failed.len(), MAXIMUM_REMEMBERED_SOUNDS);
+    }
+
+    #[gpui::test]
+    fn a_press_before_the_sound_is_loaded_is_kept_for_its_first_play(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let sound = attachment("audio/ogg", 10);
+            seek_attachment_audio_to_fraction(sound.id, 0.4, cx);
+            let view = attachment_audio_view(sound.id, cx);
+            assert_eq!(view.playback, AudioPlayback::Idle);
+            assert_eq!(view.pending_start, Some(0.4));
+            assert_eq!(
+                attachment_audio_view(Snowflake::from_raw(10), cx).pending_start,
+                None,
+                "another sound's card"
+            );
+            set_attachment_speed(sound.id, 1.5, cx);
+            assert!((attachment_speed(sound.id, cx) - 1.5).abs() < f32::EPSILON);
+            end_attachment_audio_session(cx);
+            assert_eq!(attachment_audio_view(sound.id, cx).pending_start, None);
+            assert!((attachment_speed(sound.id, cx) - 1.0).abs() < f32::EPSILON);
+        });
+    }
+
+    #[gpui::test]
+    fn a_speed_and_a_press_while_it_loads_are_kept_and_pause_cancels_the_load(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            let (sound, other) = (Snowflake::from_raw(21), Snowflake::from_raw(22));
+            let loading = |cx: &mut App| {
+                cx.default_global::<AttachmentAudio>().fetching =
+                    Some((sound, Task::ready(()), Instant::now()));
+            };
+            seek_attachment_audio_to_fraction(other, 0.3, cx);
+            loading(cx);
+            assert_eq!(
+                attachment_audio_view(sound, cx).playback,
+                AudioPlayback::Loading
+            );
+            set_attachment_speed(sound, 2.0, cx);
+            seek_attachment_audio_to_fraction(sound, 0.25, cx);
+            let store = cx.global_mut::<AttachmentAudio>();
+            assert_eq!(
+                take_start_and_speed(store, sound),
+                (ClipStart::Fraction(0.25), 2.0)
+            );
+            seek_attachment_audio_to_fraction(other, 0.3, cx);
+            let store = cx.global_mut::<AttachmentAudio>();
+            assert_eq!(
+                take_start_and_speed(store, sound),
+                (ClipStart::Beginning, 2.0)
+            );
+            assert_eq!(
+                store.pending_start,
+                Some((other, 0.3)),
+                "another sound's press stays"
+            );
+
+            // Pause while loading drops the download.
+            loading(cx);
+            let sound_attachment = Attachment {
+                id: sound,
+                ..attachment("audio/ogg", 10)
+            };
+            toggle_attachment_audio(&sound_attachment, cx);
+            assert_eq!(
+                attachment_audio_view(sound, cx).playback,
+                AudioPlayback::Idle
+            );
+        });
+    }
+
+    #[test]
+    fn a_press_starts_at_a_time_when_the_length_is_known_here() {
+        assert_eq!(start_of(None, None), ClipStart::Beginning);
+        assert_eq!(
+            start_of(Some(0.0), Some(Duration::from_secs(10))),
+            ClipStart::Beginning
+        );
+        assert_eq!(
+            start_of(Some(0.5), Some(Duration::from_secs(10))),
+            ClipStart::At(Duration::from_secs(5))
+        );
+        assert_eq!(start_of(Some(0.5), None), ClipStart::Fraction(0.5));
+    }
+
+    #[test]
     fn videos_are_played_where_the_system_decodes_their_container() {
         let mp4 = attachment("video/mp4", 10);
         assert_eq!(
@@ -617,7 +1037,8 @@ mod tests {
         cx.run_until_parked();
         // The first row's attachment is being fetched, as after pressing play.
         cx.update(|_, cx| {
-            cx.default_global::<AttachmentAudio>().fetching = Some((playing, Task::ready(())));
+            cx.default_global::<AttachmentAudio>().fetching =
+                Some((playing, Task::ready(()), Instant::now()));
         });
         let playback = |cx: &mut gpui::VisualTestContext| {
             cx.update(|_, cx| attachment_audio_view(playing, cx).playback)
