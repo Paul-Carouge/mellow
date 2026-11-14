@@ -6,7 +6,9 @@
   import { mediumDateLabel, mediumDateLabelWithoutRepeatedYear } from "../format";
   import Icon from "../Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "../image-retry";
+  import { siteLabelOf } from "../link-previews";
   import { compactCount, issueStateBadge, type IssueStateTone, languageColorOf, MAXIMUM_SHOWN_TOPICS } from "./provider-cards";
+  import SiteLabel from "./SiteLabel.svelte";
 
   // A GitHub repository banner, or an issue or pull request with its state (docs/design/web-provider-embeds.md §4.3):
   // the facts as text instead of GitHub's social picture, states in Mellow's colours with a word and a glyph each.
@@ -15,11 +17,11 @@
     embed: Extract<LinkEmbed, { kind: "github_repository" | "github_issue" | "github_pull_request" }>;
     /** The owner's avatar as the instance stored it, or null. */
     imageUrl: string | null;
-    /** The page's colour for the pill, or null for the token's. */
-    barColor: string | null;
+    /** The page's colour for the seal, or null for the dusk seal. */
+    pageColor: string | null;
   }
 
-  let { preview, embed, imageUrl, barColor }: Props = $props();
+  let { preview, embed, imageUrl, pageColor }: Props = $props();
 
   const BADGE_TONE_CLASSES: Record<IssueStateTone, string> = {
     open: "bg-(--mw-component-link-preview-state-open-background) text-(--mw-component-link-preview-state-open-text)",
@@ -46,20 +48,12 @@
 <div
   role="group"
   aria-label={preview.title ?? preview.url}
-  class="flex w-full max-w-(--mw-component-link-preview-max-width) gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)"
+  class="flex w-full max-w-(--mw-component-link-preview-max-width) flex-col gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)"
 >
-  <!-- The page's colour is decoration only; without one, the quote bar's dusk. -->
-  <span
-    aria-hidden="true"
-    style:background-color={barColor}
-    class="w-(--mw-component-link-preview-bar-width) shrink-0 self-stretch rounded-full bg-(--mw-component-link-preview-bar-fallback)"
-  ></span>
   <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-link-preview-text-gap)">
     {#if embed.kind === "github_repository"}
       {@const languageColor = languageColorOf(embed)}
-      {#if preview.site_name}
-        <p class="type-body-sm break-words text-(--mw-component-link-preview-site-text)">{preview.site_name}</p>
-      {/if}
+      <SiteLabel {pageColor} label={siteLabelOf(preview)} />
       <div class="flex items-center gap-(--mw-component-link-preview-gap)">
         {#if hasAvatar && imageUrl !== null}
           {#key retriedImageIds.has(preview.id)}
@@ -139,10 +133,7 @@
       </div>
     {:else}
       {@const badge = issueStateBadge(embed.state, embed.kind === "github_pull_request")}
-      <p class="flex flex-wrap gap-x-xs type-body-sm break-words text-(--mw-component-link-preview-site-text)">
-        {#if preview.site_name}<span>{preview.site_name}</span>{/if}
-        <span>{embed.owner}/{embed.repository}</span>
-      </p>
+      <SiteLabel {pageColor} label={siteLabelOf(preview)} detail={`${embed.owner}/${embed.repository}`} />
       <div class="flex flex-wrap items-center gap-x-xs gap-y-3xs">
         <span
           class="inline-flex h-(--mw-component-link-preview-state-badge-height) items-center gap-2xs rounded-(--mw-component-link-preview-state-badge-radius) px-xs type-body-sm font-semibold {BADGE_TONE_CLASSES[
