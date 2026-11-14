@@ -385,3 +385,61 @@ fn people_are_listed_in_join_order_with_you_added_before_your_state_comes_back()
     );
     assert_eq!(call_people(&states, Some(ANA)).len(), 2);
 }
+
+#[gpui::test]
+fn messages_arriving_under_the_call_view_stay_unread_until_it_closes(cx: &mut TestAppContext) {
+    let (shell, voice, cx) = shell_in_a_call(cx);
+    let (session, conversation) = shell.read_with(cx, |shell, _| {
+        (shell.session.clone(), shell.conversation.clone())
+    });
+    let channel_id = conversation
+        .read_with(cx, |conversation, _| conversation.open_channel_id())
+        .expect("the conversation keeps its channel under the call view");
+    let ana = crate::shell_fixtures::person(ANA, "ana", "Ana");
+    let last_read = |cx: &mut VisualTestContext| {
+        session.read_with(cx, |session, _| {
+            session.state().last_read_message_id(channel_id)
+        })
+    };
+    // The channel read down to its latest message, then the call view opened over it.
+    voice.update(cx, Voice::close_call_view);
+    session.update(cx, |session, cx| {
+        let first = crate::shell_fixtures::text_message(10_001, channel_id, &ana, "hello");
+        session
+            .state_mut()
+            .insert_history_page(channel_id, vec![first]);
+        cx.notify();
+    });
+    cx.run_until_parked();
+    let read_before = last_read(cx);
+    assert_eq!(read_before, Some(Snowflake::from_raw(10_001)));
+    voice.update(cx, Voice::open_call_view);
+    cx.run_until_parked();
+    session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(
+            vec![mellow_client_core::GatewayUpdate::Event(
+                GatewayEvent::MessageCreate(crate::shell_fixtures::text_message(
+                    10_002,
+                    channel_id,
+                    &ana,
+                    "while you watch",
+                )),
+            )],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+    assert_eq!(
+        last_read(cx),
+        read_before,
+        "the call view covers it: not read"
+    );
+
+    voice.update(cx, Voice::close_call_view);
+    cx.run_until_parked();
+    assert_eq!(
+        last_read(cx),
+        Some(Snowflake::from_raw(10_002)),
+        "shown again at its latest message, it is read"
+    );
+}

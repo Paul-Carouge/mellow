@@ -1573,6 +1573,10 @@ impl super::DuskShell {
             }
             _ => {}
         }
+        let is_covered = self.call_view.is_some();
+        self.conversation.update(cx, |conversation, cx| {
+            conversation.set_covered_by_call_view(is_covered, cx);
+        });
     }
 
     /// The call view in the sheet's place, unless it fills the window.

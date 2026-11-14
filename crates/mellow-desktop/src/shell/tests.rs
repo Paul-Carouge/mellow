@@ -9,8 +9,9 @@ use super::*;
 use crate::navigation::Place;
 use crate::preferences::change_preferences;
 use crate::shell_fixtures::{
-    BOOKS_READING, CONVERSATION_ANA, GUILD_BOOKS, GUILD_RUST, RUST_ANNOUNCEMENTS, RUST_GENERAL,
-    RUST_HELP, open_shell, sample_state, sample_state_with_unreads,
+    ANA, BOOKS_READING, CONVERSATION_ANA, GUILD_BOOKS, GUILD_RUST, RUST_ANNOUNCEMENTS,
+    RUST_GENERAL, RUST_HELP, open_shell, open_shell_counting_frames, sample_state,
+    sample_state_with_unreads,
 };
 use crate::theme::tokens::{
     BREAKPOINT_NAVIGATOR, BREAKPOINT_SIDE_SHEET, COMPONENT_NAVIGATOR_STRIP_WIDTH, SIZE_DOCK_HEIGHT,
@@ -543,4 +544,79 @@ fn add_friend_from_a_profile_says_why_it_failed_and_can_be_tried_again(cx: &mut 
                 .is_some_and(|error| error.starts_with("Couldn't send the friend request"))
         );
     });
+}
+
+#[gpui::test]
+fn someone_typing_costs_a_frame_only_in_the_open_channel(cx: &mut TestAppContext) {
+    let (session, frames, cx) = open_shell_counting_frames(cx, sample_state());
+    let typing_in = |channel_id, cx: &mut VisualTestContext| {
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates_of_this_session(
+                vec![mellow_client_core::GatewayUpdate::Event(
+                    mellow_protocol::GatewayEvent::TypingStart {
+                        guild_id: Some(GUILD_RUST),
+                        channel_id,
+                        user_id: ANA,
+                    },
+                )],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+    };
+
+    typing_in(RUST_HELP, cx);
+    assert_eq!(
+        frames.get(),
+        0,
+        "another channel's typing line is not drawn"
+    );
+
+    typing_in(RUST_ANNOUNCEMENTS, cx);
+    assert_eq!(frames.get(), 1, "the open channel's line shows the name");
+}
+
+#[gpui::test]
+fn messages_arriving_in_a_channel_left_for_friends_stay_unread(cx: &mut TestAppContext) {
+    let mut state = sample_state();
+    let ana = crate::shell_fixtures::person(ANA, "ana", "Ana");
+    let first = crate::shell_fixtures::text_message(10_001, RUST_ANNOUNCEMENTS, &ana, "hello");
+    state.insert_history_page(RUST_ANNOUNCEMENTS, vec![first]);
+    let (shell, cx) = open_shell(cx, state, 1280.0);
+    let session = shell.read_with(cx, |shell, _| shell.session.clone());
+    let last_read = |cx: &mut VisualTestContext| {
+        session.read_with(cx, |session, _| {
+            session.state().last_read_message_id(RUST_ANNOUNCEMENTS)
+        })
+    };
+    assert_eq!(
+        last_read(cx),
+        Some(Snowflake::from_raw(10_001)),
+        "shown at its latest message, the channel is read"
+    );
+
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.open_place(None, None, window, cx));
+    });
+    cx.run_until_parked();
+    session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(
+            vec![mellow_client_core::GatewayUpdate::Event(
+                mellow_protocol::GatewayEvent::MessageCreate(crate::shell_fixtures::text_message(
+                    10_002,
+                    RUST_ANNOUNCEMENTS,
+                    &ana,
+                    "while you were away",
+                )),
+            )],
+            cx,
+        );
+    });
+    cx.run_until_parked();
+
+    assert_eq!(
+        last_read(cx),
+        Some(Snowflake::from_raw(10_001)),
+        "Friends shows instead: the new message is not read"
+    );
 }

@@ -421,7 +421,15 @@ impl DuskShell {
             self.load_members_of_open_server(cx);
         }
         self.show_place_in_conversation(cx);
-        cx.notify();
+        // Typing is the conversation's alone to draw (`Session::apply_gateway_updates`): a frame
+        // for it here would redraw the window at each notice anywhere.
+        if changes.is_empty()
+            || changes
+                .iter()
+                .any(|change| !matches!(change, StateChange::Typing { .. }))
+        {
+            cx.notify();
+        }
     }
 
     /// The place changed: remembered for the next launch, and the members asked for.

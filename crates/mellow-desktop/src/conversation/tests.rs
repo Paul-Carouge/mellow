@@ -1,16 +1,22 @@
 //! The conversation view headless: where the list opens, what Esc and the keys do, and how a
 //! refused send comes back, over a session fed by hand as the gateway would.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
     AppContext as _, Entity, InputEvent as _, KeyUpEvent, Keystroke, ListOffset, TestAppContext,
     VisualTestContext, WindowAppearance, px, size,
 };
-use mellow_protocol::{Message, PublicUser, Snowflake};
+use mellow_client_core::GatewayUpdate;
+use mellow_protocol::{GatewayEvent, Message, PublicUser, Snowflake};
 
 use super::*;
 use crate::components::bind_tab_navigation;
 use crate::composer::bind_composer_keys;
-use crate::shell_fixtures::{ANA, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person, sample_state};
+use crate::shell_fixtures::{
+    ANA, FrameCountingRoot, GUILD_RUST, ME, RUST_GENERAL, RUST_HELP, person, sample_state,
+};
 use crate::strings_pending_i18n::{ActiveStrings, ENGLISH};
 use crate::theme::ActiveTheme;
 use mellow_client_core::shared_logic::context_menus_people::message_menu_quick_reactions;
@@ -18,25 +24,7 @@ use mellow_client_core::shared_logic::context_menus_people::message_menu_quick_r
 mod forwards;
 
 pub(super) fn message(id: u64, author: &PublicUser, content: &str) -> Message {
-    Message {
-        id: Snowflake::from_raw(id),
-        channel_id: RUST_GENERAL,
-        author: author.clone(),
-        content: content.to_owned(),
-        reply_to_id: None,
-        edited_at_unix_milliseconds: None,
-        nonce: None,
-        attachments: Vec::new(),
-        reactions: Vec::new(),
-        pinned: false,
-        mention_ids: Vec::new(),
-        mention_role_ids: Vec::new(),
-        link_previews: Vec::new(),
-        poll: None,
-        checklist: None,
-        progress_bar: None,
-        forwarded_from: None,
-    }
+    crate::shell_fixtures::text_message(id, RUST_GENERAL, author, content)
 }
 
 fn general() -> OpenConversation {
@@ -62,6 +50,30 @@ pub(super) fn open_general(
     Entity<Session>,
     &mut VisualTestContext,
 ) {
+    let session = session_over_general(cx, messages, last_read);
+    let view_session = session.clone();
+    let (view, cx) =
+        cx.add_window_view(|window, cx| ConversationView::new(view_session, window, cx));
+    show_general(&view, cx);
+    (view, session, cx)
+}
+
+/// The window is sized and in front, and `#general` opens in `view`.
+fn show_general(view: &Entity<ConversationView>, cx: &mut VisualTestContext) {
+    cx.simulate_resize(size(px(900.0), px(600.0)));
+    cx.update(|window, cx| {
+        window.activate_window();
+        view.update(cx, |view, cx| view.set_place(Some(general()), cx));
+    });
+    cx.run_until_parked();
+}
+
+/// The app's globals and a session holding `#general`'s `messages`, read up to `last_read`.
+fn session_over_general(
+    cx: &mut TestAppContext,
+    messages: Vec<Message>,
+    last_read: Option<u64>,
+) -> Entity<Session> {
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_global(ActiveStrings(&ENGLISH));
@@ -79,16 +91,43 @@ pub(super) fn open_general(
             state.mark_read(RUST_GENERAL, Snowflake::from_raw(last_read));
         }
     });
-    let view_session = session.clone();
-    let (view, cx) =
-        cx.add_window_view(|window, cx| ConversationView::new(view_session, window, cx));
-    cx.simulate_resize(size(px(900.0), px(600.0)));
-    cx.update(|window, cx| {
-        window.activate_window();
-        view.update(cx, |view, cx| view.set_place(Some(general()), cx));
+    session
+}
+
+/// `open_general`, read to its end, with a count of the window's frames from now on.
+fn open_general_counting_frames(
+    cx: &mut TestAppContext,
+    messages: Vec<Message>,
+) -> (
+    Entity<ConversationView>,
+    Entity<Session>,
+    Rc<Cell<u32>>,
+    &mut VisualTestContext,
+) {
+    let session = session_over_general(cx, messages, None);
+    let frames = Rc::new(Cell::new(0));
+    let (view_session, counted) = (session.clone(), Rc::clone(&frames));
+    let mut view = None;
+    let (_, cx) = cx.add_window_view(|window, cx| {
+        let conversation = cx.new(|cx| ConversationView::new(view_session, window, cx));
+        view = Some(conversation.clone());
+        FrameCountingRoot {
+            child: conversation.into(),
+            frames: counted,
+        }
+    });
+    let view = view.expect("the window builds its root at once");
+    show_general(&view, cx);
+    frames.set(0);
+    (view, session, frames, cx)
+}
+
+/// `update` reaches the session as one gateway burst.
+fn from_the_gateway(session: &Entity<Session>, update: GatewayEvent, cx: &mut VisualTestContext) {
+    session.update(cx, |session, cx| {
+        session.apply_gateway_updates_of_this_session(vec![GatewayUpdate::Event(update)], cx);
     });
     cx.run_until_parked();
-    (view, session, cx)
 }
 
 pub(super) fn ana() -> PublicUser {
@@ -363,10 +402,14 @@ fn scrolling_and_unrelated_changes_do_not_rebuild_the_rows(cx: &mut TestAppConte
                 StateChange::Messages {
                     channel_id: RUST_HELP,
                 },
+                StateChange::ReadStates,
             ],
             cx,
         );
-        assert!(!view.are_rows_stale, "nor does typing or another channel");
+        assert!(
+            !view.are_rows_stale,
+            "nor does typing, another channel or a read position"
+        );
         view.follow_state(
             &[StateChange::Messages {
                 channel_id: RUST_GENERAL,
@@ -375,6 +418,56 @@ fn scrolling_and_unrelated_changes_do_not_rebuild_the_rows(cx: &mut TestAppConte
         );
         assert!(view.are_rows_stale, "the open channel's messages do");
     });
+}
+
+#[gpui::test]
+fn a_message_arriving_at_the_latest_is_drawn_and_read_in_one_frame(cx: &mut TestAppContext) {
+    let (_view, session, frames, cx) =
+        open_general_counting_frames(cx, vec![message(10_001, &ana(), "hello")]);
+    assert_eq!(last_read(&session, cx), Some(Snowflake::from_raw(10_001)));
+
+    from_the_gateway(
+        &session,
+        GatewayEvent::MessageCreate(message(10_002, &ana(), "again")),
+        cx,
+    );
+
+    assert_eq!(frames.get(), 1, "not a second frame for marking it read");
+    assert_eq!(last_read(&session, cx), Some(Snowflake::from_raw(10_002)));
+}
+
+#[gpui::test]
+fn a_typing_notice_costs_one_frame_when_it_shows_and_one_when_it_ends(cx: &mut TestAppContext) {
+    let (view, session, frames, cx) =
+        open_general_counting_frames(cx, vec![message(10_001, &ana(), "hello")]);
+    let typing = || GatewayEvent::TypingStart {
+        guild_id: Some(GUILD_RUST),
+        channel_id: RUST_GENERAL,
+        user_id: ANA,
+    };
+    let names = |cx: &mut VisualTestContext| {
+        view.read_with(cx, |view, _| view.typing_line_user_ids.clone())
+    };
+
+    from_the_gateway(&session, typing(), cx);
+    assert_eq!(names(cx), [ANA]);
+    assert_eq!(frames.get(), 1);
+
+    // Typing on renews the notice without changing the line.
+    from_the_gateway(&session, typing(), cx);
+    assert_eq!(frames.get(), 1);
+
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(
+            mellow_client_core::state::TYPING_INDICATOR_LIFETIME_MILLISECONDS,
+        ));
+    cx.run_until_parked();
+    assert_eq!(names(cx), Vec::<Snowflake>::new());
+    assert_eq!(
+        frames.get(),
+        2,
+        "one frame when it ends, none while it shows"
+    );
 }
 
 #[gpui::test]
