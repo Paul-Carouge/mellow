@@ -150,6 +150,6 @@ Progress (2026-11-13, end of the ninth wave): steps 1 to 9 are done apart from t
 - Announced public release (`v0.1.0` exists since 2026-10-20 for testing), after the trade-dress review.
 
 ## Later (not committed)
-- Ideas from wave 10 (2026-11-14): the "Animated pictures" setting on the desktop (then its Settings section is "Accessibility" as on the web); avatar (circle) and banner crops with the icon crop dialog; Melli's "sleeping" state for an empty friends tab; the desktop sidebar as its own cached view if a measure shows the shell re-rendering costs; upstream the two GPUI text-system fixes (ADR-0059) and `occlude` on menus; a CI workflow_dispatch dry run of the `dist` release profile before the next tag.
+- Ideas from wave 10 (2026-11-14): avatar (circle) and banner crops with the icon crop dialog; Melli's "sleeping" state for an empty friends tab; the desktop sidebar as its own cached view if a measure shows the shell re-rendering costs; upstream the two GPUI text-system fixes (ADR-0059) and `occlude` on menus; a CI workflow_dispatch dry run of the `dist` release profile before the next tag.
 - End-to-end encrypted DMs.
 - S3-compatible attachment storage, OIDC login.
