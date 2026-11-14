@@ -20,7 +20,7 @@ use crate::screen_capture::{
 };
 use crate::screen_capture_linux::{RunningShareSound, start_sound_for};
 use crate::session::ScreenShareEnd;
-use crate::simulcast::FRAMES_PER_SECOND;
+use crate::simulcast::{FRAMES_PER_SECOND, HARDWARE_SCREEN_FRAMES_PER_SECOND};
 use crate::video_sender::VideoInput;
 
 /// DRM fourccs of the 8-bit RGB layouts shared memory may carry: blue first (`BGRx`, `BGRA`
@@ -101,7 +101,11 @@ pub(crate) fn start(
         restore_token: None,
         persist: false,
         memory,
-        max_fps: FRAMES_PER_SECOND,
+        // The GPU follows the source up to 60 pictures a second (ADR-0058); libvpx keeps 30.
+        max_fps: match memory {
+            FrameMemory::DmaBuf => HARDWARE_SCREEN_FRAMES_PER_SECOND,
+            FrameMemory::Shared => FRAMES_PER_SECOND,
+        },
     };
     let capture = {
         let sink = Arc::clone(&sink);
