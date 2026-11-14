@@ -4,6 +4,11 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+- Desktop on Windows: a one-screen installer, `mellow-desktop-X.Y.Z-x86_64-pc-windows-msvc-setup.exe` (Inno Setup, per user, no administrator rights; Start menu entry, Installed apps entry, Mellow opens when it is done), in Mellow's colours with Melli, in English or French (ADR-0060). Not code-signed yet: SmartScreen asks once ("More info", "Run anyway"; see the README).
+- Desktop on Windows: the signed self-update; the verified installer runs silently once Mellow quits, and "Restart to update" reopens it, never during a call.
+- Desktop on Windows: the app has its icon, version information and a per-monitor DPI manifest, opens no console window, and `mellow --version` prints its version.
+
 ## [0.50.0] - 2026-11-14
 The desktop app now looks and behaves like the web client, starts faster and keeps running in the background on Linux and Windows; screen sharing leaves Mellow's own sound out and can run at 60 fps; the server reads twice as fast, uses less memory and delivers large READYs. No database migration; the protocol is unchanged.
 

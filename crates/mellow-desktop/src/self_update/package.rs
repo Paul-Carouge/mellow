@@ -1,6 +1,6 @@
 //! Where this copy of Mellow is installed, which release package replaces it, and the blocking
-//! work of unpacking, checking and swapping that package in (ADR-0057). Nothing here runs on the
-//! UI thread: the self-update calls it from a background task.
+//! work of unpacking, checking and swapping that package in (ADR-0057; Windows: ADR-0060).
+//! Nothing here runs on the UI thread: the self-update calls it from a background task.
 
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,10 +18,20 @@ const MAXIMUM_PACKAGE_BYTES: usize = 512 * 1024 * 1024;
 const STAGING_PREFIX: &str = ".mellow-update-";
 /// Held locked by the process that staged the update, so another instance's start leaves it alone.
 const STAGING_LOCK_FILE: &str = "lock";
-/// `<user cache>/mellow/updates` on Linux: not a tmpfs that `systemd-tmpfiles` empties after ten
-/// days, and often on the same file system as `~/.local/bin`.
-#[cfg(target_os = "linux")]
-const LINUX_STAGING_DIRECTORIES: [&str; 2] = ["mellow", "updates"];
+/// `<user cache>/mellow/updates` on Linux (not a tmpfs that `systemd-tmpfiles` empties after ten
+/// days, and often on the same file system as `~/.local/bin`) and on Windows
+/// (`%LOCALAPPDATA%\mellow\updates`, which the uninstaller removes).
+#[cfg(any(target_os = "linux", windows))]
+const CACHE_STAGING_DIRECTORIES: [&str; 2] = ["mellow", "updates"];
+/// Where the Windows installer puts the app, under `%LOCALAPPDATA%` (Inno Setup's `{userpf}`).
+#[cfg(any(windows, test))]
+const WINDOWS_INSTALL_FOLDERS: [&str; 2] = ["Programs", "Mellow"];
+#[cfg(any(windows, test))]
+const WINDOWS_EXECUTABLE_NAME: &str = "mellow.exe";
+/// What the staged installer is saved as; Windows runs it by its `.exe` name.
+const WINDOWS_INSTALLER_FILE_NAME: &str = "mellow-setup.exe";
+/// Every Windows executable starts with the DOS header's magic.
+const WINDOWS_EXECUTABLE_MAGIC: &[u8] = b"MZ";
 /// macOS runs an app opened from a quarantined download from a read-only random folder.
 #[cfg(any(target_os = "macos", test))]
 const APP_TRANSLOCATION_FOLDER: &str = "AppTranslocation";
@@ -65,6 +75,23 @@ pub enum Installation {
         /// Where updates are unpacked before `install.sh` runs.
         staging_folder: PathBuf,
     },
+    /// The Windows installer's copy in `%LOCALAPPDATA%\Programs\Mellow` (ADR-0060), updated by
+    /// running the next release's installer.
+    WindowsUserInstall {
+        executable: PathBuf,
+        /// Where the installer waits until the app quits.
+        staging_folder: PathBuf,
+    },
+}
+
+/// What starts the updated app once this process ends.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Relaunch {
+    /// This process starts the executable or bundle at this path (GPUI's restart).
+    ThisApp(PathBuf),
+    /// The Windows installer, which waits for this process to exit, installs, and opens Mellow
+    /// when asked to (`/LAUNCH`).
+    ByInstaller,
 }
 
 /// The device and inode of a file: they change when the installed copy is replaced.
@@ -94,6 +121,10 @@ enum StagedKind {
         install_script: PathBuf,
         executable: PathBuf,
         home: PathBuf,
+    },
+    WindowsInstaller {
+        installer: PathBuf,
+        executable: PathBuf,
     },
 }
 
@@ -154,14 +185,33 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
 }
 
 /// # Errors
-/// Always: Windows packages come with the Windows work (ADR-0055).
-#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+/// The [`UpdateProblem`] that keeps this copy from updating itself.
+#[cfg(windows)]
+pub fn detect_installation() -> Result<Installation, UpdateProblem> {
+    // The release has an x86-64 installer only; Windows on Arm runs it emulated, but an Arm
+    // build of Mellow came from elsewhere.
+    if !cfg!(target_arch = "x86_64") {
+        return Err(UpdateProblem::UnsupportedSystem);
+    }
+    let executable = std::env::current_exe().map_err(|_| UpdateProblem::NotPackaged)?;
+    let local_app_data = dirs::data_local_dir().ok_or(UpdateProblem::NotPackaged)?;
+    check_windows_install_location(&executable, &local_app_data)?;
+    let staging_folder = staging_folder_of_this_copy().ok_or(UpdateProblem::NotWritable)?;
+    Ok(Installation::WindowsUserInstall {
+        executable,
+        staging_folder,
+    })
+}
+
+/// # Errors
+/// Always: there is no package for other systems.
+#[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
 pub fn detect_installation() -> Result<Installation, UpdateProblem> {
     Err(UpdateProblem::UnsupportedSystem)
 }
 
 /// Where this copy stages its updates, so the leftovers of an earlier run can be removed at the
-/// start: the app's folder on macOS, the user's cache on Linux. Blocking.
+/// start: the app's folder on macOS, the user's cache on Linux and Windows. Blocking.
 #[must_use]
 pub fn staging_folder_of_this_copy() -> Option<PathBuf> {
     #[cfg(target_os = "macos")]
@@ -171,15 +221,15 @@ pub fn staging_folder_of_this_copy() -> Option<PathBuf> {
             .ok()?;
         Some(bundle_of_executable(&executable)?.parent()?.to_owned())
     }
-    #[cfg(target_os = "linux")]
+    #[cfg(any(target_os = "linux", windows))]
     {
         Some(
-            LINUX_STAGING_DIRECTORIES
+            CACHE_STAGING_DIRECTORIES
                 .iter()
                 .fold(dirs::cache_dir()?, |folder, name| folder.join(name)),
         )
     }
-    #[cfg(not(any(target_os = "macos", target_os = "linux")))]
+    #[cfg(not(any(target_os = "macos", target_os = "linux", windows)))]
     {
         None
     }
@@ -252,6 +302,39 @@ pub(super) fn check_linux_install_location(
     Ok(())
 }
 
+/// Only the installer's copy in `%LOCALAPPDATA%\Programs\Mellow` updates itself; one elsewhere
+/// was built or copied by hand. The folder must be writable, tested by creating a file in it.
+#[cfg(any(windows, test))]
+pub(super) fn check_windows_install_location(
+    executable: &Path,
+    local_app_data: &Path,
+) -> Result<(), UpdateProblem> {
+    let expected = WINDOWS_INSTALL_FOLDERS
+        .iter()
+        .fold(local_app_data.to_owned(), |folder, name| folder.join(name))
+        .join(WINDOWS_EXECUTABLE_NAME);
+    // Windows compares paths without case, and a shortcut or a terminal may spell them otherwise.
+    let lowercase = |path: &Path| path.to_string_lossy().to_lowercase();
+    if lowercase(executable) != lowercase(&expected) {
+        return Err(UpdateProblem::NotPackaged);
+    }
+    let folder = executable.parent().ok_or(UpdateProblem::NotPackaged)?;
+    tempfile::tempfile_in(folder).map_err(|_| UpdateProblem::NotWritable)?;
+    Ok(())
+}
+
+/// The arguments the staged installer runs with (ADR-0060): silent, no message box or reboot,
+/// waiting for this app to quit (`/UPDATE`), and opening the new version when `relaunch`.
+#[cfg(any(windows, test))]
+#[must_use]
+pub(super) fn windows_installer_arguments(relaunch: bool) -> Vec<&'static str> {
+    let mut arguments = vec!["/VERYSILENT", "/SUPPRESSMSGBOXES", "/NORESTART", "/UPDATE"];
+    if relaunch {
+        arguments.push("/LAUNCH");
+    }
+    arguments
+}
+
 /// The FFmpeg majors whose `libavcodec` is in `directories`, newest first.
 #[cfg(any(target_os = "linux", test))]
 pub(super) fn ffmpeg_majors_in(directories: &[&Path]) -> Vec<u32> {
@@ -274,8 +357,8 @@ pub(super) fn ffmpeg_majors_in(directories: &[&Path]) -> Vec<u32> {
     majors
 }
 
-/// The release asset that replaces `installation` (ADR-0055's names): on Linux, the package for
-/// the newest FFmpeg the system has that the release carries.
+/// The release asset that replaces `installation` (ADR-0055's and ADR-0060's names): on Linux,
+/// the package for the newest FFmpeg the system has that the release carries.
 ///
 /// # Errors
 /// `NoFfmpeg` or `NoPackage`.
@@ -306,6 +389,14 @@ pub fn asset_name_for(
                 })
                 .find(|name| release.has_signed_asset(name))
                 .ok_or(UpdateProblem::NoPackage)
+        }
+        Installation::WindowsUserInstall { .. } => {
+            let name = format!("mellow-desktop-{version}-x86_64-pc-windows-msvc-setup.exe");
+            if release.has_signed_asset(&name) {
+                Ok(name)
+            } else {
+                Err(UpdateProblem::NoPackage)
+            }
         }
     }
 }
@@ -358,7 +449,7 @@ fn problem_of(error: &UpdateError) -> UpdateProblem {
 
 /// Writes the verified `package` to a private staging directory, unpacks it and checks it is
 /// what `installation` needs: on macOS a bundle signed by the running app's certificate, on Linux
-/// the package's installer and binary. Blocking.
+/// the package's installer and binary, on Windows an executable. Blocking.
 ///
 /// # Errors
 /// `NotWritable`, `BadPackage` or `WrongCertificate`.
@@ -382,6 +473,10 @@ pub fn stage_package(
             executable,
             staging_folder,
             ..
+        }
+        | Installation::WindowsUserInstall {
+            executable,
+            staging_folder,
         } => {
             std::fs::create_dir_all(staging_folder).map_err(|_| UpdateProblem::NotWritable)?;
             (staging_folder.clone(), executable.clone())
@@ -400,7 +495,30 @@ pub fn stage_package(
     std::fs::write(&archive, package)
         .and_then(|()| std::fs::create_dir(&unpacked))
         .map_err(|_| UpdateProblem::NotWritable)?;
-    let kind = match installation {
+    let kind = unpack_package(installation, staging.path(), asset_name, package)?;
+    // The archive is no longer needed once unpacked; failing to remove it only costs space until
+    // the staging directory goes.
+    let _ = std::fs::remove_file(&archive);
+    Ok(StagedUpdate {
+        version,
+        _lock: lock,
+        staging,
+        kind,
+        installed_identity,
+    })
+}
+
+/// Unpacks the archive written at `staging/package` into `staging/unpacked` (Windows: keeps the
+/// installer as `staging/mellow-setup.exe`) and checks it holds what `installation` needs.
+fn unpack_package(
+    installation: &Installation,
+    staging: &Path,
+    asset_name: &str,
+    package: &[u8],
+) -> Result<StagedKind, UpdateProblem> {
+    let archive = staging.join("package");
+    let unpacked = staging.join("unpacked");
+    match installation {
         Installation::MacosBundle {
             bundle,
             designated_requirement,
@@ -418,10 +536,10 @@ pub fn stage_package(
                 return Err(UpdateProblem::BadPackage);
             }
             check_code_signature(&new_bundle, designated_requirement)?;
-            StagedKind::MacosBundle {
+            Ok(StagedKind::MacosBundle {
                 new_bundle,
                 installed_bundle: bundle.clone(),
-            }
+            })
         }
         Installation::LinuxUserInstall {
             executable, home, ..
@@ -445,23 +563,25 @@ pub fn stage_package(
             if !is_complete {
                 return Err(UpdateProblem::BadPackage);
             }
-            StagedKind::LinuxPackage {
+            Ok(StagedKind::LinuxPackage {
                 install_script,
                 executable: executable.clone(),
                 home: home.clone(),
-            }
+            })
         }
-    };
-    // The archive is no longer needed once unpacked; failing to remove it only costs space until
-    // the staging directory goes.
-    let _ = std::fs::remove_file(&archive);
-    Ok(StagedUpdate {
-        version,
-        _lock: lock,
-        staging,
-        kind,
-        installed_identity,
-    })
+        Installation::WindowsUserInstall { executable, .. } => {
+            // The signature covers the installer; this only refuses what Windows could not run.
+            if !package.starts_with(WINDOWS_EXECUTABLE_MAGIC) {
+                return Err(UpdateProblem::BadPackage);
+            }
+            let installer = staging.join(WINDOWS_INSTALLER_FILE_NAME);
+            std::fs::rename(&archive, &installer).map_err(|_| UpdateProblem::NotWritable)?;
+            Ok(StagedKind::WindowsInstaller {
+                installer,
+                executable: executable.clone(),
+            })
+        }
+    }
 }
 
 /// macOS only checks a signature against a requirement; elsewhere a bundle is never staged.
@@ -475,14 +595,18 @@ fn check_code_signature(bundle: &Path, designated_requirement: &str) -> Result<(
     .map_err(|()| UpdateProblem::WrongCertificate)
 }
 
-/// Swaps the staged package in and returns what to start instead of this process. The call
-/// checks come before this: it is never run during a voice call (ADR-0057). A copy reinstalled
-/// by hand since the update was staged is left alone (replacing it could be a downgrade) and is
-/// what the returned path starts. Blocking.
+/// Swaps the staged package in and returns what starts the app instead of this process. The
+/// call checks come before this: it is never run during a voice call (ADR-0057). A copy
+/// reinstalled by hand since the update was staged is left alone (replacing it could be a
+/// downgrade) and is what restarts. On Windows the installer is started and waits for this
+/// process to exit; `relaunch` asks it to open the new version. Blocking.
 ///
 /// # Errors
 /// `InstallFailed`, with the running version left in place.
-pub fn apply_staged_update(staged: &mut StagedUpdate) -> Result<PathBuf, UpdateProblem> {
+pub fn apply_staged_update(
+    staged: &mut StagedUpdate,
+    relaunch: bool,
+) -> Result<Relaunch, UpdateProblem> {
     let (installed_file, restart_path) = match &staged.kind {
         StagedKind::MacosBundle {
             installed_bundle, ..
@@ -490,11 +614,14 @@ pub fn apply_staged_update(staged: &mut StagedUpdate) -> Result<PathBuf, UpdateP
             installed_bundle.join("Contents").join("Info.plist"),
             installed_bundle.clone(),
         ),
-        StagedKind::LinuxPackage { executable, .. } => (executable.clone(), executable.clone()),
+        StagedKind::LinuxPackage { executable, .. }
+        | StagedKind::WindowsInstaller { executable, .. } => {
+            (executable.clone(), executable.clone())
+        }
     };
     if file_identity(&installed_file) != staged.installed_identity {
         tracing::info!("Mellow was reinstalled since the update was staged; it is not replaced");
-        return Ok(restart_path);
+        return Ok(Relaunch::ThisApp(restart_path));
     }
     match &staged.kind {
         StagedKind::MacosBundle {
@@ -519,8 +646,39 @@ pub fn apply_staged_update(staged: &mut StagedUpdate) -> Result<PathBuf, UpdateP
             executable,
             home,
         } => run_install_script(install_script, executable, home)?,
+        StagedKind::WindowsInstaller { installer, .. } => {
+            start_windows_installer(installer, relaunch)?;
+            // The installer runs from the staging directory until it is done: the next start
+            // removes the directory.
+            staged.staging.disable_cleanup(true);
+            return Ok(Relaunch::ByInstaller);
+        }
     }
-    Ok(restart_path)
+    Ok(Relaunch::ThisApp(restart_path))
+}
+
+/// Starts the staged installer on its own: it waits for this process to exit (ADR-0060).
+#[cfg(windows)]
+fn start_windows_installer(installer: &Path, relaunch: bool) -> Result<(), UpdateProblem> {
+    use std::os::windows::process::CommandExt as _;
+    /// No console, and not tied to this process's console or group, which end with it.
+    const DETACHED_PROCESS: u32 = 0x0000_0008;
+    const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
+    Command::new(installer)
+        .args(windows_installer_arguments(relaunch))
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
+        .spawn()
+        .map(drop)
+        .map_err(|_| UpdateProblem::InstallFailed)
+}
+
+/// Only Windows stages an installer.
+#[cfg(not(windows))]
+fn start_windows_installer(_installer: &Path, _relaunch: bool) -> Result<(), UpdateProblem> {
+    Err(UpdateProblem::UnsupportedSystem)
 }
 
 #[cfg(unix)]
@@ -531,8 +689,23 @@ fn file_identity(path: &Path) -> Option<FileIdentity> {
         .map(|metadata| (metadata.dev(), metadata.ino()))
 }
 
-/// Windows stages no update (ADR-0055).
-#[cfg(not(unix))]
+/// Windows: the size and the time of the last write, which an installer run by hand changes
+/// (`std` has no stable file index).
+#[cfg(windows)]
+fn file_identity(path: &Path) -> Option<FileIdentity> {
+    let metadata = std::fs::metadata(path).ok()?;
+    let modified = metadata
+        .modified()
+        .ok()?
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()?;
+    Some((
+        metadata.len(),
+        u64::try_from(modified.as_nanos()).unwrap_or(u64::MAX),
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
 fn file_identity(_path: &Path) -> Option<FileIdentity> {
     None
 }

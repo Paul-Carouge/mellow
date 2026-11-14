@@ -14,7 +14,7 @@ use crate::app_icons::{render_png, render_png_with_margin};
 pub const VERSION: &str = env!("CARGO_PKG_VERSION");
 const VERSION_PLACEHOLDER: &str = "@VERSION@";
 
-const PACKAGING_DIRECTORY: &str = "crates/mellow-desktop/packaging";
+pub const PACKAGING_DIRECTORY: &str = "crates/mellow-desktop/packaging";
 /// Committed and checked by `cargo xtask tokens --check`.
 const FAVICON_PATH: &str = "web/public/favicon.svg";
 const EXECUTABLE_NAME: &str = "mellow";
@@ -83,7 +83,7 @@ fn macos_icon(favicon: &usvg::Tree) -> Result<Vec<u8>> {
     icns(&entries)
 }
 
-fn read_favicon(root: &Path) -> Result<(String, usvg::Tree)> {
+pub fn read_favicon(root: &Path) -> Result<(String, usvg::Tree)> {
     let path = root.join(FAVICON_PATH);
     let text = std::fs::read_to_string(&path)
         .with_context(|| format!("cannot read {}", path.display()))?;
@@ -92,7 +92,7 @@ fn read_favicon(root: &Path) -> Result<(String, usvg::Tree)> {
     Ok((text, tree))
 }
 
-fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
+pub fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .with_context(|| format!("cannot create {}", parent.display()))?;
@@ -100,7 +100,7 @@ fn write_file(path: &Path, contents: impl AsRef<[u8]>) -> Result<()> {
     std::fs::write(path, contents).with_context(|| format!("cannot write {}", path.display()))
 }
 
-fn copy_file(source: &Path, destination: &Path) -> Result<()> {
+pub fn copy_file(source: &Path, destination: &Path) -> Result<()> {
     let contents =
         std::fs::read(source).with_context(|| format!("cannot read {}", source.display()))?;
     write_file(destination, contents)

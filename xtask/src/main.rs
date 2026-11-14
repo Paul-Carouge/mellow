@@ -11,6 +11,9 @@
 //!
 //! `cargo xtask linux-package --binary PATH --output DIRECTORY`: lays out the Linux package the
 //! release workflow archives (ADR-0055).
+//!
+//! `cargo xtask windows-package --binary PATH --output DIRECTORY`: lays out the folder Inno Setup
+//! compiles into the Windows installer (ADR-0060).
 
 // A command-line program: its messages to the operator go to stderr.
 #![allow(clippy::print_stderr)]
@@ -23,6 +26,7 @@ mod favicon;
 mod i18n;
 mod rust_tokens;
 mod web_manifest;
+mod windows_installer;
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -34,7 +38,8 @@ use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 
 const USAGE: &str = "usage: cargo xtask tokens [--check] | cargo xtask i18n [--check] \
 | cargo xtask macos-app [--binary PATH] [--output DIRECTORY] [--sign IDENTITY] \
-| cargo xtask linux-package --binary PATH --output DIRECTORY";
+| cargo xtask linux-package --binary PATH --output DIRECTORY \
+| cargo xtask windows-package --binary PATH --output DIRECTORY";
 /// codesign's name for an ad hoc signature, which needs no certificate.
 const AD_HOC_SIGNING_IDENTITY: &str = "-";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
@@ -44,6 +49,8 @@ const WEB_MANIFEST_OUTPUT_PATH: &str = "web/public/manifest.webmanifest";
 const RUST_TOKENS_OUTPUT_PATH: &str = "crates/mellow-desktop/src/theme/tokens.rs";
 const RUST_ICONS_OUTPUT_PATH: &str = "crates/mellow-desktop/src/theme/icons.rs";
 const ICONS_SOURCE_DIRECTORY: &str = "design/icons";
+/// Embedded in `mellow.exe` by the desktop's build script and used by its installer (ADR-0060).
+const WINDOWS_ICON_OUTPUT_PATH: &str = "crates/mellow-desktop/packaging/windows/mellow.ico";
 /// `ICONS_SOURCE_DIRECTORY` as seen from `RUST_ICONS_OUTPUT_PATH`, for `include_bytes!`.
 const ICONS_DIRECTORY_FROM_RUST_ICONS: &str = "../../../../design/icons";
 /// Hand-written, except for its marked `theme-color` block.
@@ -68,6 +75,7 @@ fn run(arguments: &[String]) -> Result<()> {
         ["i18n", "--check"] => generate_i18n_catalogue(true),
         ["macos-app", options @ ..] => build_macos_app(options),
         ["linux-package", options @ ..] => build_linux_package(options),
+        ["windows-package", options @ ..] => build_windows_package(options),
         _ => bail!("{USAGE}"),
     }
 }
@@ -121,6 +129,23 @@ fn build_linux_package(arguments: &[&str]) -> Result<()> {
     Ok(())
 }
 
+fn build_windows_package(arguments: &[&str]) -> Result<()> {
+    let options = parse_options(arguments, &["--binary", "--output"])?;
+    let (Some(binary), Some(output)) = (options.get("--binary"), options.get("--output")) else {
+        bail!("{USAGE}");
+    };
+    windows_installer::build_windows_installer_folder(
+        &workspace_root()?,
+        Path::new(binary),
+        Path::new(output),
+    )?;
+    eprintln!(
+        "laid out {output} for {}.exe",
+        windows_installer::installer_base_name(desktop_package::VERSION)
+    );
+    Ok(())
+}
+
 fn workspace_root() -> Result<PathBuf> {
     Path::new(env!("CARGO_MANIFEST_DIR"))
         .parent()
@@ -171,6 +196,10 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         WEB_INDEX_HTML_PATH.to_owned(),
         web_manifest::with_theme_color_metas(&index_html, &tokens)?.into_bytes(),
     ));
+    outputs.push((
+        WINDOWS_ICON_OUTPUT_PATH.to_owned(),
+        app_icons::generate_windows_icon(&favicon_svg)?,
+    ));
     let maskable_svg = favicon::generate_maskable_icon(&tokens)?;
     let icons_by_directory = [(
         app_icons::WEB_ICONS_DIRECTORY,
@@ -194,6 +223,8 @@ fn generate_tokens(is_check_only: bool) -> Result<()> {
         // A rasteriser's rounding differences alone never rewrite an icon (app_icons.rs).
         let is_up_to_date = if icon_paths.contains(&relative_path) {
             app_icons::is_icon_up_to_date(&current, &generated)?
+        } else if relative_path == WINDOWS_ICON_OUTPUT_PATH {
+            app_icons::is_ico_up_to_date(&current, &generated)?
         } else {
             current == generated
         };

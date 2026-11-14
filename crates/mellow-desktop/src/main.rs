@@ -4,6 +4,8 @@
 // its compact unwind table cannot encode; with the voice engine (str0m, WebRTC's processing,
 // libvpx) the app crosses it. Only the speed of unwinding a panic is affected.
 #![cfg_attr(target_os = "macos", allow(linker_messages))]
+// No console window behind the app on Windows (ADR-0060); debug builds keep theirs for the logs.
+#![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
 
 use std::process::ExitCode;
 
@@ -14,6 +16,18 @@ use mellow_desktop::theme::EmbeddedAssets;
 use mellow_desktop::tokio_bridge::build_network_runtime;
 
 fn main() -> ExitCode {
+    // Answered before anything starts: the release workflow checks the installed copy with it.
+    if std::env::args_os()
+        .nth(1)
+        .is_some_and(|argument| argument == "--version")
+    {
+        // The one line a command-line caller asked for.
+        #[allow(clippy::print_stdout)]
+        {
+            println!("mellow {}", env!("CARGO_PKG_VERSION"));
+        }
+        return ExitCode::SUCCESS;
+    }
     tracing_subscriber::fmt()
         .with_writer(std::io::stderr)
         .init();
