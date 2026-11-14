@@ -100,12 +100,13 @@ jobs:
         with:
           name: web-client
           path: web/dist
-      - run: cargo build --release --locked -p mellow-server --features mellow-server/web-client
+      # `dist`: the release profile with whole-program optimisation (Cargo.toml).
+      - run: cargo build --profile dist --locked -p mellow-server --features mellow-server/web-client
       - name: Name the assets
         shell: bash
         run: |
           mkdir dist
-          cp "target/release/mellow-server${{ matrix.extension }}" \
+          cp "target/dist/mellow-server${{ matrix.extension }}" \
             "dist/mellow-server-${MELLOW_VERSION}-${{ matrix.target }}${{ matrix.extension }}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

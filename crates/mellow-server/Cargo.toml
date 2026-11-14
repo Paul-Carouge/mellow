@@ -25,6 +25,7 @@ futures-util.workspace = true
 getrandom.workspace = true
 hkdf.workspace = true
 gif.workspace = true
+flate2.workspace = true
 image.workspace = true
 http-body.workspace = true
 hyper-util.workspace = true

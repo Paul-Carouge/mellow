@@ -62,6 +62,8 @@ hyper-util = { version = "0.1.21", features = ["tokio"] }
 icu_properties = "2.3.0"
 # Already in the tree through axum; wraps request and response bodies to bound HTTP/2 stalls.
 http-body = "1.1.0"
+# Already in the tree through png (the image crate); gzip for the API's large JSON answers.
+flate2 = "1.1.10"
 # Already in the tree through hyper; tests drive HTTP/2 flow control and pings with its client.
 h2 = "0.4.20"
 # Already in the tree through hyper-util; `serde` reads proxy networks from mellow.toml.
@@ -166,6 +168,14 @@ todo = "warn"
 print_stdout = "warn"
 # Logs go through `tracing`; only the command-line binaries talk to the operator on stderr.
 print_stderr = "warn"
+
+# The server binaries the release workflow publishes: whole-program optimisation makes the
+# download a quarter smaller at no measured speed cost (docs/server-performance-audit.md). Only the
+# server's release job uses it, which runs beside the much longer desktop jobs.
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
 
 # Tests encode real pictures: unoptimised, rav1e and SSIMULACRA2 are tens of times slower.
 [profile.dev.package.rav1e]
