@@ -4,6 +4,23 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.51.0] - 2026-11-14
+A desktop update: animated pictures play, an Accessibility section, channel icons, Mellow's own window frame on Linux and Windows, and fewer redraws. No database migration and no protocol change; the server only changes its version.
+
+### Added
+- Desktop: Settings → Accessibility with "Animated pictures": "Animate on hover" (avatars and server icons play while pointed at or focused) or "Always animate" (they play everywhere, even when the system asks to reduce motion), as on the web.
+- Desktop: channel icons in the channel list and the chat header; a read-only channel's lock moves after its name, and a group conversation's header shows its members' pictures.
+- Desktop on Linux and Windows: Mellow draws its own window frame in the Dusk style (title band, minimise, maximise and close buttons, rounded corners and shadow while floating, resize edges), and falls back to the system's frame where the desktop asks for it. macOS is unchanged.
+
+### Changed
+- Desktop draws one frame per incoming message instead of two, and a typing notice costs two frames instead of nine.
+- Desktop release packages are built with full link-time optimisation: the Linux binary is 18 % smaller.
+
+### Fixed
+- Desktop: animated avatars, server icons, custom emoji and GIFs stayed on their first frame.
+- Desktop: an open channel could be marked read while the friends list or the call view hid it.
+- Desktop: the pins panel could miss a pin carried by an older edit.
+
 ## [0.50.0] - 2026-11-14
 The desktop app now looks and behaves like the web client, starts faster and keeps running in the background on Linux and Windows; screen sharing leaves Mellow's own sound out and can run at 60 fps; the server reads twice as fast, uses less memory and delivers large READYs. No database migration; the protocol is unchanged.
 
