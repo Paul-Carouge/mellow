@@ -9,6 +9,11 @@ use crate::vp8::{VideoContent, Vp8Encoder, Vp8EncoderSettings, Vp8Error};
 
 /// Cameras and screens alike, as on the web.
 pub(crate) const FRAMES_PER_SECOND: u32 = 30;
+/// A screen's top layer where the GPU encodes it (H.264 through VA-API, ADR-0058) and the source
+/// changes that often: games and video move smoothly. Its two lower layers stay at
+/// [`FRAMES_PER_SECOND`] and their budgets.
+#[cfg(target_os = "linux")]
+pub(crate) const HARDWARE_SCREEN_FRAMES_PER_SECOND: u32 = 60;
 const QUARTER_BITS_PER_SECOND: u32 = 150_000;
 const LOW_BITS_PER_SECOND: u32 = 500_000;
 const CAMERA_TOP_BITS_PER_SECOND: u32 = 1_500_000;
@@ -42,10 +47,24 @@ impl ScreenShareQuality {
         }
     }
 
-    const fn top_bits_per_second(self) -> u32 {
+    pub(crate) const fn top_bits_per_second(self) -> u32 {
         match self {
             Self::Standard => 2_500_000,
             Self::High => 5_000_000,
+            Self::Highest => 8_000_000,
+        }
+    }
+
+    /// The top layer's asked rate at [`HARDWARE_SCREEN_FRAMES_PER_SECOND`] (ADR-0058). AMD's
+    /// VA-API "constant" rate overshoots by about 17 % (measured on an RX 9070 XT, half-second
+    /// buffer: 8 Mbit/s asked at 1440p60 gave 9.3 on average, 10.1 at worst over a second), so
+    /// 1440p asks what it asks at 30: with the lower layers, RTX and headers the share stays
+    /// under a sender's 12 Mbit/s (1.5 MB/s) at the server.
+    #[cfg(target_os = "linux")]
+    pub(crate) const fn hardware_top_bits_per_second(self) -> u32 {
+        match self {
+            Self::Standard => 3_000_000,
+            Self::High => 6_000_000,
             Self::Highest => 8_000_000,
         }
     }
@@ -287,6 +306,27 @@ impl LayerEncoder {
 mod tests {
     use super::*;
     use crate::vp8::Vp8Decoder;
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_60_fps_screen_stays_under_the_server_s_byte_budget() {
+        // AMD's measured worst second over the asked "constant" rate (1440p60, 9 Mbit/s asked:
+        // 11.25), and the server's 1.5 MB/s per sender.
+        const MEASURED_OVERSHOOT: f64 = 1.26;
+        const SENDER_BITS_PER_SECOND: f64 = 12_000_000.0;
+        const RTP_AND_RTX_OVERHEAD: f64 = 1.05;
+        for quality in [
+            ScreenShareQuality::Standard,
+            ScreenShareQuality::High,
+            ScreenShareQuality::Highest,
+        ] {
+            let top = f64::from(quality.hardware_top_bits_per_second()) * MEASURED_OVERSHOOT;
+            let lower = f64::from(QUARTER_BITS_PER_SECOND + LOW_BITS_PER_SECOND);
+            let sent = (top + lower * MEASURED_OVERSHOOT) * RTP_AND_RTX_OVERHEAD;
+            assert!(sent < SENDER_BITS_PER_SECOND, "{quality:?}: {sent} bit/s");
+            assert!(quality.hardware_top_bits_per_second() >= quality.top_bits_per_second());
+        }
+    }
 
     /// A picture with detail the encoder must spend bits on.
     fn pattern(width: u32, height: u32, shift: u32) -> I420Picture {
