@@ -1157,6 +1157,9 @@ export const fr: Catalogue = {
   members: {
     members: "Membres",
     profile: "Profil",
+    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
+    profileOf: (person) => `Profil de ${person}`,
+    backToMembers: "Retour aux membres",
     sendMessage: "Envoyer un message",
     opening: "Ouverture…",
     openConversationFailed: "Impossible d’ouvrir la conversation",
