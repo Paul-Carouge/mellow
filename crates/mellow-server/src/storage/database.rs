@@ -320,6 +320,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn sqlcipher_is_built_without_its_global_memory_statistics_lock() {
+        let directory = tempfile::tempdir().unwrap();
+        let database =
+            open_encrypted_database(&directory.path().join("mellow.db"), &key_filled_with(5))
+                .await
+                .unwrap();
+        let compile_options: Vec<String> = sqlx::query_scalar("PRAGMA compile_options")
+            .fetch_all(database.readers())
+            .await
+            .unwrap();
+        database.close().await;
+        // Set by `.cargo/config.toml` (`LIBSQLITE3_FLAGS`): a build that loses it halves reads.
+        assert!(
+            compile_options
+                .iter()
+                .any(|option| option == "DEFAULT_MEMSTATUS=0"),
+            "{compile_options:?}"
+        );
+    }
+
+    #[tokio::test]
     async fn readers_refuse_writes_and_the_writer_is_a_single_connection() {
         let directory = tempfile::tempdir().unwrap();
         let database =

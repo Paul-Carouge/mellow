@@ -1,2 +1,10 @@
 [alias]
 xtask = "run --quiet --package xtask --"
+
+[env]
+# The bundled SQLCipher, built by libsqlite3-sys, which adds these defines after its own. Without
+# memory statistics, SQLite's allocations no longer take one process-wide mutex: every read
+# allocates per column and row, and that lock halved read throughput (docs/server-performance-audit.md).
+# Applies to every build from this workspace, the release workflow's included; a test checks the
+# server's database reports it (`storage::database`).
+LIBSQLITE3_FLAGS = "-DSQLITE_DEFAULT_MEMSTATUS=0"
