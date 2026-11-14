@@ -16,10 +16,10 @@ use std::time::Duration;
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, Bounds, Context, ElementId,
-    Entity, EventEmitter, FocusHandle, Focusable, FontWeight, InteractiveElement as _, IntoElement,
-    KeyBinding, KeyDownEvent, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _,
-    Pixels, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Subscription, Window, actions, anchored, deferred, div, img, point,
+    Entity, EventEmitter, FocusHandle, Focusable, InteractiveElement as _, IntoElement, KeyBinding,
+    KeyDownEvent, ListAlignment, ListOffset, ListState, ObjectFit, ParentElement as _, Pixels,
+    Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Subscription, Window, actions, anchored, deferred, div, img, point,
     prelude::FluentBuilder as _, px, relative,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
@@ -565,7 +565,6 @@ impl EmojiPicker {
                 div()
                     .text_size(length(COMPONENT_EMOJI_PICKER_EMOJI_SIZE))
                     .line_height(length(COMPONENT_EMOJI_PICKER_EMOJI_SIZE))
-                    .font_weight(emoji_glyph_weight())
                     .child(emoji.clone())
                     .into_any_element(),
             ),
@@ -870,31 +869,6 @@ impl std::fmt::Debug for EmojiPicker {
             .field("active_index", &self.active_index)
             .finish_non_exhaustive()
     }
-}
-
-// ---- Emoji glyphs ----
-
-/// The weight a built-in emoji is drawn at (CSS weight), so it comes from the colour emoji font.
-///
-/// On Linux, GPUI's text system (cosmic-text 0.19) looks for a glyph the primary font lacks in
-/// `Noto Sans`, `DejaVu Sans`, …, `Noto Sans Symbols` and only then `Noto Color Emoji`, keeping
-/// only faces at the primary face's weight: at 400, `DejaVu Sans` draws 😀 😐 in black and white.
-/// No common text font has a 600 face, and past that list the emoji fonts sort first, so asked at
-/// 600 every emoji comes in colour; a colour glyph has no weight, so nothing else shows.
-/// Elsewhere the system fallback finds the emoji font by itself.
-// shortcut: a variable or SemiBold font covering 600 before the emoji font (Fedora's Noto Sans
-// Symbols, noto-fonts-extra) keeps the monochrome glyph, and the composer's field cannot take
-// the weight. Replace with `Font::fallbacks` naming the emoji fonts once `gpui-pre-wgpu` accepts
-// emoji fonts without an "m" glyph in that chain (0.3.11 drops them in `load_family`).
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-pub const EMOJI_GLYPH_WEIGHT_VALUE: u16 = 600;
-#[cfg(any(target_os = "macos", target_os = "windows"))]
-pub const EMOJI_GLYPH_WEIGHT_VALUE: u16 = 400;
-
-/// [`EMOJI_GLYPH_WEIGHT_VALUE`] as GPUI's weight.
-#[must_use]
-pub fn emoji_glyph_weight() -> FontWeight {
-    FontWeight(f32::from(EMOJI_GLYPH_WEIGHT_VALUE))
 }
 
 // ---- Recently used emoji (recent-emoji.svelte.ts) ----

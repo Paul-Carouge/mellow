@@ -11,7 +11,7 @@ use crate::notifier::{end_notifications, notifier_of_session};
 use crate::session::{Session, SessionPhase};
 use crate::shell::DuskShell;
 use crate::sign_in_screen::SignInScreen;
-use crate::theme::{SANS_FONT_FAMILY, color, theme};
+use crate::theme::{color, interface_font, theme};
 use crate::window_chrome::WINDOW_TITLE;
 
 pub struct MainWindow {
@@ -98,7 +98,7 @@ impl Render for MainWindow {
         let tokens = theme(cx);
         let root = div()
             .size_full()
-            .font_family(SANS_FONT_FAMILY)
+            .font(interface_font())
             .bg(color(tokens.component_auth_card_backdrop))
             // Lets message text be selected and copied (gpui-base's window text selection).
             .child(gpui_base::TextSelectionLayer)

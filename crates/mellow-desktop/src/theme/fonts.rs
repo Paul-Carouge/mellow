@@ -4,7 +4,7 @@
 use std::borrow::Cow;
 
 use anyhow::{Context as _, Result};
-use gpui::App;
+use gpui::{App, Font, font};
 
 /// The family names inside the font files, as `font.family.sans` and `font.family.mono` list them.
 pub const SANS_FONT_FAMILY: &str = "Figtree";
@@ -28,6 +28,33 @@ const EMBEDDED_FONT_FILES: [&[u8]; 12] = [
     include_bytes!("../../../../design/fonts/desktop/SourceCodePro-Bold.ttf"),
 ];
 
+/// The colour emoji font, tried first for a character the embedded fonts lack. GPUI's Linux text
+/// system would otherwise try monochrome symbol fonts first (`DejaVu Sans`, `Noto Sans Symbols`);
+/// a fallback chain may name an emoji font since ADR-0059 (`vendor/gpui-pre-wgpu`). macOS and
+/// Windows find their colour emoji font by themselves.
+#[cfg(target_os = "linux")]
+const EMOJI_FONT_FAMILY: &str = "Noto Color Emoji";
+
+/// Figtree, with the colour emoji font as its fallback. Set on the main window's root, so every text
+/// below it inherits the fallback, the composer's input included.
+#[cfg(target_os = "linux")]
+#[must_use]
+pub fn interface_font() -> Font {
+    Font {
+        fallbacks: Some(gpui::FontFallbacks::from_fonts(vec![
+            EMOJI_FONT_FAMILY.to_owned(),
+        ])),
+        ..font(SANS_FONT_FAMILY)
+    }
+}
+
+/// Figtree.
+#[cfg(not(target_os = "linux"))]
+#[must_use]
+pub fn interface_font() -> Font {
+    font(SANS_FONT_FAMILY)
+}
+
 /// # Errors
 /// When the text system rejects a font file.
 pub fn register_embedded_fonts(cx: &App) -> Result<()> {
@@ -35,6 +62,35 @@ pub fn register_embedded_fonts(cx: &App) -> Result<()> {
         .add_fonts(EMBEDDED_FONT_FILES.into_iter().map(Cow::Borrowed).collect())
         .context("cannot register the embedded fonts")
 }
+
+/// GPUI's Linux text system reads the system fonts on a background thread (ADR-0059), so the
+/// first frames draw with the embedded fonts alone, leaving out what they lack (an emoji). Once
+/// the system fonts are in, GPUI's font lookups and line layouts are dropped and the windows drawn
+/// again.
+#[cfg(target_os = "linux")]
+pub fn redraw_with_system_fonts_once_read(cx: &App) {
+    let text_system = cx.text_system().clone();
+    // Waits for the system fonts: off the main thread.
+    let system_fonts_read = cx
+        .background_executor()
+        .spawn(async move { text_system.prewarm_fonts(&[interface_font()]) });
+    cx.spawn(async move |cx| {
+        system_fonts_read.await;
+        cx.update(|cx| {
+            // Adds no font, but GPUI drops what it shaped before.
+            if let Err(error) = cx.text_system().add_fonts(Vec::new()) {
+                tracing::warn!("cannot redraw with the system fonts: {error:#}");
+            }
+            cx.refresh_windows();
+        });
+    })
+    .detach();
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+#[path = "fonts_tests.rs"]
+mod system_font_tests;
 
 #[cfg(test)]
 mod tests {

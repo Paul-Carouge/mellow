@@ -16,7 +16,9 @@ use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, rems, rgba};
 
 use crate::preferences::{ThemeChoice, preferences};
 pub use assets::EmbeddedAssets;
-pub use fonts::{MONOSPACE_FONT_FAMILY, SANS_FONT_FAMILY, register_embedded_fonts};
+#[cfg(target_os = "linux")]
+pub use fonts::redraw_with_system_fonts_once_read;
+pub use fonts::{MONOSPACE_FONT_FAMILY, SANS_FONT_FAMILY, interface_font, register_embedded_fonts};
 use tokens::{AnimationDuration, DARK_THEME, Delay, LIGHT_THEME, ThemeTokens};
 
 /// Token lengths are logical pixels at 100 % zoom; GPUI's rem is the window's root font size, so

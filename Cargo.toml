@@ -14,8 +14,8 @@ members = [
     "crates/vesper-encode",
     "xtask",
 ]
-# A patched dependency, not a member: neither linted nor formatted as Mellow code.
-exclude = ["vendor/str0m"]
+# Patched dependencies, not members: neither linted nor formatted as Mellow code.
+exclude = ["vendor/gpui-pre-wgpu", "vendor/str0m"]
 
 [workspace.package]
 version = "0.49.0"
@@ -195,3 +195,8 @@ opt-level = 3
 # Drop the patch once an upstream release fixes both.
 [patch.crates-io]
 str0m = { path = "vendor/str0m" }
+# gpui-pre-wgpu 0.3.11 with the Linux text system reading the system fonts on a background thread
+# (the first window no longer waits for them, 380 to 610 ms with a cold disk cache) and emoji fonts
+# accepted in a font's fallback chain, so emoji draw in colour (ADR-0059). Drop it once upstream
+# does both.
+gpui-pre-wgpu = { path = "vendor/gpui-pre-wgpu" }

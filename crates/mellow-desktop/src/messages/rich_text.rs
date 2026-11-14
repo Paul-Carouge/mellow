@@ -31,7 +31,6 @@ use mellow_protocol::CustomEmoji;
 
 use super::picture_for_box;
 use crate::components::Tooltip;
-use crate::emoji_picker::EMOJI_GLYPH_WEIGHT_VALUE;
 use crate::i18n::Strings;
 use crate::pictures::Animation;
 use crate::theme::tokens::{
@@ -86,8 +85,9 @@ pub(crate) struct RichText {
     pub covered_emoji: Vec<(Range<usize>, Hsla)>,
 }
 
-/// Where the emoji are in each text of a parsed body, found once per body rather than at every
-/// frame. Keyed by the text's address and length in the body, which outlives this map.
+/// Where the emoji are in each text inside a spoiler of a parsed body (they are covered while it
+/// is hidden), found once per body rather than at every frame. Keyed by the text's address and
+/// length in the body, which outlives this map.
 #[derive(Debug, Default)]
 pub(crate) struct EmojiRangesByText {
     ranges_by_text: HashMap<(usize, usize), Vec<Range<usize>>>,
@@ -106,7 +106,7 @@ impl EmojiRangesByText {
         match block {
             BlockNode::Paragraph(children)
             | BlockNode::Heading { children, .. }
-            | BlockNode::Subtext(children) => self.note_inlines(children),
+            | BlockNode::Subtext(children) => self.note_inlines(children, false),
             BlockNode::Quote(blocks) => blocks.iter().for_each(|block| self.note_block(block)),
             BlockNode::List(list) => self.note_list(list),
             BlockNode::CodeBlock { .. } => {}
@@ -115,26 +115,28 @@ impl EmojiRangesByText {
 
     fn note_list(&mut self, list: &MarkdownList) {
         for item in &list.items {
-            self.note_inlines(&item.children);
+            self.note_inlines(&item.children, false);
             item.sublists
                 .iter()
                 .for_each(|sublist| self.note_list(sublist));
         }
     }
 
-    fn note_inlines(&mut self, nodes: &[InlineNode]) {
+    fn note_inlines(&mut self, nodes: &[InlineNode], is_in_spoiler: bool) {
         for node in nodes {
             match node {
                 InlineNode::Text(text) | InlineNode::Match(text) | InlineNode::Code(text) => {
-                    self.ranges_by_text
-                        .insert(Self::key(text), emoji_grapheme_ranges(text));
+                    if is_in_spoiler {
+                        self.ranges_by_text
+                            .insert(Self::key(text), emoji_grapheme_ranges(text));
+                    }
                 }
+                InlineNode::Spoiler { children, .. } => self.note_inlines(children, true),
                 InlineNode::Strong(children)
                 | InlineNode::Emphasis(children)
                 | InlineNode::Underline(children)
                 | InlineNode::Strikethrough(children)
-                | InlineNode::Spoiler { children, .. }
-                | InlineNode::Link { children, .. } => self.note_inlines(children),
+                | InlineNode::Link { children, .. } => self.note_inlines(children, is_in_spoiler),
                 InlineNode::Mention { .. }
                 | InlineNode::RoleMention(_)
                 | InlineNode::EveryoneMention(_)
@@ -266,8 +268,8 @@ impl RichText {
         self.push_run(text, text, style, emoji)
     }
 
-    /// `text` drawn, `spoken` read by a screen reader unless inside a hidden spoiler. Its emoji
-    /// are drawn at the weight that takes them from the colour emoji font.
+    /// `text` drawn, `spoken` read by a screen reader unless inside a hidden spoiler. Inside one,
+    /// its emoji are covered with the bar: a colour glyph ignores the text's colour.
     fn push_run(
         &mut self,
         text: &str,
@@ -284,30 +286,22 @@ impl RichText {
         if range.is_empty() {
             return range;
         }
-        let emoji_style = InlineStyle {
-            weight: Some(EMOJI_GLYPH_WEIGHT_VALUE),
-            ..style
-        };
-        let searched;
-        let emoji_ranges = if let Some(known) = known_emoji {
-            known
-        } else {
-            searched = emoji_grapheme_ranges(text);
-            searched.as_slice()
-        };
-        let mut drawn_up_to = start;
-        for emoji in emoji_ranges {
-            let emoji = start + emoji.start..start + emoji.end;
-            self.push_highlight(drawn_up_to..emoji.start, style);
-            drawn_up_to = emoji.end;
-            if style.is_hidden
-                && let Some(bar) = style.background
-            {
-                self.covered_emoji.push((emoji.clone(), bar));
+        if style.is_hidden
+            && let Some(bar) = style.background
+        {
+            let searched;
+            let emoji_ranges = if let Some(known) = known_emoji {
+                known
+            } else {
+                searched = emoji_grapheme_ranges(text);
+                searched.as_slice()
+            };
+            for emoji in emoji_ranges {
+                self.covered_emoji
+                    .push((start + emoji.start..start + emoji.end, bar));
             }
-            self.push_highlight(emoji, emoji_style);
         }
-        self.push_highlight(drawn_up_to..range.end, style);
+        self.push_highlight(range.clone(), style);
         if style.is_monospace {
             self.monospace.push(range.clone());
         }
@@ -923,11 +917,11 @@ mod tests {
     }
 
     #[test]
-    fn a_bodys_emoji_found_beforehand_are_the_ones_drawn() {
-        let blocks = vec![BlockNode::Paragraph(vec![
-            text("Salut 😐 "),
-            InlineNode::Strong(vec![text("❤️")]),
-        ])];
+    fn a_bodys_emoji_found_beforehand_are_the_ones_covered() {
+        let blocks = vec![BlockNode::Paragraph(vec![InlineNode::Spoiler {
+            id: 1,
+            children: vec![text("Salut 😐 "), InlineNode::Strong(vec![text("❤️")])],
+        }])];
         let found = EmojiRangesByText::of_blocks(&blocks);
         let BlockNode::Paragraph(children) = &blocks[0] else {
             unreachable!("a paragraph was built above");
@@ -942,7 +936,7 @@ mod tests {
         );
         let searched = RichText::from_inlines(children, context(&revealed));
         assert_eq!(with_found, searched);
-        assert_eq!(with_found.highlights.len(), 2, "😐 and ❤️");
+        assert_eq!(with_found.covered_emoji.len(), 2, "😐 and ❤️");
     }
 
     #[test]
@@ -970,13 +964,12 @@ mod tests {
     }
 
     #[test]
-    fn emoji_are_drawn_at_the_colour_emoji_weight_even_inside_bold() {
+    fn emoji_take_the_style_of_their_text() {
         let revealed = HashSet::new();
         let rich = RichText::from_inlines(
             &[text("Salut 😐 "), InlineNode::Strong(vec![text("❤️ fort")])],
             context(&revealed),
         );
-        let emoji_weight = Some(FontWeight(f32::from(EMOJI_GLYPH_WEIGHT_VALUE)));
         let runs: Vec<(&str, Option<FontWeight>)> = rich
             .highlights
             .iter()
@@ -984,11 +977,7 @@ mod tests {
             .collect();
         assert_eq!(
             runs,
-            [
-                ("😐", emoji_weight),
-                ("❤️", emoji_weight),
-                (" fort", Some(FontWeight(f32::from(FONT_WEIGHT_BOLD)))),
-            ]
+            [("❤️ fort", Some(FontWeight(f32::from(FONT_WEIGHT_BOLD))))]
         );
     }
 
