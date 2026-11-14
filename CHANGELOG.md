@@ -4,6 +4,29 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.50.0] - 2026-11-14
+The desktop app now looks and behaves like the web client, starts faster and keeps running in the background on Linux and Windows; screen sharing leaves Mellow's own sound out and can run at 60 fps; the server reads twice as fast, uses less memory and delivers large READYs. No database migration; the protocol is unchanged.
+
+**Before updating a server run by systemd:** add `Environment=MALLOC_MMAP_THRESHOLD_=1048576 MALLOC_TRIM_THRESHOLD_=2097152` to the service (see the README); the Docker image sets it. Without it the server works as before but keeps more memory after sign-ins.
+
+### Added
+- Desktop: the rail's "+" creates a server, joins one with an invite, or connects to another instance; the server header opens the server menu (invite people, create a channel or category); channel and category menus move, rename and delete.
+- Desktop: the sign-in card shows which instance you sign in to, with a "Change" button; Melli, the mascot, on the Home button, the sign-in card and empty states.
+- Desktop: server and channel icons with a crop dialog, and deleting a server or channel by typing its name.
+- Desktop screen sharing at 60 fps when the screen moves that fast, on Linux with a hardware H.264 encoder (ADR-0058).
+
+### Changed
+- Desktop: settings, messages, composer, menus, tooltips and the chat header follow the web's design: every font weight renders (all text was drawn light), switches and choice groups show their labels, desktop row sizes, colour emoji everywhere, device lists as menus, a profile preview.
+- Desktop starts faster: system fonts load in the background (first frame of a cold start 387 ms → 45 ms on Linux, ADR-0059).
+- Server: SQLite reads about twice as fast, JSON answers gzipped where they hold no secret, 92 KB instead of 213 KB per idle connection, memory given back after sign-ins, a 26 % smaller binary.
+
+### Fixed
+- Desktop on Linux and Windows quit when its window closed instead of staying in the background (ADR-0056).
+- Screen sharing on Linux sent the call's voices to viewers once an update had replaced the app's binary; a window's sound is now found by its process, also for Firefox and Chromium.
+- Voices and sounds stuttered under a long PipeWire period (34 % silence at 2048 frames, now none).
+- A server or member list whose READY passed 256 KiB could not connect (invalid_session in a loop); large READYs now arrive, within a memory budget per process and per account.
+- Desktop: Tab moved nowhere on the sign-in screen; menu clicks reached the row underneath; tooltips stayed over what a click had opened; a hidden spoiler showed its emoji; invite codes with spaces were refused.
+
 ## [0.49.0] - 2026-11-13
 The first release of the native desktop app, built with GPUI at parity with the web client (ADR-0051): a signed macOS app and Linux packages that update themselves. No database migration; the protocol is unchanged for the web client. The desktop app is a preview: it has not yet been tried on every system, so report what does not work.
 
