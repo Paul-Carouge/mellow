@@ -159,10 +159,53 @@ impl Session {
         );
     }
 
+    /// Deletes a channel or a category; it leaves the state as soon as the instance agrees, so
+    /// focus can move to what remains. `on_done` gets the failure in words.
+    pub fn delete_channel(
+        &mut self,
+        guild_id: Snowflake,
+        channel_id: Snowflake,
+        failure_summary: String,
+        cx: &mut Context<Self>,
+        on_done: impl FnOnce(Result<(), String>, &mut App) + 'static,
+    ) {
+        let Some(rest) = self.rest_client().cloned() else {
+            cx.defer(move |cx| on_done(Err(failure_summary), cx));
+            return;
+        };
+        self.run_request(
+            cx,
+            async move { rest.delete_channel(channel_id).await },
+            move |session, answer, cx| match answer {
+                Ok(()) => {
+                    let change = session.state.apply_event(
+                        GatewayEvent::ChannelDelete {
+                            guild_id,
+                            id: channel_id,
+                        },
+                        now_unix_milliseconds(),
+                    );
+                    cx.emit(StateChanged(vec![change]));
+                    cx.notify();
+                    cx.defer(move |cx| on_done(Ok(()), cx));
+                }
+                Err(error) => {
+                    let message = describe_error(&error, &failure_summary, strings(cx));
+                    session.report_request_error(&error, "delete channel", cx);
+                    cx.defer(move |cx| on_done(Err(message), cx));
+                }
+            },
+        );
+    }
+
     /// Signs out to sign in to another instance ("Connect to another instance" in the rail's
     /// "+"): one session at a time is kept, so the current one ends first. A failure shows in
     /// `sign_out_error`, as for "Sign out".
     pub fn sign_out_for_another_instance(&mut self, cx: &mut Context<Self>) {
+        // Nothing to sign out of: no later sign-out may inherit the choice.
+        if self.connection.is_none() || self.is_signing_out {
+            return;
+        }
         self.after_sign_out = AfterSignOut::AnotherInstance;
         self.sign_out(cx);
     }

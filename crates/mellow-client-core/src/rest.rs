@@ -374,19 +374,14 @@ impl RestClient {
 
     /// # Errors
     /// `Api` with `InvalidInvite` for unknown, expired or used-up codes.
-    pub async fn join_with_invite(&self, code: &str) -> Result<Guild, ClientError> {
-        // The code becomes a path segment: reject anything that is not a plain code.
-        if code.is_empty()
-            || !code
-                .bytes()
-                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
-        {
+    pub async fn join_with_invite(&self, typed_code: &str) -> Result<Guild, ClientError> {
+        let Some(code) = invite_code_path_segment(typed_code) else {
             return Err(ClientError::Api {
                 status: StatusCode::NOT_FOUND.as_u16(),
                 code: mellow_protocol::ApiErrorCode::InvalidInvite,
                 message: "this invite is unknown, expired or used up".into(),
             });
-        }
+        };
         Self::send_and_decode_json(self.request(
             Method::POST,
             &format!("api/v1/invites/{code}"),
@@ -802,6 +797,18 @@ fn percent_encode(text: &str) -> String {
     encoded
 }
 
+/// A typed invite code as its path segment: spaces dropped (the instance reads `ae8c 78a9` as
+/// `AE8C-78A9`), dashes kept, as the web's `joinWithInvite`. `None` unless what is left is a plain
+/// code, since it becomes a path segment.
+fn invite_code_path_segment(typed_code: &str) -> Option<String> {
+    let code: String = typed_code.chars().filter(|c| !c.is_whitespace()).collect();
+    let is_plain = !code.is_empty()
+        && code
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-');
+    is_plain.then_some(code)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -814,5 +821,20 @@ mod tests {
         let printed = format!("{client:?}");
         assert!(!printed.contains("mlw_secret"), "{printed}");
         assert!(printed.contains("<redacted>"));
+    }
+
+    #[test]
+    fn an_invite_code_loses_its_spaces_and_must_be_a_plain_code() {
+        // Ported from `api.test.ts`: the instance reads `ae8c 78a9` as `AE8C-78A9`.
+        assert_eq!(
+            invite_code_path_segment(" ae8c 78a9-k2qf ").as_deref(),
+            Some("ae8c78a9-k2qf")
+        );
+        assert_eq!(
+            invite_code_path_segment("AE8C 78A9 K2QF").as_deref(),
+            Some("AE8C78A9K2QF")
+        );
+        assert_eq!(invite_code_path_segment("ab/../x"), None);
+        assert_eq!(invite_code_path_segment("  "), None);
     }
 }

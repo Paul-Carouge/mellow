@@ -321,8 +321,9 @@ impl DuskShell {
             .on_click(cx.listener(move |shell, _, window, cx| {
                 shell.toggle_server_header_menu(guild_id, window, cx);
             }))
+            // Enter and Space reach it as a click; Down opens the menu too, as a menu button.
             .on_key_down(cx.listener(move |shell, event: &KeyDownEvent, window, cx| {
-                if matches!(event.keystroke.key.as_str(), "enter" | "space" | "down") {
+                if event.keystroke.key == "down" && !shell.is_server_header_menu_open() {
                     cx.stop_propagation();
                     shell.toggle_server_header_menu(guild_id, window, cx);
                 }

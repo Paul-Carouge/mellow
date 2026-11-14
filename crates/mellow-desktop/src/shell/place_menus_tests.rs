@@ -253,3 +253,44 @@ fn a_plain_member_gets_no_settings_in_the_menus(cx: &mut TestAppContext) {
         "{more_options:?}"
     );
 }
+
+#[gpui::test]
+fn choosing_a_menu_item_over_a_category_does_not_fold_it(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_place(Some(GUILD_RUST), None, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    // Rust Lyon lists "announcements", then the Talk category's header.
+    let talk = shell
+        .read_with(cx, |shell, _| {
+            shell.regions.channel_list.scroll.bounds_for_item(1)
+        })
+        .expect("the Talk header is laid out");
+    let left = f32::from(talk.left()) + 10.0;
+    let top = f32::from(talk.top());
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            let origin = MenuOrigin::Point {
+                x: left,
+                y: top - 4.0,
+            };
+            shell.open_place_menu(
+                PlaceMenuTarget::Server(GUILD_RUST),
+                origin,
+                None,
+                window,
+                cx,
+            );
+        });
+    });
+    cx.run_until_parked();
+    // The menu's first item lies over the header: the click is the item's alone.
+    cx.simulate_click(talk.center(), gpui::Modifiers::default());
+    cx.run_until_parked();
+    assert!(shell.read_with(cx, |shell, _| {
+        !shell.collapsed_category_ids.contains(&RUST_TALK)
+    }));
+}

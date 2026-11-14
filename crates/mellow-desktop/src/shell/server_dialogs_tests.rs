@@ -1,6 +1,7 @@
 //! The rail's "+", the server header's menu and the dialogs of `server_dialogs`, headless.
 
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{Entity, InputEvent as _, KeyUpEvent, Keystroke, TestAppContext, VisualTestContext};
+use mellow_protocol::GatewayEvent;
 
 use super::*;
 use crate::components::MenuEntry;
@@ -9,6 +10,16 @@ use crate::shell::place_menus::PlaceMenuTarget;
 use crate::shell_fixtures::{
     GUILD_RUST, RUST_GENERAL, RUST_TALK, open_shell, sample_state, sample_state_administering_rust,
 };
+
+/// A full key press: GPUI turns Enter and Space on a focused control into a click on the release.
+fn press(cx: &mut VisualTestContext, key: &'static str) {
+    cx.simulate_keystrokes(key);
+    let keystroke = Keystroke::parse(key).expect("a valid keystroke in a test");
+    cx.update(|window, cx| {
+        window.dispatch_event(KeyUpEvent { keystroke }.to_platform_input(), cx);
+    });
+    cx.run_until_parked();
+}
 
 fn labels_of(entries: Vec<MenuEntry>) -> Vec<String> {
     entries
@@ -42,7 +53,7 @@ fn shown_kind(shell: &Entity<DuskShell>, cx: &mut VisualTestContext) -> Option<&
             .map(|shown| match shown.kind {
                 OpenDialog::AddServer(_) => "add server",
                 OpenDialog::AnotherInstance => "another instance",
-                OpenDialog::InvitePeople => "invite people",
+                OpenDialog::InvitePeople { .. } => "invite people",
                 OpenDialog::CreateChannel { .. } => "create channel",
                 OpenDialog::DeleteChannel(_) => "delete channel",
                 OpenDialog::MoveToCategory { .. } => "move to category",
@@ -184,7 +195,7 @@ fn the_rails_plus_offers_creating_joining_and_another_instance(cx: &mut TestAppC
     cx.run_until_parked();
     assert!(!shell.read_with(cx, |shell, _| shell.is_add_server_menu_open()));
     assert_eq!(
-        connect_another_instance_label(Strings::new(Language::French)),
+        crate::strings_pending_i18n::FRENCH.connect_another_instance,
         "Se connecter à une autre instance"
     );
 }
@@ -281,4 +292,62 @@ fn a_refused_move_says_why_under_the_header_and_lets_the_next_one_start(cx: &mut
         assert!(shell.server_dialogs.reorder_error.is_some());
         assert!(!shell.server_dialogs.is_reordering);
     });
+}
+
+#[gpui::test]
+fn change_limits_opens_from_the_keyboard(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state_administering_rust(), 1280.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_invite_people(GUILD_RUST, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    let body = shell.read_with(cx, |shell, _| match &shell.server_dialogs.shown {
+        Some(ShownDialog {
+            kind: OpenDialog::InvitePeople { body, .. },
+            ..
+        }) => body.clone(),
+        _ => panic!("the invite dialog shows"),
+    });
+    cx.update(|window, cx| {
+        let disclosure = body.read(cx).disclosure_focus.clone();
+        window.focus(&disclosure, cx);
+    });
+    cx.run_until_parked();
+    press(cx, "enter");
+    assert!(body.read_with(cx, |body, _| body.is_limits_panel_open));
+    press(cx, "space");
+    assert!(!body.read_with(cx, |body, _| body.is_limits_panel_open));
+}
+
+#[gpui::test]
+fn moving_a_channel_gone_meanwhile_does_not_leave_the_dialog_busy(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state_administering_rust(), 1280.0);
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_move_to_category(RUST_GENERAL, window, cx);
+        });
+    });
+    cx.run_until_parked();
+    let dialog = shown_dialog(&shell, cx);
+    // Deleted elsewhere while the dialog is open, before its action runs.
+    shell.update(cx, |shell, cx| {
+        shell.session.update(cx, |session, _| {
+            session.state_mut().apply_event(
+                GatewayEvent::ChannelDelete {
+                    guild_id: GUILD_RUST,
+                    id: RUST_GENERAL,
+                },
+                0,
+            );
+        });
+    });
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| shell.submit_server_dialog(window, cx));
+    });
+    cx.run_until_parked();
+    assert!(!dialog.read_with(cx, |dialog, _| dialog.is_busy()));
+    // A dialog about a channel that is gone closes.
+    assert_eq!(shown_kind(&shell, cx), None);
 }
