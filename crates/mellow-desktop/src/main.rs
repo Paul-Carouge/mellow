@@ -21,6 +21,7 @@ fn main() -> ExitCode {
         .nth(1)
         .is_some_and(|argument| argument == "--version")
     {
+        attach_to_the_parent_console();
         // The one line a command-line caller asked for.
         #[allow(clippy::print_stdout)]
         {
@@ -75,3 +76,24 @@ fn main() -> ExitCode {
     network_runtime.shutdown_timeout(LOGOUT_ON_EXIT_TIMEOUT);
     ExitCode::SUCCESS
 }
+
+/// A Windows app without a console prints nowhere: when started from a terminal without its
+/// output redirected, write to that terminal instead.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn attach_to_the_parent_console() {
+    use windows::Win32::System::Console::{
+        ATTACH_PARENT_PROCESS, AttachConsole, GetStdHandle, STD_OUTPUT_HANDLE,
+    };
+    // SAFETY: both calls take plain values and only read or change this process's console.
+    unsafe {
+        // A redirected output (a file, a pipe) is kept; null or invalid means there is none.
+        if GetStdHandle(STD_OUTPUT_HANDLE).is_err() {
+            // Started from Explorer: no terminal to attach to, and nothing is printed, as before.
+            let _ = AttachConsole(ATTACH_PARENT_PROCESS);
+        }
+    }
+}
+
+#[cfg(not(windows))]
+fn attach_to_the_parent_console() {}

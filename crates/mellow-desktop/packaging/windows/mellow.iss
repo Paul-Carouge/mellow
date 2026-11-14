@@ -55,15 +55,17 @@ WizardStyle=modern dynamic hidebevels
 WizardBackColor={#BackColorLight}
 WizardBackColorDynamicDark={#BackColorDark}
 WizardImageFile={#WizardImages}
-WizardImageFileDynamicDark={#WizardImages}
 WizardSmallImageFile={#WizardSmallImages}
-WizardSmallImageFileDynamicDark={#WizardSmallImages}
 WizardImageStretch=yes
 Compression=lzma2/ultra64
 SolidCompression=yes
 OutputDir=output
 OutputBaseFilename={#OutputBaseName}
 SetupLogging=yes
+; Inno Setup's RedirectionGuard shields an elevated installer from planted junctions. This one
+; never runs elevated, and the mitigation would pass to the Mellow it opens, breaking the user's
+; own junctions and links there (ADR-0060).
+RedirectionGuard=no
 ; Code signing comes later (ADR-0060): define a sign tool here (SignTool=mellow $f) and pass
 ; /Smellow=... to ISCC; it then signs this installer and its uninstaller. mellow.exe must be
 ; signed before it is packed.
@@ -110,8 +112,14 @@ begin
       Result := True;
 end;
 
+{ Kernel32's BOOL is four bytes: read as an Integer, not a one-byte Boolean. }
+function SetEnvironmentVariable(Name, Value: String): Integer;
+  external 'SetEnvironmentVariableW@kernel32.dll stdcall';
+
 { Waits up to GraceSeconds for the Mellow installed here to exit, then stops it. Only this
-  copy, found by its path: another account's Mellow or a development build keeps running. }
+  copy, found by its path: another account's Mellow or a development build keeps running. The
+  path reaches PowerShell through the environment, never inside the script, so no character of
+  it (a quote in a user name) can change the command. }
 procedure StopInstalledMellow(GraceSeconds: Integer);
 var
   Executable, Script: String;
@@ -120,9 +128,13 @@ begin
   Executable := ExpandConstant('{app}\mellow.exe');
   if not FileExists(Executable) then
     Exit;
-  StringChangeEx(Executable, '''', '''''', True);
+  if SetEnvironmentVariable('MELLOW_EXE', Executable) = 0 then
+  begin
+    Log('Could not pass the installed path to PowerShell');
+    Exit;
+  end;
   Script := '$running = @(Get-Process -Name mellow -ErrorAction SilentlyContinue | ' +
-    'Where-Object { $_.Path -eq ''' + Executable + ''' });';
+    'Where-Object { $_.Path -eq $env:MELLOW_EXE });';
   if GraceSeconds > 0 then
     Script := Script + ' $running | Wait-Process -Timeout ' + IntToStr(GraceSeconds) +
       ' -ErrorAction SilentlyContinue;';
@@ -155,8 +167,9 @@ begin
   Result := (not WizardSilent) or HasSwitch('/LAUNCH');
 end;
 
-function InitializeUninstall: Boolean;
+{ After the uninstaller's confirmation, before any file goes. }
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
 begin
-  StopInstalledMellow(0);
-  Result := True;
+  if CurUninstallStep = usUninstall then
+    StopInstalledMellow(0);
 end;

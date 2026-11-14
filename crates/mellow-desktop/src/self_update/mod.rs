@@ -1,6 +1,6 @@
 //! The desktop app's signed self-update (ADR-0057): a check soon after start and then about once
 //! a day (with jitter, without the user's Mellow token), the package downloaded and its minisign
-//! signature verified by `mellow-update`, unpacked into a private staging directory, and swapped
+//! signature verified by `mellow-update`, unpacked into a staging directory, and swapped
 //! in when the user restarts from the interface or quits the app, never during a voice call. On
 //! Windows the staged installer does the swap once the app has exited (ADR-0060).
 
@@ -45,6 +45,8 @@ pub enum UpdateProblem {
     Translocated,
     /// A system or processor the release has no package for.
     UnsupportedSystem,
+    /// Windows: Mellow runs as administrator, and an elevated app never updates itself.
+    Elevated,
     /// Linux: no FFmpeg the packages are built for.
     NoFfmpeg,
     Network,

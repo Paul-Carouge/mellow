@@ -2366,6 +2366,7 @@ export const fr: Catalogue = {
     updateNotWritable: "Mellow ne peut pas écrire dans le dossier où il est installé, il ne peut donc pas se mettre à jour.",
     updateTranslocated: "macOS a ouvert Mellow depuis une copie temporaire en lecture seule. Déplace Mellow dans ton dossier Applications, ouvre-le depuis là, puis vérifie à nouveau.",
     updateUnsupportedSystem: "Mellow ne peut pas encore se mettre à jour sur ce système. Télécharge les nouvelles versions depuis ses publications sur GitHub.",
+    updateElevated: "Mellow tourne en tant qu’administrateur, il ne se met donc pas à jour. Ouvre-le normalement, puis vérifie à nouveau.",
     updateNoFfmpeg: "Mellow n’a trouvé aucune des versions de FFmpeg pour lesquelles ses paquets sont construits (6 à 9). Installe les bibliothèques FFmpeg de ta distribution, puis vérifie à nouveau.",
     updateNetwork: "Impossible de télécharger la mise à jour. Vérifie ta connexion et réessaie.",
     updateNoPackage: "La nouvelle version n’a pas encore de paquet pour ce système.",

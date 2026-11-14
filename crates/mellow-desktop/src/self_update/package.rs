@@ -97,7 +97,7 @@ pub enum Relaunch {
 /// The device and inode of a file: they change when the installed copy is replaced.
 type FileIdentity = (u64, u64);
 
-/// A package downloaded, verified and unpacked, waiting to be swapped in. Its private staging
+/// A package downloaded, verified and unpacked, waiting to be swapped in. Its staging
 /// directory is removed when it is dropped.
 #[derive(Debug)]
 pub struct StagedUpdate {
@@ -125,6 +125,8 @@ enum StagedKind {
     WindowsInstaller {
         installer: PathBuf,
         executable: PathBuf,
+        /// SHA-256 of the installer whose signature verified, checked again just before it runs.
+        verified_digest: Vec<u8>,
     },
 }
 
@@ -195,7 +197,7 @@ pub fn detect_installation() -> Result<Installation, UpdateProblem> {
     }
     let executable = std::env::current_exe().map_err(|_| UpdateProblem::NotPackaged)?;
     let local_app_data = dirs::data_local_dir().ok_or(UpdateProblem::NotPackaged)?;
-    check_windows_install_location(&executable, &local_app_data)?;
+    check_windows_installation(&executable, &local_app_data, is_process_elevated())?;
     let staging_folder = staging_folder_of_this_copy().ok_or(UpdateProblem::NotWritable)?;
     Ok(Installation::WindowsUserInstall {
         executable,
@@ -303,24 +305,43 @@ pub(super) fn check_linux_install_location(
 }
 
 /// Only the installer's copy in `%LOCALAPPDATA%\Programs\Mellow` updates itself; one elsewhere
-/// was built or copied by hand. The folder must be writable, tested by creating a file in it.
+/// was built or copied by hand. The folder must be writable, tested by creating a file in it. An
+/// elevated Mellow never updates itself: it would start, as administrator, an installer the user's
+/// own unelevated programs can replace in that user's folders (a way around UAC).
 #[cfg(any(windows, test))]
-pub(super) fn check_windows_install_location(
+pub(super) fn check_windows_installation(
     executable: &Path,
     local_app_data: &Path,
+    is_elevated: bool,
 ) -> Result<(), UpdateProblem> {
+    if is_elevated {
+        return Err(UpdateProblem::Elevated);
+    }
     let expected = WINDOWS_INSTALL_FOLDERS
         .iter()
         .fold(local_app_data.to_owned(), |folder, name| folder.join(name))
         .join(WINDOWS_EXECUTABLE_NAME);
-    // Windows compares paths without case, and a shortcut or a terminal may spell them otherwise.
-    let lowercase = |path: &Path| path.to_string_lossy().to_lowercase();
-    if lowercase(executable) != lowercase(&expected) {
+    // Windows compares paths without case, and a shortcut or a terminal may spell them otherwise;
+    // components, not strings, so `/` and `\` separators compare equal.
+    let lowercase_components = |path: &Path| -> Vec<String> {
+        path.components()
+            .map(|component| component.as_os_str().to_string_lossy().to_lowercase())
+            .collect()
+    };
+    if lowercase_components(executable) != lowercase_components(&expected) {
         return Err(UpdateProblem::NotPackaged);
     }
     let folder = executable.parent().ok_or(UpdateProblem::NotPackaged)?;
     tempfile::tempfile_in(folder).map_err(|_| UpdateProblem::NotWritable)?;
     Ok(())
+}
+
+/// Whether this process runs with an administrator's elevated token.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn is_process_elevated() -> bool {
+    // SAFETY: `IsUserAnAdmin` takes no argument and only reads this process's token.
+    unsafe { windows::Win32::UI::Shell::IsUserAnAdmin() }.as_bool()
 }
 
 /// The arguments the staged installer runs with (ADR-0060): silent, no message box or reboot,
@@ -447,7 +468,7 @@ fn problem_of(error: &UpdateError) -> UpdateProblem {
     }
 }
 
-/// Writes the verified `package` to a private staging directory, unpacks it and checks it is
+/// Writes the verified `package` to a staging directory (private to the user on macOS and Linux), unpacks it and checks it is
 /// what `installation` needs: on macOS a bundle signed by the running app's certificate, on Linux
 /// the package's installer and binary, on Windows an executable. Blocking.
 ///
@@ -460,7 +481,9 @@ pub fn stage_package(
     package: &[u8],
 ) -> Result<StagedUpdate, UpdateProblem> {
     // Beside the bundle on macOS, so the swap is a rename on one file system; tempfile makes the
-    // folder readable by its owner only.
+    // folder readable by its owner only on Unix. On Windows it inherits `%LOCALAPPDATA%`'s access
+    // list (the user, SYSTEM and administrators), and the installer is checked again before it
+    // runs.
     let (staging_folder, installed_file) = match installation {
         Installation::MacosBundle { bundle, .. } => (
             bundle
@@ -579,6 +602,7 @@ fn unpack_package(
             Ok(StagedKind::WindowsInstaller {
                 installer,
                 executable: executable.clone(),
+                verified_digest: sha256(package),
             })
         }
     }
@@ -646,8 +670,12 @@ pub fn apply_staged_update(
             executable,
             home,
         } => run_install_script(install_script, executable, home)?,
-        StagedKind::WindowsInstaller { installer, .. } => {
-            start_windows_installer(installer, relaunch)?;
+        StagedKind::WindowsInstaller {
+            installer,
+            verified_digest,
+            ..
+        } => {
+            start_windows_installer(installer, verified_digest, relaunch)?;
             // The installer runs from the staging directory until it is done: the next start
             // removes the directory.
             staged.staging.disable_cleanup(true);
@@ -657,14 +685,52 @@ pub fn apply_staged_update(
     Ok(Relaunch::ThisApp(restart_path))
 }
 
-/// Starts the staged installer on its own: it waits for this process to exit (ADR-0060).
+fn sha256(contents: &[u8]) -> Vec<u8> {
+    aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, contents)
+        .as_ref()
+        .to_vec()
+}
+
+/// Reads the staged installer through `file` and checks it is still the one whose signature
+/// verified: the staging folder is not private on Windows.
+#[cfg(any(windows, test))]
+pub(super) fn check_staged_installer(
+    file: &mut std::fs::File,
+    verified_digest: &[u8],
+) -> Result<(), UpdateProblem> {
+    use std::io::Read as _;
+    let mut contents = Vec::new();
+    file.read_to_end(&mut contents)
+        .map_err(|_| UpdateProblem::BadPackage)?;
+    if sha256(&contents) == verified_digest {
+        Ok(())
+    } else {
+        Err(UpdateProblem::BadPackage)
+    }
+}
+
+/// Starts the staged installer on its own: it waits for this process to exit (ADR-0060). The
+/// file is opened without write or delete sharing, checked through that handle, and kept open
+/// until the installer has started, so it cannot change between the check and the start.
 #[cfg(windows)]
-fn start_windows_installer(installer: &Path, relaunch: bool) -> Result<(), UpdateProblem> {
+fn start_windows_installer(
+    installer: &Path,
+    verified_digest: &[u8],
+    relaunch: bool,
+) -> Result<(), UpdateProblem> {
+    use std::os::windows::fs::OpenOptionsExt as _;
     use std::os::windows::process::CommandExt as _;
     /// No console, and not tied to this process's console or group, which end with it.
     const DETACHED_PROCESS: u32 = 0x0000_0008;
     const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-    Command::new(installer)
+    const FILE_SHARE_READ: u32 = 0x0000_0001;
+    let mut held = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ)
+        .open(installer)
+        .map_err(|_| UpdateProblem::InstallFailed)?;
+    check_staged_installer(&mut held, verified_digest)?;
+    let started = Command::new(installer)
         .args(windows_installer_arguments(relaunch))
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -672,12 +738,19 @@ fn start_windows_installer(installer: &Path, relaunch: bool) -> Result<(), Updat
         .creation_flags(DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP)
         .spawn()
         .map(drop)
-        .map_err(|_| UpdateProblem::InstallFailed)
+        .map_err(|_| UpdateProblem::InstallFailed);
+    // Released only once Windows has opened the installer to run it.
+    drop(held);
+    started
 }
 
 /// Only Windows stages an installer.
 #[cfg(not(windows))]
-fn start_windows_installer(_installer: &Path, _relaunch: bool) -> Result<(), UpdateProblem> {
+fn start_windows_installer(
+    _installer: &Path,
+    _verified_digest: &[u8],
+    _relaunch: bool,
+) -> Result<(), UpdateProblem> {
     Err(UpdateProblem::UnsupportedSystem)
 }
 

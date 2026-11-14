@@ -21,6 +21,9 @@ runtime-shaders = ["gpui_platform/runtime_shaders"]
 
 [dependencies]
 anyhow.workspace = true
+# SHA-256 of a staged Windows update, checked again just before it runs (ADR-0060); already a
+# dependency of mellow-client-core and the voice engine.
+aws-lc-rs.workspace = true
 avif-parse.workspace = true
 # Already in the tree through GPUI (with `clock`): the reader's time zone offset at a message's moment.
 chrono = { version = "0.4.45", default-features = false, features = ["clock"] }
@@ -78,7 +81,7 @@ ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }
 # The notification area icon and the single-instance pipe (ADR-0056): the `windows` version and
 # features GPUI's Windows platform already builds, plus `Win32_System_Pipes`.
 [target.'cfg(windows)'.dependencies]
-windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Win32_Foundation", "Win32_Graphics_Gdi", "Win32_Security", "Win32_Storage_FileSystem", "Win32_System_Console", "Win32_System_IO", "Win32_System_LibraryLoader", "Win32_System_Pipes", "Win32_UI_Shell", "Win32_UI_WindowsAndMessaging"] }
 
 # rav1d's x86-64 assembly builds with nasm (already needed by the server's rav1e); its arm64
 # assembly does not build from the published crate (`src/arm/asm-offsets.h` is left out of the
@@ -96,9 +99,9 @@ objc2 = "0.6.5"
 objc2-app-kit = { version = "0.3.2", default-features = false, features = ["std", "NSApplication", "NSButton", "NSControl", "NSDockTile", "NSImage", "NSMenu", "NSMenuItem", "NSResponder", "NSStatusBar", "NSStatusBarButton", "NSStatusItem", "NSView"] }
 objc2-foundation = { version = "0.3.2", default-features = false, features = ["std", "NSData", "NSGeometry", "NSObject", "NSString"] }
 
-# The Windows icon, version information and manifest (ADR-0060): the version GPUI already builds
-# (with the `windows-manifest` feature), so nothing new is built or audited. It does nothing for
-# other targets.
+# The Windows icon and version information (ADR-0060; GPUI links the manifest): the version GPUI
+# already builds (with the `windows-manifest` feature), so nothing new is built or audited. It
+# does nothing for other targets.
 [build-dependencies]
 embed-resource = "3.0.12"
 
@@ -106,8 +109,6 @@ embed-resource = "3.0.12"
 gpui = { package = "gpui-pre", version = "=0.3.11", features = ["test-support"] }
 # The headless Metal or wgpu renderer, so the gallery can be drawn to a picture (`examples/gallery_picture.rs`).
 gpui_platform = { package = "gpui-pre-platform", version = "=0.3.11", features = ["test-support"] }
-# Authenticator codes for the two-factor test; already built for the server.
-aws-lc-rs.workspace = true
 # Its local test release host, for the self-update tests.
 mellow-update = { workspace = true, features = ["test-release-host"] }
 tempfile.workspace = true

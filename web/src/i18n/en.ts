@@ -2416,6 +2416,7 @@ export const en = {
     updateNotWritable: "Mellow can't write to the folder it's installed in, so it can't update itself.",
     updateTranslocated: "macOS opened Mellow from a temporary read-only copy. Move Mellow to your Applications folder, open it from there, then check again.",
     updateUnsupportedSystem: "Mellow can't update itself on this system yet. Download new versions from its releases on GitHub.",
+    updateElevated: "Mellow is running as administrator, so it won't update itself. Open it normally, then check again.",
     updateNoFfmpeg: "Mellow found none of the FFmpeg versions its packages are built for (6 to 9). Install your distribution's FFmpeg libraries, then check again.",
     updateNetwork: "Couldn't download the update. Check your connection and try again.",
     updateNoPackage: "The new version has no package for this system yet.",

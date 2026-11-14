@@ -10,7 +10,7 @@ use mellow_update::{Release, UpdateClient};
 use semver::Version;
 use tokio::io::{AsyncReadExt as _, AsyncWriteExt as _};
 
-use super::package::{self, Installation, Relaunch};
+use super::package::{self, Installation};
 use super::{UpdateProblem, UpdateStatus, can_restart_to_update, delay_with_jitter};
 
 const TEST_PUBLIC_KEY: &str = include_str!("../../tests/fixtures/self_update/test.pub");
@@ -153,7 +153,7 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
     );
 
     let relaunch = package::apply_staged_update(&mut staged, true).unwrap();
-    assert_eq!(relaunch, Relaunch::ThisApp(executable.clone()));
+    assert_eq!(relaunch, package::Relaunch::ThisApp(executable.clone()));
     assert_eq!(std::fs::read(&executable).unwrap(), NEW_BINARY);
     assert_eq!(
         file_names_in(executable.parent().unwrap()),
@@ -189,7 +189,7 @@ fn a_copy_reinstalled_after_staging_is_not_replaced() {
 
     assert_eq!(
         package::apply_staged_update(&mut staged, true).unwrap(),
-        Relaunch::ThisApp(executable.clone()),
+        package::Relaunch::ThisApp(executable.clone()),
         "the reinstalled copy is what restarts"
     );
     assert_eq!(std::fs::read(&executable).unwrap(), b"manual mellow\n");
@@ -413,7 +413,7 @@ fn only_the_installer_copy_updates_itself_on_windows() {
     std::fs::create_dir_all(&folder).unwrap();
     let executable = folder.join("mellow.exe");
     assert_eq!(
-        package::check_windows_install_location(&executable, local_app_data.path()),
+        package::check_windows_installation(&executable, local_app_data.path(), false),
         Ok(())
     );
     // Windows paths are compared without case (this file system may not find that folder).
@@ -423,7 +423,7 @@ fn only_the_installer_copy_updates_itself_on_windows() {
         .join("MELLOW")
         .join("Mellow.exe");
     assert_ne!(
-        package::check_windows_install_location(&other_case, local_app_data.path()),
+        package::check_windows_installation(&other_case, local_app_data.path(), false),
         Err(UpdateProblem::NotPackaged)
     );
     for elsewhere in [
@@ -432,7 +432,7 @@ fn only_the_installer_copy_updates_itself_on_windows() {
         PathBuf::from("/Program Files/Mellow/mellow.exe"),
     ] {
         assert_eq!(
-            package::check_windows_install_location(&elsewhere, local_app_data.path()),
+            package::check_windows_installation(&elsewhere, local_app_data.path(), false),
             Err(UpdateProblem::NotPackaged),
             "{}",
             elsewhere.display()
@@ -442,9 +442,63 @@ fn only_the_installer_copy_updates_itself_on_windows() {
     let missing = tempfile::tempdir().unwrap();
     let unwritable = missing.path().join("Programs/Mellow/mellow.exe");
     assert_eq!(
-        package::check_windows_install_location(&unwritable, missing.path()),
+        package::check_windows_installation(&unwritable, missing.path(), false),
         Err(UpdateProblem::NotWritable)
     );
+}
+
+#[test]
+fn an_elevated_mellow_never_updates_itself_on_windows() {
+    let local_app_data = tempfile::tempdir().unwrap();
+    let folder = local_app_data.path().join("Programs").join("Mellow");
+    std::fs::create_dir_all(&folder).unwrap();
+    assert_eq!(
+        package::check_windows_installation(
+            &folder.join("mellow.exe"),
+            local_app_data.path(),
+            true
+        ),
+        Err(UpdateProblem::Elevated),
+        "even the installer's own copy"
+    );
+}
+
+#[test]
+fn a_staged_installer_changed_after_its_check_is_refused() {
+    let local_app_data = tempfile::tempdir().unwrap();
+    let installation = Installation::WindowsUserInstall {
+        executable: local_app_data.path().join("Programs/Mellow/mellow.exe"),
+        staging_folder: local_app_data.path().join("mellow/updates"),
+    };
+    let verified = b"MZ verified installer";
+    let staged = package::stage_package(
+        &installation,
+        Version::new(9, 0, 0),
+        "mellow-desktop-9.0.0-x86_64-pc-windows-msvc-setup.exe",
+        verified,
+    )
+    .unwrap();
+    let digest = aws_lc_rs::digest::digest(&aws_lc_rs::digest::SHA256, verified);
+    let installer = std::fs::read_dir(local_app_data.path().join("mellow/updates"))
+        .unwrap()
+        .next()
+        .unwrap()
+        .unwrap()
+        .path()
+        .join("mellow-setup.exe");
+    let mut file = std::fs::File::open(&installer).unwrap();
+    assert_eq!(
+        package::check_staged_installer(&mut file, digest.as_ref()),
+        Ok(())
+    );
+    std::fs::write(&installer, b"MZ another program").unwrap();
+    let mut file = std::fs::File::open(&installer).unwrap();
+    assert_eq!(
+        package::check_staged_installer(&mut file, digest.as_ref()),
+        Err(UpdateProblem::BadPackage)
+    );
+    drop(file);
+    drop(staged);
 }
 
 #[test]

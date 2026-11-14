@@ -336,6 +336,16 @@ jobs:
       # asset digest), so a changed download fails instead of building the installer.
       INNO_SETUP_URL: https://github.com/jrsoftware/issrc/releases/download/is-6_7_4/innosetup-6.7.4.exe
       INNO_SETUP_SHA256: a549929319f9120716677c685535ca4671e4b937b5fdc87e2585f32d8eb30e8c
+      # The assemblers, from upstream and pinned by digest like Inno Setup: nasm assembles rav1d
+      # and aws-lc, yasm libvpx.
+      NASM_URL: https://www.nasm.us/pub/nasm/releasebuilds/3.02/win64/nasm-3.02-win64.zip
+      NASM_SHA256: 161d0bfaff53c2f9e9f3e69fd0672323ebabafd1268976a5cec11be92a19aee7
+      YASM_URL: https://github.com/yasm/yasm/releases/download/v1.3.0/yasm-1.3.0-win64.exe
+      YASM_SHA256: d160b1d97266f3f28a71b4420a0ad2cd088a7977c2dd3b25af155652d8d8d91f
+      # MSYS2's packages by exact version; pacman checks their MSYS2 signatures.
+      MSYS2_PACKAGES: >-
+        https://repo.msys2.org/msys/x86_64/make-4.4.1-3-x86_64.pkg.tar.zst
+        https://repo.msys2.org/msys/x86_64/diffutils-3.12-1-x86_64.pkg.tar.zst
       # Inno Setup's `AppId` in packaging/windows/mellow.iss.
       UNINSTALL_KEY: HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\{CAD4F275-B047-40C0-A309-245EBA2DE460}_is1
     steps:
@@ -346,14 +356,29 @@ jobs:
       - name: The tag is a released version of main
         shell: bash
         run: .github/release-version.sh
-      # As ci.yml's Windows job: libvpx is built by MSBuild driven by MSYS2's sh and make and
-      # assembled by yasm; nasm assembles rav1d and aws-lc; cmake (on the runner) builds libopus.
+      # As ci.yml's Windows job, pinned: libvpx is built by MSBuild driven by MSYS2's sh and make
+      # and assembled by yasm; nasm assembles rav1d and aws-lc; cmake (on the runner) builds libopus.
       - name: Install the C build tools
         shell: pwsh
         run: |
-          choco install --yes --no-progress nasm yasm
-          C:\msys64\usr\bin\pacman.exe --sync --noconfirm --needed make diffutils perl
-          "C:\Program Files\NASM" | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          $tools = Join-Path $env:RUNNER_TEMP 'assemblers'
+          New-Item -ItemType Directory $tools | Out-Null
+          function Get-Pinned([string] $Url, [string] $Digest, [string] $File) {
+            Invoke-WebRequest -Uri $Url -OutFile $File
+            $actual = (Get-FileHash -Algorithm SHA256 $File).Hash
+            if ($actual -ne $Digest) { throw "$Url has digest $actual" }
+          }
+          $nasmZip = Join-Path $env:RUNNER_TEMP 'nasm.zip'
+          Get-Pinned $env:NASM_URL $env:NASM_SHA256 $nasmZip
+          Expand-Archive $nasmZip -DestinationPath $env:RUNNER_TEMP
+          Copy-Item (Join-Path $env:RUNNER_TEMP 'nasm-3.02\nasm.exe') $tools
+          Get-Pinned $env:YASM_URL $env:YASM_SHA256 (Join-Path $tools 'yasm.exe')
+          $tools | Out-File -FilePath $env:GITHUB_PATH -Append -Encoding utf8
+          C:\msys64\usr\bin\pacman.exe --upgrade --noconfirm --needed $env:MSYS2_PACKAGES.Split(' ')
+          if ($LASTEXITCODE -ne 0) { throw "pacman exited with $LASTEXITCODE" }
+          # Part of the runner's MSYS2 base: installed only if missing, so nothing moves under it.
+          C:\msys64\usr\bin\pacman.exe --sync --noconfirm --needed perl
+          if ($LASTEXITCODE -ne 0) { throw "pacman exited with $LASTEXITCODE" }
       - name: Build
         shell: pwsh
         run: |
@@ -391,6 +416,7 @@ jobs:
         shell: pwsh
         run: |
           cargo xtask windows-package --binary target\dist\mellow.exe --output installer
+          if ($LASTEXITCODE -ne 0) { throw "cargo xtask exited with $LASTEXITCODE" }
           & $env:ISCC /Qp installer\mellow.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC exited with $LASTEXITCODE" }
           New-Item -ItemType Directory dist | Out-Null
@@ -416,7 +442,8 @@ jobs:
             if ($displayVersion -ne $env:MELLOW_VERSION) { throw "Installed apps lists $displayVersion" }
           }
 
-          Invoke-Setup @('/LOG=install.log')
+          $logs = $env:RUNNER_TEMP
+          Invoke-Setup @("/LOG=$logs\install.log")
           Assert-Installed
           $output = Join-Path $env:RUNNER_TEMP 'version.txt'
           $run = Start-Process -FilePath $exe -ArgumentList '--version' -Wait -PassThru -NoNewWindow -RedirectStandardOutput $output
@@ -427,16 +454,17 @@ jobs:
           # the installer stops it and installs over it without a question.
           Copy-Item "$env:SystemRoot\System32\PING.EXE" $exe -Force
           $running = Start-Process -FilePath $exe -ArgumentList '-n', '600', '127.0.0.1' -WindowStyle Hidden -PassThru
-          Invoke-Setup @('/LOG=reinstall.log')
+          Invoke-Setup @("/LOG=$logs\reinstall.log")
           if (-not $running.HasExited) { throw 'the running copy was not stopped' }
           Assert-Installed
 
           # An update: the installer waits for the app that started it to quit by itself.
           Copy-Item "$env:SystemRoot\System32\PING.EXE" $exe -Force
-          $quitting = Start-Process -FilePath $exe -ArgumentList '-n', '4', '127.0.0.1' -WindowStyle Hidden -PassThru
+          # About 19 seconds: well past the installer's start, so its wait is what is tested.
+          $quitting = Start-Process -FilePath $exe -ArgumentList '-n', '20', '127.0.0.1' -WindowStyle Hidden -PassThru
           # Holding the handle keeps the exit code readable after the process ends.
           $null = $quitting.Handle
-          Invoke-Setup @('/UPDATE', '/LOG=update.log')
+          Invoke-Setup @('/UPDATE', "/LOG=$logs\update.log")
           if (-not $quitting.HasExited -or $quitting.ExitCode -ne 0) { throw 'the quitting copy was stopped instead of awaited' }
           Assert-Installed
 
@@ -454,7 +482,7 @@ jobs:
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-installer-logs
-          path: "*.log"
+          path: ${{ runner.temp }}/*.log
           retention-days: 7
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:

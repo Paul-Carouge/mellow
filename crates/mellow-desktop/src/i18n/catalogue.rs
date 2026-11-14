@@ -14955,6 +14955,13 @@ impl DesktopStrings {
         }
     }
 
+    pub fn update_elevated(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow is running as administrator, so it won't update itself. Open it normally, then check again.",
+            Language::French => "Mellow tourne en tant qu’administrateur, il ne se met donc pas à jour. Ouvre-le normalement, puis vérifie à nouveau.",
+        }
+    }
+
     pub fn update_no_ffmpeg(self) -> &'static str {
         match self.language {
             Language::English => "Mellow found none of the FFmpeg versions its packages are built for (6 to 9). Install your distribution's FFmpeg libraries, then check again.",
