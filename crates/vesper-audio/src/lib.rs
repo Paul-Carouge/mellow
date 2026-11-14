@@ -229,6 +229,10 @@ pub enum Source {
     /// Every playback stream of this application (`application.name`, or
     /// `application.process.binary`), including streams it opens later.
     App(String),
+    /// Every playback stream of this process and its descendants, by their
+    /// PipeWire client's process (the one a PipeWire-Pulse client declares),
+    /// including streams opened later: a window's application.
+    Process(u32),
 }
 
 impl Source {

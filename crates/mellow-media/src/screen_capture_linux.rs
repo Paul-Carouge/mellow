@@ -101,10 +101,12 @@ fn sound_applications() -> Vec<SoundApplication> {
         .recv_timeout(NODE_LISTING_TIMEOUT)
         .unwrap_or_default();
     drop(watch);
+    // Mellow's own streams are left out by their client's process (`NodeWatch`); its name is
+    // the fallback where process ids differ (Flatpak), " (deleted)" after an update included.
     let own = own_binary_name();
     applications
         .into_iter()
-        .filter(|application| own.as_deref() != Some(application.id.as_str()))
+        .filter(|application| own.as_deref() != Some(without_deleted_mark(&application.id)))
         .collect()
 }
 
@@ -114,17 +116,34 @@ fn own_binary_name() -> Option<String> {
     std::env::current_exe()
         .ok()
         .as_deref()
-        .and_then(Path::file_name)
-        .map(|name| name.to_string_lossy().into_owned())
+        .and_then(executable_file_name)
 }
 
-/// The binary of process `pid`, for a window's application (X11's `_NET_WM_PID`).
-pub(crate) fn binary_of_process(pid: u32) -> Option<String> {
-    std::fs::read_link(format!("/proc/{pid}/exe"))
-        .ok()
-        .as_deref()
-        .and_then(Path::file_name)
-        .map(|name| name.to_string_lossy().into_owned())
+/// Whether `pid` (a window's `_NET_WM_PID`) names one of this user's programs here, whose
+/// sound a window share may take: never a kernel thread (no executable), init or another
+/// account's process. A Flatpak app's window names its pid inside the sandbox (often 2), which
+/// on the host is a kernel thread, the parent of every other one: taken as is, it would bring
+/// in every other app's sound.
+pub(crate) fn is_this_user_s_program(pid: u32) -> bool {
+    use std::os::unix::fs::MetadataExt as _;
+    let process = format!("/proc/{pid}");
+    let is_program = std::fs::read_link(format!("{process}/exe")).is_ok();
+    let owner = std::fs::metadata(&process).map(|metadata| metadata.uid());
+    let own = std::fs::metadata("/proc/self").map(|metadata| metadata.uid());
+    is_program && matches!((owner, own), (Ok(owner), Ok(own)) if owner == own)
+}
+
+/// An executable's file name as PipeWire recorded it when the process connected: Linux adds
+/// " (deleted)" to `/proc/<pid>/exe` once a package update replaced the file.
+fn executable_file_name(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_string_lossy();
+    Some(without_deleted_mark(&name).to_owned())
+}
+
+/// `name` without the " (deleted)" Linux adds to a replaced binary's name, which PipeWire
+/// keeps in the names of a process that connected after the update.
+fn without_deleted_mark(name: &str) -> &str {
+    name.strip_suffix(" (deleted)").unwrap_or(name)
 }
 
 /// Where a share's sound is taken from.
@@ -134,6 +153,8 @@ pub(crate) enum LinuxShareSound {
     WholeSystem,
     /// One application's playback streams, by its PipeWire application key or binary.
     Application(String),
+    /// The playback streams of one process and its children: an X11 window's (`_NET_WM_PID`).
+    Process(u32),
 }
 
 /// A running capture of a share's sound; dropping it stops it.
@@ -159,6 +180,7 @@ pub(crate) fn start_share_sound(
             (Source::Desktop, Some(exclusions), hold)
         }
         LinuxShareSound::Application(application) => (Source::App(application), None, None),
+        LinuxShareSound::Process(pid) => (Source::Process(pid), None, None),
     };
     let options = Options {
         anchor: vesper_audio::monotonic_now(),
@@ -186,11 +208,11 @@ pub(crate) fn start_share_sound(
 }
 
 /// The sound to capture for `sound`, given what the capture knows of its source: whether it is
-/// a whole screen, and the application of a window when the system names it.
+/// a whole screen, and the process of a window when the system names it.
 pub(crate) fn share_sound_source(
     sound: &ShareSound,
     is_whole_screen: bool,
-    window_application: Option<String>,
+    window_process: Option<u32>,
 ) -> (Option<LinuxShareSound>, ShareSoundState) {
     match sound {
         ShareSound::Off => (None, ShareSoundState::Off),
@@ -202,9 +224,9 @@ pub(crate) fn share_sound_source(
             Some(LinuxShareSound::WholeSystem),
             ShareSoundState::Captured,
         ),
-        ShareSound::FromSource => match window_application {
-            Some(application) => (
-                Some(LinuxShareSound::Application(application)),
+        ShareSound::FromSource => match window_process {
+            Some(pid) => (
+                Some(LinuxShareSound::Process(pid)),
                 ShareSoundState::Captured,
             ),
             // The Wayland portal names no application for a window.
@@ -218,10 +240,10 @@ pub(crate) fn share_sound_source(
 pub(crate) fn start_sound_for(
     sound: &ShareSound,
     is_whole_screen: bool,
-    window_application: Option<String>,
+    window_process: Option<u32>,
     share: &ScreenShareContext,
 ) -> (Option<RunningShareSound>, ShareSoundState) {
-    let (source, state) = share_sound_source(sound, is_whole_screen, window_application);
+    let (source, state) = share_sound_source(sound, is_whole_screen, window_process);
     let Some(source) = source else {
         return (None, state);
     };
@@ -252,8 +274,8 @@ mod tests {
             )
         );
         assert_eq!(
-            share_sound_source(&ShareSound::FromSource, false, Some("firefox".into())).0,
-            Some(LinuxShareSound::Application("firefox".into()))
+            share_sound_source(&ShareSound::FromSource, false, Some(4_242)).0,
+            Some(LinuxShareSound::Process(4_242))
         );
         assert_eq!(
             share_sound_source(&ShareSound::Application("vlc".into()), false, None).0,
@@ -266,10 +288,39 @@ mod tests {
     }
 
     #[test]
+    fn a_binary_replaced_by_an_update_keeps_its_name() {
+        assert_eq!(
+            executable_file_name(Path::new("/usr/bin/mellow (deleted)")).as_deref(),
+            Some("mellow")
+        );
+        assert_eq!(
+            executable_file_name(Path::new("/usr/lib/firefox/firefox")).as_deref(),
+            Some("firefox")
+        );
+        assert_eq!(without_deleted_mark("mellow (deleted)"), "mellow");
+    }
+
+    #[test]
+    fn only_this_user_s_programs_give_a_window_its_sound() {
+        use std::os::unix::fs::MetadataExt as _;
+        assert!(is_this_user_s_program(std::process::id()));
+        assert!(!is_this_user_s_program(u32::MAX), "no such process");
+        // Where pid 2 is the kernel's thread daemon (any Linux host), a sandboxed window's pid.
+        if std::fs::read_to_string("/proc/2/comm").is_ok_and(|name| name.trim() == "kthreadd") {
+            assert!(!is_this_user_s_program(2));
+        }
+        let own = std::fs::metadata("/proc/self").unwrap().uid();
+        if std::fs::metadata("/proc/1").is_ok_and(|init| init.uid() != own) {
+            assert!(!is_this_user_s_program(1), "another account's process");
+        }
+    }
+
+    #[test]
     fn the_own_process_binary_is_found() {
         assert!(own_binary_name().is_some());
+        let from_proc = std::fs::read_link("/proc/self/exe").unwrap();
         assert_eq!(
-            binary_of_process(std::process::id()),
+            executable_file_name(&from_proc),
             own_binary_name(),
             "PipeWire names Mellow's streams by this binary"
         );

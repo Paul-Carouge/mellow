@@ -206,14 +206,23 @@ fn run(
     let notify: Rc<dyn Fn()> = Rc::new(notify);
     // The "default" metadata (the default devices) and its listener.
     let metadata = Rc::new(RefCell::new(None));
+    // Never lists ourselves: a recorder recording its own sound would loop.
+    let own = Rc::new(RefCell::new(crate::pw::OwnProcess::new(
+        std::process::id().to_string(),
+    )));
     let _registry_listener = registry
         .add_listener_local()
         .global({
             let (nodes, notify, metadata) = (nodes.clone(), notify.clone(), metadata.clone());
+            let own = own.clone();
             // Weak: the registry owns this closure.
             let registry = registry.downgrade();
             move |global| {
                 let Some(props) = global.props else { return };
+                if global.type_ == ObjectType::Client {
+                    own.borrow_mut().note_client(global.id, props);
+                    return;
+                }
                 if global.type_ == ObjectType::Metadata
                     && props.get("metadata.name") == Some("default")
                     && let Some(registry) = registry.upgrade()
@@ -224,7 +233,7 @@ fn run(
                     }
                     return;
                 }
-                if global.type_ != ObjectType::Node {
+                if global.type_ != ObjectType::Node || own.borrow().owns(props) {
                     return;
                 }
                 let node = classify(&Props {
@@ -244,6 +253,7 @@ fn run(
         .global_remove({
             let (nodes, notify) = (nodes.clone(), notify.clone());
             move |id| {
+                own.borrow_mut().forget_client(id);
                 let removed = nodes.borrow_mut().remove(&id).is_some();
                 if removed {
                     notify();
