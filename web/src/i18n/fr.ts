@@ -2442,6 +2442,8 @@ export const fr: Catalogue = {
     attachmentSaving: (fileName) => `Enregistrement de ${fileName}…`,
     attachmentSaved: (fileName) => `${fileName} est enregistré.`,
     attachmentSaveFailed: (fileName) => `Impossible d’enregistrer ${fileName}. Réessaie, ou choisis un autre dossier.`,
-    closeEnlargedVideo: "Fermer la vidéo",
+    openWithDefaultApp: "Ouvrir avec l’application par défaut",
+    attachmentOpening: (fileName) => `Ouverture de ${fileName}…`,
+    attachmentOpenFailed: (fileName) => `Impossible d’ouvrir ${fileName}. Réessaie, ou télécharge-le.`,
   },
 };

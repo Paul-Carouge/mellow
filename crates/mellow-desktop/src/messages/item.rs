@@ -488,8 +488,13 @@ impl RenderOnce for MessageItem {
                 }
             });
         let attachments = (!content.attachments.is_empty()).then(|| {
-            MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
-                .pending(content.pending.is_some())
+            let attachments =
+                MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
+                    .pending(content.pending.is_some());
+            match content.sent_at_unix_milliseconds {
+                Some(sent_at) => attachments.sent_by(author_name.clone(), sent_at),
+                None => attachments,
+            }
         });
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)

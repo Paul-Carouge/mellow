@@ -24,11 +24,12 @@ mod rich_text;
 pub(crate) mod samples;
 mod time;
 mod video_attachment;
+pub(crate) mod video_player;
 
 use gpui::{App, ImageSource, Window};
 
 pub use attachments::MessageAttachments;
-pub(crate) use attachments::file_size_label;
+pub(crate) use attachments::{PREVIEWABLE_PICTURE_TYPES, file_size_label, picture_box};
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
 pub use code_block::MessageCodeBlock;

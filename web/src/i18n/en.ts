@@ -2524,8 +2524,10 @@ export const en = {
     attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
     attachmentSaved: (fileName: string) => `${fileName} saved.`,
     attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
-    /** The enlarged video's way back to the conversation. */
-    closeEnlargedVideo: "Close the video",
+    /** The media viewer's way to the file outside Mellow: fetched with the session, then handed to the system. */
+    openWithDefaultApp: "Open with the default app",
+    attachmentOpening: (fileName: string) => `Opening ${fileName}…`,
+    attachmentOpenFailed: (fileName: string) => `Couldn't open ${fileName}. Try again, or download it.`,
   },
 };
 

@@ -15478,10 +15478,24 @@ impl DesktopStrings {
         }
     }
 
-    pub fn close_enlarged_video(self) -> &'static str {
+    pub fn open_with_default_app(self) -> &'static str {
         match self.language {
-            Language::English => "Close the video",
-            Language::French => "Fermer la vidéo",
+            Language::English => "Open with the default app",
+            Language::French => "Ouvrir avec l’application par défaut",
+        }
+    }
+
+    pub fn attachment_opening(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Opening {file_name}…"),
+            Language::French => format!("Ouverture de {file_name}…"),
+        }
+    }
+
+    pub fn attachment_open_failed(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Couldn't open {file_name}. Try again, or download it."),
+            Language::French => format!("Impossible d’ouvrir {file_name}. Réessaie, ou télécharge-le."),
         }
     }
 }

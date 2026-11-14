@@ -372,6 +372,13 @@ impl DuskShell {
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
+        // The viewer is drawn by this shell: it goes with its window and its session.
+        cx.on_release(|_, cx| crate::media_viewer::forget_media_viewer(cx))
+            .detach();
+        cx.observe_window_bounds(window, |_, window, cx| {
+            crate::media_viewer::follow_window_fullscreen(window, cx);
+        })
+        .detach();
         shell
     }
 
@@ -510,8 +517,8 @@ impl DuskShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The settings sheet covers the shell: its shortcuts wait until it closes.
-        if self.is_settings_screen_open() {
+        // The settings sheet and the media viewer cover the shell: its shortcuts wait.
+        if self.is_settings_screen_open() || crate::media_viewer::is_modal_layer_open(cx) {
             return;
         }
         let state = self.state(cx);
@@ -524,7 +531,7 @@ impl DuskShell {
     }
 
     fn step_server(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_settings_screen_open() {
+        if self.is_settings_screen_open() || crate::media_viewer::is_modal_layer_open(cx) {
             return;
         }
         let state = self.state(cx);
@@ -585,7 +592,10 @@ impl DuskShell {
         let Some(place_id) = self.member_sheet_place_id(cx) else {
             return;
         };
-        if self.quick_switcher.is_some() || self.is_settings_screen_open() {
+        if self.quick_switcher.is_some()
+            || self.is_settings_screen_open()
+            || crate::media_viewer::is_modal_layer_open(cx)
+        {
             return;
         }
         if self.message_search.read(cx).is_panel_open() {
@@ -694,7 +704,10 @@ impl DuskShell {
             cx.notify();
             return;
         }
-        if self.is_member_overlay_open || self.is_settings_screen_open() {
+        if self.is_member_overlay_open
+            || self.is_settings_screen_open()
+            || crate::media_viewer::is_modal_layer_open(cx)
+        {
             return;
         }
         // Closed first, so the switcher records the drawer's opener, not the drawer.
@@ -1340,7 +1353,9 @@ impl Render for DuskShell {
             .children(self.render_voice_person_popover(cx))
             .children(self.render_soundboard_popover(window, cx))
             .children(self.render_screen_share_overlays(window, cx))
-            .children(self.render_fullscreen_call_view(cx));
+            .children(self.render_fullscreen_call_view(cx))
+            // Above everything: a message's pictures and videos, large (`media_viewer`).
+            .children(crate::media_viewer::open_media_viewer_view(cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

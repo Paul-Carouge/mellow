@@ -627,3 +627,62 @@ fn messages_arriving_in_a_channel_left_for_friends_stay_unread(cx: &mut TestAppC
         "Friends shows instead: the new message is not read"
     );
 }
+
+fn open_a_picture_viewer(cx: &mut VisualTestContext) {
+    let picture = mellow_protocol::Attachment {
+        id: Snowflake::from_raw(901),
+        file_name: "photo.png".to_owned(),
+        content_type: "image/png".to_owned(),
+        size_bytes: 10,
+        width: Some(10),
+        height: Some(10),
+    };
+    let set = crate::media_viewer::ViewerSet::of_message(&[picture], "Ana", 0);
+    cx.update(|window, cx| {
+        crate::media_viewer::open_media_viewer(
+            &set,
+            Snowflake::from_raw(901),
+            None,
+            false,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn the_shell_s_shortcuts_wait_while_the_media_viewer_is_open(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    let channel = selected_channel(&shell, cx);
+    open_a_picture_viewer(cx);
+    press(cx, "alt-down");
+    assert_eq!(
+        selected_channel(&shell, cx),
+        channel,
+        "no channel change under the viewer"
+    );
+    press(cx, secondary("k"));
+    assert!(!shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
+    press(cx, secondary(","));
+    assert!(!shell.read_with(cx, |shell, _| shell.is_settings_screen_open()));
+    press(cx, secondary("u"));
+    press(cx, secondary("f"));
+    let is_in_viewer = cx.update(|window, cx| {
+        crate::media_viewer::open_media_viewer_view(cx)
+            .is_some_and(|viewer| viewer.read(cx).has_focus_within(window, cx))
+    });
+    assert!(is_in_viewer, "focus stays in the viewer");
+}
+
+#[gpui::test]
+fn the_media_viewer_goes_with_its_window(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    open_a_picture_viewer(cx);
+    assert!(cx.update(|_, cx| crate::media_viewer::open_media_viewer_view(cx).is_some()));
+    drop(shell);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    let app = &mut cx.cx;
+    assert!(app.update(|cx| crate::media_viewer::open_media_viewer_view(cx).is_none()));
+}
