@@ -2,13 +2,16 @@
 //! sign in or create an account, then the two-factor step (ADR-0049), as the web's
 //! `SignInScreen.svelte` does. Fields are checked before sending and errors are said in words.
 //!
-//! shortcut: Melli does not stand on the card's edge yet, the instance check has no "Cancel" and
-//! the password has no "Show password" toggle; they come with the shared primitives.
+//! Melli stands on the card's top edge, as on the web, in the state of the connection being made.
+//! The desktop also says which instance the card talks to: a row under the title with the
+//! instance's initials, its address and "Change", which goes back to the address step.
+//!
+//! shortcut: the instance check has no "Cancel" yet (DESIGN.md §5.1 "Checking").
 
 use gpui::{
-    AppContext as _, Context, Entity, FocusHandle, Focusable as _, InteractiveElement as _,
-    IntoElement, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Task, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Task, Window, div, prelude::FluentBuilder as _,
 };
 use gpui_base::input::{InputAccessibility, InputEvent, InputState};
 use mellow_client_core::{ClientError, InstanceAddress, RestClient, SignIn};
@@ -17,23 +20,45 @@ use mellow_protocol::{
 };
 use zeroize::{Zeroize as _, Zeroizing};
 
-use crate::components::LiveRegion as _;
-use crate::local_widgets::{TextField, error_line, link_button, primary_button, text_style};
+use crate::components::{
+    Button, ButtonSize, ButtonVariant, LiveRegion as _, Melli, MelliState, PasswordToggle,
+    TextField, shadow, with_tab_navigation, with_type,
+};
+use crate::local_widgets::{error_line, link_button, primary_button, text_style};
 use crate::preferences::{Preferences, change_preferences};
 use crate::session::Session;
 use crate::sign_in_form::{
-    FieldToCheck, MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH, SignInField,
-    describe_error, field_errors_before_sending, is_valid_email_address, judge_instance_health,
+    FieldToCheck, InstanceRefusal, MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH,
+    SignInField, describe_error, field_errors_before_sending, is_valid_email_address,
+    judge_instance_health,
 };
 use crate::strings_pending_i18n::{Strings, strings as active_strings};
 use crate::theme::tokens::{
     COMPONENT_AUTH_CARD_ERROR_ICON_SIZE, COMPONENT_AUTH_CARD_MARGIN, COMPONENT_AUTH_CARD_MAX_WIDTH,
-    COMPONENT_AUTH_CARD_PADDING, COMPONENT_AUTH_CARD_RADIUS, COMPONENT_AUTH_CARD_SECTION_GAP,
-    COMPONENT_AUTH_CARD_SUBTITLE_GAP, COMPONENT_TEXT_FIELD_FIELD_GAP, SPACE_2XS, SPACE_XS,
-    TYPE_BODY, TYPE_BODY_LG, TYPE_HEADING_XL,
+    COMPONENT_AUTH_CARD_MELLI_SIZE, COMPONENT_AUTH_CARD_PADDING, COMPONENT_AUTH_CARD_RADIUS,
+    COMPONENT_AUTH_CARD_SECTION_GAP, COMPONENT_AUTH_CARD_SUBTITLE_GAP,
+    COMPONENT_CONVERSATION_ROW_AVATAR_SIZE, COMPONENT_TEXT_FIELD_BORDER_WIDTH,
+    COMPONENT_TEXT_FIELD_FIELD_GAP, COMPONENT_TEXT_FIELD_RADIUS, SPACE_2XS, SPACE_SM, SPACE_XS,
+    TYPE_BODY, TYPE_BODY_LG, TYPE_CATEGORY, TYPE_HEADING_XL,
 };
 use crate::theme::{SANS_FONT_FAMILY, color, length, theme};
 use crate::tokio_bridge::spawn_on_network_runtime;
+
+/// Melli's drawing is 256 units square, its cloud 164 units tall, and the card's edge meets the
+/// cloud's base 210 units down (`SignInScreen.svelte`): the token sizes the cloud, not the box.
+const MELLI_DRAWING_SIZE: f32 = 256.0;
+const MELLI_CLOUD_HEIGHT: f32 = 164.0;
+const CARD_EDGE_IN_MELLI_DRAWING: f32 = 210.0;
+
+/// The box Melli is drawn in, so that its cloud is `component.auth-card.melli-size` tall.
+fn melli_box_size() -> f32 {
+    COMPONENT_AUTH_CARD_MELLI_SIZE * MELLI_DRAWING_SIZE / MELLI_CLOUD_HEIGHT
+}
+
+/// How far Melli's box rises above the card's top edge.
+fn melli_height_above_card() -> f32 {
+    melli_box_size() * CARD_EDGE_IN_MELLI_DRAWING / MELLI_DRAWING_SIZE
+}
 
 /// Which card the screen shows.
 #[derive(Debug)]
@@ -76,9 +101,13 @@ pub struct SignInScreen {
     field_errors: Vec<(SignInField, &'static str)>,
     /// The instance ended the last session by itself: the sign-in card says so.
     has_session_ended_by_itself: bool,
+    /// The last request could not reach the instance: Melli shows the connection lost.
+    is_instance_unreachable: bool,
     /// The request under way; replacing or dropping it cancels it, so a late answer never lands
     /// on a later step.
     request: Option<Task<()>>,
+    /// Holds focus while no field does, so Tab and Shift+Tab reach the screen's handlers.
+    root_focus: FocusHandle,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -110,6 +139,33 @@ fn instance_field_value(instance: &InstanceAddress) -> &str {
         .strip_prefix("https://")
         .unwrap_or(address)
         .trim_end_matches('/')
+}
+
+/// The instance did not answer at all, as opposed to answering with a refusal.
+fn is_unreachable(error: &ClientError) -> bool {
+    matches!(
+        error,
+        ClientError::Network(_) | ClientError::TransferStalled
+    )
+}
+
+/// The instance's initials in its row: the first letter of its host's first label
+/// (`chat.example.org` gives "C"), as a server without an icon shows its own. `None` for an
+/// address with no name to take a letter from (`127.0.0.1`, `[::1]`, `localhost`).
+fn instance_initials(instance: &InstanceAddress) -> Option<String> {
+    let host_and_port = instance_display_name(instance);
+    let host = host_and_port
+        .rsplit_once(':')
+        .filter(|(host, port)| !host.ends_with(':') && port.chars().all(|c| c.is_ascii_digit()))
+        .map_or(host_and_port, |(host, _)| host);
+    let host = host.trim_start_matches('[').trim_end_matches(']');
+    if host.parse::<std::net::IpAddr>().is_ok() || host.eq_ignore_ascii_case("localhost") {
+        return None;
+    }
+    host.split('.')
+        .find(|label| !label.is_empty())
+        .and_then(|label| label.chars().next())
+        .map(|initial| initial.to_uppercase().collect())
 }
 
 fn device_name() -> String {
@@ -263,7 +319,9 @@ impl SignInScreen {
             error_message: None,
             field_errors: Vec::new(),
             has_session_ended_by_itself,
+            is_instance_unreachable: false,
             request: None,
+            root_focus: cx.focus_handle(),
             _subscriptions: subscriptions,
         };
         if matches!(screen.step, Step::InstanceAddress)
@@ -346,10 +404,6 @@ impl SignInScreen {
     fn focus(&self, field: SignInField, window: &mut Window, cx: &mut Context<Self>) {
         self.input(field)
             .update(cx, |input, cx| input.focus(window, cx));
-    }
-
-    fn focus_handle_of(&self, field: SignInField, cx: &Context<Self>) -> FocusHandle {
-        self.input(field).read(cx).focus_handle(cx)
     }
 
     /// The first field the person still has to fill, or the first one.
@@ -460,7 +514,10 @@ impl SignInScreen {
             let _ = screen.update_in(cx, |screen, window, cx| {
                 screen.is_busy = false;
                 screen.instance_being_checked = None;
-                match judge_instance_health(answer) {
+                let verdict = judge_instance_health(answer);
+                screen.is_instance_unreachable =
+                    matches!(verdict, Err(InstanceRefusal::Unreachable));
+                match verdict {
                     Ok(()) => {
                         screen.step = Step::Credentials {
                             instance,
@@ -485,6 +542,7 @@ impl SignInScreen {
 
     fn start_request(&mut self, cx: &mut Context<Self>) {
         self.is_busy = true;
+        self.is_instance_unreachable = false;
         self.error_message = None;
         self.field_errors.clear();
         cx.notify();
@@ -584,6 +642,7 @@ impl SignInScreen {
                         screen.focus_first_field_to_fill(window, cx);
                     }
                     Err(error) => {
+                        screen.is_instance_unreachable = is_unreachable(&error);
                         let strings = active_strings(cx);
                         let summary = if is_registering {
                             strings.register_failed
@@ -652,6 +711,7 @@ impl SignInScreen {
                         screen.back_to_password(Some(message), window, cx);
                     }
                     Err(error) => {
+                        screen.is_instance_unreachable = is_unreachable(&error);
                         let strings = active_strings(cx);
                         let is_rate_limited = matches!(
                             error,
@@ -762,11 +822,24 @@ impl SignInScreen {
         self.is_busy = false;
         self.step = Step::InstanceAddress;
         self.has_session_ended_by_itself = false;
+        self.is_instance_unreachable = false;
         self.error_message = None;
         self.field_errors.clear();
         self.set_value(SignInField::InstanceAddress, &address, window, cx);
         self.focus(SignInField::InstanceAddress, window, cx);
         cx.notify();
+    }
+
+    /// Melli's state (DESIGN.md §5.1): connecting while a request is out, connection lost when the
+    /// last one could not reach the instance, otherwise idle.
+    fn melli_state(&self) -> MelliState {
+        if self.is_busy {
+            MelliState::Connecting
+        } else if self.is_instance_unreachable {
+            MelliState::ConnectionLost
+        } else {
+            MelliState::Idle
+        }
     }
 
     fn field_error(&self, field: SignInField) -> Option<&'static str> {
@@ -780,18 +853,29 @@ impl SignInScreen {
         field: SignInField,
         label: &'static str,
         helper: Option<SharedString>,
-        window: &Window,
         cx: &Context<Self>,
-    ) -> impl IntoElement {
-        TextField {
-            label,
-            input: self.input(field),
-            helper,
-            error: self.field_error(field),
-            is_focused: self.focus_handle_of(field, cx).is_focused(window),
-            is_monospace: field == SignInField::Code,
+    ) -> TextField {
+        let id = match field {
+            SignInField::InstanceAddress => "sign-in-instance-address",
+            SignInField::Login => "sign-in-login",
+            SignInField::Password => "sign-in-password",
+            SignInField::Email => "register-email",
+            SignInField::Username => "register-username",
+            SignInField::NewPassword => "register-password",
+            SignInField::Code => "sign-in-code",
+        };
+        let text_field = TextField::new(id, label, self.input(field))
+            .when_some(helper, TextField::helper)
+            .when_some(self.field_error(field), TextField::error);
+        match field {
+            SignInField::Password | SignInField::NewPassword => {
+                text_field.password(PasswordToggle {
+                    label: crate::i18n::strings(cx).sign_in().show_password().into(),
+                })
+            }
+            SignInField::Code => text_field.monospace(),
+            _ => text_field,
         }
-        .render(theme(cx))
     }
 
     fn title_and_subtitle(&self, strings: &Strings) -> (String, &'static str) {
@@ -852,7 +936,7 @@ impl SignInScreen {
     }
 
     /// The step's fields with their labels and helpers, and the code kind switch.
-    fn render_fields(&self, window: &Window, cx: &mut Context<Self>) -> gpui::Div {
+    fn render_fields(&self, cx: &mut Context<Self>) -> gpui::Div {
         let tokens = theme(cx);
         let strings = active_strings(cx);
         div()
@@ -882,7 +966,7 @@ impl SignInScreen {
                         ) => (strings.two_factor_recovery_code, None),
                         (SignInField::Code, _) => (strings.two_factor_code, None),
                     };
-                self.text_field(*field, label, helper, window, cx)
+                self.text_field(*field, label, helper, cx)
             }))
             .when_some(
                 match &self.step {
@@ -907,9 +991,8 @@ impl SignInScreen {
             )
     }
 
-    /// The row under the button (sign in, create an account, back) and, on the credentials
-    /// card, "Use another instance".
-    fn render_links(&self, cx: &mut Context<Self>) -> (Option<gpui::Div>, Option<gpui::Div>) {
+    /// The row under the button: sign in, create an account, or back from the code step.
+    fn render_mode_row(&self, cx: &mut Context<Self>) -> Option<gpui::Div> {
         let tokens = theme(cx);
         let strings = active_strings(cx);
         let (hint, link_label) = match &self.step {
@@ -924,35 +1007,109 @@ impl SignInScreen {
             ),
             Step::TwoFactor { .. } => (None, Some(strings.two_factor_back_to_sign_in)),
         };
-        let mode_row =
-            link_label.map(|label| {
-                text_style(div(), TYPE_BODY)
-                    .flex()
-                    .flex_wrap()
-                    .items_center()
-                    .justify_center()
-                    .gap_x(length(SPACE_2XS))
-                    .text_color(color(tokens.component_auth_card_hint_text))
-                    .when_some(hint, gpui::ParentElement::child)
-                    .child(link_button("switch-mode", label, tokens).on_click(
+        link_label.map(|label| {
+            text_style(div(), TYPE_BODY)
+                .flex()
+                .flex_wrap()
+                .items_center()
+                .justify_center()
+                .gap_x(length(SPACE_2XS))
+                .text_color(color(tokens.component_auth_card_hint_text))
+                .when_some(hint, gpui::ParentElement::child)
+                .child(
+                    link_button("switch-mode", label, tokens).on_click(
                         cx.listener(|screen, _, window, cx| screen.switch_mode(window, cx)),
-                    ))
-            });
-        let another_instance = matches!(self.step, Step::Credentials { .. }).then(|| {
-            div().flex().justify_center().child(
-                link_button("use-another-instance", strings.use_another_instance, tokens).on_click(
-                    cx.listener(|screen, _, window, cx| {
-                        screen.use_another_instance(window, cx);
-                    }),
+                    ),
+                )
+        })
+    }
+
+    /// Under the title of the sign-in and account cards: which instance the account lives on, and
+    /// "Change" back to the address step (ROADMAP M3, "make choosing one's server obvious").
+    fn render_instance_row(&self, cx: &mut Context<Self>) -> Option<gpui::Stateful<gpui::Div>> {
+        let Step::Credentials { instance, .. } = &self.step else {
+            return None;
+        };
+        let tokens = theme(cx);
+        let strings = active_strings(cx);
+        let address = instance_display_name(instance).to_owned();
+        let screen = cx.entity().downgrade();
+        Some(
+            div()
+                .id("sign-in-instance")
+                .role(Role::Group)
+                .aria_label(SharedString::from(format!(
+                    "{}, {address}",
+                    strings.instance_row_label
+                )))
+                .flex()
+                .items_center()
+                .gap(length(SPACE_SM))
+                .py(length(SPACE_XS))
+                .pl(length(SPACE_XS))
+                .pr(length(SPACE_XS))
+                .rounded(length(COMPONENT_TEXT_FIELD_RADIUS))
+                .border(length(COMPONENT_TEXT_FIELD_BORDER_WIDTH))
+                .border_color(color(tokens.color_border_divider))
+                .child(
+                    with_type(div(), TYPE_BODY)
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .justify_center()
+                        .size(length(COMPONENT_CONVERSATION_ROW_AVATAR_SIZE))
+                        .rounded_full()
+                        .bg(color(tokens.component_rail_icon_background_rest))
+                        .text_color(color(tokens.component_rail_icon_text_rest))
+                        // An address without a name gets Melli, Mellow's own mark, still.
+                        .map(|badge| match instance_initials(instance) {
+                            Some(initials) => badge.child(initials),
+                            None => badge.child(
+                                Melli::new(
+                                    "sign-in-instance-melli",
+                                    MelliState::Idle,
+                                    COMPONENT_CONVERSATION_ROW_AVATAR_SIZE,
+                                )
+                                .still(true),
+                            ),
+                        }),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .flex_col()
+                        .flex_1()
+                        .min_w_0()
+                        .child(
+                            with_type(div(), TYPE_CATEGORY)
+                                .text_color(color(tokens.component_text_field_label_text))
+                                .child(strings.instance_row_label),
+                        )
+                        .child(
+                            with_type(div(), TYPE_BODY_LG)
+                                .text_color(color(tokens.component_auth_card_title_text))
+                                .truncate()
+                                .child(address),
+                        ),
+                )
+                .child(
+                    Button::new("change-instance", strings.change_instance)
+                        .variant(ButtonVariant::Secondary)
+                        .size(ButtonSize::Small)
+                        .accessible_label(strings.change_instance_label)
+                        // Stays usable while busy: it is how a stuck sign-in is abandoned.
+                        .on_click(move |window, cx| {
+                            let _ = screen.update(cx, |screen, cx| {
+                                screen.use_another_instance(window, cx);
+                            });
+                        }),
                 ),
-            )
-        });
-        (mode_row, another_instance)
+        )
     }
 }
 
 impl Render for SignInScreen {
-    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
         let strings = active_strings(cx);
         let (title, subtitle) = self.title_and_subtitle(strings);
@@ -965,7 +1122,7 @@ impl Render for SignInScreen {
             }
             _ => subtitle.to_owned(),
         };
-        let fields = self.render_fields(window, cx);
+        let fields = self.render_fields(cx);
 
         let submit = primary_button("submit", self.primary_label(strings), self.is_busy, tokens)
             .on_click(cx.listener(|screen, _, window, cx| screen.submit(window, cx)));
@@ -980,11 +1137,29 @@ impl Render for SignInScreen {
                 ))
             });
 
-        let (mode_row, another_instance) = self.render_links(cx);
+        let mode_row = self.render_mode_row(cx);
+        let instance_row = self.render_instance_row(cx);
+
+        // The screen's hero (DESIGN.md §2.10, §5.1): the cloud above the edge, its shadow on the
+        // card; decorative, as the title says where the reader is.
+        let melli = div()
+            .absolute()
+            .top(-length(melli_height_above_card()))
+            .left_0()
+            .right_0()
+            .flex()
+            .justify_center()
+            .child(Melli::new(
+                "sign-in-melli",
+                self.melli_state(),
+                melli_box_size(),
+            ));
 
         let card = div()
             .id("sign-in-card")
             .role(Role::Form)
+            .relative()
+            .mt(length(melli_height_above_card()))
             .w_full()
             .max_w(length(COMPONENT_AUTH_CARD_MAX_WIDTH))
             .flex()
@@ -993,6 +1168,8 @@ impl Render for SignInScreen {
             .p(length(COMPONENT_AUTH_CARD_PADDING))
             .rounded(length(COMPONENT_AUTH_CARD_RADIUS))
             .bg(color(tokens.component_auth_card_background))
+            .shadow(shadow(tokens.elevation_high))
+            .child(melli)
             .child(
                 div()
                     .flex()
@@ -1001,17 +1178,18 @@ impl Render for SignInScreen {
                     .gap(length(COMPONENT_AUTH_CARD_SUBTITLE_GAP))
                     .text_center()
                     .child(
-                        text_style(div().id("sign-in-title"), TYPE_HEADING_XL)
+                        with_type(div().id("sign-in-title"), TYPE_HEADING_XL)
                             .role(Role::Heading)
                             .text_color(color(tokens.component_auth_card_title_text))
                             .child(title),
                     )
                     .child(
-                        text_style(div(), TYPE_BODY_LG)
+                        with_type(div(), TYPE_BODY_LG)
                             .text_color(color(tokens.component_auth_card_subtitle_text))
                             .child(subtitle),
                     ),
             )
+            .children(instance_row)
             .child(fields)
             .child(
                 div()
@@ -1021,11 +1199,9 @@ impl Render for SignInScreen {
                     .child(form_error)
                     .child(submit),
             )
-            .children(mode_row)
-            .children(another_instance);
+            .children(mode_row);
 
-        div()
-            .id("sign-in-screen")
+        with_tab_navigation(div().id("sign-in-screen"), &self.root_focus)
             .size_full()
             .overflow_y_scroll()
             .flex()

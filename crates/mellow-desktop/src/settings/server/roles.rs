@@ -740,7 +740,7 @@ impl RolesPage {
             .items_center()
             .gap(length(COMPONENT_ROLES_ROW_ICON_GAP))
             .w_full()
-            .min_h(length(COMPONENT_ROLES_ROW_HEIGHT.max(SIZE_HIT_WEB_MIN)))
+            .min_h(length(COMPONENT_ROLES_ROW_HEIGHT))
             .px(length(COMPONENT_ROLES_ROW_PADDING_INLINE))
             .rounded(length(COMPONENT_ROLES_ROW_RADIUS))
             .when_some(background, |row, background| row.bg(color(background)))

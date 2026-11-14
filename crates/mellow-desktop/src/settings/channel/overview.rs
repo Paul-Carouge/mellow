@@ -1,9 +1,9 @@
-//! Channel Overview (`ChannelOverviewSettings.svelte`): the name and the topic, saved together
-//! through the unsaved changes bar. A change by someone else to a field not typed in shows at once;
-//! a typed field is kept until saved or reset, and only typed fields are sent.
+//! Channel Overview (`ChannelOverviewSettings.svelte`): the channel's icon, saved at once, then the
+//! name and the topic, saved together through the unsaved changes bar. A change by someone else to
+//! a field not typed in shows at once; a typed field is kept until saved or reset, and only typed
+//! fields are sent.
 //!
-//! shortcut: the channel icon editor needs the picture crop dialog (see the server Overview), and
-//! a voice channel's user limit needs a select; voice rows open no settings before M3 step 7, which
+//! shortcut: a voice channel's user limit needs a select; voice rows open no settings before M3 step 7, which
 //! adds the field (`voice_user_limit_choices` is ready in client-core).
 
 use std::sync::Arc;
@@ -22,6 +22,7 @@ use mellow_protocol::{Channel, ChannelKind, Snowflake};
 use crate::components::{TextField, UnsavedChangesBar};
 use crate::i18n::strings;
 use crate::session::Session;
+use crate::settings::icon_editor::{IconEditor, IconTarget};
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice, unsaved_changes_labels};
 use crate::theme::icons::IconName;
 use crate::theme::length;
@@ -83,6 +84,7 @@ impl OverviewField {
 pub struct ChannelOverviewPage {
     session: Entity<Session>,
     channel_id: Snowflake,
+    icon_editor: Option<Entity<IconEditor>>,
     name: OverviewField,
     topic: OverviewField,
     /// Saved, and waiting for the gateway to bring it: not an unsaved change any more.
@@ -156,9 +158,16 @@ impl ChannelOverviewPage {
                 page.follow_stored_channel(window, cx);
             }),
         ];
+        // A category has no icon (the instance refuses one).
+        let icon_editor = stored_channel(&session, channel_id, cx)
+            .filter(|channel| channel.kind != ChannelKind::Category)
+            .map(|_| {
+                cx.new(|cx| IconEditor::new(session.clone(), IconTarget::Channel(channel_id), cx))
+            });
         Self {
             session,
             channel_id,
+            icon_editor,
             name,
             topic,
             saved: None,
@@ -301,8 +310,12 @@ impl Render for ChannelOverviewPage {
             .flex()
             .flex_col()
             .flex_1()
+            .children(self.icon_editor.clone())
             .child(
                 div()
+                    .when(self.icon_editor.is_some(), |fields| {
+                        fields.mt(length(COMPONENT_SETTINGS_SECTION_GAP))
+                    })
                     .max_w(length(COMPONENT_DIALOG_WIDTH))
                     .flex()
                     .flex_col()

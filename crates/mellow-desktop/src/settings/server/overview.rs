@@ -1,32 +1,49 @@
-//! Overview (`ServerOverviewSettings.svelte`): the server's name, saved through the unsaved
-//! changes bar. A rename by someone else while nothing is typed shows at once; a draft is kept
-//! until saved or reset.
-//!
-//! shortcut: the icon editor and the server preview beside the name are left out: the icon needs
-//! the picture crop dialog (`PictureCropDialog.svelte`) that the profile pictures need too; add
-//! both with it.
+//! Overview (`ServerOverviewSettings.svelte`): the icon editor, saved at once, then the server's
+//! name, saved through the unsaved changes bar, beside a preview of the navigator's header
+//! (`ServerPreview.svelte`) that follows what is typed. A rename by someone else while nothing is
+//! typed shows at once; a draft is kept until saved or reset.
 
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, ParentElement as _, Render,
-    SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    AppContext as _, Context, Entity, EventEmitter, IntoElement, ObjectFit, ParentElement as _,
+    Render, SharedString, Styled as _, StyledImage as _, Subscription, Window, div, img,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{InputEvent, InputState};
+use mellow_client_core::DownloadableFile;
+use mellow_client_core::shared_logic::format::server_initials;
 use mellow_client_core::shared_logic::server_settings::MAXIMUM_SERVER_NAME_LENGTH;
 use mellow_protocol::Snowflake;
 
-use crate::components::{TextField, UnsavedChangesBar};
+use crate::components::{TextField, UnsavedChangesBar, icon, with_type};
 use crate::i18n::strings;
+use crate::messages::picture_for_box;
+use crate::pictures::Animation;
 use crate::session::Session;
+use crate::settings::icon_editor::{IconEditor, IconTarget};
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice, unsaved_changes_labels};
-use crate::theme::length;
-use crate::theme::tokens::COMPONENT_DIALOG_WIDTH;
+use crate::theme::icons::IconName;
+use crate::theme::tokens::{
+    COMPONENT_DIALOG_SECTION_GAP, COMPONENT_DIALOG_WIDTH, COMPONENT_NAVIGATOR_STRIP_WIDTH,
+    COMPONENT_RAIL_ICON_RADIUS_ACTIVE, COMPONENT_RAIL_ITEM_SIZE, COMPONENT_RAIL_PADDING_TOP,
+    COMPONENT_RAIL_PILL_HEIGHT_SELECTED, COMPONENT_RAIL_PILL_WIDTH,
+    COMPONENT_SERVER_PREVIEW_BORDER_WIDTH, COMPONENT_SERVER_PREVIEW_RADIUS,
+    COMPONENT_SERVER_PREVIEW_WIDTH, COMPONENT_SETTINGS_SECTION_GAP,
+    COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE, COMPONENT_SIDEBAR_HEADER_HEIGHT,
+    COMPONENT_TEXT_FIELD_LABEL_GAP, SPACE_XS, TYPE_CATEGORY, TYPE_HEADING_MD,
+};
+use crate::theme::{color, length, theme};
+
+/// The name field takes the room first and the preview what is left (the web's
+/// `flex-[999_1_…]` beside `flex-[1_1_…]`), until the preview wraps under it.
+const NAME_FIELD_GROWTH: f32 = 999.0;
 
 pub struct ServerOverviewPage {
     session: Entity<Session>,
     guild_id: Snowflake,
     name_input: Entity<InputState>,
+    icon_editor: Entity<IconEditor>,
     /// The stored name the field was last set to: the field holds a draft once it differs.
     shown_stored_name: String,
     /// Saved, and waiting for the gateway to bring it: not an unsaved change any more.
@@ -88,10 +105,13 @@ impl ServerOverviewPage {
                     page.follow_stored_name(window, cx);
                 }),
             ];
+        let icon_editor =
+            cx.new(|cx| IconEditor::new(session.clone(), IconTarget::Server(guild_id), cx));
         Self {
             session,
             guild_id,
             name_input,
+            icon_editor,
             shown_stored_name: stored_name,
             saved_name: None,
             is_saving: false,
@@ -221,22 +241,176 @@ fn stored_name(session: &Entity<Session>, guild_id: Snowflake, cx: &gpui::App) -
         .unwrap_or_default()
 }
 
+/// The navigator's header in miniature (`ServerPreview.svelte`, DESIGN.md §5.2): the server's
+/// icon selected in the strip with the apricot pill, and its name as the sidebar shows it, at
+/// their real size. It repeats the form for the eye, so it is not in the accessibility tree.
+fn server_preview(
+    name: &str,
+    icon_image: Option<mellow_protocol::ProfileImage>,
+    window: &Window,
+    cx: &gpui::App,
+) -> gpui::Div {
+    let tokens = theme(cx);
+    let catalogue = strings(cx);
+    let shown_name = name.trim();
+    let is_placeholder = shown_name.is_empty();
+    let shown_name = if is_placeholder {
+        catalogue.add_server().preview_placeholder()
+    } else {
+        shown_name
+    };
+    let pill_top = COMPONENT_RAIL_PADDING_TOP
+        + (COMPONENT_RAIL_ITEM_SIZE - COMPONENT_RAIL_PILL_HEIGHT_SELECTED) / 2.0;
+    let server_icon = with_type(div(), TYPE_HEADING_MD)
+        .relative()
+        .flex()
+        .items_center()
+        .justify_center()
+        .overflow_hidden()
+        .size(length(COMPONENT_RAIL_ITEM_SIZE))
+        .rounded(length(COMPONENT_RAIL_ICON_RADIUS_ACTIVE))
+        .bg(color(tokens.component_rail_icon_background_active))
+        .text_color(color(tokens.component_rail_icon_text_active))
+        .map(|server_icon| match icon_image {
+            Some(image) => server_icon.child(
+                img(picture_for_box(
+                    DownloadableFile::Icon(image.id),
+                    COMPONENT_RAIL_ITEM_SIZE,
+                    COMPONENT_RAIL_ITEM_SIZE,
+                    Animation::StillFrame,
+                    window,
+                ))
+                .size_full()
+                .object_fit(ObjectFit::Cover)
+                .rounded(length(COMPONENT_RAIL_ICON_RADIUS_ACTIVE)),
+            ),
+            None => server_icon.child(server_initials(shown_name)),
+        });
+    div()
+        .flex()
+        .overflow_hidden()
+        .rounded(length(COMPONENT_SERVER_PREVIEW_RADIUS))
+        .border(length(COMPONENT_SERVER_PREVIEW_BORDER_WIDTH))
+        .border_color(color(tokens.component_server_preview_border))
+        .bg(color(tokens.component_server_preview_background))
+        .child(
+            div()
+                .relative()
+                .flex()
+                .flex_none()
+                .justify_center()
+                .w(length(COMPONENT_NAVIGATOR_STRIP_WIDTH))
+                .py(length(COMPONENT_RAIL_PADDING_TOP))
+                .child(
+                    div()
+                        .absolute()
+                        .left(-length(COMPONENT_RAIL_PILL_WIDTH / 2.0))
+                        .top(length(pill_top))
+                        .w(length(COMPONENT_RAIL_PILL_WIDTH))
+                        .h(length(COMPONENT_RAIL_PILL_HEIGHT_SELECTED))
+                        .rounded_full()
+                        .bg(color(tokens.component_rail_pill_color_selected)),
+                )
+                .child(server_icon),
+        )
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .min_w_0()
+                .pr(length(SPACE_XS))
+                .child(
+                    with_type(div(), TYPE_HEADING_MD)
+                        .flex()
+                        .flex_none()
+                        .items_center()
+                        .gap(length(SPACE_XS))
+                        .h(length(COMPONENT_SIDEBAR_HEADER_HEIGHT))
+                        .px(length(SPACE_XS))
+                        .text_color(color(if is_placeholder {
+                            tokens.component_server_preview_placeholder_text
+                        } else {
+                            tokens.component_sidebar_header_text
+                        }))
+                        .child(
+                            div()
+                                .flex_1()
+                                .min_w_0()
+                                .truncate()
+                                .child(shown_name.to_owned()),
+                        )
+                        .child(icon(
+                            IconName::CaretDown,
+                            COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE,
+                            color(tokens.color_text_secondary),
+                        )),
+                ),
+        )
+}
+
 impl Render for ServerOverviewPage {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalogue = strings(cx);
         let words = catalogue.server_settings().overview();
         let is_changed = self.is_changed(cx);
         let page = cx.entity();
         let reset_page = page.clone();
+        let icon_image = self
+            .session
+            .read(cx)
+            .state()
+            .guild(self.guild_id)
+            .and_then(|guild| guild.icon);
+        let tokens = theme(cx);
         div()
             .flex()
             .flex_col()
             .flex_1()
+            .child(self.icon_editor.clone())
             .child(
-                div().max_w(length(COMPONENT_DIALOG_WIDTH)).child(
-                    TextField::new("server-name", words.server_name(), &self.name_input)
-                        .helper(words.server_name_helper()),
-                ),
+                // Side by side while both fit, as in "Create a server"; the preview wraps under.
+                div()
+                    .mt(length(COMPONENT_SETTINGS_SECTION_GAP))
+                    .flex()
+                    .flex_wrap()
+                    .items_start()
+                    .gap(length(COMPONENT_DIALOG_SECTION_GAP))
+                    .child(
+                        div()
+                            .flex_grow(NAME_FIELD_GROWTH)
+                            .flex_basis(length(COMPONENT_SERVER_PREVIEW_WIDTH))
+                            .min_w_0()
+                            .max_w(length(COMPONENT_DIALOG_WIDTH))
+                            .child(
+                                TextField::new(
+                                    "server-name",
+                                    words.server_name(),
+                                    &self.name_input,
+                                )
+                                .helper(words.server_name_helper()),
+                            ),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_grow(1.0)
+                            .flex_basis(length(COMPONENT_SERVER_PREVIEW_WIDTH))
+                            .min_w_0()
+                            .gap(length(COMPONENT_TEXT_FIELD_LABEL_GAP))
+                            .child(
+                                with_type(div(), TYPE_CATEGORY)
+                                    .text_color(color(tokens.component_text_field_label_text))
+                                    .child(catalogue.add_server().preview()),
+                            )
+                            .child(server_preview(
+                                &self.field_value(cx),
+                                icon_image,
+                                window,
+                                cx,
+                            )),
+                    ),
             )
             .child(saved_notice(
                 "server-overview-notice",

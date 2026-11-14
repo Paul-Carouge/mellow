@@ -149,7 +149,12 @@ pub struct Strings {
     pub instance_not_mellow: fn(&str) -> String,
     /// Host, the instance's version, the oldest version the app supports.
     pub instance_too_old: fn(&str, &str, &str) -> String,
-    pub use_another_instance: &'static str,
+    /// The instance row under the sign-in title: its label, its button, the button's name.
+    pub instance_row_label: &'static str,
+    pub change_instance: &'static str,
+    pub change_instance_label: &'static str,
+    /// Why a picture was refused before sending: its megapixels and longest side allowed.
+    pub picture_too_many_pixels: fn(u32, u32) -> String,
     // Desktop only: the rail's "+" toward another instance (DESIGN.md §5.1). One session is kept
     // at a time, so it signs out first.
     pub connect_another_instance: &'static str,
@@ -259,7 +264,12 @@ pub static ENGLISH: Strings = Strings {
             "{host} runs Mellow {version}. This app needs {minimum} or later. Ask the instance admin to update."
         )
     },
-    use_another_instance: "Use another instance",
+    instance_row_label: "Instance",
+    change_instance: "Change",
+    change_instance_label: "Change instance",
+    picture_too_many_pixels: |megapixels, side| {
+        format!("Pictures can be up to {megapixels} megapixels and {side} pixels on a side.")
+    },
     connect_another_instance: "Connect to another instance",
     connect_another_instance_title: "Connect to another instance?",
     connect_another_instance_body: |instance| {
@@ -372,7 +382,24 @@ pub static FRENCH: Strings = Strings {
             "{host} utilise Mellow {version}. Cette application demande la version {minimum} ou plus récente. Demande à l’admin de l’instance de la mettre à jour."
         )
     },
-    use_another_instance: "Utiliser une autre instance",
+    instance_row_label: "Instance",
+    change_instance: "Changer",
+    change_instance_label: "Changer d’instance",
+    picture_too_many_pixels: |megapixels, side| {
+        // A thin no-break space groups the thousands, as the catalogue writes numbers.
+        let side = side.to_string();
+        let grouped = match side.len() {
+            4.. => format!(
+                "{}\u{202f}{}",
+                &side[..side.len() - 3],
+                &side[side.len() - 3..]
+            ),
+            _ => side,
+        };
+        format!(
+            "Les images peuvent faire jusqu’à {megapixels}{NO_BREAK_SPACE}mégapixels et {grouped}{NO_BREAK_SPACE}pixels de côté."
+        )
+    },
     connect_another_instance: "Se connecter à une autre instance",
     connect_another_instance_title: "Se connecter à une autre instance\u{202f}?",
     connect_another_instance_body: |instance| {

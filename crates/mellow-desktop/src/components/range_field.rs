@@ -13,7 +13,8 @@ use gpui::{
 
 use super::{child_id, focus_ring, is_focus_visible, remembered_focus_handle, with_type};
 use crate::theme::tokens::{
-    RADIUS_SM, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY_SM, TYPE_CATEGORY,
+    COMPONENT_BUTTON_DISABLED_OPACITY, RADIUS_SM, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_MD, SPACE_XS,
+    TYPE_BODY_SM, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
 
@@ -88,6 +89,7 @@ pub struct RangeField {
     value_text: ValueText,
     on_change: Option<ChangeHandler>,
     is_label_shown: bool,
+    is_disabled: bool,
 }
 
 impl RangeField {
@@ -107,6 +109,7 @@ impl RangeField {
             value_text: Arc::new(value_text),
             on_change: None,
             is_label_shown: true,
+            is_disabled: false,
         }
     }
 
@@ -114,6 +117,14 @@ impl RangeField {
     #[must_use]
     pub fn label_hidden(mut self) -> Self {
         self.is_label_shown = false;
+        self
+    }
+
+    /// Dimmed, out of the Tab order and unmoved by the pointer, as a disabled range input (a
+    /// zoom with nothing to zoom into).
+    #[must_use]
+    pub fn disabled(mut self, is_disabled: bool) -> Self {
+        self.is_disabled = is_disabled;
         self
     }
 
@@ -147,7 +158,8 @@ impl RenderOnce for RangeField {
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let accent = color(tokens.component_slider_accent);
         let (bounds, value) = (self.bounds, self.value);
-        let on_change = self.on_change;
+        let is_disabled = self.is_disabled;
+        let on_change = self.on_change.filter(|_| !is_disabled);
         let (key_change, down_change, drag_change) =
             (on_change.clone(), on_change.clone(), on_change);
         let (down_track, paint_track) = (track_bounds.clone(), track_bounds);
@@ -163,12 +175,16 @@ impl RenderOnce for RangeField {
             .aria_min_numeric_value(f64::from(bounds.minimum))
             .aria_max_numeric_value(f64::from(bounds.maximum))
             .aria_numeric_value_step(f64::from(bounds.step))
-            .track_focus(&focus_handle)
+            .when(!is_disabled, |track| {
+                track.track_focus(&focus_handle).cursor_pointer()
+            })
+            .when(is_disabled, |track| {
+                track.opacity(COMPONENT_BUTTON_DISABLED_OPACITY)
+            })
             .relative()
             .h(length(SLIDER_HEIGHT))
             .w_full()
             .rounded(length(RADIUS_SM))
-            .cursor_pointer()
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if event.keystroke.modifiers.modified() {
                     return;

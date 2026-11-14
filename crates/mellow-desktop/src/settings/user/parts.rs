@@ -56,7 +56,14 @@ pub(super) fn section_label(
         .child(text)
 }
 
-/// A sentence of the page's body.
+/// A description under a section's label (`type.body`), as the web's editors write them.
+pub(super) fn description_text(text: impl Into<SharedString>, cx: &App) -> Div {
+    with_type(div(), TYPE_BODY)
+        .text_color(color(theme(cx).component_settings_body_text))
+        .child(text.into())
+}
+
+/// A sentence of the page's body: an intro or a step (`type.body-lg`).
 pub(super) fn body_text(text: impl Into<SharedString>, cx: &App) -> Div {
     with_type(div(), TYPE_BODY_LG)
         .text_color(color(theme(cx).component_settings_body_text))

@@ -1,8 +1,8 @@
 //! Server settings (`ServerSettings.svelte`): the server's own sections under its name, then
 //! "Moderation", each only with its permission and once the desktop has its page. See the parent
 //! module for how a section is added.
-//!
-//! shortcut: "Delete server" (the owner's danger item) comes with a later M3 step.
+//! The owner also gets "Delete server", the danger item under the sections, which asks for the
+//! server's name first (`DeleteServerDialog.svelte`).
 
 mod bans;
 mod emoji;
@@ -22,9 +22,12 @@ mod test_support;
 use std::sync::Arc;
 
 use gpui::{
-    AppContext as _, Context, Entity, EventEmitter, IntoElement, Render, SharedString, Window, div,
+    AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
+    Render, SharedString, Styled as _, Subscription, Window, div,
 };
-use mellow_client_core::shared_logic::server_settings::{ServerSettingsSection, visible_sections};
+use mellow_client_core::shared_logic::server_settings::{
+    ServerSettingsSection, is_owner, visible_sections,
+};
 use mellow_protocol::{Guild, Snowflake};
 
 use self::bans::ServerBansPage;
@@ -41,8 +44,14 @@ pub(crate) use self::{
     bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
     moderation_log::ServerModerationLogPage as ModerationLogPage,
 };
+use super::name_confirmation::{
+    NameConfirmation, NameConfirmationWords, open_name_confirmation_dialog,
+};
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
-use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
+use crate::components::{
+    ModalDialog, ModalDialogEvent, SettingsNavEntry, SettingsNavItem, SettingsSheet,
+    SettingsSheetLabels,
+};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 
@@ -94,6 +103,8 @@ pub struct ServerSettings {
     guild_id: Snowflake,
     navigation: SettingsNavigation<ServerSettingsSection>,
     is_closing: bool,
+    delete_focus: FocusHandle,
+    delete_dialog: Option<(Entity<ModalDialog>, Entity<NameConfirmation>, Subscription)>,
 }
 
 impl EventEmitter<SettingsClosed> for ServerSettings {}
@@ -138,7 +149,116 @@ impl ServerSettings {
             guild_id,
             navigation,
             is_closing: false,
+            delete_focus: cx.focus_handle().tab_stop(true),
+            delete_dialog: None,
         }
+    }
+
+    /// The owner's danger item: the server and everything in it, for everyone.
+    fn can_delete_server(&self, cx: &gpui::App) -> bool {
+        let state = self.session.read(cx).state();
+        let my_id = state.current_user().map(|user| user.id);
+        state
+            .guild(self.guild_id)
+            .is_some_and(|guild| is_owner(guild, my_id))
+    }
+
+    fn open_delete_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.delete_dialog.is_some() || !self.can_delete_server(cx) {
+            return;
+        }
+        let Some(name) = self
+            .session
+            .read(cx)
+            .state()
+            .guild(self.guild_id)
+            .map(|guild| guild.name.clone())
+        else {
+            return;
+        };
+        let words = strings(cx).server_settings().delete_server_dialog();
+        let session = self.session.downgrade();
+        let guild_id = self.guild_id;
+        let (dialog, field) = open_name_confirmation_dialog(
+            NameConfirmationWords {
+                title: words.title(&name),
+                body: words.body(&name),
+                field_label: words.confirm_label().to_owned(),
+                submit: words.submit(),
+                busy_submit: words.deleting(),
+            },
+            move |cx| {
+                let session = session.upgrade()?;
+                let name = session.read(cx).state().guild(guild_id)?.name.clone();
+                Some(name)
+            },
+            &self.session,
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(
+            &dialog,
+            window,
+            |settings, dialog, event: &ModalDialogEvent, window, cx| match event {
+                ModalDialogEvent::Closed => {
+                    settings.delete_dialog = None;
+                    cx.notify();
+                }
+                ModalDialogEvent::Submitted => settings.delete_server(dialog, window, cx),
+            },
+        );
+        self.delete_dialog = Some((dialog, field, subscription));
+        cx.notify();
+    }
+
+    /// Once the instance agrees, the gateway takes the server away and the settings close with
+    /// it (see `render`); the dialog goes with them.
+    fn delete_server(
+        &mut self,
+        dialog: &Entity<ModalDialog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Renamed since the last keystroke: the typed name no longer confirms.
+        if !self
+            .delete_dialog
+            .as_ref()
+            .is_some_and(|(_, field, _)| field.read(cx).is_confirmed(cx))
+        {
+            dialog.update(cx, |dialog, cx| dialog.set_submit_enabled(false, cx));
+            return;
+        }
+        dialog.update(cx, |dialog, cx| {
+            dialog.set_error(None, cx);
+            dialog.set_busy(true, cx);
+        });
+        let guild_id = self.guild_id;
+        let dialog = dialog.downgrade();
+        let window_handle = window.window_handle();
+        let failure = strings(cx)
+            .server_settings()
+            .delete_server_dialog()
+            .failed()
+            .to_owned();
+        self.session.update(cx, |session, cx| {
+            session.send_settings_change(
+                "delete server",
+                failure,
+                move |rest| async move { rest.delete_guild(guild_id).await },
+                cx,
+                move |outcome, cx| {
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let _ = dialog.update(cx, |dialog, cx| {
+                            dialog.set_busy(false, cx);
+                            match outcome {
+                                Ok(()) => dialog.request_close(window, cx),
+                                Err(message) => dialog.set_error(Some(message.into()), cx),
+                            }
+                        });
+                    });
+                },
+            );
+        });
     }
 
     fn navigation(&mut self) -> &mut SettingsNavigation<ServerSettingsSection> {
@@ -214,6 +334,7 @@ impl ServerSettings {
 }
 
 impl Render for ServerSettings {
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalogue = strings(cx);
         let guild = self
@@ -264,6 +385,17 @@ impl Render for ServerSettings {
             }
         }
 
+        let can_delete_server = self.can_delete_server(cx);
+        if can_delete_server {
+            entries.push(SettingsNavEntry::Separator);
+            entries.push(SettingsNavEntry::Item(SettingsNavItem {
+                label: catalogue.server_settings().delete_server().into(),
+                focus_handle: self.delete_focus.clone(),
+                is_selected: false,
+                is_danger: true,
+            }));
+        }
+
         let words = catalogue.server_settings();
         let settings = cx.entity();
         let choose_settings = settings.clone();
@@ -284,13 +416,14 @@ impl Render for ServerSettings {
         .wide(is_wide, self.navigation.is_page_shown_when_narrow())
         .entries(entries)
         .on_choose(move |index, window, cx| {
-            let Some(target) = item_sections.get(index).copied() else {
-                return;
-            };
             choose_settings.update(cx, |settings, cx| {
-                settings
-                    .navigation
-                    .choose(target, section, is_wide, window, cx);
+                // The item after the sections: "Delete server".
+                match item_sections.get(index).copied() {
+                    Some(target) => settings
+                        .navigation
+                        .choose(target, section, is_wide, window, cx),
+                    None => settings.open_delete_dialog(window, cx),
+                }
                 cx.notify();
             });
         })
@@ -306,6 +439,96 @@ impl Render for ServerSettings {
         if let (Some(section), Some(page)) = (section, self.navigation.page_view()) {
             sheet = sheet.page(section_label(section, catalogue), page.into_any_element());
         }
-        sheet.into_any_element()
+        div()
+            .absolute()
+            .inset_0()
+            .child(sheet)
+            .children(
+                self.delete_dialog
+                    .as_ref()
+                    .map(|(dialog, _, _)| dialog.clone()),
+            )
+            .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod delete_server_tests {
+    use gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use mellow_client_core::shared_logic::server_settings::ServerSettingsSection;
+    use mellow_protocol::GatewayEvent;
+
+    use super::ServerSettings;
+    use super::test_support::open_server_settings;
+    use crate::session::Session;
+    use crate::shell_fixtures::{GUILD_RUST, ME};
+
+    /// Gives the server to the reader, or renames it, as the gateway would.
+    fn change_guild(
+        session: &gpui::Entity<Session>,
+        change: impl FnOnce(&mut mellow_protocol::Guild),
+        cx: &mut VisualTestContext,
+    ) {
+        session.update(cx, |session, cx| {
+            let mut guild = session.state().guild(GUILD_RUST).cloned().unwrap();
+            change(&mut guild);
+            session
+                .state_mut()
+                .apply_event(GatewayEvent::GuildCreate(Box::new(guild)), 0);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn only_the_owner_is_offered_delete_server(cx: &mut TestAppContext) {
+        let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Overview);
+        // An administrator who does not own the server.
+        assert!(!settings.read_with(cx, ServerSettings::can_delete_server));
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_none()));
+
+        change_guild(&session, |guild| guild.owner_id = ME, cx);
+        assert!(settings.read_with(cx, ServerSettings::can_delete_server));
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_some()));
+    }
+
+    #[gpui::test]
+    fn delete_waits_for_the_current_name_and_enter_on_a_partial_one_sends_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Overview);
+        change_guild(&session, |guild| guild.owner_id = ME, cx);
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        let (dialog, field) = settings.read_with(cx, |settings, _| {
+            let (dialog, field, _) = settings.delete_dialog.as_ref().unwrap();
+            (dialog.clone(), field.clone())
+        });
+        let name = session.read_with(cx, |session, _| {
+            session.state().guild(GUILD_RUST).unwrap().name.clone()
+        });
+        cx.update(|window, cx| {
+            let focus = field.read(cx).input().focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        let (partial, rest) = name.split_at(name.len() / 2);
+        cx.simulate_input(partial);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_busy()));
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_some()));
+
+        cx.simulate_input(rest);
+        cx.run_until_parked();
+        assert!(dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+
+        // Renamed meanwhile: the old name no longer wakes the button.
+        change_guild(&session, |guild| guild.name = "Renamed".to_owned(), cx);
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_busy()));
     }
 }

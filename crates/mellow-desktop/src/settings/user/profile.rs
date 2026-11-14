@@ -2,48 +2,61 @@
 //! ADR-0021, ADR-0050): the avatar and banner editors, then "About me" and links, saved with
 //! their own button since a text is typed in several goes. The instance crops, resizes and
 //! compresses a picture before answering, a second or two for a large GIF, so the buttons say so
-//! meanwhile; one change runs at a time.
+//! meanwhile; one change runs at a time. Beside the editors, "Preview" shows the profile card
+//! with "About me" and the links as typed.
 //!
 //! shortcut: a chosen picture is sent as it is, so the instance keeps its centred square (avatar)
-//! or band (banner): the crop dialog (`PictureCropDialog.svelte`) and the live profile card
-//! preview beside the editors are left out until the desktop has the crop dialog, which the
-//! server icon needs too.
+//! or band (banner): the crop dialog (`settings/icon_editor.rs`, square icons only so far) still
+//! needs the avatar's circle and the banner's band.
 
-use std::io::Read as _;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use gpui::{
     AnyElement, App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, Focusable as _,
-    InteractiveElement as _, IntoElement, ParentElement as _, PathPromptOptions, Render,
-    SharedString, Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, PathPromptOptions, Render,
+    SharedString, Styled as _, StyledImage as _, Subscription, Window, div, img,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{InputEvent, InputState, Textarea, TextareaState};
-use mellow_client_core::ClientError;
+use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::user_settings::{
-    MAXIMUM_PROFILE_IMAGE_BYTES, ProfileDraft, ProfileImageFileProblem, ProfileLinkDraft,
-    ProfileLinkProblem, link_problem, profile_image_file_problem,
+    MAXIMUM_PROFILE_IMAGE_BYTES, ProfileDraft, ProfileLinkDraft, ProfileLinkProblem, link_problem,
 };
+use mellow_client_core::{ClientError, DownloadableFile};
 use mellow_protocol::{
-    ApiErrorCode, BannerCropQuery, IconCropQuery, MAXIMUM_ABOUT_ME_LENGTH,
-    MAXIMUM_PROFILE_LINK_LABEL_LENGTH, MAXIMUM_PROFILE_LINKS, UserProfile,
+    BannerCropQuery, IconCropQuery, MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH,
+    MAXIMUM_PROFILE_LINKS, PublicUser, UserProfile,
 };
 
-use super::parts::{body_text, error_line, section_label};
-use crate::components::{Button, ButtonVariant, IconButton, TextField, focus_ring, with_type};
+use super::parts::{description_text, error_line, section_label};
+use crate::components::{
+    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, TextField, avatar_tint, focus_ring,
+    icon, with_type,
+};
 use crate::i18n::{Strings, strings};
-use crate::messages::file_size_label;
+use crate::messages::{file_size_label, picture_animation, picture_for_box};
 use crate::session::Session;
+use crate::settings::picture_upload::{
+    PictureReadProblem, describe_image_failure, describe_read_problem, read_picture,
+};
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings as pending_strings;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP, COMPONENT_SETTINGS_ERROR_ICON_SIZE,
+    COMPONENT_PROFILE_POPOVER_AVATAR_RING_WIDTH, COMPONENT_PROFILE_POPOVER_AVATAR_SIZE,
+    COMPONENT_PROFILE_POPOVER_BANNER_HEIGHT, COMPONENT_PROFILE_POPOVER_BANNER_IMAGE_HEIGHT,
+    COMPONENT_PROFILE_POPOVER_BORDER_WIDTH, COMPONENT_PROFILE_POPOVER_LINK_GAP,
+    COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE, COMPONENT_PROFILE_POPOVER_LINK_ROW_HEIGHT,
+    COMPONENT_PROFILE_POPOVER_PADDING, COMPONENT_PROFILE_POPOVER_RADIUS,
+    COMPONENT_PROFILE_POPOVER_SECTION_GAP, COMPONENT_PROFILE_POPOVER_TEXT_GAP,
+    COMPONENT_PROFILE_POPOVER_WIDTH, COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP,
     COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP,
     COMPONENT_SETTINGS_SECTION_LABEL_GAP, COMPONENT_TEXT_FIELD_BORDER_WIDTH,
-    COMPONENT_TEXT_FIELD_FIELD_GAP, COMPONENT_TEXT_FIELD_LABEL_GAP,
-    COMPONENT_TEXT_FIELD_PADDING_INLINE, COMPONENT_TEXT_FIELD_RADIUS, SIZE_HIT_WEB_MIN, SPACE_XS,
-    TYPE_BODY_LG, TYPE_BODY_SM, TYPE_CATEGORY,
+    COMPONENT_TEXT_FIELD_FIELD_GAP, COMPONENT_TEXT_FIELD_HEIGHT, COMPONENT_TEXT_FIELD_ICON_SIZE,
+    COMPONENT_TEXT_FIELD_LABEL_GAP, COMPONENT_TEXT_FIELD_PADDING_INLINE,
+    COMPONENT_TEXT_FIELD_RADIUS, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, TYPE_CATEGORY,
+    TYPE_HEADING_LG,
 };
 use crate::theme::{color, length, theme};
 
@@ -60,12 +73,6 @@ enum ImageKind {
 enum ImageAction {
     Upload,
     Remove,
-}
-
-/// Why a picked file was not sent.
-enum PictureReadProblem {
-    File(ProfileImageFileProblem),
-    Unreadable,
 }
 
 /// One link row: its address and its name.
@@ -176,52 +183,6 @@ fn image_words(kind: ImageKind, catalogue: Strings) -> ImageWords {
     }
 }
 
-/// Reads a picked file off the UI thread, never more than the instance takes.
-fn read_picture(path: &Path) -> Result<Vec<u8>, PictureReadProblem> {
-    let file_name = path
-        .file_name()
-        .map(|name| name.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    let size = std::fs::metadata(path)
-        .map_err(|_| PictureReadProblem::Unreadable)?
-        .len();
-    if let Some(problem) = profile_image_file_problem(&file_name, size) {
-        return Err(PictureReadProblem::File(problem));
-    }
-    let mut bytes = Vec::new();
-    std::fs::File::open(path)
-        .and_then(|file| {
-            file.take(MAXIMUM_PROFILE_IMAGE_BYTES + 1)
-                .read_to_end(&mut bytes)
-        })
-        .map_err(|_| PictureReadProblem::Unreadable)?;
-    // The file grew since its size was read.
-    if u64::try_from(bytes.len()).unwrap_or(u64::MAX) > MAXIMUM_PROFILE_IMAGE_BYTES {
-        return Err(PictureReadProblem::File(ProfileImageFileProblem::TooLarge));
-    }
-    Ok(bytes)
-}
-
-fn too_large_reason(cx: &App) -> String {
-    let catalogue = strings(cx);
-    catalogue
-        .profile()
-        .too_large(&file_size_label(MAXIMUM_PROFILE_IMAGE_BYTES, catalogue))
-}
-
-/// Says what to do about each refusal, in the words of this page rather than the generic ones.
-fn describe_image_failure(error: &ClientError, summary: &str, cx: &App) -> String {
-    let pending = pending_strings(cx);
-    match error {
-        ClientError::Api {
-            code: ApiErrorCode::ValidationFailed,
-            ..
-        } => (pending.error_with_reason)(summary, strings(cx).profile().unreadable()),
-        ClientError::FileTooLarge => (pending.error_with_reason)(summary, &too_large_reason(cx)),
-        _ => describe_error(error, summary, pending),
-    }
-}
-
 impl ProfilePage {
     pub fn new(session: Entity<Session>, cx: &mut Context<Self>) -> Self {
         let observation = cx.observe(&session, |_, _, cx| cx.notify());
@@ -304,20 +265,9 @@ impl ProfilePage {
         let bytes = match read {
             Ok(bytes) => bytes,
             Err(problem) => {
-                let reason = match problem {
-                    PictureReadProblem::File(ProfileImageFileProblem::NotAPicture) => {
-                        catalogue.profile().not_a_picture().to_owned()
-                    }
-                    PictureReadProblem::File(ProfileImageFileProblem::TooLarge) => {
-                        too_large_reason(cx)
-                    }
-                    PictureReadProblem::Unreadable => catalogue.profile().unreadable().to_owned(),
-                };
                 self.image_notice = None;
-                self.image_error = Some((
-                    kind,
-                    (pending_strings(cx).error_with_reason)(summary, &reason).into(),
-                ));
+                self.image_error =
+                    Some((kind, describe_read_problem(&problem, summary, cx).into()));
                 cx.notify();
                 return;
             }
@@ -599,7 +549,7 @@ impl ProfilePage {
                 cx,
             ))
             .when(!has_picture, |editor| {
-                editor.child(body_text(words.empty_text, cx))
+                editor.child(description_text(words.empty_text, cx))
             })
             .child(
                 div()
@@ -765,10 +715,10 @@ impl ProfilePage {
             .child(
                 IconButton::new(
                     SharedString::from(format!("profile-link-{index}-remove")),
-                    IconName::X,
+                    IconName::Trash,
                     words.remove_link(position),
                 )
-                .sizes(SIZE_HIT_WEB_MIN, COMPONENT_SETTINGS_ERROR_ICON_SIZE)
+                .sizes(COMPONENT_TEXT_FIELD_HEIGHT, COMPONENT_TEXT_FIELD_ICON_SIZE)
                 .on_click(move |window, cx| {
                     page.update(cx, |page, cx| page.remove_link(index, window, cx));
                 }),
@@ -801,7 +751,7 @@ impl ProfilePage {
             .children(rows)
             .when(can_add, |links| {
                 links.child(
-                    div().child(
+                    div().flex().child(
                         Button::new("profile-add-link", words.add_link())
                             .variant(ButtonVariant::Ghost)
                             .track_focus(&self.add_link_focus)
@@ -825,11 +775,11 @@ impl ProfilePage {
                 words.editor_title(),
                 cx,
             ))
-            .child(body_text(words.editor_intro(), cx));
+            .child(description_text(words.editor_intro(), cx));
         match &self.details {
             DetailsLoad::Loading => {
                 return editor
-                    .child(body_text(words.loading(), cx))
+                    .child(description_text(words.loading(), cx))
                     .into_any_element();
             }
             DetailsLoad::Failed => {
@@ -870,7 +820,7 @@ impl ProfilePage {
                 cx,
             ))
             .child(
-                div().flex().justify_end().child(
+                div().flex().child(
                     Button::new(
                         "profile-details-save",
                         if self.is_saving {
@@ -879,7 +829,6 @@ impl ProfilePage {
                             words.save()
                         },
                     )
-                    .variant(ButtonVariant::Primary)
                     .disabled(!self.can_save_details(cx))
                     .on_click(move |_, cx| save_page.update(cx, Self::save_details)),
                 ),
@@ -890,6 +839,187 @@ impl ProfilePage {
                 cx,
             ))
             .into_any_element()
+    }
+}
+
+impl ProfilePage {
+    /// "Preview" (`ProfileCard.svelte` in `ProfileSettings.svelte`): the card others open, with
+    /// the pictures as saved and "About me" and the links as typed, so a change shows before it
+    /// is saved. It repeats the page for the eye.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
+    fn render_preview(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tokens = theme(cx);
+        let catalogue = strings(cx);
+        let me = self.session.read(cx).state().current_user()?.clone();
+        let user = PublicUser {
+            id: me.id,
+            username: me.username,
+            display_name: me.display_name,
+            avatar: me.avatar,
+            banner: me.banner,
+        };
+        let animation = picture_animation(cx);
+        let person = AvatarPerson::from_user(
+            &user,
+            user.avatar.map(|image| {
+                picture_for_box(
+                    DownloadableFile::ProfileImage(image.id),
+                    COMPONENT_PROFILE_POPOVER_AVATAR_SIZE,
+                    COMPONENT_PROFILE_POPOVER_AVATAR_SIZE,
+                    animation,
+                    window,
+                )
+            }),
+        );
+        let tint = avatar_tint(tokens, person.tint_number);
+        let surface = color(tokens.component_profile_popover_background);
+        let banner = match user.banner {
+            Some(banner) => div()
+                .w_full()
+                .h(length(COMPONENT_PROFILE_POPOVER_BANNER_IMAGE_HEIGHT))
+                .bg(color(tokens.component_profile_popover_banner))
+                .child(
+                    img(picture_for_box(
+                        DownloadableFile::ProfileImage(banner.id),
+                        COMPONENT_PROFILE_POPOVER_WIDTH,
+                        COMPONENT_PROFILE_POPOVER_BANNER_IMAGE_HEIGHT,
+                        animation,
+                        window,
+                    ))
+                    .size_full()
+                    .object_fit(ObjectFit::Cover)
+                    .with_fallback(move || div().size_full().bg(tint).into_any_element()),
+                ),
+            // No banner picture: the strip takes the person's avatar tint.
+            None => div()
+                .w_full()
+                .h(length(COMPONENT_PROFILE_POPOVER_BANNER_HEIGHT))
+                .bg(tint),
+        };
+        // The ring is drawn outside the avatar, cut out of the card, as in the member sheet.
+        let ring = COMPONENT_PROFILE_POPOVER_AVATAR_RING_WIDTH;
+        let avatar = div()
+            .flex_none()
+            .size(length(COMPONENT_PROFILE_POPOVER_AVATAR_SIZE + 2.0 * ring))
+            .mt(length(
+                COMPONENT_PROFILE_POPOVER_TEXT_GAP
+                    - COMPONENT_PROFILE_POPOVER_AVATAR_SIZE / 2.0
+                    - ring,
+            ))
+            .ml(-length(ring))
+            .p(length(ring))
+            .rounded_full()
+            .bg(surface)
+            .child(Avatar::new(person, COMPONENT_PROFILE_POPOVER_AVATAR_SIZE));
+        let draft = self.draft(cx);
+        let about_me = draft.about_me.trim().to_owned();
+        let links: Vec<String> = draft
+            .links
+            .iter()
+            .filter(|link| link_problem(link).is_none() && !link.url.trim().is_empty())
+            .map(|link| {
+                let label = link.label.trim();
+                if label.is_empty() {
+                    link.url.trim().to_owned()
+                } else {
+                    label.to_owned()
+                }
+            })
+            .collect();
+        let section_title = |title: &'static str| {
+            with_type(div(), TYPE_CATEGORY)
+                .text_color(color(tokens.component_profile_popover_section_label_text))
+                .child(title)
+        };
+        let words = catalogue.profile_details();
+        let card = div()
+            .w_full()
+            .max_w(length(COMPONENT_PROFILE_POPOVER_WIDTH))
+            .flex()
+            .flex_col()
+            .overflow_hidden()
+            .rounded(length(COMPONENT_PROFILE_POPOVER_RADIUS))
+            .border(length(COMPONENT_PROFILE_POPOVER_BORDER_WIDTH))
+            .border_color(color(tokens.component_profile_popover_border))
+            .bg(surface)
+            .child(banner)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(length(COMPONENT_PROFILE_POPOVER_TEXT_GAP))
+                    .px(length(COMPONENT_PROFILE_POPOVER_PADDING))
+                    .pb(length(COMPONENT_PROFILE_POPOVER_PADDING))
+                    .child(avatar)
+                    .child(
+                        with_type(div(), TYPE_HEADING_LG)
+                            .mt(length(SPACE_XS))
+                            .text_color(color(tokens.component_profile_popover_name_text))
+                            .child(display_name(&user).to_owned()),
+                    )
+                    .when(!about_me.is_empty(), |details| {
+                        details.child(
+                            div()
+                                .mt(length(COMPONENT_PROFILE_POPOVER_SECTION_GAP))
+                                .flex()
+                                .flex_col()
+                                .gap(length(COMPONENT_PROFILE_POPOVER_TEXT_GAP))
+                                .child(section_title(words.about_me()))
+                                .child(
+                                    with_type(div(), TYPE_BODY)
+                                        .text_color(color(
+                                            tokens.component_profile_popover_about_text,
+                                        ))
+                                        .child(about_me),
+                                ),
+                        )
+                    })
+                    .when(!links.is_empty(), |details| {
+                        details.child(
+                            div()
+                                .mt(length(COMPONENT_PROFILE_POPOVER_SECTION_GAP))
+                                .flex()
+                                .flex_col()
+                                .gap(length(COMPONENT_PROFILE_POPOVER_TEXT_GAP))
+                                .child(section_title(words.links()))
+                                .children(links.into_iter().map(|label| {
+                                    with_type(div(), TYPE_BODY)
+                                        .flex()
+                                        .items_center()
+                                        .gap(length(COMPONENT_PROFILE_POPOVER_LINK_GAP))
+                                        .h(length(COMPONENT_PROFILE_POPOVER_LINK_ROW_HEIGHT))
+                                        .text_color(color(
+                                            tokens.component_profile_popover_link_text,
+                                        ))
+                                        .child(icon(
+                                            IconName::LinkSimple,
+                                            COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE,
+                                            color(
+                                                tokens.component_profile_popover_link_icon_fallback,
+                                            ),
+                                        ))
+                                        .child(div().min_w_0().truncate().child(label))
+                                })),
+                        )
+                    }),
+            );
+        Some(
+            div()
+                .flex()
+                .flex_col()
+                .flex_grow(0.0)
+                .flex_shrink(1.0)
+                .flex_basis(length(COMPONENT_PROFILE_POPOVER_WIDTH))
+                .min_w_0()
+                .gap(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
+                .child(section_label(
+                    "profile-preview-title",
+                    catalogue.profile().preview(),
+                    cx,
+                ))
+                .child(card)
+                .into_any_element(),
+        )
     }
 }
 
@@ -907,23 +1037,44 @@ impl Render for ProfilePage {
         }
         let catalogue = strings(cx);
         let size_label = file_size_label(MAXIMUM_PROFILE_IMAGE_BYTES, catalogue);
+        let preview = self.render_preview(window, cx);
         div()
             .flex()
             .flex_col()
             .child(
+                // Right under the title, as on the web: the sheet's title gap is for intros.
                 div()
-                    .mt(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))
-                    .child(body_text(catalogue.profile().formats(&size_label), cx)),
+                    .mt(-length(
+                        COMPONENT_SETTINGS_PAGE_TITLE_GAP - COMPONENT_SETTINGS_SECTION_LABEL_GAP,
+                    ))
+                    .child(description_text(
+                        catalogue.profile().formats(&size_label),
+                        cx,
+                    )),
             )
             .child(
+                // Both columns start at the card's width, so the preview wraps under the editors
+                // when the page cannot hold the two.
                 div()
                     .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
                     .flex()
-                    .flex_col()
+                    .flex_wrap()
+                    .items_start()
                     .gap(length(COMPONENT_SETTINGS_SECTION_GAP))
-                    .child(self.render_image_editor(ImageKind::Avatar, cx))
-                    .child(self.render_image_editor(ImageKind::Banner, cx))
-                    .child(self.render_details(window, cx)),
+                    .child(
+                        div()
+                            .flex()
+                            .flex_col()
+                            .flex_grow(1.0)
+                            .flex_shrink(1.0)
+                            .flex_basis(length(COMPONENT_PROFILE_POPOVER_WIDTH))
+                            .min_w_0()
+                            .gap(length(COMPONENT_SETTINGS_SECTION_GAP))
+                            .child(self.render_image_editor(ImageKind::Avatar, cx))
+                            .child(self.render_image_editor(ImageKind::Banner, cx))
+                            .child(self.render_details(window, cx)),
+                    )
+                    .children(preview),
             )
     }
 }

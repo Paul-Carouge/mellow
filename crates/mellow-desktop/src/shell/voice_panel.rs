@@ -330,6 +330,7 @@ impl DuskShell {
     ) -> Option<AnyElement> {
         let voice_entity = self.voice.clone()?;
         let screen_share_section = self.render_screen_share_section(&voice_entity, window, cx);
+        let camera_button = self.render_camera_button(cx);
         let voice = voice_entity.read(cx);
         let global_push_to_talk_status = voice.global_push_to_talk_status().clone();
         let strings = strings(cx);
@@ -489,7 +490,6 @@ impl DuskShell {
                                 }),
                         ),
                 )
-                .child(self.render_camera_button(cx))
                 .child(self.render_soundboard_button(cx))
                 .child(
                     IconButton::new(
@@ -508,9 +508,16 @@ impl DuskShell {
                 );
             let hint_ink = color(tokens.component_voice_panel_hint_text);
             let microphone_ink = color(tokens.component_voice_panel_microphone_problem_text);
+            // The second row, as on the web: the camera, then the screen share and its quality.
+            let media_row = div()
+                .flex()
+                .items_start()
+                .gap(length(SPACE_2XS))
+                .child(div().mt(length(SPACE_XS)).child(camera_button))
+                .child(div().flex_1().min_w_0().children(screen_share_section));
             return Some(
                 card.child(row)
-                    .children(screen_share_section)
+                    .child(media_row)
                     .when_some(push_to_talk, |card, (is_missing_key, sentence)| {
                         card.child(hint_line(
                             is_missing_key.then_some(IconName::WarningCircle),
