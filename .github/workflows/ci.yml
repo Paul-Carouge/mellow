@@ -28,8 +28,9 @@ env:
   # X11 backends (ADR-0051); the jobs building the whole workspace need them. Zed's list, plus
   # PipeWire's headers and libclang for the voice engine's audio devices (cpal's PipeWire host).
   # Global push-to-talk adds none (ADR-0053): global-hotkey's X11 grab speaks the protocol in pure
-  # Rust (x11rb) and the Wayland portal goes through zbus.
-  DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libpipewire-0.3-dev libclang-dev
+  # Rust (x11rb) and the Wayland portal goes through zbus. The YouTube player window
+  # (`mellow-player`, ADR-0061) links WebKitGTK 4.1, which brings GTK 3 and libsoup 3.
+  DESKTOP_BUILD_PACKAGES: pkg-config libxkbcommon-dev libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev libfreetype-dev libpipewire-0.3-dev libclang-dev libwebkit2gtk-4.1-dev
   # Vesper's Linux capture and encoder (ADR-0051), linked by the desktop's screen sharing
   # (ADR-0054, whose X11 capture adds none: x11rb is pure Rust): PipeWire, VA-API and FFmpeg's headers and
   # libraries, and libclang for the bindgen runs of pipewire-sys and rusty_ffmpeg. The code calls
@@ -53,6 +54,8 @@ jobs:
           sudo apt-get update && sudo apt-get install --yes --no-install-recommends ${SERVER_BUILD_PACKAGES} ${DESKTOP_BUILD_PACKAGES} ${VESPER_BUILD_PACKAGES}
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
+      # The YouTube player window builds only with its feature, which the app never turns on.
+      - run: cargo clippy -p mellow-player --features window --all-targets --locked -- -D warnings
       - name: Design tokens are generated and pass their contrast pairs
         run: cargo xtask tokens --check
       - name: The desktop string catalogue is generated from the web's
@@ -88,6 +91,7 @@ jobs:
       # mellow-server`) does not have.
       - run: cargo test --workspace --exclude mellow-desktop --locked --no-fail-fast
       - run: cargo test -p mellow-desktop --locked --no-fail-fast
+      - run: cargo test -p mellow-player --features window --locked --no-fail-fast
 
   desktop-macos:
     name: Desktop client (macOS)
@@ -100,7 +104,8 @@ jobs:
         with:
           persist-credentials: false
       - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
-      - run: cargo build --locked -p mellow-desktop -p mellow-media
+      - run: cargo build --locked -p mellow-desktop -p mellow-media -p mellow-player --features mellow-player/window
+      - run: cargo clippy --locked --all-targets -p mellow-player --features window -- -D warnings
       # Vesper's audio filters are portable (ADR-0051): tested on macOS too.
       - run: cargo test --locked -p vesper-dsp -p vesper-core
 
@@ -130,12 +135,12 @@ jobs:
         run: |
           # rustc and cc find MSVC's link.exe by its full path, so MSYS2's link does not matter.
           $env:PATH = "C:\msys64\usr\bin;$env:PATH"
-          cargo clippy --locked --all-targets -p mellow-desktop -p mellow-media -p mellow-client-core -p mellow-protocol -- -D warnings
+          cargo clippy --locked --all-targets -p mellow-desktop -p mellow-media -p mellow-player -p mellow-client-core -p mellow-protocol --features mellow-player/window -- -D warnings
       - name: Test
         shell: pwsh
         run: |
           $env:PATH = "C:\msys64\usr\bin;$env:PATH"
-          cargo test --locked --no-fail-fast -p mellow-desktop -p mellow-media -p mellow-client-core -p mellow-protocol
+          cargo test --locked --no-fail-fast -p mellow-desktop -p mellow-media -p mellow-player -p mellow-client-core -p mellow-protocol --features mellow-player/window
 
   web:
     name: Web client

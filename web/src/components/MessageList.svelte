@@ -27,6 +27,7 @@
   } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
+  import { openProfileModal } from "./profile-surfaces.svelte";
   import { createReplyReferenceLookup, messageSummary } from "./reply-references";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
   import { roleIconsByUserId } from "./role-icons";
@@ -240,6 +241,11 @@
           return { onselect: () => actions.askToRemoveAllReactions(message) };
         case "end-poll":
           return { onselect: () => actions.askToEndPoll(message) };
+        case "author-profile":
+          return {
+            label: strings.profileCard.viewProfileOf(displayName(message.author)),
+            onselect: () => openProfileModal(message.author, invoker),
+          };
         case "delete":
           return { onselect: () => ondelete(message, false) };
       }

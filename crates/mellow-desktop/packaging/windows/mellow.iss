@@ -84,6 +84,8 @@ fr.WelcomeLabel2=Tes serveurs, tes conversations et tes appels, sur l’instance
 
 [Files]
 Source: "mellow.exe"; DestDir: "{app}"; Flags: ignoreversion
+; The YouTube player window (ADR-0061), started by mellow.exe only.
+Source: "mellow-player.exe"; DestDir: "{app}"; Flags: ignoreversion
 Source: "LICENSE.txt"; DestDir: "{app}"; Flags: ignoreversion
 
 [Icons]
@@ -100,6 +102,8 @@ Filename: "{app}\mellow.exe"; Flags: nowait; Check: ShouldOpenMellow
 [UninstallDelete]
 ; Updates being staged; preferences, drafts, the picture cache and the session stay, as on Linux.
 Type: filesandordirs; Name: "{localappdata}\mellow\updates"
+; The player window's WebView2 folder: the web engine's own files, nothing of the user's.
+Type: filesandordirs; Name: "{localappdata}\mellow\player-web-view"
 
 [Code]
 function HasSwitch(const Name: String): Boolean;
@@ -128,13 +132,15 @@ begin
   Executable := ExpandConstant('{app}\mellow.exe');
   if not FileExists(Executable) then
     Exit;
-  if SetEnvironmentVariable('MELLOW_EXE', Executable) = 0 then
+  { The YouTube player window (ADR-0061) ends with Mellow; it is stopped too in case it lingers. }
+  if (SetEnvironmentVariable('MELLOW_EXE', Executable) = 0) or
+    (SetEnvironmentVariable('MELLOW_PLAYER_EXE', ExpandConstant('{app}\mellow-player.exe')) = 0) then
   begin
     Log('Could not pass the installed path to PowerShell');
     Exit;
   end;
-  Script := '$running = @(Get-Process -Name mellow -ErrorAction SilentlyContinue | ' +
-    'Where-Object { $_.Path -eq $env:MELLOW_EXE });';
+  Script := '$running = @(Get-Process -Name mellow, mellow-player -ErrorAction SilentlyContinue | ' +
+    'Where-Object { $_.Path -eq $env:MELLOW_EXE -or $_.Path -eq $env:MELLOW_PLAYER_EXE });';
   if GraceSeconds > 0 then
     Script := Script + ' $running | Wait-Process -Timeout ' + IntToStr(GraceSeconds) +
       ' -ErrorAction SilentlyContinue;';

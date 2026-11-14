@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount, tick } from "svelte";
+  import { onMount, tick, untrack } from "svelte";
 
   import { strings } from "../i18n";
   import type { MellowClient } from "../lib/client.svelte";
@@ -20,10 +20,12 @@
     client: MellowClient;
     /** Wide enough for the navigation beside the page (the shell's sidebar breakpoint). */
     isWide: boolean;
+    /** The page it opens on: the profile modal's "Edit profile" opens Profile (DESIGN.md §5.7.1). */
+    initialSection?: Section;
     onclose: () => void;
   }
 
-  let { client, isWide, onclose }: Props = $props();
+  let { client, isWide, initialSection, onclose }: Props = $props();
 
   type Section = "account" | "profile" | "security" | "accessibility" | "voice" | "notifications" | "about";
   const SECTION_TITLES: Record<Section, string> = {
@@ -43,8 +45,9 @@
   let accountSettings = $state<{ closeOpenForm: () => boolean } | null>(null);
   let securitySettings = $state<{ closeOpenForm: () => boolean } | null>(null);
   let pageHeading = $state<HTMLElement | null>(null);
-  let section = $state<Section>("account");
-  let isSectionShownOnPhone = $state(false);
+  // Read once: the settings then follow the reader's choices.
+  let section = $state<Section>(untrack(() => initialSection ?? "account"));
+  let isSectionShownOnPhone = $state(untrack(() => initialSection !== undefined));
 
   const isNavigationShown = $derived(isWide || !isSectionShownOnPhone);
   const isPageShown = $derived(isWide || isSectionShownOnPhone);

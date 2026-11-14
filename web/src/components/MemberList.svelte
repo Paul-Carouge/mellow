@@ -1,9 +1,7 @@
 <script lang="ts">
-  import { tick } from "svelte";
-
   import { strings } from "../i18n";
-  import { type MellowClient, describeError } from "../lib/client.svelte";
-  import type { Guild, PublicUser } from "../lib/protocol";
+  import type { MellowClient } from "../lib/client.svelte";
+  import type { Guild } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
   import { contextMenuTrigger } from "./context-menu-trigger";
@@ -12,16 +10,13 @@
   import { memberListGroups, membersSortedByDisplayName } from "./member-order";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
-  import ProfileCard from "./ProfileCard.svelte";
-  import ProfileDetails from "./ProfileDetails.svelte";
-  import RelationshipConfirmDialog from "./RelationshipConfirmDialog.svelte";
+  import { openProfileModal, profileTrigger } from "./profile-surfaces.svelte";
   import RoleIcon from "./RoleIcon.svelte";
   import { roleIconsByUserId } from "./role-icons";
-  import { createUserProfileLoader } from "./user-profile-loader.svelte";
 
   // The members side sheet (DESIGN.md §5.7, ADR-0022 §1): Online then Offline, offline avatars
-  // dimmed while names keep full contrast; choosing a member shows their profile in the sheet,
-  // with "Send message".
+  // dimmed while names keep full contrast. Choosing a member opens their profile modal; resting on
+  // one shows their hover card beside the sheet (§5.7.1 to §5.7.3). The sheet stays the list.
   interface Props {
     client: MellowClient;
     guild: Guild;
@@ -30,7 +25,7 @@
     /** The phone layout: the sheet covers the window, without corners. */
     isFullWindow?: boolean;
     onclose: () => void;
-    /** After "Send message" opened a conversation (the overlay closes). */
+    /** After "Send message" in a person's menu opened a conversation (the overlay closes). */
     onopenedconversation: () => void;
   }
 
@@ -44,7 +39,6 @@
   );
   // Each member's highest role with an icon, beside their name (ADR-0050).
   const roleIcons = $derived(roleIconsByUserId(guild, members ?? undefined));
-  const sheetId = $props.id();
   const isOnline = (userId: string) => client.presenceOf(userId) !== "offline";
   // Sorted only when the members change: a presence update just splits the sorted list again.
   const sortedMembers = $derived(membersSortedByDisplayName(members ?? []));
@@ -61,83 +55,7 @@
     })),
   );
 
-  let profileUserId = $state<string | null>(null);
   let personMenu = $state<PersonContextMenu | null>(null);
-  // From the list, so a USER_UPDATE (a new avatar, say) shows in an open profile too.
-  const profile = $derived(members?.find((member) => member.user.id === profileUserId)?.user ?? null);
-  let opener: HTMLElement | null = null;
-  let backButton = $state<HTMLButtonElement | null>(null);
-  let isOpening = $state(false);
-  let errorMessage = $state("");
-  // "About me" and links, read when a profile opens (ADR-0050).
-  const profileDetails = createUserProfileLoader((userId) => client.loadUserProfile(userId));
-
-  async function showProfile(user: PublicUser, row: HTMLElement) {
-    opener = row;
-    profileUserId = user.id;
-    profileDetails.show(user.id);
-    errorMessage = "";
-    await tick();
-    backButton?.focus();
-  }
-
-  async function showMembers() {
-    profileUserId = null;
-    profileDetails.show(null);
-    await tick();
-    if (opener?.isConnected) {
-      opener.focus();
-    }
-  }
-
-  async function message(user: PublicUser) {
-    isOpening = true;
-    errorMessage = "";
-    try {
-      await client.openDirectMessage(user.id);
-      onopenedconversation();
-    } catch (error) {
-      errorMessage = describeError(error, strings.members.openConversationFailed);
-    } finally {
-      isOpening = false;
-    }
-  }
-
-  // Friends and blocks from the profile (ADR-0025); the Friends space at Home has the rest.
-  const relationship = $derived(profile ? (client.relationshipByUserId.get(profile.id) ?? null) : null);
-  let isChangingRelationship = $state(false);
-  let isConfirmingBlock = $state(false);
-  let sheet = $state<HTMLElement | null>(null);
-  let relationshipAnnouncement = $state("");
-
-  type ProfileAction = "send-message" | "block" | "unblock";
-
-  /**
-   * The button pressed is replaced once the relationship changes (Add friend becomes "Friend
-   * request sent", Unblock becomes Send message): focus goes to `next`, else the back button.
-   */
-  async function focusProfileActionAfterChange(next: ProfileAction) {
-    await tick();
-    if (document.activeElement !== null && document.activeElement !== document.body) {
-      return;
-    }
-    const target = sheet?.querySelector<HTMLElement>(`[data-profile-action="${next}"]`) ?? backButton;
-    target?.focus();
-  }
-
-  async function changeRelationship(change: () => Promise<unknown>, done: string, failed: string, next: ProfileAction) {
-    isChangingRelationship = true;
-    errorMessage = "";
-    try {
-      await change();
-      relationshipAnnouncement = done;
-      await focusProfileActionAfterChange(next);
-    } catch (error) {
-      errorMessage = describeError(error, failed);
-    } finally {
-      isChangingRelationship = false;
-    }
-  }
 
   const headButtonClass =
     "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-state-hover hover:text-text-normal";
@@ -146,8 +64,8 @@
 
 <!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
 <aside
-  bind:this={sheet}
-  aria-label={profile ? strings.members.profileOf(displayName(profile)) : strings.shell.membersOf(guild.name)}
+  aria-label={strings.shell.membersOf(guild.name)}
+  data-hover-card-column
   class={[
     "flex h-full shrink-0 flex-col overflow-hidden bg-(--mw-component-side-sheet-background)",
     isFullWindow ? "w-full safe-area-padding" : "w-(--mw-component-side-sheet-width) rounded-(--mw-component-side-sheet-radius)",
@@ -161,196 +79,81 @@
   }}
 >
   <div class="flex h-(--mw-component-chat-header-height) shrink-0 items-center gap-2xs ps-md pe-2xs text-text-heading">
-    {#if profile}
-      <!-- The caret points back, towards the list. -->
-      <IconButton
-        bind:element={backButton}
-        icon="caret-right"
-        label={strings.members.backToMembers}
-        class={headButtonClass}
-        iconClass="{headIconClass} rotate-180"
-        onclick={() => void showMembers()}
-      />
-    {/if}
-    <h2 class="min-w-0 flex-1 truncate type-heading-md">{profile ? strings.members.profile : strings.members.members}</h2>
+    <h2 class="min-w-0 flex-1 truncate type-heading-md">{strings.members.members}</h2>
     <IconButton icon="x" label={strings.common.close} class={headButtonClass} iconClass={headIconClass} onclick={onclose} />
   </div>
 
   <div class="min-h-0 flex-1 overflow-y-auto pb-md [scrollbar-width:thin]">
-    {#if profile}
-      {@const isSelf = profile.id === client.user?.id}
-      <div class="profile-enter">
-        <ProfileCard user={profile} surfaceToken="--mw-component-side-sheet-background">
-          {@const details = profileDetails.current}
-          {#if details.kind === "loaded" && details.userId === profile.id}
-            <ProfileDetails aboutMe={details.profile.about_me} links={details.profile.links} id="{sheetId}-details" />
-          {:else if details.kind === "failed" && details.userId === profile.id}
-            <p class="mt-(--mw-component-profile-popover-section-gap) type-body-sm text-(--mw-component-profile-popover-username-text)">
-              {strings.profileDetails.loadFailed}
-            </p>
-          {/if}
-          {#if !isSelf}
-            {@const user = profile}
-            {@const person = displayName(user)}
-            {#if relationship?.kind === "blocked"}
-              <!-- No conversation while blocked: unblocking comes first. -->
-              <div class="mt-xs">
-                <Button
-                  data-profile-action="unblock"
-                  isFullWidth
-                  isDisabled={isChangingRelationship}
-                  onclick={() =>
-                    void changeRelationship(
-                      () => client.removeRelationship(user.id),
-                      strings.friends.unblocked(person),
-                      strings.friends.unblockFailed(person),
-                      "send-message",
-                    )}>{strings.friends.unblock}</Button
-                >
-              </div>
-            {:else}
-              <div class="mt-xs flex flex-col gap-xs">
-                <Button
-                  data-profile-action="send-message"
-                  variant="primary"
-                  isFullWidth
-                  isDisabled={isOpening}
-                  onclick={() => message(user)}
-                >
-                  {isOpening ? strings.members.opening : strings.members.sendMessage}
-                </Button>
-                <!-- Stacked: the side sheet is too narrow for two labels side by side in French. -->
-                <div class="flex flex-col gap-xs [&>*]:w-full">
-                  {#if relationship === null}
-                    <Button
-                      isDisabled={isChangingRelationship}
-                      onclick={() =>
-                        void changeRelationship(
-                          () => client.sendFriendRequest({ username: user.username }),
-                          strings.friends.sent(person),
-                          strings.members.friendRequestFailed,
-                          "block",
-                        )}>{strings.members.addFriend}</Button
-                    >
-                  {:else if relationship.kind === "incoming_request"}
-                    <Button
-                      isDisabled={isChangingRelationship}
-                      onclick={() =>
-                        void changeRelationship(
-                          () => client.acceptFriendRequest(user.id),
-                          strings.friends.accepted(person),
-                          strings.members.acceptFailed,
-                          "block",
-                        )}>{strings.members.acceptRequest}</Button
-                    >
-                  {:else if relationship.kind === "outgoing_request"}
-                    <Button isDisabled>{strings.members.requestSent}</Button>
-                  {/if}
-                  <Button data-profile-action="block" aria-haspopup="dialog" onclick={() => (isConfirmingBlock = true)}
-                    >{strings.friends.block}</Button
-                  >
-                </div>
-              </div>
-            {/if}
-          {/if}
-          <p class="sr-only" aria-live="polite">{relationshipAnnouncement}</p>
-          <div role="alert" class="contents">
-            {#if errorMessage}
-              <p class="type-body text-(--mw-component-profile-popover-error-text)">{errorMessage}</p>
-            {/if}
-          </div>
-        </ProfileCard>
+    {#if members === null && client.failedMemberGuildIds.has(guild.id)}
+      <div role="alert" class="flex flex-col items-start gap-sm px-md pt-xs">
+        <p class="type-body text-text-muted">{strings.members.loadFailed}</p>
+        <Button onclick={() => client.retryLoadingMembers()}>{strings.common.tryAgain}</Button>
       </div>
-    {:else}
-      {#if members === null && client.failedMemberGuildIds.has(guild.id)}
-        <div role="alert" class="flex flex-col items-start gap-sm px-md pt-xs">
-          <p class="type-body text-text-muted">{strings.members.loadFailed}</p>
-          <Button onclick={() => client.retryLoadingMembers()}>{strings.common.tryAgain}</Button>
-        </div>
-      {:else if members === null}
-        <p role="status" class="px-md pt-xs type-body text-text-muted">{strings.members.loading}</p>
-      {/if}
-      {#each groups as group (group.key)}
-        <!-- Sentence case, the count as its own number (ADR-0022 §3). -->
-        <h3
-          aria-label={strings.members.groupLabel(group.label, group.members.length)}
-          class="flex h-(--mw-component-member-list-group-height) items-end justify-between px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
-        >
-          <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
-            {#if group.role}<RoleIcon
-                role={group.role}
-                sizeToken="--mw-component-role-icon-group-size"
-                isDecorative
-              />{/if}<span class="truncate">{group.label}</span>
-          </span>
-          <span aria-hidden="true">{group.members.length}</span>
-        </h3>
-        <ul>
-          {#each group.members as member (member.user.id)}
-            {@const isOnline = group.isOnline}
-            {@const presence = client.presenceOf(member.user.id)}
-            {@const customStatus = client.customStatusOf(member.user.id)}
-            {@const roleIcon = roleIcons.get(member.user.id)}
-            <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
-              <button
-                type="button"
-                aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus) +
-                  (roleIcon ? `, ${roleIcon.name}` : "")}
-                class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
-                onclick={(event) => void showProfile(member.user, event.currentTarget)}
-                {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(member.user, origin, invoker) ?? false)}
-              >
-                <Avatar
-                  user={member.user}
-                  sizeToken="--mw-component-member-row-avatar-size"
-                  presence={isOnline ? presence : null}
-                  ringColorToken="--mw-component-side-sheet-background"
-                  isDimmed={!isOnline}
-                />
-                <span class="flex min-w-0 flex-1 flex-col">
-                  <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
-                    <span class="truncate type-member-name" style:color={nameColors.get(member.user.id)}
-                      >{displayName(member.user)}</span
-                    >
-                    {#if roleIcon}<RoleIcon role={roleIcon} sizeToken="--mw-component-role-icon-member-size" />{/if}
-                  </span>
-                  {#if customStatus}
-                    <span class="truncate type-body-sm text-(--mw-component-member-row-activity-text)">{customStatus}</span>
-                  {/if}
-                </span>
-              </button>
-            </li>
-          {/each}
-        </ul>
-      {/each}
+    {:else if members === null}
+      <p role="status" class="px-md pt-xs type-body text-text-muted">{strings.members.loading}</p>
     {/if}
+    {#each groups as group (group.key)}
+      <!-- Sentence case, the count as its own number (ADR-0022 §3). -->
+      <h3
+        aria-label={strings.members.groupLabel(group.label, group.members.length)}
+        class="flex h-(--mw-component-member-list-group-height) items-end justify-between px-md pb-2xs type-category text-(--mw-component-member-list-group-text)"
+      >
+        <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
+          {#if group.role}<RoleIcon
+              role={group.role}
+              sizeToken="--mw-component-role-icon-group-size"
+              isDecorative
+            />{/if}<span class="truncate">{group.label}</span>
+        </span>
+        <span aria-hidden="true">{group.members.length}</span>
+      </h3>
+      <ul>
+        {#each group.members as member (member.user.id)}
+          {@const isOnline = group.isOnline}
+          {@const presence = client.presenceOf(member.user.id)}
+          {@const customStatus = client.customStatusOf(member.user.id)}
+          {@const roleIcon = roleIcons.get(member.user.id)}
+          <li class="mx-(--mw-component-member-row-margin-inline) mt-(--mw-component-member-row-gap)">
+            <button
+              type="button"
+              aria-haspopup="dialog"
+              aria-label={strings.members.memberLabel(displayName(member.user), strings.presence[presence], customStatus) +
+                (roleIcon ? `, ${roleIcon.name}` : "")}
+              class="flex h-(--mw-component-member-row-height) w-full items-center gap-sm rounded-(--mw-component-member-row-radius) px-(--mw-component-member-row-padding-inline) text-start text-(--mw-component-member-row-name-text) transition-colors duration-(--mw-motion-duration-fast) ease-(--mw-motion-easing-standard) hover:bg-(--mw-component-member-row-background-hover) hover:text-(--mw-component-member-row-name-text-hover) focus-visible:focus-ring-inset pointer-coarse:min-h-(--mw-size-hit-web-min)"
+              onclick={(event) => openProfileModal(member.user, event.currentTarget)}
+              {@attach profileTrigger(member.user, { placement: "beside" })}
+              {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(member.user, origin, invoker) ?? false)}
+            >
+              <Avatar
+                user={member.user}
+                sizeToken="--mw-component-member-row-avatar-size"
+                presence={isOnline ? presence : null}
+                ringColorToken="--mw-component-side-sheet-background"
+                isDimmed={!isOnline}
+              />
+              <span class="flex min-w-0 flex-1 flex-col">
+                <span class="flex min-w-0 items-center gap-(--mw-component-role-icon-gap)">
+                  <span class="truncate type-member-name" style:color={nameColors.get(member.user.id)}
+                    >{displayName(member.user)}</span
+                  >
+                  {#if roleIcon}<RoleIcon role={roleIcon} sizeToken="--mw-component-role-icon-member-size" />{/if}
+                </span>
+                {#if customStatus}
+                  <span class="truncate type-body-sm text-(--mw-component-member-row-activity-text)">{customStatus}</span>
+                {/if}
+              </span>
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {/each}
   </div>
 </aside>
 
-<PersonContextMenu
-  bind:this={personMenu}
-  {client}
-  onshowprofile={(user, invoker) => void showProfile(user, invoker)}
-  {onopenedconversation}
-/>
-
-{#if isConfirmingBlock && profile}
-  <RelationshipConfirmDialog
-    {client}
-    action="block"
-    user={profile}
-    onclose={() => (isConfirmingBlock = false)}
-    ondone={(sentence) => (relationshipAnnouncement = sentence)}
-    fallbackFocus={() =>
-      (sheet?.querySelector<HTMLElement>('[data-profile-action="unblock"]') ?? backButton)?.focus()}
-  />
-{/if}
+<PersonContextMenu bind:this={personMenu} {client} {onopenedconversation} />
 
 <style>
   .side-sheet-docked {
     animation: mw-slide-from-end var(--mw-motion-duration-slow) var(--mw-motion-easing-enter) both;
-  }
-  .profile-enter {
-    animation: mw-rise var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
   }
 </style>

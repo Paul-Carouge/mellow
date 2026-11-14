@@ -57,6 +57,7 @@ export type MessageMenuAction =
   | "view-reactions"
   | "remove-all-reactions"
   | "end-poll"
+  | "author-profile"
   | "delete";
 
 export interface MessageMenuFacts {
@@ -79,6 +80,11 @@ export interface MessageMenuFacts {
   readonly canJoinReactions: boolean;
   readonly canRemoveReactions: boolean;
   readonly canManagePins: boolean;
+  /**
+   * "View X's profile": the keyboard's way to the author's profile modal, since the list keeps one
+   * Tab stop and names are pointer-only (DESIGN.md §5.7.3).
+   */
+  readonly canViewAuthorProfile?: boolean;
 }
 
 /** The More button and a right-click open the same menu, as on Discord (DESIGN.md §5.4). */
@@ -94,6 +100,7 @@ export function messageMenuActions(facts: MessageMenuFacts): MenuLine<MessageMen
       facts.canManagePins && (facts.isPinned ? "unpin" : "pin"),
       facts.hasReactions && facts.canJoinReactions && "view-reactions",
     ],
+    [(facts.canViewAuthorProfile ?? false) && "author-profile"],
     [
       facts.isOwn && facts.isPoll && facts.isPollOpen && "end-poll",
       facts.hasReactions && facts.canRemoveReactions && "remove-all-reactions",
@@ -121,8 +128,13 @@ export type PersonMenuAction =
 export interface PersonMenuFacts {
   readonly isSelf: boolean;
   readonly relationship: RelationshipKind | null;
-  /** The member list shows profiles; elsewhere there is none to show. */
+  /** "Profile" opens the profile modal (DESIGN.md §5.7.1); false inside that modal's own menu. */
   readonly canShowProfile: boolean;
+  /**
+   * The profile modal's More menu: the modal already shows Message and the friend request, accept
+   * and unblock actions as buttons, so the menu keeps only the rest.
+   */
+  readonly isInProfile?: boolean;
   /** Not from the conversation itself, which is already open. */
   readonly canOpenConversation: boolean;
   /** A one-to-one conversation's row also copies the conversation's ID and mutes it. */
@@ -134,16 +146,20 @@ export interface PersonMenuFacts {
 export function personMenuActions(facts: PersonMenuFacts): MenuLine<PersonMenuAction>[] {
   const { isSelf, relationship } = facts;
   const isBlocked = relationship === "blocked";
+  const isInProfile = facts.isInProfile ?? false;
   return joinSections<PersonMenuAction>([
-    [facts.canShowProfile && "profile", !isSelf && !isBlocked && facts.canOpenConversation && "message"],
+    [
+      facts.canShowProfile && "profile",
+      !isInProfile && !isSelf && !isBlocked && facts.canOpenConversation && "message",
+    ],
     isSelf
       ? []
       : [
-          relationship === null && "add-friend",
-          relationship === "incoming_request" && "accept-request",
+          !isInProfile && relationship === null && "add-friend",
+          !isInProfile && relationship === "incoming_request" && "accept-request",
           relationship === "incoming_request" && "ignore-request",
           relationship === "outgoing_request" && "cancel-request",
-          isBlocked && "unblock",
+          !isInProfile && isBlocked && "unblock",
         ],
     facts.conversationChannel ? notificationSection(facts.isConversationMuted) : [],
     ["copy-user-id", facts.conversationChannel && "copy-channel-id"],
@@ -324,6 +340,8 @@ const looksInReadersLanguage = (): Record<MenuAction, MenuItemLook> => ({
   "remove-all-reactions": { label: strings.reactions.removeAll, icon: "x-circle", tone: "danger" },
   "end-poll": { label: strings.polls.end, icon: "chart-bar-horizontal", tone: "danger" },
   delete: { label: strings.contextMenu.deleteMessage, icon: "trash", tone: "danger" },
+  // Named after the author where the menu knows them (`MessageList` gives the label).
+  "author-profile": { label: strings.members.profile, icon: "at", tone: "normal" },
   profile: { label: strings.members.profile, icon: "at", tone: "normal" },
   message: { label: strings.contextMenu.message, icon: "chat-circle", tone: "normal" },
   "add-friend": { label: strings.members.addFriend, icon: "user-plus", tone: "normal" },
@@ -369,9 +387,13 @@ export function menuItemLook(action: MenuAction): MenuItemLook {
 
 // --- From actions to the menu's entries ---------------------------------------------------------
 
-export type MenuItemHandler =
+export type MenuItemHandler = (
   | { readonly onselect: () => void }
-  | { readonly onselectAndWait: () => Promise<ContextMenuOutcome> };
+  | { readonly onselectAndWait: () => Promise<ContextMenuOutcome> }
+) & {
+  /** Replaces the action's usual label, for one that names someone ("View Ana's profile"). */
+  readonly label?: string;
+};
 
 /** The entries of `ContextMenu`, each action read as it looks and acting through `handlerOf`. */
 export function menuEntries<Action extends MenuAction>(

@@ -20,6 +20,7 @@ Read before working:
 | `crates/mellow-client-core` | Client logic for native clients to come (connections, state, cache, outbox). No UI code. |
 | `crates/mellow-desktop` | The native desktop client, binary `mellow` (GPUI, ADR-0051). `src/theme/tokens.rs` and `icons.rs` are generated. |
 | `crates/mellow-media` | The desktop client's voice engine (ADR-0051): WebRTC peer, audio devices, processing, Opus. No UI code. |
+| `crates/mellow-player` | The desktop's YouTube player window, binary `mellow-player` (tao + wry, ADR-0061), and the pure library both processes share. Only the binary, behind the `window` feature, may use the web engine. |
 | `crates/mellow-update` | Signed self-update of `mellow-server` (`mellow-server update`, the Docker kit). |
 | `web/` | The web client (Svelte 5, Tailwind 4), built into `web/dist` and embedded in the server binary. |
 | `design/tokens.json` | Single source of truth for design tokens. Never hard-code colours or sizes in the web client or admin CSS. Icons in `design/icons`, fonts in `design/fonts`. |
@@ -34,7 +35,7 @@ cargo xtask tokens          # regenerate web/src/lib/tokens.css, the favicon, we
 cargo run -p mellow-desktop # the desktop client (Linux needs GPUI's and the voice engine's packages, see DESKTOP_BUILD_PACKAGES and SERVER_BUILD_PACKAGES in ci.yml)
 cd web && npm ci && npm run check && npm test && npm run build
 ```
-Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (GPUI desktop client), `mellow-media` (desktop voice engine), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
+Crates are added to the workspace when their milestone starts (see ROADMAP.md); today `mellow-protocol`, `mellow-server` (`init`, `serve`, `update`, `backup`, `admin …`: REST API, WebSocket gateway, voice SFU, embedded web client), `mellow-client-core` (REST, gateway, state), `mellow-desktop` (GPUI desktop client), `mellow-media` (desktop voice engine), `mellow-player` (the desktop's YouTube player window), `mellow-update` and `xtask` (design token generator) exist. Update this section when run commands appear.
 CI (`.github/workflows/ci.yml`) runs the same checks, with tests on Linux only and macOS and Windows builds of `mellow-desktop` and `mellow-media` (ADR-0051).
 
 ## Rules specific to this project
