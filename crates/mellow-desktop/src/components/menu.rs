@@ -849,6 +849,8 @@ impl Render for ContextMenu {
             .on_mouse_down_out(cx.listener(|menu, _, window, cx| menu.dismiss(window, cx)))
             // A right-click inside the menu must not reach what lies under it.
             .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
+            // Clicks on the card must not also reach the row or category lying under it.
+            .occlude()
             .flex()
             .flex_col()
             .min_w(length(

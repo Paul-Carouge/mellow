@@ -300,7 +300,8 @@ impl Render for ModalDialog {
                             COMPONENT_DIALOG_ERROR_ICON_SIZE,
                             color(tokens.component_dialog_error_text),
                         ))
-                        .child(error),
+                        // A long error wraps inside the dialog instead of running past its edge.
+                        .child(div().flex_1().min_w_0().child(error)),
                 )
             });
 
