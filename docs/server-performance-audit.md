@@ -379,7 +379,8 @@ the earlier runs), release builds without `web-client`. Every A/B ran back to ba
   the 92 KB per session below). With presences in `READY`, that is quadratic in a large guild's
   online members (3 500 online: about 250 KB each, 875 MB in all). Hence a process-wide budget
   (security review): beyond 256 KiB per socket, the capacity a socket keeps counts against
-  512 MiB; a socket that would exceed what is left is closed with 1013 (`server_busy`) and its
+  512 MiB and 16 MiB per user (second review), following the buffer's real growth (`Vec::reserve`
+  at least doubles it); a socket that would exceed what is left is closed with 1013 (`server_busy`) and its
   client retries with backoff (test
   `large_frames_share_a_memory_budget_that_closing_sockets_give_back`). A light `READY` with one
   `GUILD_CREATE` per server, or lazy presences, remains the lasting fix (roadmap).

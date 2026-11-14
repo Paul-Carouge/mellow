@@ -67,6 +67,12 @@ const FRAME_BYTES_WITHOUT_BUDGET: usize = 256 * 1024;
 /// exchanging heartbeats. A socket that needs more than what is left is closed with 1013 (try
 /// again later), and clients reconnect with backoff.
 const MAXIMUM_RETAINED_LARGE_FRAME_BYTES: usize = 512 * 1024 * 1024;
+/// The part of `MAXIMUM_RETAINED_LARGE_FRAME_BYTES` all the sockets of one user may hold together,
+/// so a few accounts in many large servers cannot take the whole budget (enough for ten sessions
+/// with a `READY` of about 1.8 MB each).
+const MAXIMUM_RETAINED_LARGE_FRAME_BYTES_PER_USER: usize = 16 * 1024 * 1024;
+/// The largest header tungstenite puts before a frame (an 8-byte length and a masking key).
+const MAXIMUM_FRAME_HEADER_BYTES: usize = 14;
 /// tungstenite zero-fills its whole read buffer before each read, so its default of 128 KiB stayed
 /// resident for every connection. Client frames are small (heartbeats; 4 KB before identify), and
 /// larger ones (a voice offer) still arrive, over several reads.
@@ -107,22 +113,38 @@ pub(crate) struct SessionRegistry {
     connection_permits: Arc<Semaphore>,
     /// One permit per byte of `MAXIMUM_RETAINED_LARGE_FRAME_BYTES`.
     retained_large_frame_bytes: Arc<Semaphore>,
+    /// Bytes of `retained_large_frame_bytes` each user's sockets hold; no entry once they hold none.
+    retained_large_frame_bytes_by_user: Mutex<HashMap<Snowflake, usize>>,
+    maximum_retained_large_frame_bytes_per_user: usize,
 }
 
 impl Default for SessionRegistry {
     fn default() -> Self {
-        Self::with_retained_large_frame_budget(MAXIMUM_RETAINED_LARGE_FRAME_BYTES)
+        Self::with_retained_large_frame_budgets(
+            MAXIMUM_RETAINED_LARGE_FRAME_BYTES,
+            MAXIMUM_RETAINED_LARGE_FRAME_BYTES_PER_USER,
+        )
     }
 }
 
 impl SessionRegistry {
-    fn with_retained_large_frame_budget(bytes: usize) -> Self {
+    fn with_retained_large_frame_budgets(total_bytes: usize, bytes_per_user: usize) -> Self {
         Self {
             sessions: Mutex::default(),
             next_attachment_id: AtomicU64::default(),
             connection_permits: Arc::new(Semaphore::new(MAXIMUM_GATEWAY_CONNECTIONS)),
-            retained_large_frame_bytes: Arc::new(Semaphore::new(bytes)),
+            retained_large_frame_bytes: Arc::new(Semaphore::new(total_bytes)),
+            retained_large_frame_bytes_by_user: Mutex::default(),
+            maximum_retained_large_frame_bytes_per_user: bytes_per_user,
         }
+    }
+
+    fn retained_large_frame_bytes_by_user(
+        &self,
+    ) -> std::sync::MutexGuard<'_, HashMap<Snowflake, usize>> {
+        self.retained_large_frame_bytes_by_user
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
     }
 
     fn sessions(&self) -> std::sync::MutexGuard<'_, HashMap<String, ResumableSession>> {
@@ -183,43 +205,110 @@ pub(crate) async fn upgrade(
         .on_upgrade(move |socket| run_connection(socket, state, permit, cookie_token, host_header)))
 }
 
-/// A client's WebSocket and its share of `MAXIMUM_RETAINED_LARGE_FRAME_BYTES`, held until it closes.
+/// A client's WebSocket and what its output buffer keeps of the retained frame budgets.
 struct GatewaySocket {
     socket: WebSocket,
-    /// Output buffer this socket may keep: `FRAME_BYTES_WITHOUT_BUDGET` plus what it holds.
-    covered_frame_bytes: usize,
-    held_frame_bytes: Option<OwnedSemaphorePermit>,
-    budget: Arc<Semaphore>,
+    retained: RetainedFrameBytes,
 }
 
 impl GatewaySocket {
-    fn new(socket: WebSocket, budget: Arc<Semaphore>) -> Self {
+    fn new(socket: WebSocket, registry: Arc<SessionRegistry>) -> Self {
         Self {
             socket,
-            covered_frame_bytes: FRAME_BYTES_WITHOUT_BUDGET,
-            held_frame_bytes: None,
-            budget,
+            retained: RetainedFrameBytes::new(registry),
+        }
+    }
+}
+
+/// What one socket's output buffer keeps beyond `FRAME_BYTES_WITHOUT_BUDGET`, counted against the
+/// instance's and its user's budgets until the socket closes.
+struct RetainedFrameBytes {
+    registry: Arc<SessionRegistry>,
+    /// Known once the client is authenticated: only then can a frame be large.
+    user_id: Option<Snowflake>,
+    /// The capacity of tungstenite's output buffer, grown as `Vec::reserve` grows it.
+    modeled_capacity: usize,
+    held_bytes: usize,
+    held_permit: Option<OwnedSemaphorePermit>,
+}
+
+impl RetainedFrameBytes {
+    fn new(registry: Arc<SessionRegistry>) -> Self {
+        Self {
+            registry,
+            user_id: None,
+            modeled_capacity: 0,
+            held_bytes: 0,
+            held_permit: None,
         }
     }
 
-    /// Takes from the budget what a frame of `frame_bytes` adds to the largest this socket sent;
-    /// `false` when the budget cannot cover it.
+    fn attribute_to(&mut self, user_id: Snowflake) {
+        self.user_id = Some(user_id);
+    }
+
+    /// Takes from the budgets what sending a frame of `frame_bytes` adds to the output buffer;
+    /// `false` when either budget cannot cover it.
     fn cover_frame(&mut self, frame_bytes: usize) -> bool {
-        if frame_bytes <= self.covered_frame_bytes {
+        // tungstenite reserves the whole frame in its emptied buffer: `Vec::reserve` then grows
+        // the capacity to at least twice what it was.
+        let needed_capacity = frame_bytes.saturating_add(MAXIMUM_FRAME_HEADER_BYTES);
+        if needed_capacity <= self.modeled_capacity {
             return true;
         }
-        let Ok(missing_bytes) = u32::try_from(frame_bytes - self.covered_frame_bytes) else {
-            return false;
-        };
-        let Ok(permit) = self.budget.clone().try_acquire_many_owned(missing_bytes) else {
-            return false;
-        };
-        match &mut self.held_frame_bytes {
-            Some(held) => held.merge(permit),
-            None => self.held_frame_bytes = Some(permit),
+        let capacity = needed_capacity.max(self.modeled_capacity.saturating_mul(2));
+        let missing_bytes = capacity
+            .saturating_sub(FRAME_BYTES_WITHOUT_BUDGET)
+            .saturating_sub(self.held_bytes);
+        if missing_bytes > 0 {
+            let Some(user_id) = self.user_id else {
+                return false;
+            };
+            let Ok(missing_permits) = u32::try_from(missing_bytes) else {
+                return false;
+            };
+            let mut bytes_by_user = self.registry.retained_large_frame_bytes_by_user();
+            let user_bytes = bytes_by_user.get(&user_id).copied().unwrap_or_default();
+            if user_bytes + missing_bytes
+                > self.registry.maximum_retained_large_frame_bytes_per_user
+            {
+                return false;
+            }
+            let Ok(permit) = self
+                .registry
+                .retained_large_frame_bytes
+                .clone()
+                .try_acquire_many_owned(missing_permits)
+            else {
+                return false;
+            };
+            bytes_by_user.insert(user_id, user_bytes + missing_bytes);
+            match &mut self.held_permit {
+                Some(held) => held.merge(permit),
+                None => self.held_permit = Some(permit),
+            }
+            self.held_bytes += missing_bytes;
         }
-        self.covered_frame_bytes = frame_bytes;
+        self.modeled_capacity = capacity;
         true
+    }
+}
+
+impl Drop for RetainedFrameBytes {
+    fn drop(&mut self) {
+        let Some(user_id) = self.user_id.filter(|_| self.held_bytes > 0) else {
+            return;
+        };
+        let mut bytes_by_user = self.registry.retained_large_frame_bytes_by_user();
+        if let std::collections::hash_map::Entry::Occupied(mut entry) = bytes_by_user.entry(user_id)
+        {
+            let left = entry.get().saturating_sub(self.held_bytes);
+            if left == 0 {
+                entry.remove();
+            } else {
+                *entry.get_mut() = left;
+            }
+        }
     }
 }
 
@@ -234,10 +323,11 @@ async fn send_text(socket: &mut GatewaySocket, text: FrameText) -> bool {
         );
         return false;
     }
-    if !socket.cover_frame(text.len()) {
+    if !socket.retained.cover_frame(text.len()) {
         tracing::warn!(
             frame_bytes = text.len(),
-            "gateway memory budget for large frames spent: the connection is closed as busy"
+            user_id = socket.retained.user_id.map(Snowflake::raw),
+            "gateway memory budget for large frames spent (instance or user): the connection is closed as busy"
         );
         let busy = CloseFrame {
             code: close_code::AGAIN,
@@ -307,10 +397,7 @@ async fn run_connection(
     cookie_token: Option<Zeroizing<String>>,
     host_header: Option<String>,
 ) {
-    let mut socket = GatewaySocket::new(
-        socket,
-        state.gateway_sessions.retained_large_frame_bytes.clone(),
-    );
+    let mut socket = GatewaySocket::new(socket, state.gateway_sessions.clone());
     let session_token = |token: String| match cookie_token.as_ref() {
         Some(cookie_token) if token.is_empty() => cookie_token.clone(),
         _ => Zeroizing::new(token),
@@ -367,6 +454,8 @@ async fn run_connection(
         _ => return refuse(socket).await,
     };
 
+    // A resumed socket replays dispatches: count them against the user too.
+    socket.retained.attribute_to(user.id);
     let attachment_id = state.gateway_sessions.next_attachment_id();
     let (outgoing, outgoing_frames) = mpsc::channel(OUTGOING_QUEUE_FRAMES);
     let (reply, answer) = oneshot::channel();
@@ -500,6 +589,7 @@ async fn identify(
         state.gateway_sessions.sessions().remove(&session_id);
         return None;
     };
+    socket.retained.attribute_to(user.id);
     if send_frame(socket, &ServerFrame::Ready { d: Box::new(ready) }).await {
         Some((user, commands_sender, hub_key))
     } else {
@@ -1656,13 +1746,188 @@ pub(crate) mod tests {
         );
     }
 
+    /// Skips text frames when `skipping_text`, then expects a close with 1013 (try again later).
+    async fn expect_busy_close(socket: &mut ClientSocket, skipping_text: bool) {
+        let close_code = loop {
+            match tokio::time::timeout(RECEIVE_TIMEOUT, socket.next())
+                .await
+                .expect("no frame within the timeout")
+            {
+                Some(Ok(ClientMessage::Close(frame))) => break frame.map(|frame| frame.code),
+                Some(Ok(ClientMessage::Text(text))) if !skipping_text => {
+                    panic!("expected a close, got {text}")
+                }
+                Some(Ok(_)) => {}
+                other => panic!("expected a close, got {other:?}"),
+            }
+        };
+        assert_eq!(
+            close_code,
+            Some(tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again)
+        );
+    }
+
+    async fn assert_closed_as_busy(socket: &mut ClientSocket) {
+        expect_busy_close(socket, false).await;
+    }
+
+    fn registry_with_budgets(total_bytes: usize, bytes_per_user: usize) -> Arc<SessionRegistry> {
+        Arc::new(SessionRegistry::with_retained_large_frame_budgets(
+            total_bytes,
+            bytes_per_user,
+        ))
+    }
+
+    #[test]
+    fn retained_bytes_follow_the_output_buffer_growth_and_come_back_on_close() {
+        const TOTAL_BYTES: usize = 1024 * 1024;
+        let registry = registry_with_budgets(TOTAL_BYTES, TOTAL_BYTES);
+        let user_id = Snowflake::from_raw(7);
+        let mut retained = RetainedFrameBytes::new(registry.clone());
+        retained.attribute_to(user_id);
+        let held_by = |registry: &SessionRegistry| {
+            let held = TOTAL_BYTES - registry.retained_large_frame_bytes.available_permits();
+            let by_user = registry
+                .retained_large_frame_bytes_by_user()
+                .get(&user_id)
+                .copied();
+            (held, by_user)
+        };
+
+        assert!(retained.cover_frame(1_000));
+        assert_eq!(held_by(&registry), (0, None));
+        // A `READY` of 300 000 bytes: the buffer grows to the frame and its header.
+        let ready_capacity = 300_000 + MAXIMUM_FRAME_HEADER_BYTES;
+        assert!(retained.cover_frame(300_000));
+        let held = ready_capacity - FRAME_BYTES_WITHOUT_BUDGET;
+        assert_eq!(held_by(&registry), (held, Some(held)));
+        // A larger dispatch doubles the capacity, more than the frame alone needs.
+        assert!(retained.cover_frame(400_000));
+        let held = 2 * ready_capacity - FRAME_BYTES_WITHOUT_BUDGET;
+        assert_eq!(held_by(&registry), (held, Some(held)));
+        // Anything within that capacity takes nothing more.
+        assert!(retained.cover_frame(500_000));
+        assert_eq!(held_by(&registry), (held, Some(held)));
+
+        drop(retained);
+        assert_eq!(held_by(&registry), (0, None));
+    }
+
+    #[test]
+    fn one_user_cannot_hold_more_than_their_share_of_the_budget() {
+        // A 400 000-byte frame holds 137 870 bytes: one per user fits, two do not.
+        let registry = registry_with_budgets(10 * 1024 * 1024, 200 * 1024);
+        let (heavy, other) = (Snowflake::from_raw(1), Snowflake::from_raw(2));
+        let socket_of = |user_id| {
+            let mut retained = RetainedFrameBytes::new(registry.clone());
+            retained.attribute_to(user_id);
+            retained
+        };
+        let mut first = socket_of(heavy);
+        let mut second = socket_of(heavy);
+        let mut someone_else = socket_of(other);
+
+        assert!(first.cover_frame(400_000));
+        assert!(!second.cover_frame(400_000));
+        assert!(someone_else.cover_frame(400_000));
+        drop(first);
+        assert!(second.cover_frame(400_000));
+    }
+
+    #[test]
+    fn an_unauthenticated_socket_never_takes_from_the_budget() {
+        let registry = registry_with_budgets(1024 * 1024, 1024 * 1024);
+        let mut retained = RetainedFrameBytes::new(registry.clone());
+        assert!(retained.cover_frame(FRAME_BYTES_WITHOUT_BUDGET - MAXIMUM_FRAME_HEADER_BYTES));
+        assert!(!retained.cover_frame(FRAME_BYTES_WITHOUT_BUDGET));
+        assert_eq!(
+            registry.retained_large_frame_bytes.available_permits(),
+            1024 * 1024
+        );
+    }
+
+    #[tokio::test]
+    async fn a_dispatch_the_budget_cannot_cover_closes_a_live_session_as_busy() {
+        // Small frames need nothing: the member's `READY` goes through, a large `GUILD_CREATE`
+        // does not.
+        let fixture = fixture_with_sessions(SessionRegistry::with_retained_large_frame_budgets(
+            1024,
+            MAXIMUM_RETAINED_LARGE_FRAME_BYTES_PER_USER,
+        ))
+        .await;
+        let owner = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.owner_token, now())
+            .await
+            .unwrap();
+        let member = fixture
+            .state
+            .accounts
+            .authenticate(&fixture.member_token, now())
+            .await
+            .unwrap();
+        let (mut socket, _) = identified(fixture.address, &fixture.member_token).await;
+        // 270 channels with the longest topics: a `GUILD_CREATE` of about 320 KB.
+        let topic = "t".repeat(crate::domain::guild_rules::MAXIMUM_CHANNEL_TOPIC_LENGTH);
+        let large = fixture
+            .state
+            .guilds
+            .create_guild(
+                owner.id,
+                false,
+                CreateGuildRequest {
+                    name: "Large".into(),
+                    initial_categories: None,
+                },
+                now(),
+            )
+            .await
+            .unwrap();
+        for index in 0..270 {
+            fixture
+                .state
+                .guilds
+                .create_channel(
+                    owner.id,
+                    large.id,
+                    mellow_protocol::CreateChannelRequest {
+                        kind: ChannelKind::Text,
+                        name: format!("channel-{index}"),
+                        topic: topic.clone(),
+                        parent_id: None,
+                        user_limit: None,
+                    },
+                    now(),
+                )
+                .await
+                .unwrap();
+        }
+        let invite = fixture
+            .state
+            .guilds
+            .create_invite(owner.id, large.id, CreateInviteRequest::default(), now())
+            .await
+            .unwrap();
+        fixture
+            .state
+            .guilds
+            .join_with_invite(member.id, &invite.code, now())
+            .await
+            .unwrap();
+
+        expect_busy_close(&mut socket, true).await;
+        fixture.close().await;
+    }
+
     #[tokio::test]
     async fn large_frames_share_a_memory_budget_that_closing_sockets_give_back() {
         // A `READY` of about 360 KB keeps about 100 KB beyond the uncounted 256 KiB: room for
         // one such socket, not two.
         const BUDGET_BYTES: usize = 150 * 1024;
-        let fixture = fixture_with_sessions(SessionRegistry::with_retained_large_frame_budget(
+        let fixture = fixture_with_sessions(SessionRegistry::with_retained_large_frame_budgets(
             BUDGET_BYTES,
+            MAXIMUM_RETAINED_LARGE_FRAME_BYTES_PER_USER,
         ))
         .await;
         give_the_owner_a_large_ready(&fixture).await;
@@ -1687,21 +1952,7 @@ pub(crate) mod tests {
             },
         )
         .await;
-        let close_code = loop {
-            match tokio::time::timeout(RECEIVE_TIMEOUT, second.next())
-                .await
-                .expect("no frame within the timeout")
-            {
-                Some(Ok(ClientMessage::Close(frame))) => break frame.map(|frame| frame.code),
-                Some(Ok(ClientMessage::Text(text))) => panic!("expected a close, got {text}"),
-                Some(Ok(_)) => {}
-                other => panic!("expected a close, got {other:?}"),
-            }
-        };
-        assert_eq!(
-            close_code,
-            Some(tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Again)
-        );
+        assert_closed_as_busy(&mut second).await;
 
         // The first socket closing gives its share back.
         drop(first);
