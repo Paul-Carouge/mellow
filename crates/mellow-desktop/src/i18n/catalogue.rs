@@ -4311,6 +4311,87 @@ impl MessagesStrings {
         }
     }
 
+    pub fn play_sound(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Play {file_name}"),
+            Language::French => format!("Lire {file_name}"),
+        }
+    }
+
+    pub fn pause_sound(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Pause {file_name}"),
+            Language::French => format!("Mettre en pause {file_name}"),
+        }
+    }
+
+    pub fn sound_position(self, file_name: &str) -> String {
+        match self.language {
+            Language::English => format!("Position in {file_name}"),
+            Language::French => format!("Position dans {file_name}"),
+        }
+    }
+
+    pub fn sound_position_value(self, elapsed: &str, total: &str) -> String {
+        match self.language {
+            Language::English => format!("{elapsed} of {total}"),
+            Language::French => format!("{elapsed} sur {total}"),
+        }
+    }
+
+    pub fn zero_seconds(self) -> &'static str {
+        match self.language {
+            Language::English => "0 seconds",
+            Language::French => "0\u{a0}s",
+        }
+    }
+
+    pub fn playback_speed(self, speed: &str) -> String {
+        match self.language {
+            Language::English => format!("Playback speed: {speed} times"),
+            Language::French => format!("Vitesse de lecture\u{a0}: {speed} fois"),
+        }
+    }
+
+    pub fn mute_sound(self) -> &'static str {
+        match self.language {
+            Language::English => "Mute",
+            Language::French => "Couper le son",
+        }
+    }
+
+    pub fn unmute_sound(self) -> &'static str {
+        match self.language {
+            Language::English => "Unmute",
+            Language::French => "Rétablir le son",
+        }
+    }
+
+    pub fn sound_volume(self) -> &'static str {
+        "Volume"
+    }
+
+    pub fn sound_loading(self) -> &'static str {
+        match self.language {
+            Language::English => "Loading…",
+            Language::French => "Chargement…",
+        }
+    }
+
+    pub fn sound_offline(self) -> &'static str {
+        match self.language {
+            Language::English => "You're offline, so this sound can't load.",
+            Language::French => "Hors ligne\u{a0}: ce son ne peut pas se charger.",
+        }
+    }
+
+    pub fn sound_stopped(self) -> &'static str {
+        match self.language {
+            Language::English => "The sound stopped loading. Press play to try again.",
+            Language::French => "Le son ne se charge plus. Appuie sur Lecture pour réessayer.",
+        }
+    }
+
     pub fn cannot_play(self) -> &'static str {
         match self.language {
             Language::English => "Couldn't play this file here. Download it to open it in another app.",
@@ -5941,6 +6022,38 @@ parts }).join(" "),
         match self.language {
             Language::English => format!("Starts at {time}"),
             Language::French => format!("Commence à {time}"),
+        }
+    }
+
+    pub fn by_channel(self, channel: &str) -> String {
+        match self.language {
+            Language::English => format!(", by {channel}"),
+            Language::French => format!(", par {channel}"),
+        }
+    }
+
+    pub fn lasting(self, spoken_duration: &str) -> String {
+        match self.language {
+            Language::English => format!(", {spoken_duration} long"),
+            Language::French => format!(", durée {spoken_duration}"),
+        }
+    }
+
+    pub fn in_playlist(self) -> &'static str {
+        match self.language {
+            Language::English => ", in a playlist",
+            Language::French => ", dans une playlist",
+        }
+    }
+
+    pub fn playlist(self) -> &'static str {
+        "Playlist"
+    }
+
+    pub fn open_on_you_tube(self, title: &str) -> String {
+        match self.language {
+            Language::English => format!("Open on YouTube: {title}"),
+            Language::French => format!("Ouvrir sur YouTube\u{a0}: {title}"),
         }
     }
 
