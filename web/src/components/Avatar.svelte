@@ -19,6 +19,8 @@
     /** Shows the status shape, cut out of `ringColorToken` (the surface behind the avatar). */
     presence?: ShownStatus | null;
     ringColorToken?: string;
+    /** The presence shape's side: small on rows, larger on the profile's bigger avatars. */
+    statusSizeToken?: string;
     isDimmed?: boolean;
   }
 
@@ -28,6 +30,7 @@
     animation = "on-hover",
     presence = null,
     ringColorToken = "--mw-color-surface-sidebar",
+    statusSizeToken = "--mw-component-status-size-small",
     isDimmed = false,
   }: Props = $props();
 
@@ -98,11 +101,11 @@
   {#if presence}
     <span
       class="absolute -right-(--mw-component-status-ring-width) -bottom-(--mw-component-status-ring-width) grid place-items-center rounded-full"
-      style:width="calc(var(--mw-component-status-size-small) + 2 * var(--mw-component-status-ring-width))"
-      style:height="calc(var(--mw-component-status-size-small) + 2 * var(--mw-component-status-ring-width))"
+      style:width="calc(var({statusSizeToken}) + 2 * var(--mw-component-status-ring-width))"
+      style:height="calc(var({statusSizeToken}) + 2 * var(--mw-component-status-ring-width))"
       style:background-color="var({ringColorToken})"
     >
-      <StatusIndicator status={presence} sizeToken="--mw-component-status-size-small" />
+      <StatusIndicator status={presence} sizeToken={statusSizeToken} />
     </span>
     <span class="sr-only">{strings.presence[presence]}</span>
   {/if}

@@ -44,12 +44,11 @@ export function durationTokenInMilliseconds(name: string): number {
   return parseDurationInMilliseconds(tokenValue(name));
 }
 
-/** A number token's value, for example "component-audio-player-wave-bar-count". */
+/** A unitless number token, for example "component-profile-hover-card-role-limit". */
 export function numberTokenValue(name: string): number {
-  const text = tokenValue(name).trim();
-  const value = Number(text);
-  if (text === "" || !Number.isFinite(value)) {
-    throw new Error(`expected a number token, got "${text}" for ${name}`);
+  const value = Number.parseFloat(tokenValue(name));
+  if (!Number.isFinite(value)) {
+    throw new Error(`expected a number token, got "${tokenValue(name)}" for --mw-${name}`);
   }
   return value;
 }

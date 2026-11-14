@@ -27,6 +27,7 @@
   } from "./message-rows";
   import { nameColorsByUserId } from "./name-colors.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
+  import { openProfileModal } from "./profile-surfaces.svelte";
   import { createReplyReferenceLookup, messageSummary } from "./reply-references";
   import { durationTokenInMilliseconds, lengthTokenInPixels } from "./tokens";
   import { roleIconsByUserId } from "./role-icons";
@@ -112,12 +113,13 @@
   const messages = $derived(client.messages(channelId));
   const messagesById = $derived(new Map(messages.map((message) => [message.id, message])));
   const replyReferenceOf = createReplyReferenceLookup();
-  // Role colours on author names, readable on the sheet in the current theme (DESIGN.md §2.3).
+  // Role colours on author names, readable on a hovered message, the least contrasting of its
+  // backgrounds, in the current theme (DESIGN.md §2.3).
   const authorColors = $derived(
     nameColorsByUserId(
       client.selectedGuild,
       client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
-      "color-surface-chat",
+      "component-message-background-hover",
     ),
   );
   // Each author's highest role with an icon, beside their name (ADR-0050).
@@ -239,6 +241,11 @@
           return { onselect: () => actions.askToRemoveAllReactions(message) };
         case "end-poll":
           return { onselect: () => actions.askToEndPoll(message) };
+        case "author-profile":
+          return {
+            label: strings.profileCard.viewProfileOf(displayName(message.author)),
+            onselect: () => openProfileModal(message.author, invoker),
+          };
         case "delete":
           return { onselect: () => ondelete(message, false) };
       }

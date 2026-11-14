@@ -22,6 +22,7 @@
     unixMillisecondsOfSnowflake,
   } from "./format";
   import { contextMenuTrigger } from "./context-menu-trigger";
+  import { profileTrigger } from "./profile-surfaces.svelte";
   import { type MenuLine, type MessageMenuAction, messageMenuActions } from "./context-menus";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -267,6 +268,7 @@
           canJoinReactions: actions.canJoinReactions,
           canRemoveReactions: actions.canRemoveReactions,
           canManagePins: actions.canManagePins,
+          canViewAuthorProfile: true,
         })
       : [],
   );
@@ -431,10 +433,13 @@
   {/if}
 
   {#if row.startsAuthorGroup}
+    <!-- Pointer only, like the message's other inner controls: the list keeps one Tab stop
+         (DESIGN.md §7.2, §5.7.3). -->
     <span
       {@attach authorMenuTrigger}
+      {@attach profileTrigger(author, { placement: "below", opensProfileOnClick: true })}
       class={[
-        "absolute left-(--mw-component-message-avatar-inset)",
+        "absolute left-(--mw-component-message-avatar-inset) cursor-pointer",
         replyReference
           ? "top-[calc(var(--mw-component-message-padding-block)_+_var(--mw-space-2xs)_+_var(--mw-component-message-reply-height))]"
           : "top-[calc(var(--mw-component-message-padding-block)_+_var(--mw-space-3xs))]",
@@ -444,9 +449,10 @@
     </span>
     <h3 class="flex flex-wrap items-baseline gap-x-xs">
       <span
-        class="type-message-author text-(--mw-component-message-author-text)"
+        class="cursor-pointer type-message-author text-(--mw-component-message-author-text) hover:underline"
         style:color={authorColor}
-        {@attach authorMenuTrigger}>{displayName(author)}</span
+        {@attach authorMenuTrigger}
+        {@attach profileTrigger(author, { placement: "below", opensProfileOnClick: true })}>{displayName(author)}</span
       >
       {#if authorRoleIcon}
         <!-- After the name, before the time, as on Discord; the role's name is its label. -->

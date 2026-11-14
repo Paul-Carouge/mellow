@@ -29,6 +29,9 @@
   import { trackInputModality } from "./input-modality";
   import LazyComponent from "./LazyComponent.svelte";
   import { closePictureViewer, pictureViewerRequest } from "./picture-viewer-request.svelte";
+  import ProfileHoverCard from "./ProfileHoverCard.svelte";
+  import ProfileModal from "./ProfileModal.svelte";
+  import { closeProfileModal, profileModalRequest } from "./profile-surfaces.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
   import { readMemberSheetPlaceIds, writeMemberSheetPlaceIds } from "./member-sheet-places";
@@ -98,6 +101,8 @@
   /** Group results said by the shell, which outlives the group's own views (ADR-0026). */
   let announcement = $state("");
   let isUserSettingsOpen = $state(false);
+  /** The page User settings open on; "Edit profile" in your profile modal asks for Profile. */
+  let userSettingsSection = $state<"profile" | undefined>(undefined);
   let isQuickSwitcherOpen = $state(false);
   /** The server the invite, settings or leave dialog is about, kept from the menu that opened it
    * (the strip's menu works on any server): a deleted server must not hand its settings to the next. */
@@ -266,6 +271,25 @@
       isMemberOverlayOpen = false;
     }
   });
+
+  /** "Send message" in a profile modal: the modal and any overlay go, the new conversation's composer focuses. */
+  async function focusComposerAfterProfile() {
+    closeProfileModal();
+    isMemberOverlayOpen = false;
+    isNavigationDrawerOpen = false;
+    // The results drawer would cover the conversation; docked beside it, they may stay.
+    if (isSearchOverlayOpen) {
+      messageSearch.isPanelOpen = false;
+    }
+    await tick();
+    focusComposer();
+  }
+
+  function editMyProfile() {
+    closeProfileModal();
+    userSettingsSection = "profile";
+    isUserSettingsOpen = true;
+  }
 
   /** The composer, or the Friends space's tab when Home shows it. */
   function focusComposer() {
@@ -553,7 +577,8 @@
       isUserSettingsOpen ||
       isNavigationDrawerOpen ||
       isQuickSwitcherOpen ||
-      isSearchOverlayOpen
+      isSearchOverlayOpen ||
+      profileModalRequest() !== null
     );
   }
 </script>
@@ -676,6 +701,7 @@
     {:else if isNavigationDrawerOpen}
       <Drawer label={strings.shell.serversAndChannels} side="start" onclose={() => (isNavigationDrawerOpen = false)}>
         {@render navigator(true)}
+        <ProfileHoverCard {client} />
       </Drawer>
     {/if}
 
@@ -782,6 +808,7 @@
         onclose={() => (messageSearch.isPanelOpen = false)}
       >
         {@render searchPanel(false)}
+        <ProfileHoverCard {client} />
       </Drawer>
     {:else if group && isMemberSheetOpen}
       <Drawer
@@ -809,7 +836,6 @@
         isFullWindow={!hasRoomForNavigator.current}
         onclose={() => (isMemberOverlayOpen = false)}
       >
-        <!-- Another server starts on its member list, never on the previous server's profile. -->
         {#key guild.id}
           <MemberList
             {client}
@@ -820,6 +846,8 @@
             onopenedconversation={() => void closeMemberSheet()}
           />
         {/key}
+        <!-- Inside the drawer's dialog: outside it, a popover would be inert (DESIGN.md §5.7.2). -->
+        <ProfileHoverCard {client} />
       </Drawer>
     {/if}
   </div>
@@ -916,11 +944,43 @@
 {/if}
 
 {#if isUserSettingsOpen}
-  <LazyComponent load={() => import("./UserSettings.svelte")} onclose={() => (isUserSettingsOpen = false)}>
+  <LazyComponent
+    load={() => import("./UserSettings.svelte")}
+    onclose={() => {
+      isUserSettingsOpen = false;
+      userSettingsSection = undefined;
+    }}
+  >
     {#snippet children({ default: UserSettings })}
-      <UserSettings {client} isWide={hasRoomForNavigator.current} onclose={() => (isUserSettingsOpen = false)} />
+      <UserSettings
+        {client}
+        isWide={hasRoomForNavigator.current}
+        initialSection={userSettingsSection}
+        onclose={() => {
+          isUserSettingsOpen = false;
+          userSettingsSection = undefined;
+        }}
+      />
     {/snippet}
   </LazyComponent>
+{/if}
+
+<!-- Profiles (DESIGN.md §5.7.1, §5.7.2): the hover card for names outside any drawer, and the
+     modal, which as the topmost dialog is never inert, whatever opened it. -->
+<ProfileHoverCard {client} />
+{#if profileModalRequest()}
+  {@const request = profileModalRequest()}
+  {#if request}
+    {#key request}
+      <ProfileModal
+        {client}
+        {request}
+        onclose={closeProfileModal}
+        onopenedconversation={() => void focusComposerAfterProfile()}
+        oneditprofile={editMyProfile}
+      />
+    {/key}
+  {/if}
 {/if}
 
 {#if pictureViewerRequest()}

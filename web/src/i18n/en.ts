@@ -1211,6 +1211,7 @@ export const en = {
   members: {
     members: "Members",
     profile: "Profile",
+    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
     profileOf: (person: string) => `Profile of ${person}`,
     backToMembers: "Back to members",
     sendMessage: "Send message",
@@ -2334,6 +2335,22 @@ export const en = {
       codesLocked: "Too many wrong codes: app codes are refused for a while. Try again later or use a recovery code.",
     },
   },
+  /** The profile modal and hover card (DESIGN.md §5.7.1, §5.7.2). */
+  profileCard: {
+    moreActionsFor: (person: string) => `More actions for ${person}`,
+    editProfile: "Edit profile",
+    noDetailsYet: "You have no About me or links yet.",
+    roles: "Roles",
+    rolesOf: (person: string) => `Roles of ${person}`,
+    memberSince: "Member since",
+    mellow: "Mellow",
+    memberSinceDate: (date: string) => `Member since ${date}`,
+    viewProfile: "View profile",
+    /** In a message's menu: the keyboard's way to its author's profile. */
+    viewProfileOf: (person: string) => `View ${person}'s profile`,
+    moreRoles: (roles: number) => `${count(roles)} more ${plural(roles, { one: "role", other: "roles" })}`,
+  },
+
   /** "About me" and links (ADR-0050): in a profile, and their editor in settings, Profile. */
   profileDetails: {
     aboutMe: "About me",

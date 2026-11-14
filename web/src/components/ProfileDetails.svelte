@@ -13,9 +13,13 @@
     links: readonly ProfileLink[];
     /** Unique per page: ties each heading to its section. */
     id: string;
+    /** Each section's layout and spacing; the profile modal's details column spaces them itself. */
+    sectionClass?: string;
+    /** Under the card's name: h4 below the settings preview's h3, h3 below the modal's h2. */
+    headingElement?: "h3" | "h4";
   }
 
-  let { aboutMe, links, id }: Props = $props();
+  let { aboutMe, links, id, headingElement = "h4", sectionClass = "mt-(--mw-component-profile-popover-section-gap) flex flex-col gap-2xs" }: Props = $props();
 
   const aboutBlocks = $derived(parseInlineMarkdown(aboutMe));
   const shownLinks = $derived(
@@ -32,20 +36,20 @@
 </script>
 
 {#if aboutBlocks.length > 0}
-  <section aria-labelledby="{id}-about" class="mt-(--mw-component-profile-popover-section-gap) flex flex-col gap-2xs">
-    <h4 id="{id}-about" class="type-category text-(--mw-component-profile-popover-section-label-text)">
+  <section aria-labelledby="{id}-about" class={sectionClass}>
+    <svelte:element this={headingElement} id="{id}-about" class="type-category text-(--mw-component-profile-popover-section-label-text)">
       {strings.profileDetails.aboutMe}
-    </h4>
+    </svelte:element>
     <div class="type-body break-words text-(--mw-component-profile-popover-about-text)">
       <MessageMarkdown blocks={aboutBlocks} />
     </div>
   </section>
 {/if}
 {#if shownLinks.length > 0}
-  <section aria-labelledby="{id}-links" class="mt-(--mw-component-profile-popover-section-gap) flex flex-col gap-2xs">
-    <h4 id="{id}-links" class="type-category text-(--mw-component-profile-popover-section-label-text)">
+  <section aria-labelledby="{id}-links" class={sectionClass}>
+    <svelte:element this={headingElement} id="{id}-links" class="type-category text-(--mw-component-profile-popover-section-label-text)">
       {strings.profileDetails.links}
-    </h4>
+    </svelte:element>
     <ul class="flex flex-col">
       {#each shownLinks as link, index (index)}
         <li>

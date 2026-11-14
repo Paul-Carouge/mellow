@@ -46,7 +46,9 @@
   let isVoicePanelUnavailable = $state(false);
 </script>
 
+<!-- A column for hover cards: a voice participant's opens beside the whole card (DESIGN.md §5.7.2). -->
 <div
+  data-hover-card-column
   class={[
     "grid h-full min-h-0 grid-rows-[minmax(0,1fr)_auto_auto] bg-(--mw-component-navigator-background)",
     isInDrawer
