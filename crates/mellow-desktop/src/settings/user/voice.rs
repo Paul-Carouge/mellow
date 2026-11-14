@@ -10,17 +10,21 @@
 //! opens; it redraws at most every [`METER_REDRAW_PERIOD`] and only when the level moves a whole
 //! decibel, and leaving the page stops the test.
 //!
-//! shortcut: the web's native selects are radio groups here (as in Invites), the threshold is a
-//! slider under the meter rather than a mark on it, and the enhancement styles are radio rows
-//! rather than a segmented control; the desktop has no select or segmented control yet.
+//! The devices are chosen as on the web's native selects: a field showing the choice, opening a
+//! menu of the devices with the current one checked.
+//!
+//! shortcut: the threshold is a slider under the meter rather than a mark on it, and the
+//! enhancement styles are radio rows rather than a segmented control; the desktop has no
+//! segmented control yet.
 //! The Video part (camera choice and preview) is `voice_video.rs`.
 
 use std::time::Duration;
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
-    IntoElement, KeyDownEvent, Modifiers, ModifiersChangedEvent, ParentElement as _, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
+    App, AppContext as _, Bounds, Context, DismissEvent, ElementId, Entity, EventEmitter,
+    FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent, Modifiers,
+    ModifiersChangedEvent, ParentElement as _, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Task, Window, div,
     prelude::FluentBuilder as _, relative,
 };
 use mellow_client_core::shared_logic::push_to_talk_keys::{
@@ -38,8 +42,10 @@ use mellow_media::{AudioDeviceDescription, AudioDeviceError};
 
 use super::parts::{body_text, section_label};
 use crate::components::{
-    Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, RangeBounds, RangeField,
-    Switch, icon, polite_live_region, with_type,
+    Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, ContextMenu, MenuAlignment,
+    MenuEntry, MenuItem, RangeBounds, RangeField, Switch, bounds_recorder, focus_ring, icon,
+    is_focus_visible, menu_origin_beside, polite_live_region, remembered_bounds,
+    remembered_focus_handle, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::preferences::PreferencesStore;
@@ -47,12 +53,14 @@ use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_KEY_CHIP_HEIGHT, COMPONENT_KEY_CHIP_MIN_WIDTH, COMPONENT_KEY_CHIP_PADDING_INLINE,
-    COMPONENT_KEY_CHIP_RADIUS, COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP,
+    COMPONENT_KEY_CHIP_RADIUS, COMPONENT_SETTINGS_SECTION_GAP,
     COMPONENT_SETTINGS_SECTION_LABEL_GAP, COMPONENT_SETTINGS_VOICE_COLUMN_MIN_WIDTH,
-    COMPONENT_TEXT_FIELD_LABEL_GAP, COMPONENT_VOICE_METER_HEIGHT, COMPONENT_VOICE_METER_RADIUS,
+    COMPONENT_TEXT_FIELD_BORDER_WIDTH, COMPONENT_TEXT_FIELD_HEIGHT, COMPONENT_TEXT_FIELD_ICON_SIZE,
+    COMPONENT_TEXT_FIELD_LABEL_GAP, COMPONENT_TEXT_FIELD_PADDING_INLINE,
+    COMPONENT_TEXT_FIELD_RADIUS, COMPONENT_VOICE_METER_HEIGHT, COMPONENT_VOICE_METER_RADIUS,
     COMPONENT_VOICE_METER_THRESHOLD_MARK_HEIGHT, COMPONENT_VOICE_METER_THRESHOLD_MARK_WIDTH,
     COMPONENT_VOICE_PANEL_SIGNAL_ICON_SIZE, RADIUS_FULL, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_LG,
-    SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BUTTON, TYPE_CATEGORY,
+    SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BUTTON, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
 use crate::voice::{Voice, change_voice_settings, current_settings, voice};
@@ -96,6 +104,7 @@ pub struct VoicePage {
     held_modifiers: Modifiers,
     key_announcement: SharedString,
     video: Entity<VoiceVideoSection>,
+    device_menu: DeviceMenu,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<Subscription>,
 }
@@ -183,6 +192,7 @@ impl VoicePage {
             held_modifiers: Modifiers::default(),
             key_announcement: SharedString::default(),
             video: cx.new(VoiceVideoSection::new),
+            device_menu: None,
             _tasks: tasks,
             _subscriptions: subscriptions,
         }
@@ -508,35 +518,30 @@ fn warning_line(icon_name: IconName, text: &'static str, text_color: u32) -> gpu
         .child(div().min_w_0().child(text))
 }
 
-/// The radio rows of a device: "Default (name)", the devices, and "Unplugged device" while the
-/// chosen one is gone from a list read (`is_list_read`). `choose` stores the choice (`None` is
-/// the default).
-#[allow(clippy::too_many_arguments)] // one group's words, state and setter, as at its call sites
-fn device_group(
-    id: &'static str,
-    label: &'static str,
+/// The options of a device select (`VoiceSettings.svelte`'s `deviceSelect`): "Default (name)",
+/// the devices, and "Unplugged device" while the chosen one is gone from a list read
+/// (`is_list_read`). Each option carries the device id it stores (`None` is the default); the
+/// index is the chosen option's.
+fn device_options(
     choices: &DeviceChoices,
     is_list_read: bool,
     chosen_id: Option<&str>,
-    missing_sentence: &'static str,
-    choose: fn(&mut VoiceSettings, Option<String>),
-    cx: &App,
-) -> impl IntoElement {
-    let words = strings(cx).voice_settings();
+    default_label: String,
+    unplugged_label: &'static str,
+) -> (Vec<(SharedString, Option<String>)>, usize, bool) {
     let is_unplugged = is_list_read && is_chosen_device_unplugged(choices, chosen_id);
-    let mut options = vec![ChoiceOption::new(
-        words.default_device(choices.default_device_name.as_deref()),
-    )];
+    let mut options: Vec<(SharedString, Option<String>)> = vec![(default_label.into(), None)];
     options.extend(
         choices
             .devices
             .iter()
-            .map(|device| ChoiceOption::new(device.label.clone())),
+            .map(|device| (device.label.clone().into(), Some(device.device_id.clone()))),
     );
     if is_unplugged {
-        options.push(ChoiceOption::new(words.unplugged_device()));
+        // The choice already made: picking it again changes nothing.
+        options.push((unplugged_label.into(), chosen_id.map(str::to_owned)));
     }
-    let checked_index = match chosen_id {
+    let chosen_index = match chosen_id {
         None => 0,
         Some(chosen) => choices
             .devices
@@ -544,40 +549,180 @@ fn device_group(
             .position(|device| device.device_id == chosen)
             .map_or(options.len() - 1, |position| position + 1),
     };
-    let device_ids: Vec<String> = choices
-        .devices
-        .iter()
-        .map(|device| device.device_id.clone())
+    (options, chosen_index, is_unplugged)
+}
+
+/// The open device menu of a page, closed by a choice, Esc or a click outside.
+pub(super) type DeviceMenu = Option<(Entity<ContextMenu>, Subscription)>;
+
+/// What one device select shows and stores.
+pub(super) struct DeviceSelect<'a> {
+    pub id: &'static str,
+    pub label: &'static str,
+    /// Leads each item of the menu: what kind of device it is.
+    pub icon: IconName,
+    pub choices: &'a DeviceChoices,
+    pub is_list_read: bool,
+    pub chosen_id: Option<&'a str>,
+    pub missing_sentence: &'static str,
+    pub store: fn(&mut VoiceSettings, Option<String>),
+}
+
+/// Opens the device menu under its field, as wide as it, the current choice checked.
+#[allow(clippy::too_many_arguments)] // one menu's words, choices and where it lives
+fn open_device_menu<Host: 'static>(
+    label: &'static str,
+    icon_name: IconName,
+    options: Vec<(SharedString, Option<String>)>,
+    chosen_index: usize,
+    store: fn(&mut VoiceSettings, Option<String>),
+    field_bounds: Bounds<Pixels>,
+    opener: FocusHandle,
+    menu_of: fn(&mut Host) -> &mut DeviceMenu,
+    window: &mut Window,
+    cx: &mut Context<Host>,
+) -> (Entity<ContextMenu>, Subscription) {
+    let entries = options
+        .into_iter()
+        .enumerate()
+        .map(|(index, (option_label, device_id))| {
+            MenuEntry::Item(
+                MenuItem::new(option_label, icon_name, move |_, cx| {
+                    let device_id = device_id.clone();
+                    change_voice_settings(cx, move |settings| store(settings, device_id));
+                })
+                .checked(Some(index == chosen_index)),
+            )
+        })
         .collect();
+    let origin = menu_origin_beside(field_bounds, MenuAlignment::Stretch);
+    let menu = cx.new(|cx| ContextMenu::open(label, entries, origin, Some(opener), window, cx));
+    let subscription = cx.subscribe(&menu, move |host, _, _: &DismissEvent, cx| {
+        *menu_of(host) = None;
+        cx.notify();
+    });
+    cx.notify();
+    (menu, subscription)
+}
+
+/// A device field (`deviceSelect`): its label, the current choice with a caret, opening the
+/// menu, and the unplugged sentence under it when the chosen device is gone. The host keeps the
+/// open menu where `menu_of` says and draws it.
+#[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
+pub(super) fn device_select<Host: 'static>(
+    select: &DeviceSelect<'_>,
+    menu_of: fn(&mut Host) -> &mut DeviceMenu,
+    is_menu_open: bool,
+    window: &mut Window,
+    cx: &mut Context<Host>,
+) -> gpui::Div {
+    let tokens = theme(cx);
+    let words = strings(cx).voice_settings();
+    let (options, chosen_index, is_unplugged) = device_options(
+        select.choices,
+        select.is_list_read,
+        select.chosen_id,
+        words.default_device(select.choices.default_device_name.as_deref()),
+        words.unplugged_device(),
+    );
+    let shown = options
+        .get(chosen_index)
+        .map(|(label, _)| label.clone())
+        .unwrap_or_default();
+    let id = ElementId::from(select.id);
+    let focus = remembered_focus_handle(&id, window, cx);
+    let bounds = remembered_bounds(&id, window, cx);
+    let is_ring_shown = is_focus_visible(&focus, window);
+    let is_open = is_menu_open && focus.is_focused(window);
+    let host = cx.entity().downgrade();
+    let (label, icon_name, store) = (select.label, select.icon, select.store);
+    let open = {
+        let focus = focus.clone();
+        let bounds = bounds.clone();
+        move |window: &mut Window, cx: &mut App| {
+            let Some(field_bounds) = *bounds.read(cx) else {
+                return;
+            };
+            let (options, focus) = (options.clone(), focus.clone());
+            let _ = host.update(cx, |host, cx| {
+                let menu = open_device_menu(
+                    label,
+                    icon_name,
+                    options,
+                    chosen_index,
+                    store,
+                    field_bounds,
+                    focus,
+                    menu_of,
+                    window,
+                    cx,
+                );
+                *menu_of(host) = Some(menu);
+            });
+        }
+    };
+    let open_by_key = open.clone();
+    let description = is_unplugged.then_some(select.missing_sentence);
     div()
         .flex()
         .flex_col()
-        .gap(length(SPACE_XS))
+        .gap(length(COMPONENT_TEXT_FIELD_LABEL_GAP))
         .child(
-            ChoiceGroup::new(id, label, options, checked_index)
-                // Read with the checked "Unplugged device", as the web's `aria-describedby`.
-                .when(is_unplugged, |group| group.description(missing_sentence))
-                .on_select(move |index, _, cx| {
-                    let choice = match index {
-                        0 => None,
-                        // The unplugged row is the choice already made.
-                        _ => match device_ids.get(index - 1) {
-                            Some(device_id) => Some(device_id.clone()),
-                            None => return,
-                        },
-                    };
-                    change_voice_settings(cx, move |settings| choose(settings, choice));
+            with_type(div(), TYPE_CATEGORY)
+                .text_color(color(tokens.component_text_field_label_text))
+                .child(select.label),
+        )
+        .child(
+            with_type(div(), TYPE_BODY_LG)
+                .id(id)
+                .role(Role::ComboBox)
+                .aria_label(SharedString::from(match description {
+                    Some(sentence) => format!("{}, {shown}. {sentence}", select.label),
+                    None => format!("{}, {shown}", select.label),
+                }))
+                .aria_expanded(is_open)
+                .track_focus(&focus)
+                .relative()
+                .flex()
+                .items_center()
+                .gap(length(COMPONENT_TEXT_FIELD_PADDING_INLINE))
+                .h(length(COMPONENT_TEXT_FIELD_HEIGHT))
+                .px(length(COMPONENT_TEXT_FIELD_PADDING_INLINE))
+                .rounded(length(COMPONENT_TEXT_FIELD_RADIUS))
+                .border(length(COMPONENT_TEXT_FIELD_BORDER_WIDTH))
+                .border_color(color(tokens.component_text_field_border))
+                .bg(color(tokens.component_text_field_background))
+                .text_color(color(tokens.component_text_field_text))
+                .cursor_pointer()
+                .on_click(move |_, window, cx| open(window, cx))
+                // Space, Enter and Alt+Down open it, as a native select does.
+                .on_key_down(move |event: &KeyDownEvent, window, cx| {
+                    let key = event.keystroke.key.as_str();
+                    let is_alt_down = key == "down" && event.keystroke.modifiers.alt;
+                    if matches!(key, "space" | "enter") || is_alt_down {
+                        cx.stop_propagation();
+                        open_by_key(window, cx);
+                    }
+                })
+                .child(div().flex_1().min_w_0().truncate().child(shown))
+                .child(icon(
+                    IconName::CaretDown,
+                    COMPONENT_TEXT_FIELD_ICON_SIZE,
+                    color(tokens.component_invite_select_icon),
+                ))
+                .child(bounds_recorder(bounds))
+                .when(is_ring_shown, |field| {
+                    field.child(focus_ring(COMPONENT_TEXT_FIELD_RADIUS, cx))
                 }),
         )
-        .when(is_unplugged, |group| {
-            group.child(warning_line(
+        .when(is_unplugged, |field| {
+            field.child(warning_line(
                 IconName::WarningCircle,
-                missing_sentence,
-                theme(cx).component_text_field_helper_text,
+                select.missing_sentence,
+                tokens.component_text_field_helper_text,
             ))
         })
 }
-
 /// A volume slider in percent; `store` writes it into the settings.
 fn percent_slider(
     id: &'static str,
@@ -625,6 +770,8 @@ fn level_meter(
         .relative()
         .flex()
         .items_center()
+        // The web's meter box with a mouse too (`VoiceLevelMeter.svelte`): the threshold handle
+        // is dragged inside it.
         .h(length(SIZE_HIT_WEB_MIN))
         .child(
             div()
@@ -675,7 +822,7 @@ fn level_meter(
 
 impl Render for VoicePage {
     #[allow(clippy::too_many_lines)] // the page, in the web's order
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let catalogue = strings(cx);
         let words = catalogue.voice_settings();
         let desktop_words = catalogue.desktop();
@@ -698,6 +845,7 @@ impl Render for VoicePage {
         let outputs = device_choices(self.outputs.as_deref().unwrap_or_default(), |position| {
             words.unnamed_output(i64::try_from(position).unwrap_or(i64::MAX))
         });
+        let is_menu_open = self.device_menu.is_some();
         let is_manual_sensitivity = settings.input_mode == VoiceInputMode::VoiceActivity
             && !settings.is_sensitivity_automatic;
         let column = || {
@@ -717,14 +865,20 @@ impl Render for VoicePage {
             .gap_y(length(SPACE_MD))
             .child(
                 column()
-                    .child(device_group(
-                        "voice-input-device",
-                        words.input_device(),
-                        &inputs,
-                        self.inputs.is_some(),
-                        settings.input_device_id.as_deref(),
-                        words.input_device_missing(),
-                        |settings, device_id| settings.input_device_id = device_id,
+                    .child(device_select(
+                        &DeviceSelect {
+                            id: "voice-input-device",
+                            icon: IconName::Microphone,
+                            label: words.input_device(),
+                            choices: &inputs,
+                            is_list_read: self.inputs.is_some(),
+                            chosen_id: settings.input_device_id.as_deref(),
+                            missing_sentence: words.input_device_missing(),
+                            store: |settings, device_id| settings.input_device_id = device_id,
+                        },
+                        |page: &mut Self| &mut page.device_menu,
+                        is_menu_open,
+                        window,
                         cx,
                     ))
                     .child(percent_slider(
@@ -738,14 +892,20 @@ impl Render for VoicePage {
             )
             .child(
                 column()
-                    .child(device_group(
-                        "voice-output-device",
-                        words.output_device(),
-                        &outputs,
-                        self.outputs.is_some(),
-                        settings.output_device_id.as_deref(),
-                        words.output_device_missing(),
-                        |settings, device_id| settings.output_device_id = device_id,
+                    .child(device_select(
+                        &DeviceSelect {
+                            id: "voice-output-device",
+                            icon: IconName::SpeakerHigh,
+                            label: words.output_device(),
+                            choices: &outputs,
+                            is_list_read: self.outputs.is_some(),
+                            chosen_id: settings.output_device_id.as_deref(),
+                            missing_sentence: words.output_device_missing(),
+                            store: |settings, device_id| settings.output_device_id = device_id,
+                        },
+                        |page: &mut Self| &mut page.device_menu,
+                        is_menu_open,
+                        window,
                         cx,
                     ))
                     .child(percent_slider(
@@ -1039,12 +1199,9 @@ impl Render for VoicePage {
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
-                    .child(body_text(desktop_words.appearance_intro(), cx)),
-            )
+            .child(div().child(body_text(desktop_words.appearance_intro(), cx)))
             .child(devices)
+            .children(self.device_menu.as_ref().map(|(menu, _)| menu.clone()))
             .child(input_mode)
             .child(mode_details)
             .child(processing)

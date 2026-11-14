@@ -19,7 +19,9 @@ use gpui::{
 use mellow_client_core::shared_logic::voice_settings::{DeviceChoice, DeviceChoices};
 use mellow_media::{CameraDescription, DecodedVideoFrame};
 
-use super::{DEVICE_REFRESH_PERIOD, device_group, helper_text, warning_line};
+use super::{
+    DEVICE_REFRESH_PERIOD, DeviceMenu, DeviceSelect, device_select, helper_text, warning_line,
+};
 use crate::components::{Button, ButtonVariant, icon, polite_live_region, with_type};
 use crate::i18n::strings;
 use crate::settings::user::parts::section_label;
@@ -45,6 +47,7 @@ pub(super) struct VoiceVideoSection {
     /// Drawn images replaced since the last draw, whose atlas slots that draw frees. At most one
     /// waits while the window is not drawn (hidden, minimised): the others never reached it.
     released: Vec<Arc<RenderImage>>,
+    device_menu: DeviceMenu,
     _tasks: Vec<Task<()>>,
     _subscriptions: Vec<gpui::Subscription>,
 }
@@ -81,6 +84,7 @@ impl VoiceVideoSection {
             picture: None,
             drawn: None,
             released: Vec::new(),
+            device_menu: None,
             _tasks: tasks,
             _subscriptions: subscriptions,
         }
@@ -202,6 +206,7 @@ impl Render for VoiceVideoSection {
         let are_names_hidden =
             listed.is_some_and(|listed| listed.iter().any(CameraDescription::is_unnamed));
         let toggle_voice = voice_entity.downgrade();
+        let is_menu_open = self.device_menu.is_some();
         let problem_sentence: SharedString = problem
             .map_or_else(SharedString::default, |problem| {
                 problem.sentence(catalogue).into()
@@ -213,14 +218,20 @@ impl Render for VoiceVideoSection {
             .gap(length(SPACE_XS))
             .flex_1()
             .min_w(length(COMPONENT_SETTINGS_VOICE_COLUMN_MIN_WIDTH))
-            .child(device_group(
-                "voice-camera-device",
-                words.camera(),
-                &choices,
-                listed.is_some(),
-                settings.camera_device_id.as_deref(),
-                words.camera_device_missing(),
-                |settings, device_id| settings.camera_device_id = device_id,
+            .child(device_select(
+                &DeviceSelect {
+                    id: "voice-camera-device",
+                    label: words.camera(),
+                    icon: IconName::VideoCamera,
+                    choices: &choices,
+                    is_list_read: listed.is_some(),
+                    chosen_id: settings.camera_device_id.as_deref(),
+                    missing_sentence: words.camera_device_missing(),
+                    store: |settings, device_id| settings.camera_device_id = device_id,
+                },
+                |section: &mut Self| &mut section.device_menu,
+                is_menu_open,
+                window,
                 cx,
             ))
             .when(has_no_camera, |controls| {
@@ -337,6 +348,7 @@ impl Render for VoiceVideoSection {
                     .child(controls)
                     .child(stage),
             )
+            .children(self.device_menu.as_ref().map(|(menu, _)| menu.clone()))
     }
 }
 
@@ -358,6 +370,7 @@ mod tests {
             picture: None,
             drawn: None,
             released: Vec::new(),
+            device_menu: None,
             _tasks: Vec::new(),
             _subscriptions: Vec::new(),
         }

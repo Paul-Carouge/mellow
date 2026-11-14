@@ -176,3 +176,35 @@ fn the_video_part_lists_the_cameras_previews_one_and_stops_on_leaving(cx: &mut T
     cx.run_until_parked();
     voice.read_with(cx, |voice, _| assert!(!voice.is_camera_preview_running()));
 }
+
+#[test]
+fn a_device_select_offers_the_default_the_devices_and_an_unplugged_choice_last() {
+    use mellow_client_core::shared_logic::voice_settings::DeviceChoice;
+
+    let choices = DeviceChoices {
+        default_device_name: Some("Speakers".to_owned()),
+        devices: vec![DeviceChoice {
+            device_id: "usb".to_owned(),
+            label: "USB headset".to_owned(),
+        }],
+    };
+    let ids = |options: &[(SharedString, Option<String>)]| {
+        options.iter().map(|(_, id)| id.clone()).collect::<Vec<_>>()
+    };
+
+    let (options, chosen, is_unplugged) =
+        device_options(&choices, true, Some("usb"), "Default".into(), "Unplugged");
+    assert_eq!(ids(&options), [None, Some("usb".to_owned())]);
+    assert_eq!((chosen, is_unplugged), (1, false));
+
+    let (options, chosen, is_unplugged) =
+        device_options(&choices, true, Some("gone"), "Default".into(), "Unplugged");
+    assert_eq!(options[2].0.as_ref(), "Unplugged");
+    assert_eq!(ids(&options)[2].as_deref(), Some("gone"));
+    assert_eq!((chosen, is_unplugged), (2, true));
+
+    // Before the list is read, a chosen device is not called unplugged.
+    let (_, _, is_unplugged) =
+        device_options(&choices, false, Some("gone"), "Default".into(), "Unplugged");
+    assert!(!is_unplugged);
+}

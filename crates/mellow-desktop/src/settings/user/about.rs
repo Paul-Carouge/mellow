@@ -17,9 +17,8 @@ use crate::self_update::{
 };
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::tokens::{
-    COMPONENT_SETTINGS_ACTION_GAP, COMPONENT_SETTINGS_PAGE_TITLE_GAP,
-    COMPONENT_SETTINGS_SECTION_GAP, COMPONENT_SETTINGS_SECTION_LABEL_GAP, SPACE_SM,
-    TYPE_HEADING_MD,
+    COMPONENT_SETTINGS_ACTION_GAP, COMPONENT_SETTINGS_SECTION_GAP,
+    COMPONENT_SETTINGS_SECTION_LABEL_GAP, SPACE_SM, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -188,7 +187,6 @@ impl Render for AboutPage {
             .items_start()
             .child(
                 with_type(div(), TYPE_HEADING_MD)
-                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
                     .text_color(color(theme(cx).component_settings_app_name_text))
                     .child(catalogue.desktop().desktop_app()),
             )

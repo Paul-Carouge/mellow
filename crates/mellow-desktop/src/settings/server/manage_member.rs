@@ -196,6 +196,8 @@ impl Render for ManageMemberBody {
                 div()
                     .flex()
                     .items_center()
+                    // The web's role rows are this tall with a mouse too
+                    // (`ManageMemberDialog.svelte`): a switch row, not a list row.
                     .min_h(length(SIZE_HIT_WEB_MIN))
                     .gap(length(COMPONENT_ROLES_ROW_ICON_GAP))
                     .border_b_1()

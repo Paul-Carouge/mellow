@@ -16,8 +16,12 @@
 //! Edits are sent with `Session::send_settings_change` and shown from the gateway's echo.
 
 pub mod channel;
+mod icon_editor;
+mod name_confirmation;
 mod navigation;
 mod permission_words;
+mod picture_crop;
+mod picture_upload;
 pub mod server;
 pub mod user;
 

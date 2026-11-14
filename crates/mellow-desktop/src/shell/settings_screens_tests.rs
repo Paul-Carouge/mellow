@@ -79,9 +79,11 @@ fn a_typed_name_keeps_the_reader_on_the_page_until_it_is_undone(cx: &mut TestApp
     });
     cx.run_until_parked();
     assert!(is_open(&shell, cx));
-    // From the Overview item, Tab passes the Permissions item and reaches the channel's name.
-    press(cx, "tab");
-    press(cx, "tab");
+    // From the Overview item, Tab passes Permissions, "Delete channel" and "Upload icon", then
+    // reaches the channel's name.
+    for _ in 0..4 {
+        press(cx, "tab");
+    }
     cx.simulate_input("-chat");
     cx.run_until_parked();
     press(cx, "escape");

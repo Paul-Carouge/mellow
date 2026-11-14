@@ -25,9 +25,9 @@ use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_PINS_MAX_HEIGHT, COMPONENT_ROLES_ROW_ICON_GAP, COMPONENT_ROLES_ROW_PADDING_INLINE,
-    COMPONENT_ROLES_ROW_RADIUS, COMPONENT_SETTINGS_SECTION_LABEL_GAP, SIZE_HIT_WEB_MIN, TYPE_BODY,
-    TYPE_CATEGORY, TYPE_CHANNEL_NAME,
+    COMPONENT_PINS_MAX_HEIGHT, COMPONENT_ROLES_ROW_HEIGHT, COMPONENT_ROLES_ROW_ICON_GAP,
+    COMPONENT_ROLES_ROW_PADDING_INLINE, COMPONENT_ROLES_ROW_RADIUS,
+    COMPONENT_SETTINGS_SECTION_LABEL_GAP, TYPE_BODY, TYPE_CATEGORY, TYPE_CHANNEL_NAME,
 };
 use crate::theme::{color, length, theme};
 
@@ -295,7 +295,7 @@ impl AddOverwriteTarget {
                     .items_center()
                     .gap(length(COMPONENT_ROLES_ROW_ICON_GAP))
                     .w_full()
-                    .min_h(length(SIZE_HIT_WEB_MIN))
+                    .min_h(length(COMPONENT_ROLES_ROW_HEIGHT))
                     .px(length(COMPONENT_ROLES_ROW_PADDING_INLINE))
                     .rounded(length(COMPONENT_ROLES_ROW_RADIUS))
                     .when_some(fill, |row, fill| row.bg(color(fill)))

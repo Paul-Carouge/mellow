@@ -33,9 +33,8 @@ use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};
 use crate::sign_in_form::{MAXIMUM_ACCOUNT_NAME_LENGTH, MINIMUM_PASSWORD_LENGTH};
 use crate::theme::tokens::{
     COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP, COMPONENT_SETTINGS_ACCOUNT_ROW_GAP,
-    COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP, COMPONENT_SETTINGS_PAGE_TITLE_GAP,
-    COMPONENT_SETTINGS_SECTION_GAP, COMPONENT_SETTINGS_SECTION_LABEL_GAP, TYPE_BODY_LG,
-    TYPE_BODY_SM, TYPE_CATEGORY,
+    COMPONENT_SETTINGS_ACCOUNT_VALUE_GAP, COMPONENT_SETTINGS_SECTION_GAP,
+    COMPONENT_SETTINGS_SECTION_LABEL_GAP, TYPE_BODY_LG, TYPE_BODY_SM, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
 
@@ -645,7 +644,6 @@ impl Render for AccountPage {
             .flex_col()
             .child(
                 card(cx)
-                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
                     .gap(length(COMPONENT_SETTINGS_ACCOUNT_ROW_GAP))
                     .child(name_row)
                     .children(friend_code_row)

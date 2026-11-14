@@ -1,8 +1,8 @@
 //! Channel settings (`ChannelSettings.svelte`, Discord's "Edit channel"): the channel's sections
 //! under its name, each only with its permission in this channel and once the desktop has its
 //! page. See the parent module for how a section is added.
-//!
-//! shortcut: "Delete channel" comes with the M3 step 6 settings tracks.
+//! "Delete channel", the danger item under the sections, asks for the channel's name first
+//! (`DeleteChannelDialog.svelte`), for whoever may manage the channel.
 
 mod add_overwrite_target;
 mod overview;
@@ -10,17 +10,24 @@ mod permissions;
 
 use std::sync::Arc;
 
-use gpui::{AppContext as _, Context, Entity, EventEmitter, IntoElement, Render, Window, div};
+use gpui::{
+    AppContext as _, Context, Entity, EventEmitter, FocusHandle, IntoElement, ParentElement as _,
+    Render, Styled as _, Subscription, Window, div,
+};
 use mellow_client_core::shared_logic::channel_settings::{
-    ChannelSettingsSection, visible_channel_sections,
+    ChannelSettingsSection, can_manage_channel, visible_channel_sections,
 };
 use mellow_client_core::state::ClientState;
-use mellow_protocol::Snowflake;
+use mellow_protocol::{ChannelKind, Snowflake};
 
 use self::overview::ChannelOverviewPage;
 use self::permissions::ChannelPermissionsPage;
+use super::name_confirmation::{NameConfirmationWords, open_name_confirmation_dialog};
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
-use crate::components::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
+use crate::components::{
+    ModalDialog, ModalDialogEvent, SettingsNavEntry, SettingsNavItem, SettingsSheet,
+    SettingsSheetLabels,
+};
 use crate::i18n::{Strings, strings};
 use crate::session::Session;
 
@@ -63,6 +70,8 @@ pub struct ChannelSettings {
     channel_id: Snowflake,
     navigation: SettingsNavigation<ChannelSettingsSection>,
     is_closing: bool,
+    delete_focus: FocusHandle,
+    delete_dialog: Option<(Entity<ModalDialog>, Subscription)>,
 }
 
 impl EventEmitter<SettingsClosed> for ChannelSettings {}
@@ -97,7 +106,93 @@ impl ChannelSettings {
             channel_id,
             navigation,
             is_closing: false,
+            delete_focus: cx.focus_handle().tab_stop(true),
+            delete_dialog: None,
         }
+    }
+
+    /// The channel's name, when the reader may delete it (a category goes through its own menu).
+    fn deletable_channel_name(&self, cx: &gpui::App) -> Option<String> {
+        let state = self.session.read(cx).state();
+        let channel = state.guild_channel(self.channel_id)?;
+        (channel.kind != ChannelKind::Category
+            && can_manage_channel(state.my_channel_permissions(self.channel_id)))
+        .then(|| channel.name.clone())
+    }
+
+    fn open_delete_dialog(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.delete_dialog.is_some() {
+            return;
+        }
+        let Some(name) = self.deletable_channel_name(cx) else {
+            return;
+        };
+        let words = strings(cx).channel_removal();
+        let dialog = open_name_confirmation_dialog(
+            NameConfirmationWords {
+                title: words.channel_title(&name),
+                body: words.channel_body().to_owned(),
+                field_label: words.confirm_label(&name),
+                submit: words.delete_channel(),
+                busy_submit: words.deleting(),
+            },
+            name,
+            window,
+            cx,
+        );
+        let subscription = cx.subscribe_in(
+            &dialog,
+            window,
+            |settings, dialog, event: &ModalDialogEvent, window, cx| match event {
+                ModalDialogEvent::Closed => {
+                    settings.delete_dialog = None;
+                    cx.notify();
+                }
+                ModalDialogEvent::Submitted => settings.delete_channel(dialog, window, cx),
+            },
+        );
+        self.delete_dialog = Some((dialog, subscription));
+        cx.notify();
+    }
+
+    /// Once the instance agrees, the gateway takes the channel away and the settings close with
+    /// it (see `render`).
+    fn delete_channel(
+        &mut self,
+        dialog: &Entity<ModalDialog>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        dialog.update(cx, |dialog, cx| {
+            dialog.set_error(None, cx);
+            dialog.set_busy(true, cx);
+        });
+        let channel_id = self.channel_id;
+        let dialog = dialog.downgrade();
+        let window_handle = window.window_handle();
+        let failure = strings(cx)
+            .channel_removal()
+            .channel_delete_failed()
+            .to_owned();
+        self.session.update(cx, |session, cx| {
+            session.send_settings_change(
+                "delete channel",
+                failure,
+                move |rest| async move { rest.delete_channel(channel_id).await },
+                cx,
+                move |outcome, cx| {
+                    let _ = window_handle.update(cx, |_, window, cx| {
+                        let _ = dialog.update(cx, |dialog, cx| {
+                            dialog.set_busy(false, cx);
+                            match outcome {
+                                Ok(()) => dialog.request_close(window, cx),
+                                Err(message) => dialog.set_error(Some(message.into()), cx),
+                            }
+                        });
+                    });
+                },
+            );
+        });
     }
 
     fn navigation(&mut self) -> &mut SettingsNavigation<ChannelSettingsSection> {
@@ -171,6 +266,16 @@ impl Render for ChannelSettings {
             }));
         }
 
+        if self.deletable_channel_name(cx).is_some() {
+            entries.push(SettingsNavEntry::Separator);
+            entries.push(SettingsNavEntry::Item(SettingsNavItem {
+                label: catalogue.channel_removal().delete_channel().into(),
+                focus_handle: self.delete_focus.clone(),
+                is_selected: false,
+                is_danger: true,
+            }));
+        }
+
         let words = catalogue.channel_settings();
         let settings = cx.entity();
         let choose_settings = settings.clone();
@@ -191,13 +296,14 @@ impl Render for ChannelSettings {
         .wide(is_wide, self.navigation.is_page_shown_when_narrow())
         .entries(entries)
         .on_choose(move |index, window, cx| {
-            let Some(target) = item_sections.get(index).copied() else {
-                return;
-            };
             choose_settings.update(cx, |settings, cx| {
-                settings
-                    .navigation
-                    .choose(target, section, is_wide, window, cx);
+                // The item after the sections: "Delete channel".
+                match item_sections.get(index).copied() {
+                    Some(target) => settings
+                        .navigation
+                        .choose(target, section, is_wide, window, cx),
+                    None => settings.open_delete_dialog(window, cx),
+                }
                 cx.notify();
             });
         })
@@ -213,6 +319,15 @@ impl Render for ChannelSettings {
         if let (Some(section), Some(page)) = (section, self.navigation.page_view()) {
             sheet = sheet.page(section_label(section, catalogue), page.into_any_element());
         }
-        sheet.into_any_element()
+        div()
+            .absolute()
+            .inset_0()
+            .child(sheet)
+            .children(
+                self.delete_dialog
+                    .as_ref()
+                    .map(|(dialog, _)| dialog.clone()),
+            )
+            .into_any_element()
     }
 }

@@ -149,7 +149,10 @@ pub struct Strings {
     pub instance_not_mellow: fn(&str) -> String,
     /// Host, the instance's version, the oldest version the app supports.
     pub instance_too_old: fn(&str, &str, &str) -> String,
-    pub use_another_instance: &'static str,
+    /// The instance row under the sign-in title: its label, its button, the button's name.
+    pub instance_row_label: &'static str,
+    pub change_instance: &'static str,
+    pub change_instance_label: &'static str,
 }
 
 pub static ENGLISH: Strings = Strings {
@@ -251,7 +254,9 @@ pub static ENGLISH: Strings = Strings {
             "{host} runs Mellow {version}. This app needs {minimum} or later. Ask the instance admin to update."
         )
     },
-    use_another_instance: "Use another instance",
+    instance_row_label: "Instance",
+    change_instance: "Change",
+    change_instance_label: "Change instance",
 };
 
 pub static FRENCH: Strings = Strings {
@@ -353,7 +358,9 @@ pub static FRENCH: Strings = Strings {
             "{host} utilise Mellow {version}. Cette application demande la version {minimum} ou plus récente. Demande à l’admin de l’instance de la mettre à jour."
         )
     },
-    use_another_instance: "Utiliser une autre instance",
+    instance_row_label: "Instance",
+    change_instance: "Changer",
+    change_instance_label: "Changer d’instance",
 };
 
 #[cfg(test)]

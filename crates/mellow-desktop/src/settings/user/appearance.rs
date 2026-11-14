@@ -17,7 +17,7 @@ use crate::preferences::{
 };
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::length;
-use crate::theme::tokens::{COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP};
+use crate::theme::tokens::COMPONENT_SETTINGS_SECTION_GAP;
 
 const THEME_CHOICES: [ThemeChoice; 3] =
     [ThemeChoice::System, ThemeChoice::Light, ThemeChoice::Dark];
@@ -75,11 +75,7 @@ impl Render for AppearancePage {
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
-                    .child(body_text(words.appearance_intro(), cx)),
-            )
+            .child(div().child(body_text(words.appearance_intro(), cx)))
             .child(
                 div().mt(length(COMPONENT_SETTINGS_SECTION_GAP)).child(
                     ChoiceGroup::new(

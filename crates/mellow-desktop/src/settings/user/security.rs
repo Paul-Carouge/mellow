@@ -38,9 +38,9 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_SETTINGS_ACCOUNT_BUTTON_GAP, COMPONENT_SETTINGS_ACTION_GAP,
     COMPONENT_SETTINGS_ERROR_ICON_GAP, COMPONENT_SETTINGS_ERROR_ICON_SIZE,
-    COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_LABEL_GAP,
-    COMPONENT_SETTINGS_TWO_FACTOR_QR_RADIUS, COMPONENT_SETTINGS_TWO_FACTOR_QR_SIZE, SPACE_2XS,
-    TYPE_BODY, TYPE_BODY_LG, TYPE_CODE, TYPE_HEADING_MD,
+    COMPONENT_SETTINGS_SECTION_LABEL_GAP, COMPONENT_SETTINGS_TWO_FACTOR_QR_RADIUS,
+    COMPONENT_SETTINGS_TWO_FACTOR_QR_SIZE, SPACE_2XS, TYPE_BODY, TYPE_BODY_LG, TYPE_CODE,
+    TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -977,15 +977,11 @@ impl Render for SecurityPage {
         div()
             .flex()
             .flex_col()
-            .child(
-                div()
-                    .mt(length(COMPONENT_SETTINGS_PAGE_TITLE_GAP))
-                    .child(section_label(
-                        "security-two-factor-heading",
-                        words.two_factor_heading(),
-                        cx,
-                    )),
-            )
+            .child(div().child(section_label(
+                "security-two-factor-heading",
+                words.two_factor_heading(),
+                cx,
+            )))
             .child(
                 card(cx)
                     .mt(length(COMPONENT_SETTINGS_SECTION_LABEL_GAP))

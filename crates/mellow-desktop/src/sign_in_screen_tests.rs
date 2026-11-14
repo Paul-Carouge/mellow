@@ -1181,3 +1181,130 @@ fn a_search_finds_a_servers_message_with_its_words_lit_and_opens_it(cx: &mut Tes
     assert!(search.read_with(cx, |search, _| search.search().hits().is_empty()));
     harness.stop();
 }
+
+/// The screen alone in a window, with Tab bound as the app binds it; no instance is needed.
+fn sign_in_screen_without_instance(
+    cx: &mut TestAppContext,
+) -> (Entity<SignInScreen>, &mut VisualTestContext) {
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(ActiveStrings(&ENGLISH));
+        cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark));
+        crate::components::bind_tab_navigation(cx);
+    });
+    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+    let (screen, cx) = cx.add_window_view(|window, cx| SignInScreen::new(session, window, cx));
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    (screen, cx)
+}
+
+fn show_credentials_step(
+    screen: &Entity<SignInScreen>,
+    is_registering: bool,
+    cx: &mut VisualTestContext,
+) {
+    screen.update_in(cx, |screen, window, cx| {
+        screen.step = Step::Credentials {
+            instance: InstanceAddress::parse("http://127.0.0.1:9").unwrap(),
+            is_registering,
+        };
+        screen.focus_first_field_to_fill(window, cx);
+        cx.notify();
+    });
+    cx.run_until_parked();
+}
+
+fn field_value(
+    screen: &Entity<SignInScreen>,
+    field: SignInField,
+    cx: &mut VisualTestContext,
+) -> String {
+    screen.read_with(cx, |screen, cx| screen.value(field, cx).to_string())
+}
+
+#[gpui::test]
+fn tab_and_shift_tab_move_between_the_sign_in_fields(cx: &mut TestAppContext) {
+    let (screen, cx) = sign_in_screen_without_instance(cx);
+    show_credentials_step(&screen, false, cx);
+
+    cx.simulate_input("alice");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("xyz");
+    assert_eq!(field_value(&screen, SignInField::Login, cx), "alice");
+    assert_eq!(field_value(&screen, SignInField::Password, cx), "xyz");
+
+    cx.simulate_keystrokes("shift-tab");
+    cx.simulate_input("!");
+    assert_eq!(field_value(&screen, SignInField::Login, cx), "alice!");
+    assert_eq!(field_value(&screen, SignInField::Password, cx), "xyz");
+}
+
+#[gpui::test]
+fn tab_moves_between_the_account_creation_fields(cx: &mut TestAppContext) {
+    let (screen, cx) = sign_in_screen_without_instance(cx);
+    show_credentials_step(&screen, true, cx);
+
+    cx.simulate_input("ada@example.org");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("ada");
+    cx.simulate_keystrokes("tab");
+    cx.simulate_input("long enough password");
+    assert_eq!(
+        field_value(&screen, SignInField::Email, cx),
+        "ada@example.org"
+    );
+    assert_eq!(field_value(&screen, SignInField::Username, cx), "ada");
+    assert_eq!(
+        field_value(&screen, SignInField::NewPassword, cx),
+        "long enough password"
+    );
+}
+
+#[test]
+fn the_instance_row_takes_the_hosts_first_letter_or_none_for_a_bare_address() {
+    let initials = |address: &str| instance_initials(&InstanceAddress::parse(address).unwrap());
+    assert_eq!(initials("chat.example.org").as_deref(), Some("C"));
+    assert_eq!(
+        initials("https://mellow.example.org:8443").as_deref(),
+        Some("M")
+    );
+    assert_eq!(initials("http://127.0.0.1:8080"), None);
+    assert_eq!(initials("http://localhost:8080"), None);
+    assert_eq!(initials("http://[::1]:8080"), None);
+}
+
+#[gpui::test]
+fn melli_connects_while_a_request_is_out_and_rains_when_the_instance_is_unreachable(
+    cx: &mut TestAppContext,
+) {
+    let runtime = build_network_runtime().unwrap();
+    cx.executor().allow_parking();
+    let handle = runtime.handle().clone();
+    cx.update(|cx| install_network_runtime(handle, cx));
+    // Bound then dropped: nothing listens there, so the probe is refused at once.
+    let closed_address = std::net::TcpListener::bind("127.0.0.1:0")
+        .unwrap()
+        .local_addr()
+        .unwrap();
+    let (screen, cx) = sign_in_screen_without_instance(cx);
+    assert_eq!(
+        screen.read_with(cx, |screen, _| screen.melli_state()),
+        MelliState::Idle
+    );
+    screen.update_in(cx, |screen, window, cx| {
+        let address = format!("http://{closed_address}");
+        screen.set_value(SignInField::InstanceAddress, &address, window, cx);
+        screen.submit(window, cx);
+    });
+    assert_eq!(
+        screen.read_with(cx, |screen, _| screen.melli_state()),
+        MelliState::Connecting
+    );
+    wait_until(cx, |cx| !screen.read_with(cx, |screen, _| screen.is_busy));
+    assert_eq!(
+        screen.read_with(cx, |screen, _| screen.melli_state()),
+        MelliState::ConnectionLost
+    );
+    runtime.shutdown_background();
+}
