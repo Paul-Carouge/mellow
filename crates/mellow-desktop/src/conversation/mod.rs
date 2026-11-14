@@ -74,8 +74,6 @@ const LIST_OVERDRAW: f32 = COMPONENT_MESSAGE_HISTORY_LOAD_DISTANCE;
 const PAGE_SCROLL_SHARE: f32 = 0.9;
 /// Who-reacted sentences kept before the cache starts over: one per pill hovered in a visit.
 const MAXIMUM_REACTOR_SENTENCES: usize = 256;
-/// The typing line forgets people whose notice expired; refreshed this often while it shows.
-const TYPING_REFRESH_INTERVAL: std::time::Duration = std::time::Duration::from_secs(1);
 
 /// What the shell opens, and how it is named.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -191,7 +189,12 @@ pub struct ConversationView {
     is_shift_held: bool,
     list_focus: FocusHandle,
     pins_focus: FocusHandle,
-    typing_refresh: Option<Task<()>>,
+    /// Who the typing line named when last followed: a change of names is what redraws it.
+    typing_line_user_ids: Vec<Snowflake>,
+    /// Wakes when the next typing notice ends, the one moment the line changes by itself.
+    typing_notice_end: Option<Task<()>>,
+    /// The call view takes the sheet or the window: nothing shown here is being read.
+    is_covered_by_call_view: bool,
     cards: cards::CardsState,
     _subscriptions: Vec<Subscription>,
 }
@@ -222,9 +225,18 @@ impl ConversationView {
         });
         let subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::follow_composer),
-            cx.subscribe(&session, |view, _, changes: &StateChanged, cx| {
-                view.follow_state(&changes.0, cx);
-            }),
+            cx.subscribe_in(
+                &session,
+                window,
+                |view, _, changes: &StateChanged, window, cx| {
+                    view.follow_state(&changes.0, cx);
+                    // Before the frame, not after it: a message arriving at the latest is read in
+                    // the frame that draws it, instead of costing a second frame for the read.
+                    if !view.visit.is_unread_marker_pending {
+                        view.mark_read_while_the_latest_shows(window, cx);
+                    }
+                },
+            ),
             cx.subscribe_in(&session, window, Self::give_back_refused_send),
             // Messages that came while the window was in the background are read once it is back.
             cx.observe_window_activation(window, |view, window, cx| {
@@ -280,7 +292,9 @@ impl ConversationView {
             is_shift_held: false,
             list_focus: cx.focus_handle().tab_stop(true),
             pins_focus: cx.focus_handle(),
-            typing_refresh: None,
+            typing_line_user_ids: Vec::new(),
+            typing_notice_end: None,
+            is_covered_by_call_view: false,
             cards: cards::CardsState::default(),
             _subscriptions: subscriptions,
         }
@@ -299,6 +313,15 @@ impl ConversationView {
     #[must_use]
     pub fn is_pins_panel_open(&self) -> bool {
         self.is_pins_panel_open
+    }
+
+    /// The shell's call view covers the conversation, or stopped covering it.
+    pub fn set_covered_by_call_view(&mut self, is_covered: bool, cx: &mut Context<Self>) {
+        if self.is_covered_by_call_view != is_covered {
+            self.is_covered_by_call_view = is_covered;
+            // Uncovered, the next render reads what arrived meanwhile.
+            cx.notify();
+        }
     }
 
     /// The place the shell shows; `None` when no channel or conversation is open.
@@ -372,6 +395,8 @@ impl ConversationView {
         }
         self.open_conversation = requested_place;
         self.are_rows_stale = true;
+        // This render draws the new place's line; only its notices' ends are waited for.
+        self.follow_typing_line(crate::session::now_unix_milliseconds(), cx);
         let label = self
             .open_conversation
             .as_ref()
@@ -458,7 +483,11 @@ impl ConversationView {
             .as_ref()
             .and_then(|open| open.guild_id);
         let mut have_rows_changed = false;
+        let mut has_view_changed = false;
         for change in changes {
+            if !matches!(change, StateChange::Typing { .. }) {
+                has_view_changed = true;
+            }
             match *change {
                 StateChange::Guilds
                 | StateChange::DirectMessages
@@ -481,12 +510,7 @@ impl ConversationView {
                 } if Some(changed_channel_id) == channel_id => {
                     have_rows_changed = true;
                 }
-                StateChange::ReadStates => have_rows_changed = true,
-                StateChange::Typing {
-                    channel_id: changed_channel_id,
-                } if Some(changed_channel_id) == channel_id => {
-                    self.keep_typing_line_fresh(cx);
-                }
+                // The rows' divider is the visit's marker, not the live read position.
                 _ => {}
             }
         }
@@ -502,43 +526,50 @@ impl ConversationView {
         if have_rows_changed || self.are_sources_stale {
             self.are_rows_stale = true;
         }
-        cx.notify();
-    }
-
-    /// While someone types, the line is drawn again every second so expired notices leave it.
-    fn keep_typing_line_fresh(&mut self, cx: &mut Context<Self>) {
-        if self.typing_refresh.is_some() {
-            return;
+        // A typing event, or a message ending its author's notice, may change the line.
+        let has_typing_line_changed =
+            self.follow_typing_line(crate::session::now_unix_milliseconds(), cx);
+        if has_view_changed || has_typing_line_changed {
+            cx.notify();
         }
-        self.typing_refresh = Some(cx.spawn(async move |view, cx| {
-            loop {
-                cx.background_executor()
-                    .timer(TYPING_REFRESH_INTERVAL)
-                    .await;
-                let is_anyone_typing = view
-                    .update(cx, |view, cx| {
-                        cx.notify();
-                        let is_typing = !view.typing_user_ids(cx).is_empty();
-                        if !is_typing {
-                            view.typing_refresh = None;
-                        }
-                        is_typing
-                    })
-                    .unwrap_or(false);
-                if !is_anyone_typing {
-                    break;
-                }
-            }
-        }));
     }
 
-    fn typing_user_ids(&self, cx: &App) -> Vec<Snowflake> {
-        self.open_channel_id().map_or_else(Vec::new, |channel_id| {
-            self.session
-                .read(cx)
-                .state()
-                .typing_user_ids(channel_id, crate::session::now_unix_milliseconds())
-        })
+    /// Reads who the typing line names at `now_unix_milliseconds` and wakes again when the next
+    /// notice ends; true when the names changed, which is when the line needs drawing again.
+    fn follow_typing_line(&mut self, now_unix_milliseconds: u64, cx: &mut Context<Self>) -> bool {
+        let (user_ids, next_end) = self.open_channel_id().map_or_else(
+            || (Vec::new(), None),
+            |channel_id| {
+                let state = self.session.read(cx).state();
+                (
+                    state.typing_user_ids(channel_id, now_unix_milliseconds),
+                    state.next_typing_notice_end(channel_id, now_unix_milliseconds),
+                )
+            },
+        );
+        // Replacing the task cancels the wait for an earlier channel's or notice's end.
+        self.typing_notice_end = next_end.map(|end| {
+            cx.spawn(async move |view, cx| {
+                cx.background_executor()
+                    .timer(std::time::Duration::from_millis(
+                        end.saturating_sub(now_unix_milliseconds),
+                    ))
+                    .await;
+                let _ = view.update(cx, |view, cx| {
+                    // At least `end`: a timer waking a moment before the wall clock reaches it
+                    // must still drop that notice, or the line would keep it until another event.
+                    let now = crate::session::now_unix_milliseconds().max(end);
+                    if view.follow_typing_line(now, cx) {
+                        cx.notify();
+                    }
+                });
+            })
+        });
+        if user_ids == self.typing_line_user_ids {
+            return false;
+        }
+        self.typing_line_user_ids = user_ids;
+        true
     }
 
     // ---- Permissions ----
@@ -667,16 +698,7 @@ impl ConversationView {
             cx.notify();
             return;
         }
-        let newest_id = state.messages(channel_id).last().map(|message| message.id);
-        let is_behind = newest_id
-            .is_some_and(|newest| state.last_read_message_id(channel_id) < Some(newest))
-            || state.mention_count(channel_id) > 0;
-        if is_behind && self.is_at_latest() && window.is_window_active() {
-            let session = self.session.clone();
-            cx.defer(move |cx| {
-                session.update(cx, |session, cx| session.mark_channel_read(channel_id, cx));
-            });
-        }
+        self.mark_read_while_the_latest_shows(window, cx);
         let status = self.session.read(cx).history_status(channel_id);
         let distance_from_top = -f32::from(self.list.scroll_px_offset_for_scrollbar().y);
         let has_older = self.session.read(cx).state().has_older_history(channel_id);
@@ -693,6 +715,30 @@ impl ConversationView {
                 session.update(cx, |session, cx| {
                     session.load_older_messages(channel_id, cx);
                 });
+            });
+        }
+    }
+
+    /// Marks the open channel read when it is behind while its latest message shows in the
+    /// active window.
+    fn mark_read_while_the_latest_shows(&self, window: &Window, cx: &mut Context<Self>) {
+        // Not drawn: the shell shows another place (the view keeps its last channel until it
+        // renders again) or the call view covers it.
+        if self.is_covered_by_call_view || self.requested_place != self.open_conversation {
+            return;
+        }
+        let Some(channel_id) = self.open_channel_id() else {
+            return;
+        };
+        let state = self.session.read(cx).state();
+        let newest_id = state.messages(channel_id).last().map(|message| message.id);
+        let is_behind = newest_id
+            .is_some_and(|newest| state.last_read_message_id(channel_id) < Some(newest))
+            || state.mention_count(channel_id) > 0;
+        if is_behind && self.is_at_latest() && window.is_window_active() {
+            let session = self.session.clone();
+            cx.defer(move |cx| {
+                session.update(cx, |session, cx| session.mark_channel_read(channel_id, cx));
             });
         }
     }

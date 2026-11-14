@@ -352,6 +352,7 @@ impl Session {
         if self.generation != generation {
             return;
         }
+        let status_before = self.status;
         let mut changes: Vec<StateChange> = Vec::new();
         let mut should_resend_failed_messages = false;
         let mut incoming_messages = Vec::new();
@@ -410,6 +411,13 @@ impl Session {
         if should_resend_failed_messages {
             self.resend_failed_messages(cx);
         }
+        // Each notify costs the window a frame. Typing is drawn by the conversation alone, which
+        // follows `StateChanged` and redraws only when its typing line's names change.
+        let should_notify = self.status != status_before
+            || should_resend_failed_messages
+            || changes
+                .iter()
+                .any(|change| !matches!(change, StateChange::Typing { .. }));
         if !changes.is_empty() {
             cx.emit(StateChanged(changes));
         }
@@ -419,7 +427,9 @@ impl Session {
         for signal in voice_signals {
             cx.emit(signal);
         }
-        cx.notify();
+        if should_notify {
+            cx.notify();
+        }
     }
 
     /// Skips the gateway's backoff wait (the banner's "Retry now").
@@ -1031,5 +1041,47 @@ mod tests {
         session.read_with(cx, |session, _| {
             assert_eq!(session.status(), ConnectionStatus::Reconnecting);
         });
+    }
+
+    #[gpui::test]
+    fn a_burst_that_changes_nothing_any_observer_draws_costs_no_notify(cx: &mut TestAppContext) {
+        use crate::shell_fixtures::{ANA, GUILD_RUST, RUST_GENERAL, sample_state};
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        session.update(cx, |session, _| *session.state_mut() = sample_state());
+        let notify_count = Rc::new(Cell::new(0_u32));
+        let counted = Rc::clone(&notify_count);
+        let _subscription =
+            cx.update(|cx| cx.observe(&session, move |_, _| counted.set(counted.get() + 1)));
+        let typing_in_general = || {
+            GatewayUpdate::Event(GatewayEvent::TypingStart {
+                guild_id: Some(GUILD_RUST),
+                channel_id: RUST_GENERAL,
+                user_id: ANA,
+            })
+        };
+        let typing_in_unknown_channel = GatewayUpdate::Event(GatewayEvent::TypingStart {
+            guild_id: Some(GUILD_RUST),
+            channel_id: Snowflake::from_raw(999_999),
+            user_id: ANA,
+        });
+
+        // Typing is the conversation's to draw; an event for an unknown channel changes nothing.
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates_of_this_session(
+                vec![typing_in_general(), typing_in_unknown_channel],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(notify_count.get(), 0);
+
+        session.update(cx, |session, cx| {
+            session.apply_gateway_updates_of_this_session(
+                vec![typing_in_general(), GatewayUpdate::Disconnected],
+                cx,
+            );
+        });
+        cx.run_until_parked();
+        assert_eq!(notify_count.get(), 1, "a status change still notifies");
     }
 }

@@ -1,8 +1,12 @@
 //! A small signed-in world for the shell's tests: two servers, a category with text and voice
 //! channels, two conversations and a few members, as `Ready` brings them.
 
+use std::cell::Cell;
+use std::rc::Rc;
+
 use gpui::{
-    AppContext as _, Entity, TestAppContext, VisualTestContext, WindowAppearance, px, size,
+    AnyView, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    Styled as _, TestAppContext, VisualTestContext, Window, WindowAppearance, div, px, size,
 };
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{
@@ -37,6 +41,34 @@ pub fn person(id: Snowflake, username: &str, display_name: &str) -> PublicUser {
         display_name: display_name.to_owned(),
         avatar: None,
         banner: None,
+    }
+}
+
+/// A plain text message by `author` in `channel_id`.
+pub fn text_message(
+    id: u64,
+    channel_id: Snowflake,
+    author: &PublicUser,
+    content: &str,
+) -> mellow_protocol::Message {
+    mellow_protocol::Message {
+        id: Snowflake::from_raw(id),
+        channel_id,
+        author: author.clone(),
+        content: content.to_owned(),
+        reply_to_id: None,
+        edited_at_unix_milliseconds: None,
+        nonce: None,
+        attachments: Vec::new(),
+        reactions: Vec::new(),
+        pinned: false,
+        mention_ids: Vec::new(),
+        mention_role_ids: Vec::new(),
+        link_previews: Vec::new(),
+        poll: None,
+        checklist: None,
+        progress_bar: None,
+        forwarded_from: None,
     }
 }
 
@@ -217,12 +249,64 @@ fn member(user: PublicUser, role_ids: Vec<Snowflake>) -> Member {
     }
 }
 
+/// A window's root drawn once per frame around `child`: what an event costs, counted in frames.
+pub struct FrameCountingRoot {
+    pub child: AnyView,
+    pub frames: Rc<Cell<u32>>,
+}
+
+impl Render for FrameCountingRoot {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        self.frames.set(self.frames.get() + 1);
+        div().size_full().flex().child(self.child.clone())
+    }
+}
+
+/// `open_shell` inside a [`FrameCountingRoot`]; the count starts once the shell is drawn.
+pub fn open_shell_counting_frames(
+    cx: &mut TestAppContext,
+    state: ClientState,
+) -> (
+    Entity<crate::session::Session>,
+    Rc<Cell<u32>>,
+    &mut VisualTestContext,
+) {
+    let session = session_for_shell(cx, state);
+    let frames = Rc::new(Cell::new(0));
+    let (shell_session, counted) = (session.clone(), Rc::clone(&frames));
+    let (_, cx) = cx.add_window_view(|window, cx| FrameCountingRoot {
+        child: cx
+            .new(|cx| crate::shell::DuskShell::new(shell_session, window, cx))
+            .into(),
+        frames: counted,
+    });
+    cx.simulate_resize(size(px(1280.0), px(800.0)));
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    frames.set(0);
+    (session, frames, cx)
+}
+
 /// A shell over `state`, in an active window of `width` × 800, with the app's keys bound.
 pub fn open_shell(
     cx: &mut TestAppContext,
     state: ClientState,
     width: f32,
 ) -> (Entity<crate::shell::DuskShell>, &mut VisualTestContext) {
+    let session = session_for_shell(cx, state);
+    let (shell, cx) =
+        cx.add_window_view(|window, cx| crate::shell::DuskShell::new(session, window, cx));
+    cx.simulate_resize(size(px(width), px(800.0)));
+    cx.update(|window, _| window.activate_window());
+    cx.run_until_parked();
+    (shell, cx)
+}
+
+/// The app's globals and keys, and a session holding `state`.
+fn session_for_shell(
+    cx: &mut TestAppContext,
+    state: ClientState,
+) -> Entity<crate::session::Session> {
     cx.update(|cx| {
         gpui_component::init(cx);
         cx.set_global(crate::strings_pending_i18n::ActiveStrings(
@@ -236,12 +320,7 @@ pub fn open_shell(
     });
     let session = cx.new(|_| crate::session::Session::signed_out_kept_in_memory_only());
     session.update(cx, |session, _| *session.state_mut() = state);
-    let (shell, cx) =
-        cx.add_window_view(|window, cx| crate::shell::DuskShell::new(session, window, cx));
-    cx.simulate_resize(size(px(width), px(800.0)));
-    cx.update(|window, _| window.activate_window());
-    cx.run_until_parked();
-    (shell, cx)
+    session
 }
 
 /// The sample world where the reader also administers Rust Lyon.

@@ -13,6 +13,7 @@ use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::message_rows::{
     UnreadMarker, arrivals_since_leaving_present, unread_summary,
 };
+use mellow_protocol::Snowflake;
 
 use super::ConversationView;
 use super::rules::typing_segments;
@@ -261,14 +262,14 @@ impl ConversationView {
             .as_ref()
             .and_then(|open| open.guild_id);
         let channel_id = self.open_channel_id();
-        let typing_user_ids = if is_covered {
-            Vec::new()
+        let typing_user_ids: &[Snowflake] = if is_covered {
+            &[]
         } else {
-            self.typing_user_ids(cx)
+            &self.typing_line_user_ids
         };
         let names: Vec<String> = typing_user_ids
-            .into_iter()
-            .map(|user_id| {
+            .iter()
+            .map(|&user_id| {
                 let member = guild_id.and_then(|guild_id| {
                     state
                         .members(guild_id)
