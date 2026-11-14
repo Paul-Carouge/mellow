@@ -1026,11 +1026,7 @@ fn open_conversation_chosen_in_switcher(
 
 /// A window x position in logical pixels at 100 % zoom, as the column widths are.
 fn logical_x(x: Pixels, window: &Window) -> f32 {
-    let viewport_width = f32::from(window.viewport_size().width);
-    if viewport_width <= 0.0 {
-        return f32::from(x);
-    }
-    f32::from(x) * window_width_at_default_zoom(window) / viewport_width
+    crate::theme::pixels_at_default_zoom(x, window)
 }
 
 /// A square picture drawn `size` logical pixels wide.
@@ -1137,13 +1133,18 @@ impl Render for DuskShell {
         let notice_bar = self.notice_bar(cx);
         let is_notice_shown =
             banner.trouble().is_some() || banner.is_back_online_shown() || notice_bar.is_some();
-        // The notices sit below the macOS title band, and the cards keep their gap below them.
+        // The notices sit below the title band, and the cards keep their gap below them. The band
+        // Mellow draws itself (Linux, Windows) sits above this view, as tall as the macOS one, so
+        // the cards start right under it.
         let top_padding = if is_full_bleed {
             0.0
         } else if is_notice_shown {
             2.0 * SIZE_SHEET_INSET
         } else {
-            TOP_BAND_HEIGHT - TITLE_BAR_BAND_HEIGHT
+            (TOP_BAND_HEIGHT
+                - TITLE_BAR_BAND_HEIGHT
+                - crate::window_chrome::client_title_band_height(window))
+            .max(0.0)
         };
 
         // Under a full-screen call view the cards would be drawn hidden, yet stay in the
@@ -1203,7 +1204,8 @@ impl Render for DuskShell {
             .relative()
             .flex()
             .flex_col()
-            .bg(color(tokens.color_surface_rail))
+            // The ground is the window's (`MainWindow`), which rounds a floating window's corners;
+            // a fill here would square them again.
             .font_family(SANS_FONT_FAMILY)
             .text_color(color(tokens.color_text_normal))
             .key_context(SHELL_KEY_CONTEXT)

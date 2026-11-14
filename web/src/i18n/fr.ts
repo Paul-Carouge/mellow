@@ -2324,6 +2324,10 @@ export const fr: Catalogue = {
   desktop: {
     quitMellow: "Quitter Mellow",
     openMellow: "Ouvrir Mellow",
+    minimiseWindow: "Réduire",
+    maximiseWindow: "Agrandir",
+    restoreWindow: "Restaurer",
+    closeWindow: "Fermer",
     keepRunningInBackground: "Continuer en arrière-plan",
     keepRunningInBackgroundMenuBar: "Fermer la fenêtre garde Mellow dans la barre des menus et le Dock, avec ton appel et tes notifications. Quitte avec Cmd+Q.",
     keepRunningInBackgroundTray: "Fermer la fenêtre garde Mellow dans la zone de notification, avec ton appel et tes notifications. Quitte depuis son menu ou avec Ctrl+Q.",

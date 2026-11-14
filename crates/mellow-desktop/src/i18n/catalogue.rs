@@ -14681,6 +14681,34 @@ impl DesktopStrings {
         }
     }
 
+    pub fn minimise_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Minimise",
+            Language::French => "Réduire",
+        }
+    }
+
+    pub fn maximise_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Maximise",
+            Language::French => "Agrandir",
+        }
+    }
+
+    pub fn restore_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Restore",
+            Language::French => "Restaurer",
+        }
+    }
+
+    pub fn close_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Close",
+            Language::French => "Fermer",
+        }
+    }
+
     pub fn keep_running_in_background(self) -> &'static str {
         match self.language {
             Language::English => "Keep running in the background",

@@ -130,7 +130,11 @@ impl DuskShell {
             .bg(color(tokens.component_navigator_background))
             .map(|card| {
                 if is_in_drawer {
+                    // Its bottom leading corner is the window's: it follows a floating frame.
+                    let window_corners =
+                        crate::window_chrome::client_frame_inner_corner_radii(window);
                     card.rounded_r(length(COMPONENT_NAVIGATOR_RADIUS))
+                        .rounded_bl(length(window_corners.bottom_left))
                 } else {
                     card.rounded(length(COMPONENT_NAVIGATOR_RADIUS))
                 }

@@ -2363,6 +2363,12 @@ export const en = {
     quitMellow: "Quit Mellow",
     /** The menu bar item's entry that brings the window to the front. */
     openMellow: "Open Mellow",
+    /** The desktop window's own title band buttons (Linux, Windows; DESIGN.md §4.2, Window chrome). */
+    minimiseWindow: "Minimise",
+    maximiseWindow: "Maximise",
+    /** The maximise button while the window is maximised. */
+    restoreWindow: "Restore",
+    closeWindow: "Close",
     /** User settings, Appearance: what the window's close button does (Discord's "Minimise to tray"). */
     keepRunningInBackground: "Keep running in the background",
     keepRunningInBackgroundMenuBar: "Closing the window keeps Mellow in the menu bar and the Dock, with your call and notifications. Quit with Cmd+Q.",

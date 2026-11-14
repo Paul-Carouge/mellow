@@ -9,7 +9,7 @@ use gpui::{
     Animation, AnimationExt as _, AnyView, App, Context, EventEmitter, FocusHandle, Focusable,
     InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Render, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred, div,
-    point, prelude::FluentBuilder as _, px,
+    prelude::FluentBuilder as _,
 };
 
 use super::{
@@ -199,7 +199,9 @@ impl Render for ModalDialog {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        let viewport = window.viewport_size();
+        // Under the title band and inside the window's frame (DESIGN.md §4.2, Window chrome).
+        let content_bounds = crate::window_chrome::client_content_bounds(window);
+        let viewport = content_bounds.size;
         let width_token = if self.is_wide {
             COMPONENT_DIALOG_WIDTH_WIDE
         } else {
@@ -354,8 +356,7 @@ impl Render for ModalDialog {
         let scrim = div()
             .id("modal-dialog-scrim")
             .occlude()
-            .w(px(f32::from(viewport.width)))
-            .h(px(f32::from(viewport.height)))
+            .map(|scrim| crate::window_chrome::sized_to_window_content(scrim, window))
             .flex()
             .items_center()
             .justify_center()
@@ -372,7 +373,7 @@ impl Render for ModalDialog {
                 gpui::Styled::opacity,
             );
 
-        deferred(anchored().position(point(px(0.0), px(0.0))).child(scrim)).with_priority(2)
+        deferred(anchored().position(content_bounds.origin).child(scrim)).with_priority(2)
     }
 }
 

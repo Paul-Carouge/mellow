@@ -12,7 +12,7 @@ pub mod tokens;
 
 use std::time::Duration;
 
-use gpui::{App, Global, Hsla, Rems, Window, WindowAppearance, rems, rgba};
+use gpui::{App, Global, Hsla, Pixels, Rems, Window, WindowAppearance, rems, rgba};
 
 use crate::preferences::{ThemeChoice, preferences};
 pub use assets::EmbeddedAssets;
@@ -119,11 +119,19 @@ pub fn length(pixels: f32) -> Rems {
     rems(pixels / PIXELS_PER_REM_AT_DEFAULT_ZOOM)
 }
 
-/// The window's width in logical pixels at 100 % zoom, the unit of the breakpoints.
+/// The window's content width in logical pixels at 100 % zoom, the unit of the breakpoints: the
+/// transparent margins of a floating Linux window's frame are not part of it.
 #[must_use]
 pub fn window_width_at_default_zoom(window: &Window) -> f32 {
-    f32::from(window.viewport_size().width) * PIXELS_PER_REM_AT_DEFAULT_ZOOM
-        / f32::from(window.rem_size())
+    let content_width =
+        window.viewport_size().width - crate::window_chrome::client_frame_horizontal_inset(window);
+    pixels_at_default_zoom(content_width, window)
+}
+
+/// A length on screen in logical pixels at 100 % zoom, as the tokens are.
+#[must_use]
+pub fn pixels_at_default_zoom(pixels: Pixels, window: &Window) -> f32 {
+    f32::from(pixels) * PIXELS_PER_REM_AT_DEFAULT_ZOOM / f32::from(window.rem_size())
 }
 
 /// How long an animation runs: nothing under reduced motion (DESIGN.md §2.8). `gpui_component::init`

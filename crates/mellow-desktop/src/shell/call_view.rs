@@ -383,8 +383,17 @@ impl Render for CallView {
             .min_w_0()
             .overflow_hidden()
             .bg(color(tokens.component_call_view_background))
-            .when(!is_fullscreen, |view| {
-                view.rounded(length(COMPONENT_SHEET_RADIUS))
+            .map(|view| {
+                if is_fullscreen {
+                    // Over the whole content, it reaches the window's bottom corners: it follows
+                    // a floating window's frame (none in full screen, where nothing is rounded).
+                    let window_corners =
+                        crate::window_chrome::client_frame_inner_corner_radii(window);
+                    view.rounded_bl(length(window_corners.bottom_left))
+                        .rounded_br(length(window_corners.bottom_right))
+                } else {
+                    view.rounded(length(COMPONENT_SHEET_RADIUS))
+                }
             })
             .on_key_down(cx.listener(|view, event: &KeyDownEvent, window, cx| {
                 if event.keystroke.key == "escape" {

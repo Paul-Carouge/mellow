@@ -11,7 +11,7 @@
 use gpui::{
     App, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _,
     RenderOnce, Role, StatefulInteractiveElement as _, Styled as _, Window, anchored, deferred,
-    div, point, prelude::FluentBuilder as _, px,
+    div, prelude::FluentBuilder as _,
 };
 use mellow_protocol::Attachment;
 
@@ -152,7 +152,8 @@ impl RenderOnce for VideoAttachment {
         };
 
         let enlarged_view = is_enlarged.then(|| {
-            let viewport = window.viewport_size();
+            // Under the title band and inside the window's frame (DESIGN.md §4.2, Window chrome).
+            let content_bounds = crate::window_chrome::client_content_bounds(window);
             let close = {
                 let enlarged = enlarged.clone();
                 let enlarge_focus = enlarge_focus.clone();
@@ -188,7 +189,7 @@ impl RenderOnce for VideoAttachment {
                     .on_click(close),
                 );
             deferred(
-                anchored().position(point(px(0.0), px(0.0))).child(
+                anchored().position(content_bounds.origin).child(
                     div()
                         .id(child_id(&id, "enlarged-view"))
                         .role(Role::Dialog)
@@ -202,8 +203,7 @@ impl RenderOnce for VideoAttachment {
                             focus_previous_inside(&previous_container, window, cx);
                         })
                         .occlude()
-                        .w(viewport.width)
-                        .h(viewport.height)
+                        .map(|view| crate::window_chrome::sized_to_window_content(view, window))
                         .flex()
                         .flex_col()
                         .bg(color(tokens.color_media_stage))
@@ -262,6 +262,7 @@ mod tests {
     use crate::attachment_audio::MAXIMUM_PLAYED_ATTACHMENT_BYTES;
     use crate::theme::ActiveTheme;
     use crate::theme::tokens::COMPONENT_ATTACHMENT_FILE_MAX_WIDTH;
+    use gpui::px;
 
     struct Card(Attachment);
 

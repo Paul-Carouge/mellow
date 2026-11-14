@@ -65,8 +65,9 @@ pub use live_region::{LiveRegion, assertive_live_region, polite_live_region};
 pub use melli::{Melli, MelliState};
 pub use menu::{
     ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone, MenuKey,
-    MenuKeys, MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
-    popover_position_beside_anchor, typeahead_menu_item_index,
+    MenuKeys, MenuOrigin, MenuPlacement, PlacementArea, menu_top_next_to_anchor,
+    next_menu_item_index, place_menu, place_menu_in_area, popover_position_beside_anchor,
+    popover_position_beside_anchor_in_area, typeahead_menu_item_index,
 };
 pub use menu_opening::{
     bounds_recorder, is_context_menu_keystroke, menu_origin_at_pointer, menu_origin_beside,
