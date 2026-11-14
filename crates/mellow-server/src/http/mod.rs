@@ -6,6 +6,7 @@ pub(crate) mod api_error;
 pub(crate) mod attachment_routes;
 pub(crate) mod authentication;
 pub(crate) mod client_address;
+mod compression;
 mod emoji_routes;
 mod gif_routes;
 mod guild_routes;
@@ -528,6 +529,9 @@ pub(crate) fn router(state: AppState) -> Router {
         .route("/gateway", get(crate::gateway::upgrade))
         .fallback(web_client::serve)
         .method_not_allowed_fallback(|| async { api_error::ApiError::method_not_allowed() })
+        .layer(middleware::from_fn(
+            compression::compress_listed_json_answers,
+        ))
         .layer(middleware::from_fn(mark_api_responses_private))
         .layer(middleware::from_fn(copy_request_authority_into_host))
         .with_state(state)

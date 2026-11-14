@@ -5122,6 +5122,7 @@ dependencies = [
  "axum",
  "axum-server",
  "clap",
+ "flate2",
  "futures-util",
  "getrandom 0.4.3",
  "gif 0.14.2",
