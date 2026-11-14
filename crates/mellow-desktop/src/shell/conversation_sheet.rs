@@ -46,13 +46,14 @@ fn is_narrower_than_go_to(width: f32) -> bool {
     width > 0.0 && width < GO_TO_FOLD_WIDTH
 }
 
-/// Go to's shortcut as the trigger shows it, and for screen readers.
+/// Go to's shortcut as the trigger shows it, and for screen readers (`aria-keyshortcuts`): the
+/// trigger, the compass and the narrow header's menu item.
 const GO_TO_KEY_HINT: &str = if cfg!(target_os = "macos") {
     "⌘ K"
 } else {
     "Ctrl K"
 };
-const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
+pub(super) const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
     "Meta+K"
 } else {
     "Control+K"
@@ -72,8 +73,6 @@ fn go_to_trigger(
     let hover = remembered_hover(&id, window, cx);
     let is_hovered = *hover.read(cx);
     let is_ring_shown = is_focus_visible(&focus_handle, window);
-    let on_click = std::rc::Rc::new(on_click);
-    let on_key = on_click.clone();
     with_type(div(), TYPE_BODY)
         .id(id)
         .role(Role::Button)
@@ -102,13 +101,8 @@ fn go_to_trigger(
                 cx.notify();
             });
         })
+        // Enter and Space reach it as a click (GPUI's keyboard click on the release).
         .on_click(move |_, window, cx| on_click(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                on_key(window, cx);
-            }
-        })
         .child(icon(
             IconName::MagnifyingGlass,
             COMPONENT_QUICK_SWITCHER_TRIGGER_ICON_SIZE,
@@ -452,7 +446,9 @@ impl DuskShell {
                         let was_folded = is_narrower_than_go_to(header_width.get());
                         header_width.set(width);
                         if was_folded != is_narrower_than_go_to(width) {
-                            window.refresh();
+                            // A refresh asked for while the frame paints is lost: ask for
+                            // it on the next one.
+                            window.on_next_frame(|window, _| window.refresh());
                         }
                     },
                     |_, (), _, _| {},

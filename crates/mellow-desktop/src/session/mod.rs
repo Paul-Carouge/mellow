@@ -958,6 +958,20 @@ mod tests {
     }
 
     #[gpui::test]
+    fn another_instance_is_remembered_only_for_a_sign_out_under_way(cx: &mut TestAppContext) {
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        // Signed out already: nothing to sign out of, so a later sign-out opens the usual card.
+        session.update(cx, Session::sign_out_for_another_instance);
+        assert!(!session.update(cx, |session, _| session.take_leaving_for_another_instance()));
+        session.update(cx, |session, _| {
+            session.after_sign_out = AfterSignOut::AnotherInstance;
+        });
+        // Read once: the next sign-in screen does not inherit it.
+        assert!(session.update(cx, |session, _| session.take_leaving_for_another_instance()));
+        assert!(!session.update(cx, |session, _| session.take_leaving_for_another_instance()));
+    }
+
+    #[gpui::test]
     async fn a_network_task_that_panics_still_answers_with_an_error(cx: &mut TestAppContext) {
         let runtime = crate::tokio_bridge::build_network_runtime().unwrap();
         cx.update(|cx| {

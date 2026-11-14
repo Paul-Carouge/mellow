@@ -150,6 +150,14 @@ pub struct Strings {
     /// Host, the instance's version, the oldest version the app supports.
     pub instance_too_old: fn(&str, &str, &str) -> String,
     pub use_another_instance: &'static str,
+    // Desktop only: the rail's "+" toward another instance (DESIGN.md §5.1). One session is kept
+    // at a time, so it signs out first.
+    pub connect_another_instance: &'static str,
+    pub connect_another_instance_title: &'static str,
+    /// The instance left, twice.
+    pub connect_another_instance_body: fn(&str) -> String,
+    pub connect_another_instance_submit: &'static str,
+    pub connect_another_instance_signing_out: &'static str,
 }
 
 pub static ENGLISH: Strings = Strings {
@@ -252,6 +260,17 @@ pub static ENGLISH: Strings = Strings {
         )
     },
     use_another_instance: "Use another instance",
+    connect_another_instance: "Connect to another instance",
+    connect_another_instance_title: "Connect to another instance?",
+    connect_another_instance_body: |instance| {
+        format!(
+            "You'll be signed out of {instance} on this computer, then you can enter another \
+             instance's address. Your account and servers stay on {instance}: sign back in \
+             whenever you like."
+        )
+    },
+    connect_another_instance_submit: "Sign out and continue",
+    connect_another_instance_signing_out: "Signing out…",
 };
 
 pub static FRENCH: Strings = Strings {
@@ -354,6 +373,17 @@ pub static FRENCH: Strings = Strings {
         )
     },
     use_another_instance: "Utiliser une autre instance",
+    connect_another_instance: "Se connecter à une autre instance",
+    connect_another_instance_title: "Se connecter à une autre instance\u{202f}?",
+    connect_another_instance_body: |instance| {
+        format!(
+            "Tu seras déconnecté de {instance} sur cet ordinateur, puis tu pourras saisir \
+             l’adresse d’une autre instance. Ton compte et tes serveurs restent sur \
+             {instance}\u{a0}: reconnecte-toi quand tu veux."
+        )
+    },
+    connect_another_instance_submit: "Me déconnecter et continuer",
+    connect_another_instance_signing_out: "Déconnexion…",
 };
 
 #[cfg(test)]

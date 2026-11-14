@@ -355,8 +355,11 @@ impl DuskShell {
                 icon(IconName::Plus, COMPONENT_RAIL_ITEM_SIZE / 2.0, color(ink)).into_any_element()
             }
             RailMark::Server { guild, .. } => match guild.icon {
+                // Rounded itself: GPUI's `overflow_hidden` clips to the rectangle, not to the
+                // rounded corners of the button around it.
                 Some(picture) => img(icon_picture(picture, COMPONENT_RAIL_ITEM_SIZE, window))
                     .size_full()
+                    .rounded(length(radius))
                     .object_fit(ObjectFit::Cover)
                     .with_fallback({
                         let initials = server_initials(&guild.name);

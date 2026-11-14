@@ -1286,7 +1286,7 @@ impl Render for DuskShell {
                 root.child(dialog.clone())
             })
             .children(self.render_place_menus(window, cx))
-            .children(self.render_server_dialogs())
+            .children(self.render_server_dialogs(window, cx))
             .children(self.render_voice_person_popover(cx))
             .children(self.render_soundboard_popover(window, cx))
             .children(self.render_screen_share_overlays(window, cx))

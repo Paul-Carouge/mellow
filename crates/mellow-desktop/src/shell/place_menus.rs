@@ -39,6 +39,7 @@ use mellow_client_core::shared_logic::notifications::{NotificationTarget, notifi
 use mellow_protocol::{ChannelKind, Snowflake};
 
 use super::DuskShell;
+use super::conversation_sheet::GO_TO_KEY_SHORTCUTS;
 use super::place_notifications::{InitialGroup, PlaceNotificationsBody};
 use super::regions::Region;
 use crate::components::{
@@ -51,13 +52,6 @@ use crate::preferences::change_preferences;
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::COMPONENT_SIDEBAR_HEADER_MENU_MARGIN;
-
-/// Go to's shortcut, for screen readers (`aria-keyshortcuts`).
-const GO_TO_KEY_SHORTCUTS: &str = if cfg!(target_os = "macos") {
-    "Meta+K"
-} else {
-    "Control+K"
-};
 
 /// What a menu is about.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

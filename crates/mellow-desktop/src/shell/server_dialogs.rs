@@ -40,12 +40,13 @@ use mellow_protocol::{
 };
 
 use super::DuskShell;
+use super::regions::Region;
 use crate::components::{
     Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, ContextMenu, IconButton,
     LiveRegion as _, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuOrigin, ModalDialog,
     ModalDialogEvent, TextField, focus_ring, icon, is_focus_visible, with_type,
 };
-use crate::i18n::{Language, Strings, strings};
+use crate::i18n::{Strings, strings};
 use crate::messages::locale;
 use crate::session::Session;
 use crate::sign_in_form::describe_error;
@@ -62,56 +63,6 @@ use crate::theme::tokens::{
     TYPE_INVITE_CODE,
 };
 use crate::theme::{color, delay, length, theme};
-
-/// The words the web does not have: the desktop's way to another instance (DESIGN.md §5.1).
-/// French in the catalogue's voice (tutoiement, a narrow no-break space before `?`).
-struct InstanceWords {
-    connect_another_instance: &'static str,
-    title: &'static str,
-    body: fn(&str) -> String,
-    submit: &'static str,
-    signing_out: &'static str,
-}
-
-const ENGLISH_INSTANCE_WORDS: InstanceWords = InstanceWords {
-    connect_another_instance: "Connect to another instance",
-    title: "Connect to another instance?",
-    body: |instance| {
-        format!(
-            "You'll be signed out of {instance} on this computer, then you can enter another \
-             instance's address. Your account and servers stay on {instance}: sign back in \
-             whenever you like."
-        )
-    },
-    submit: "Sign out and continue",
-    signing_out: "Signing out…",
-};
-
-const FRENCH_INSTANCE_WORDS: InstanceWords = InstanceWords {
-    connect_another_instance: "Se connecter à une autre instance",
-    title: "Se connecter à une autre instance\u{202f}?",
-    body: |instance| {
-        format!(
-            "Tu seras déconnecté de {instance} sur cet ordinateur, puis tu pourras saisir \
-             l’adresse d’une autre instance. Ton compte et tes serveurs restent sur {instance}\u{a0}: \
-             reconnecte-toi quand tu veux."
-        )
-    },
-    submit: "Me déconnecter et continuer",
-    signing_out: "Déconnexion…",
-};
-
-fn instance_words(words: Strings) -> &'static InstanceWords {
-    match words.language() {
-        Language::English => &ENGLISH_INSTANCE_WORDS,
-        Language::French => &FRENCH_INSTANCE_WORDS,
-    }
-}
-
-/// "Connect to another instance", for the rail's "+" menu.
-pub(super) fn connect_another_instance_label(words: Strings) -> &'static str {
-    instance_words(words).connect_another_instance
-}
 
 /// The starter templates of "Create a server" (`server-templates.ts`), in the order listed; the
 /// first is chosen when the dialog opens.
@@ -169,9 +120,6 @@ fn template_channel_names(words: Strings, index: usize) -> String {
         .join(", ")
 }
 
-/// What a link-like button does, from a click or a key.
-type Activation = Rc<dyn Fn(&mut Window, &mut App)>;
-
 /// A sentence's link-like button ("Join a server" under "Already have an invite?").
 fn mode_link(
     id: &'static str,
@@ -179,11 +127,10 @@ fn mode_link(
     focus: &FocusHandle,
     window: &Window,
     cx: &App,
-    on_activate: Activation,
+    on_activate: impl Fn(&mut Window, &mut App) + 'static,
 ) -> impl IntoElement {
     let tokens = theme(cx);
     let is_ring_shown = is_focus_visible(focus, window);
-    let on_key = on_activate.clone();
     with_type(div(), TYPE_BODY)
         .id(id)
         .role(Role::Button)
@@ -196,13 +143,8 @@ fn mode_link(
         .text_color(color(tokens.component_dialog_mode_link_text))
         .cursor_pointer()
         .hover(gpui::Styled::underline)
+        // Enter and Space reach it as a click (GPUI's keyboard click on the release).
         .on_click(move |_, window, cx| on_activate(window, cx))
-        .on_key_down(move |event, window, cx| {
-            if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                cx.stop_propagation();
-                on_key(window, cx);
-            }
-        })
         .child(label)
         .when(is_ring_shown, |link| link.child(focus_ring(RADIUS_XS, cx)))
 }
@@ -313,11 +255,11 @@ impl Render for AddServerBody {
                     &self.link_focus,
                     window,
                     cx,
-                    Rc::new(move |window, cx| {
+                    move |window, cx| {
                         let _ = shell.update(cx, |shell, cx| {
                             shell.switch_add_server_page(window, cx);
                         });
-                    }),
+                    },
                 ))
                 .into_any_element()
         } else {
@@ -693,13 +635,6 @@ impl Render for InviteBody {
                                     cx.notify();
                                 });
                             })
-                            .on_key_down(cx.listener(|body, event: &gpui::KeyDownEvent, _, cx| {
-                                if matches!(event.keystroke.key.as_str(), "enter" | "space") {
-                                    cx.stop_propagation();
-                                    body.is_limits_panel_open = !body.is_limits_panel_open;
-                                    cx.notify();
-                                }
-                            }))
                             .child(icon(
                                 if self.is_limits_panel_open {
                                     IconName::CaretDown
@@ -916,7 +851,14 @@ impl Render for FieldBody {
 enum OpenDialog {
     AddServer(Entity<AddServerBody>),
     AnotherInstance,
-    InvitePeople,
+    InvitePeople {
+        guild_id: Snowflake,
+        #[cfg_attr(
+            not(test),
+            expect(dead_code, reason = "the tests reach the dialog's body through it")
+        )]
+        body: Entity<InviteBody>,
+    },
     CreateChannel {
         guild_id: Snowflake,
         body: Entity<CreateChannelBody>,
@@ -1037,7 +979,7 @@ impl DuskShell {
         }
         entries.push(MenuEntry::Separator);
         entries.push(MenuEntry::Item(MenuItem::new(
-            connect_another_instance_label(words),
+            crate::strings_pending_i18n::strings(cx).connect_another_instance,
             IconName::ArrowSquareOut,
             move |window, cx| {
                 let _ = shell.update(cx, |shell, cx| shell.confirm_another_instance(window, cx));
@@ -1276,7 +1218,7 @@ impl DuskShell {
     /// (asking first) and the sign-in card opens on the instance address.
     fn confirm_another_instance(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let catalogue = strings(cx);
-        let words = instance_words(catalogue);
+        let words = crate::strings_pending_i18n::strings(cx);
         let instance = self
             .session
             .read(cx)
@@ -1294,10 +1236,14 @@ impl DuskShell {
         self.server_dialogs.shown = None;
         self.show_server_dialog(
             DialogWords {
-                title: words.title.to_owned(),
-                subtitle: Some((words.body)(&instance)),
+                title: words.connect_another_instance_title.to_owned(),
+                subtitle: Some((words.connect_another_instance_body)(&instance)),
                 cancel: catalogue.common().cancel(),
-                submit: Some((words.submit.to_owned(), words.signing_out, false)),
+                submit: Some((
+                    words.connect_another_instance_submit.to_owned(),
+                    words.connect_another_instance_signing_out,
+                    false,
+                )),
             },
             None,
             OpenDialog::AnotherInstance,
@@ -1349,7 +1295,10 @@ impl DuskShell {
                 submit: None,
             },
             Some(body.clone().into()),
-            OpenDialog::InvitePeople,
+            OpenDialog::InvitePeople {
+                guild_id,
+                body: body.clone(),
+            },
             Vec::new(),
             window,
             cx,
@@ -1697,7 +1646,7 @@ impl DuskShell {
         match kind {
             OpenDialog::AddServer(body) => self.submit_add_server(&body, finish, cx),
             OpenDialog::AnotherInstance => self.sign_out_for_another_instance(&dialog, cx),
-            OpenDialog::InvitePeople => {}
+            OpenDialog::InvitePeople { .. } => {}
             OpenDialog::CreateChannel { guild_id, body } => {
                 self.submit_create_channel(guild_id, &body, finish, cx);
             }
@@ -1715,14 +1664,15 @@ impl DuskShell {
                         words.channel_deleted(&channel.name),
                     )
                 };
+                let guild_id = channel.guild_id;
                 self.session.update(cx, |session, cx| {
-                    session.send_settings_change(
-                        "delete a channel",
+                    session.delete_channel(
+                        guild_id,
+                        channel_id,
                         failure.to_owned(),
-                        move |rest| async move { rest.delete_channel(channel_id).await },
                         cx,
                         move |answer, cx| {
-                            finish(answer.map(|()| ServerDialogOutcome::Done(done)), cx);
+                            finish(answer.map(|()| ServerDialogOutcome::Deleted(done)), cx);
                         },
                     );
                 });
@@ -1954,6 +1904,20 @@ impl DuskShell {
                             shell.announce(sentence, cx);
                         }
                     }
+                    // The dialog's opener was the deleted row: focus goes to the channel that
+                    // shows now (its composer), else to the channel list, as the web's
+                    // `shouldReturnFocusToOpener: !hasSucceeded`. After the next frame, once the
+                    // navigation followed the deletion.
+                    ServerDialogOutcome::Deleted(sentence) => {
+                        shell.announce(sentence, cx);
+                        cx.on_next_frame(window, |shell, window, cx| {
+                            if shell.navigation.selected_channel_id().is_some() {
+                                shell.focus_composer(window, cx);
+                            } else {
+                                shell.focus_region(Region::ChannelList, window, cx);
+                            }
+                        });
+                    }
                 });
             });
         })
@@ -2106,6 +2070,10 @@ impl DuskShell {
             .guild_of_channel(channel.id)
             .map(|guild| guild.id)
         else {
+            // Gone meanwhile (deleted, or no longer visible): the dialog must not stay busy.
+            // Deferred, as an answer from the instance is: the dialog's window is free then.
+            let failure = strings(cx).channel_order().channel_move_failed().to_owned();
+            cx.defer(move |cx| on_done(Err(failure), cx));
             return;
         };
         let sections = self.sections_of(guild_id, cx);
@@ -2122,7 +2090,7 @@ impl DuskShell {
                 leaves_hidden_category: true,
             },
         ) else {
-            on_done(Ok(String::new()), cx);
+            cx.defer(move |cx| on_done(Ok(String::new()), cx));
             return;
         };
         let words = strings(cx).channel_order();
@@ -2231,8 +2199,43 @@ impl DuskShell {
         )
     }
 
-    /// The "+" menu and the open dialog, drawn over the shell.
-    pub(super) fn render_server_dialogs(&self) -> Vec<AnyElement> {
+    /// Whether the open dialog's server, channel or category is still there (a dialog about one
+    /// that was deleted or hidden meanwhile closes, as the menus do).
+    fn has_dialog_subject(&self, cx: &App) -> bool {
+        let Some(shown) = &self.server_dialogs.shown else {
+            return true;
+        };
+        let state = self.state(cx);
+        match &shown.kind {
+            OpenDialog::AddServer(_) | OpenDialog::AnotherInstance => true,
+            OpenDialog::InvitePeople { guild_id, .. }
+            | OpenDialog::CreateChannel { guild_id, .. } => state.guild(*guild_id).is_some(),
+            OpenDialog::DeleteChannel(channel)
+            | OpenDialog::MoveToCategory { channel, .. }
+            | OpenDialog::RenameCategory {
+                category: channel, ..
+            } => state.guild_channel(channel.id).is_some(),
+        }
+    }
+
+    /// The "+" menu and the open dialog, drawn over the shell; a dialog whose subject went away
+    /// closes, unless it waits for its own answer.
+    pub(super) fn render_server_dialogs(
+        &self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Vec<AnyElement> {
+        if !self.has_dialog_subject(cx)
+            && let Some(dialog) = self
+                .server_dialogs
+                .shown
+                .as_ref()
+                .map(|shown| shown.dialog.clone())
+        {
+            cx.defer_in(window, move |_, window, cx| {
+                dialog.update(cx, |dialog, cx| dialog.request_close(window, cx));
+            });
+        }
         self.server_dialogs
             .add_menu
             .as_ref()
@@ -2260,6 +2263,8 @@ enum ServerDialogOutcome {
     OpenChannel(Snowflake, Snowflake),
     /// Stays here; the sentence (if any) is read out.
     Done(String),
+    /// A channel or category is gone: the sentence is read out and focus goes to the list.
+    Deleted(String),
 }
 
 #[cfg(test)]
