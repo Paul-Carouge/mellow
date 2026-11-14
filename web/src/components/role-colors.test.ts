@@ -44,6 +44,29 @@ describe("highestColouredRole", () => {
   });
 });
 
+describe("role colours on names", () => {
+  // The backgrounds a name sits on (DESIGN.md §2.3), in dark then light: the side sheet and a
+  // hovered member row; the chat sheet and a hovered message. Colours are worked out on the hover.
+  const BACKGROUNDS_BY_HOVER = [
+    { hover: "#221B23", others: ["#1B151C"] },
+    { hover: "#ECE6ED", others: ["#FFFFFF"] },
+    { hover: "#282129", others: ["#221B23"] },
+    { hover: "#FBF9FC", others: ["#FFFFFF"] },
+  ];
+  const COLORS = [0x010101, 0xffffff, 0xffff00, 0x0000ff, 0x3a1f6b, 0xf1c40f, 0xe74c3c, 0x3498db, 0x4fb39a, 0x99aab5];
+
+  it("keeps 4.5:1 on the hovered row and on the plain sheet, in both themes", () => {
+    for (const { hover, others } of BACKGROUNDS_BY_HOVER) {
+      for (const color of COLORS) {
+        const shown = rgbOf(readableRoleColor(color, hover));
+        for (const background of [hover, ...others]) {
+          expect(contrastRatio(shown, rgbOf(background)), `${color.toString(16)} on ${background}`).toBeGreaterThanOrEqual(4.5);
+        }
+      }
+    }
+  });
+});
+
 describe("roleMentionChipColors", () => {
   it("washes the sheet with the role colour and keeps 4.5:1 for the text, in both themes", () => {
     for (const sheet of [DARK_SHEET, WHITE_SHEET]) {

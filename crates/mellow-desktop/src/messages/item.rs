@@ -18,7 +18,7 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::state::PendingMessageStatus;
-use mellow_protocol::{Attachment, PublicUser};
+use mellow_protocol::{Attachment, PublicUser, Role as GuildRole};
 
 use super::attachments::MessageAttachments;
 use super::body::MessageBody;
@@ -36,7 +36,7 @@ use super::time::{
 };
 use crate::components::{
     ActivationHandler, Avatar, AvatarPerson, Tooltip, child_id, colour_transition, focus_ring,
-    icon, is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
+    icon, is_focus_visible, remembered_focus_handle, remembered_hover, role_icon, with_type,
 };
 use crate::i18n::{self, Strings};
 use crate::theme::icons::IconName;
@@ -45,8 +45,9 @@ use crate::theme::tokens::{
     COMPONENT_MESSAGE_GROUP_GAP, COMPONENT_MESSAGE_GUTTER, COMPONENT_MESSAGE_PADDING_BLOCK,
     COMPONENT_MESSAGE_PADDING_TRAILING, COMPONENT_MESSAGE_REPLY_HEIGHT,
     COMPONENT_MESSAGE_STATUS_ICON_SIZE, COMPONENT_REACTION_PINNED_ICON_SIZE,
-    MOTION_DELAY_PENDING_LABEL, RADIUS_XS, SIZE_HIT_DESKTOP_MIN, SPACE_2XS, SPACE_3XS, SPACE_XS,
-    TYPE_MESSAGE, TYPE_MESSAGE_AUTHOR, TYPE_MESSAGE_SUBTEXT, TYPE_MESSAGE_TIMESTAMP,
+    COMPONENT_ROLE_ICON_MESSAGE_SIZE, MOTION_DELAY_PENDING_LABEL, RADIUS_XS, SIZE_HIT_DESKTOP_MIN,
+    SPACE_2XS, SPACE_3XS, SPACE_XS, TYPE_MESSAGE, TYPE_MESSAGE_AUTHOR, TYPE_MESSAGE_SUBTEXT,
+    TYPE_MESSAGE_TIMESTAMP,
 };
 use crate::theme::{color, delay, length, theme};
 
@@ -82,9 +83,28 @@ pub struct MessageAuthor {
     pub user: PublicUser,
     /// Their avatar, when they have one.
     pub picture: Option<ImageSource>,
-    /// Their role colour, already readable on the sheet (`readable_role_colour`); `None` keeps
+    /// Their role colour, already readable on a hovered row (`readable_role_colour`); `None` keeps
     /// the heading colour.
     pub colour: Option<Hsla>,
+    /// Their highest role with an icon, shown after the name (ADR-0050); shared by every row.
+    pub role_icon: Option<Rc<ShownRoleIcon>>,
+}
+
+/// A role whose icon is shown beside its members' names, with its name ready to label it.
+#[derive(Debug)]
+pub struct ShownRoleIcon {
+    pub role: GuildRole,
+    pub name: SharedString,
+}
+
+impl ShownRoleIcon {
+    #[must_use]
+    pub fn new(role: &GuildRole) -> Self {
+        Self {
+            role: role.clone(),
+            name: role.name.clone().into(),
+        }
+    }
 }
 
 /// Everything one row shows; the list builds it from client-core's rows and its body cache.
@@ -405,6 +425,22 @@ impl RenderOnce for MessageItem {
                         )
                         .child(author_name.clone()),
                 )
+                // After the name, before the time, as on Discord; the role's name labels it.
+                .children(content.author.role_icon.as_ref().and_then(|shown| {
+                    let name = shown.name.clone();
+                    role_icon(&shown.role, COMPONENT_ROLE_ICON_MESSAGE_SIZE, window, cx).map(
+                        |icon| {
+                            div()
+                                .id(child_id(&id, "role-icon"))
+                                .role(Role::Image)
+                                .aria_label(name.clone())
+                                .self_center()
+                                .tooltip(move |_, cx| Tooltip::view(name.clone(), cx))
+                                .tooltip_show_delay(Tooltip::show_delay())
+                                .child(icon)
+                        },
+                    )
+                }))
                 .children(time)
                 .when(content.is_pinned, |header| {
                     header.child(pinned_mark(

@@ -36,6 +36,7 @@ mod menu_opening;
 mod outside_click_dismissal;
 mod progress;
 mod range_field;
+mod role_icon;
 mod settings_list_status;
 mod settings_sheet;
 mod status;
@@ -76,6 +77,7 @@ pub use menu_opening::{
 pub use outside_click_dismissal::OutsideClickDismissal;
 pub use progress::ProgressMeter;
 pub use range_field::{RangeBounds, RangeField};
+pub use role_icon::role_icon;
 pub use settings_list_status::{SettingsListStatus, SettingsListStatusKind};
 pub use settings_sheet::{SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels};
 pub use status::{ShownStatus, StatusIndicator};

@@ -6,26 +6,24 @@ use std::path::{Path, PathBuf};
 
 use gpui::{
     App, AppContext as _, Bounds, Context, Entity, FocusHandle, InteractiveElement as _,
-    IntoElement, ObjectFit, ParentElement as _, PathPromptOptions, Pixels, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Subscription,
-    Window, div, img, prelude::FluentBuilder as _,
+    IntoElement, ParentElement as _, PathPromptOptions, Pixels, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
-use mellow_client_core::shared_logic::custom_emoji::display_emoji;
+use mellow_client_core::ClientError;
 use mellow_client_core::shared_logic::emoji_picker::PickerEmoji;
 use mellow_client_core::shared_logic::role_icons::has_role_icon;
 use mellow_client_core::shared_logic::server_settings::{
     MAXIMUM_ROLE_ICON_UPLOAD_BYTES, can_manage_role, role_manager_of,
 };
 use mellow_client_core::state::reaction_key;
-use mellow_client_core::{ClientError, DownloadableFile};
 use mellow_protocol::{ApiErrorCode, IconCropQuery, Role as GuildRole, Snowflake};
 
 use crate::components::{
-    Button, ButtonVariant, OutsideClickDismissal, bounds_recorder, icon, with_type,
+    Button, ButtonVariant, OutsideClickDismissal, bounds_recorder, icon, role_icon, with_type,
 };
 use crate::emoji_picker::{EmojiPicker, EmojiPickerEvent, note_emoji_used, recent_emoji};
 use crate::i18n::strings;
-use crate::messages::{picture_animation, picture_for_box};
 use crate::session::Session;
 use crate::settings::{error_alert, saved_notice};
 use crate::sign_in_form::describe_error;
@@ -378,34 +376,6 @@ fn maximum_kilobytes() -> i64 {
     i64::try_from(MAXIMUM_ROLE_ICON_UPLOAD_BYTES / BYTES_PER_KILOBYTE).unwrap_or(i64::MAX)
 }
 
-/// The role's picture, or its emoji, at `size`; decorative (the tile names it).
-fn role_icon_preview(role: &GuildRole, size: f32, window: &Window, cx: &App) -> gpui::AnyElement {
-    if let Some(picture) = role.icon {
-        return img(picture_for_box(
-            DownloadableFile::Icon(picture.id),
-            size,
-            size,
-            picture_animation(cx),
-            window,
-        ))
-        .flex_none()
-        .size(length(size))
-        .object_fit(ObjectFit::Contain)
-        .into_any_element();
-    }
-    div()
-        .flex()
-        .items_center()
-        .justify_center()
-        .size(length(size))
-        .text_size(length(size))
-        .line_height(length(size))
-        .child(display_emoji(
-            role.unicode_emoji.as_deref().unwrap_or_default(),
-        ))
-        .into_any_element()
-}
-
 impl Render for RoleIconEditor {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
@@ -437,7 +407,8 @@ impl Render for RoleIconEditor {
             .map(|tile| {
                 if has_icon {
                     tile.border_color(color(tokens.component_role_icon_editor_tile_border))
-                        .child(role_icon_preview(
+                        // Decorative: the tile names it.
+                        .children(role_icon(
                             &role,
                             COMPONENT_ROLE_ICON_EDITOR_PREVIEW_SIZE,
                             window,

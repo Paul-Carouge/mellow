@@ -30,7 +30,7 @@ mod voice_camera;
 mod voice_panel;
 
 use std::cell::Cell;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 use gpui::{
@@ -252,6 +252,10 @@ pub struct DuskShell {
     open_settings: Option<settings_screens::OpenSettings>,
     /// The profile a member row opened in the side sheet.
     member_profile: member_profile::MemberProfileState,
+    /// Role colours made readable in the member sheet, by role colour and background: a theme
+    /// switch or a new colour is a new key, so nothing goes stale. Bounded by the role colours
+    /// seen times the themes.
+    readable_role_colours: HashMap<(u32, u32), u32>,
     /// Where the user card is drawn, for the status menu to open across it.
     user_card_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// "User ID copied" on the user card, until `copied_label_timer` ends it.
@@ -355,6 +359,7 @@ impl DuskShell {
             server_dialogs: server_dialogs::ServerDialogs::default(),
             open_settings: None,
             member_profile: member_profile::MemberProfileState::new(cx),
+            readable_role_colours: HashMap::new(),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
             copied_label_timer: None,
