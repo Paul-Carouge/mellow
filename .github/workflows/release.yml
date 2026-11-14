@@ -37,16 +37,17 @@ env:
   # What the desktop app builds against on Debian and Ubuntu, as ci.yml's SERVER_, DESKTOP_ and
   # VESPER_BUILD_PACKAGES: nasm for libvpx and rav1d, ALSA, GPUI's windowing and fonts, PipeWire,
   # VA-API, FFmpeg, libclang and cmake for libopus (ADR-0051, ADR-0054); plus the validators of
-  # the desktop entry and the AppStream metainfo.
+  # the desktop entry and the AppStream metainfo; and WebKitGTK 4.1 for the YouTube player window
+  # (`mellow-player`, ADR-0061), which the app itself does not link.
   DESKTOP_APT_PACKAGES: >-
     build-essential ca-certificates cmake curl git nasm pkg-config libasound2-dev libxkbcommon-dev
     libxkbcommon-x11-dev libwayland-dev libvulkan1 libx11-xcb-dev libxcb1-dev libfontconfig-dev
     libfreetype-dev libpipewire-0.3-dev libclang-dev libva-dev libavcodec-dev libavdevice-dev
     libavfilter-dev libavformat-dev libavutil-dev libswresample-dev libswscale-dev
-    desktop-file-utils appstream
+    libwebkit2gtk-4.1-dev desktop-file-utils appstream
   DESKTOP_PACMAN_PACKAGES: >-
     git cmake curl nasm pkgconf alsa-lib libxkbcommon libxkbcommon-x11 wayland vulkan-icd-loader libx11
-    libxcb fontconfig freetype2 pipewire clang libva ffmpeg desktop-file-utils appstream
+    libxcb fontconfig freetype2 pipewire clang libva ffmpeg webkit2gtk-4.1 desktop-file-utils appstream
 
 jobs:
   # The web client is built apart from the native binaries, without install scripts: npm code
@@ -170,28 +171,35 @@ jobs:
           header="$(pkg-config --variable=includedir libavutil)/libavutil/ffversion.h"
           major="$(sed -n 's/^#define FFMPEG_VERSION "n\{0,1\}\([0-9]*\)\..*/\1/p' "${header}")"
           test "${major}" = "${{ matrix.ffmpeg }}" || { echo "FFmpeg ${major} instead of ${{ matrix.ffmpeg }}"; exit 1; }
-      - run: cargo build --profile dist --locked -p mellow-desktop
-      - name: The binary needs only system libraries, FFmpeg's among them
+      - run: cargo build --profile dist --locked -p mellow-desktop -p mellow-player --features mellow-player/window
+      - name: The binaries need only system libraries, FFmpeg's among them; the app no web engine
         shell: bash
         run: |
-          strip target/dist/mellow
+          strip target/dist/mellow target/dist/mellow-player
           ldd target/dist/mellow | tee linked-libraries.txt
           if grep 'not found' linked-libraries.txt; then exit 1; fi
           grep --quiet 'libavcodec\.so\.' linked-libraries.txt
+          # Mellow starts without WebKitGTK; only the player window needs it (ADR-0061).
+          if grep 'webkit2gtk' linked-libraries.txt; then exit 1; fi
+          ldd target/dist/mellow-player | tee player-libraries.txt
+          if grep 'not found' player-libraries.txt; then exit 1; fi
+          grep --quiet 'libwebkit2gtk-4\.1\.so\.' player-libraries.txt
       - name: Lay out, check and archive the package
         shell: bash
         run: |
           name="mellow-desktop-${MELLOW_VERSION}-${PACKAGE_TARGET}-ffmpeg${{ matrix.ffmpeg }}"
-          cargo xtask linux-package --binary target/dist/mellow --output "package/${name}"
+          cargo xtask linux-package --binary target/dist/mellow --player target/dist/mellow-player --output "package/${name}"
           desktop-file-validate "package/${name}/share/applications/mellow.desktop"
           appstreamcli validate --no-net "package/${name}/share/metainfo/org.mellow.desktop.metainfo.xml"
           # The installer, into a throwaway home, then out again.
           trial_home="$(mktemp -d)"
           HOME="${trial_home}" XDG_DATA_HOME='' "package/${name}/install.sh"
           test -x "${trial_home}/.local/bin/mellow"
+          test -x "${trial_home}/.local/bin/mellow-player"
           grep --quiet "^Exec=${trial_home}/.local/bin/mellow\$" "${trial_home}/.local/share/applications/mellow.desktop"
           HOME="${trial_home}" XDG_DATA_HOME='' "package/${name}/install.sh" --uninstall
           test ! -e "${trial_home}/.local/bin/mellow"
+          test ! -e "${trial_home}/.local/bin/mellow-player"
           mkdir dist
           tar --create --gzip --owner=0 --group=0 --numeric-owner --directory package \
             --file "dist/${name}.tar.gz" "${name}"
@@ -226,11 +234,13 @@ jobs:
       - if: matrix.target == 'x86_64-apple-darwin'
         run: brew install nasm
       # Metal shaders compiled at build time, not at every start (ADR-0051).
-      - run: cargo build --profile dist --locked -p mellow-desktop --no-default-features
+      - run: cargo build --profile dist --locked -p mellow-desktop -p mellow-player --no-default-features --features mellow-player/window
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-binary-${{ matrix.target }}
-          path: target/dist/mellow
+          path: |
+            target/dist/mellow
+            target/dist/mellow-player
           if-no-files-found: error
           retention-days: 7
 
@@ -252,6 +262,10 @@ jobs:
             binaries/desktop-binary-aarch64-apple-darwin/mellow binaries/desktop-binary-x86_64-apple-darwin/mellow
           lipo mellow-universal -verify_arch arm64 x86_64
           strip -x mellow-universal
+          lipo -create -output mellow-player-universal \
+            binaries/desktop-binary-aarch64-apple-darwin/mellow-player binaries/desktop-binary-x86_64-apple-darwin/mellow-player
+          lipo mellow-player-universal -verify_arch arm64 x86_64
+          strip -x mellow-player-universal
           # ScreenCaptureKit (macOS 12.3) must stay weak below LSMinimumSystemVersion (11.0), or
           # dyld refuses to start the app on older systems; any other framework newer than 11.0
           # must be weak-linked the same way (crates/mellow-desktop/build.rs).
@@ -261,7 +275,7 @@ jobs:
             if grep -A2 'cmd LC_LOAD_DYLIB$' load-commands.txt | grep ScreenCaptureKit; then exit 1; fi
           done
           mkdir bundle
-          cargo xtask macos-app --binary mellow-universal --output bundle
+          cargo xtask macos-app --binary mellow-universal --player mellow-player-universal --output bundle
       # Pull requests try the release's signing with a throwaway identity, without any secret.
       - name: Sign with a throwaway identity (dry run)
         if: github.ref_type != 'tag'
@@ -375,7 +389,7 @@ jobs:
         run: |
           # rustc and cc find MSVC's link.exe by its full path, so MSYS2's link does not matter.
           $env:PATH = "C:\msys64\usr\bin;$env:PATH"
-          cargo build --profile dist --locked -p mellow-desktop
+          cargo build --profile dist --locked -p mellow-desktop -p mellow-player --features mellow-player/window
       - name: The executable is a windowed app carrying its version
         shell: pwsh
         run: |
@@ -406,7 +420,7 @@ jobs:
       - name: Lay out and compile the installer
         shell: pwsh
         run: |
-          cargo xtask windows-package --binary target\dist\mellow.exe --output installer
+          cargo xtask windows-package --binary target\dist\mellow.exe --player target\dist\mellow-player.exe --output installer
           if ($LASTEXITCODE -ne 0) { throw "cargo xtask exited with $LASTEXITCODE" }
           & $env:ISCC /Qp installer\mellow.iss
           if ($LASTEXITCODE -ne 0) { throw "ISCC exited with $LASTEXITCODE" }
@@ -425,7 +439,7 @@ jobs:
             if ($run.ExitCode -ne 0) { throw "the installer exited with $($run.ExitCode)" }
           }
           function Assert-Installed {
-            foreach ($path in @($exe, (Join-Path $folder 'LICENSE.txt'), (Join-Path $folder 'unins000.exe'), $shortcut)) {
+            foreach ($path in @($exe, (Join-Path $folder 'mellow-player.exe'), (Join-Path $folder 'LICENSE.txt'), (Join-Path $folder 'unins000.exe'), $shortcut)) {
               if (-not (Test-Path $path)) { throw "$path is missing" }
             }
             if ((Get-Item $exe).VersionInfo.ProductVersion -ne $env:MELLOW_VERSION) { throw 'another mellow.exe is installed' }
@@ -465,9 +479,11 @@ jobs:
           # The uninstaller finishes from a copy of itself in the temporary folder.
           $deadline = (Get-Date).AddMinutes(2)
           while ((Test-Path $exe) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 1 }
-          foreach ($path in @($exe, $shortcut, $env:UNINSTALL_KEY)) {
+          foreach ($path in @($exe, (Join-Path $folder 'mellow-player.exe'), $shortcut, $env:UNINSTALL_KEY)) {
             if (Test-Path $path) { throw "$path is left after uninstalling" }
           }
+          # Nor the player window (ADR-0061), which ends with Mellow.
+          if (Get-Process -Name mellow-player -ErrorAction SilentlyContinue) { throw 'mellow-player is still running' }
       - name: Keep the installer logs
         if: failure()
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2

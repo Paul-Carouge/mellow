@@ -15591,6 +15591,20 @@ impl DesktopStrings {
         }
     }
 
+    pub fn you_tube_playing_in_player_window(self) -> &'static str {
+        match self.language {
+            Language::English => "Playing in the player window",
+            Language::French => "En lecture dans le lecteur",
+        }
+    }
+
+    pub fn you_tube_player_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "The player window couldn't open, so the video opened in your browser.",
+            Language::French => "La fenêtre du lecteur n’a pas pu s’ouvrir\u{a0}: la vidéo s’est ouverte dans ton navigateur.",
+        }
+    }
+
     pub fn close_enlarged_video(self) -> &'static str {
         match self.language {
             Language::English => "Close the video",

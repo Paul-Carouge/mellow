@@ -32,7 +32,7 @@ use super::time::{local_date_time, locale};
 use super::{picture_animation, picture_for_box};
 use crate::components::{
     Button, ButtonSize, ButtonVariant, Tooltip, child_id, focus_ring, icon, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    polite_live_region, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{self, Strings};
 use crate::theme::icons::IconName;
@@ -56,6 +56,9 @@ use crate::theme::tokens::{
     SPACE_3XS, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
+use crate::youtube_player::{
+    play_in_youtube_player, youtube_player_fallback, youtube_player_video,
+};
 
 /// A video's poster box, 16:9; a Short's, 9:16.
 const VIDEO_ASPECT_RATIO: f32 = 16.0 / 9.0;
@@ -473,7 +476,8 @@ fn plain_card(
 }
 
 /// A YouTube video or Short (`VideoEmbed.svelte`): the instance's poster with the play key, which
-/// opens the video in the browser where the link starts it; nothing comes from YouTube here.
+/// plays the video in Mellow's player window (ADR-0061), or in the browser when that window cannot
+/// open; nothing comes from YouTube in this card.
 #[allow(clippy::too_many_lines)] // One card's element tree, in the order it is drawn.
 fn video_card(
     shown: &Shown<'_>,
@@ -528,6 +532,27 @@ fn video_card(
             .object_fit(ObjectFit::Cover)
             .with_fallback(|| div().into_any_element())
     });
+    // shortcut: a plain chip says the video plays in the player window; the card design track
+    // gives it its look (DESIGN.md §5.4). A click on the card brings the window forward.
+    let in_player_note: Option<SharedString> = (youtube_player_video(cx)
+        == Some(video.video_id.as_str()))
+    .then(|| strings.desktop().you_tube_playing_in_player_window().into());
+    let play_label: SharedString = match &in_player_note {
+        Some(note) => format!("{play_label}. {note}").into(),
+        None => play_label,
+    };
+    let in_player_chip = in_player_note.map(|note| {
+        with_type(div(), TYPE_BODY_SM)
+            .absolute()
+            .left(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
+            .top(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
+            .px(length(SPACE_XS))
+            .py(length(SPACE_3XS))
+            .rounded(length(COMPONENT_LINK_PREVIEW_START_CHIP_RADIUS))
+            .bg(color(tokens.component_link_preview_start_chip_background))
+            .text_color(color(tokens.component_link_preview_start_chip_text))
+            .child(note)
+    });
     let start_chip = video.start_seconds.map(|start| {
         // Said in the play key's name; shown for the eye.
         with_type(div(), TYPE_BODY_SM)
@@ -546,6 +571,8 @@ fn video_card(
     let hover = remembered_hover(&key_id, window, cx);
     let is_hovered = *hover.read(cx);
     let url = preview.url.clone();
+    let played_video = video.clone();
+    let played_title = shown.title.clone();
     let tooltip = play_label.clone();
     // The whole box is the key, as on the web; the disc is opaque so it reads on any picture.
     let stage = div()
@@ -578,7 +605,7 @@ fn video_card(
                 cx.notify();
             });
         })
-        .on_click(move |_, _, cx| open_message_link(&url, cx))
+        .on_click(move |_, _, cx| play_in_youtube_player(&url, &played_video, &played_title, cx))
         .children(poster)
         .child(
             div()
@@ -599,6 +626,7 @@ fn video_card(
                 )),
         )
         .children(start_chip)
+        .children(in_player_chip)
         .when(is_focus_visible(&focus, window), |stage| {
             // Inside the box, in the media stage's own focus colour.
             stage.child(
@@ -638,6 +666,16 @@ fn video_card(
             .into_any_element(),
     );
     content.push(stage);
+    if youtube_player_fallback(&video.video_id, cx) {
+        let note: SharedString = strings.desktop().you_tube_player_unavailable().into();
+        content.push(
+            with_type(div(), TYPE_BODY_SM)
+                .text_color(color(tokens.component_link_preview_player_error_text))
+                .child(note.clone())
+                .child(polite_live_region(child_id(&shown.id, "player-note"), note))
+                .into_any_element(),
+        );
+    }
     card_frame(shown, Some(shown.title.clone()), content, tokens)
 }
 

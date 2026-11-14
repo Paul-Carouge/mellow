@@ -49,6 +49,9 @@ keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 # Its sound player plays the web's notification chime (the voice engine comes with step 7).
 mellow-media.workspace = true
+# What the YouTube player window may be asked and may load (ADR-0061): its library only, so the
+# app links no web engine; the window is the crate's own binary.
+mellow-player.workspace = true
 # The release check, download and signature verification the server's `update` uses (ADR-0057).
 mellow-update.workspace = true
 mellow-protocol.workspace = true
