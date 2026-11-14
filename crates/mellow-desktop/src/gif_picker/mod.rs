@@ -36,9 +36,9 @@ use mellow_protocol::{ApiErrorCode, GifSettings, MAXIMUM_GIF_FAVOURITES};
 
 use self::layout::{justified_rows, sheet_height};
 use crate::components::{
-    Button, FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, Tabs,
-    focus_next_inside, focus_previous_inside, focus_ring, icon, is_focus_visible,
-    polite_live_region, popover_position_beside_anchor, shadow, with_type,
+    Button, FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, PlacementArea,
+    Tabs, focus_next_inside, focus_previous_inside, focus_ring, icon, is_focus_visible,
+    polite_live_region, popover_position_beside_anchor_in_area, shadow, with_type,
 };
 use crate::gif_video::{GifVideoPhase, plays_klipy_video, use_gif_video};
 use crate::i18n::{Strings, strings};
@@ -1268,7 +1268,6 @@ impl Render for GifPicker {
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let (width, height) = Self::panel_size(window);
-        let viewport = window.viewport_size();
         let token_pixels_per_pixel = TOKEN_PIXELS_PER_REM / f32::from(window.rem_size());
         let to_tokens = |side: f32| side * token_pixels_per_pixel;
         // The anchor is in window pixels; the placement works in token pixels, then back.
@@ -1278,13 +1277,10 @@ impl Render for GifPicker {
             left: to_tokens(self.anchor.left),
             right: to_tokens(self.anchor.right),
         };
-        let (top, left) = popover_position_beside_anchor(
+        let (top, left) = popover_position_beside_anchor_in_area(
             anchor,
             (width, height),
-            (
-                to_tokens(f32::from(viewport.width)),
-                to_tokens(f32::from(viewport.height)),
-            ),
+            PlacementArea::of_window_content(window, token_pixels_per_pixel),
             COMPONENT_GIF_PICKER_GAP,
         );
         let is_search_focused = self.search.read(cx).focus_handle(cx).is_focused(window);

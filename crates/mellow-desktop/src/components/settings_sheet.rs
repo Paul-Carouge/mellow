@@ -518,6 +518,7 @@ impl RenderOnce for SettingsSheet {
         });
 
         let close_on_escape = self.on_request_close;
+        let window_corners = crate::window_chrome::client_frame_inner_corner_radii(window);
         let container_focus = self.container_focus.clone();
         let previous_focus = self.container_focus.clone();
         div()
@@ -531,6 +532,9 @@ impl RenderOnce for SettingsSheet {
             .inset_0()
             .occlude()
             .flex()
+            // Its fill reaches the window's bottom corners: it follows a floating window's frame.
+            .rounded_bl(length(window_corners.bottom_left))
+            .rounded_br(length(window_corners.bottom_right))
             .bg(color(if is_wide {
                 tokens.component_settings_sidebar_background
             } else {

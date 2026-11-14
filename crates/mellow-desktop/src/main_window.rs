@@ -2,8 +2,8 @@
 //! out, the Dusk shell when signed in (a new one per session, so nothing of the last one stays).
 
 use gpui::{
-    AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render, Styled as _,
-    Subscription, Window, div,
+    AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
+    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
 };
 
 use crate::components::Tooltip;
@@ -11,8 +11,8 @@ use crate::notifier::{end_notifications, notifier_of_session};
 use crate::session::{Session, SessionPhase};
 use crate::shell::DuskShell;
 use crate::sign_in_screen::SignInScreen;
-use crate::theme::{color, interface_font, theme};
-use crate::window_chrome::WINDOW_TITLE;
+use crate::theme::{color, interface_font, length, theme};
+use crate::window_chrome::{self, WINDOW_TITLE};
 
 pub struct MainWindow {
     session: Entity<Session>,
@@ -103,24 +103,42 @@ impl MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
-        let root = div()
+        let chrome = window_chrome::client_chrome(window);
+        let (screen, ground): (Option<AnyElement>, u32) = match (&self.sign_in_screen, &self.shell)
+        {
+            (Some(sign_in_screen), _) => (
+                Some(sign_in_screen.clone().into_any_element()),
+                tokens.component_auth_card_backdrop,
+            ),
+            (None, Some(shell)) => (
+                Some(shell.clone().into_any_element()),
+                tokens.color_surface_rail,
+            ),
+            (None, None) => (None, tokens.component_auth_card_backdrop),
+        };
+        let content = div()
+            .relative()
             .size_full()
+            .flex()
+            .flex_col()
             .font(interface_font())
-            .bg(color(tokens.component_auth_card_backdrop))
             // Lets message text be selected and copied (gpui-base's window text selection).
             .child(gpui_base::TextSelectionLayer)
             // Hides tooltips on a press or a keystroke (DESIGN.md §6.34).
-            .child(Tooltip::dismissal_layer());
-        if let Some(sign_in_screen) = &self.sign_in_screen {
-            return root.child(sign_in_screen.clone());
-        }
-        match &self.shell {
-            Some(shell) => root
-                .bg(color(tokens.color_surface_rail))
-                .child(shell.clone()),
-            None => root,
-        }
+            .child(Tooltip::dismissal_layer())
+            .when(chrome.is_title_band_drawn, |content| {
+                content.child(div().flex_none().h(length(chrome.title_band_height())))
+            })
+            // The screen's layers laid out in it (sheets, the settings sheet) stay below the title
+            // band; deferred layers (dialogs, scrims, menus) place themselves there with
+            // `window_chrome::client_content_bounds`.
+            .child(div().relative().flex_1().min_h_0().flex().children(screen))
+            // Drawn last: above the screen, and after it in the Tab order.
+            .when(chrome.is_title_band_drawn, |content| {
+                content.child(window_chrome::title_band(window, cx))
+            });
+        window_chrome::framed_window_content(content, chrome, color(ground), window, cx)
     }
 }
