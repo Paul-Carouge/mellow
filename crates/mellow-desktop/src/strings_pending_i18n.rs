@@ -153,6 +153,8 @@ pub struct Strings {
     pub instance_row_label: &'static str,
     pub change_instance: &'static str,
     pub change_instance_label: &'static str,
+    /// Why a picture was refused before sending: its megapixels and longest side allowed.
+    pub picture_too_many_pixels: fn(u32, u32) -> String,
 }
 
 pub static ENGLISH: Strings = Strings {
@@ -257,6 +259,9 @@ pub static ENGLISH: Strings = Strings {
     instance_row_label: "Instance",
     change_instance: "Change",
     change_instance_label: "Change instance",
+    picture_too_many_pixels: |megapixels, side| {
+        format!("Pictures can be up to {megapixels} megapixels and {side} pixels on a side.")
+    },
 };
 
 pub static FRENCH: Strings = Strings {
@@ -361,6 +366,21 @@ pub static FRENCH: Strings = Strings {
     instance_row_label: "Instance",
     change_instance: "Changer",
     change_instance_label: "Changer d’instance",
+    picture_too_many_pixels: |megapixels, side| {
+        // A thin no-break space groups the thousands, as the catalogue writes numbers.
+        let side = side.to_string();
+        let grouped = match side.len() {
+            4.. => format!(
+                "{}\u{202f}{}",
+                &side[..side.len() - 3],
+                &side[side.len() - 3..]
+            ),
+            _ => side,
+        };
+        format!(
+            "Les images peuvent faire jusqu’à {megapixels}{NO_BREAK_SPACE}mégapixels et {grouped}{NO_BREAK_SPACE}pixels de côté."
+        )
+    },
 };
 
 #[cfg(test)]

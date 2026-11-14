@@ -10,6 +10,10 @@ use mellow_protocol::IconCropQuery;
 pub const MAXIMUM_CROP_ZOOM: f32 = 8.0;
 /// The smallest side worth keeping, in picture pixels, whatever the zoom allows.
 const MINIMUM_CROP_SIDE: f32 = 16.0;
+/// The instance's limits on an uploaded picture (`image_processing.rs` on the server), checked
+/// before sending so the refusal names them.
+pub const MAXIMUM_PICTURE_SIDE_PIXELS: u32 = 8_192;
+pub const MAXIMUM_PICTURE_MEGAPIXELS: u32 = 24;
 /// Under half a pixel from the centred square counts as untouched.
 const UNTOUCHED_TOLERANCE: f32 = 0.5;
 
@@ -154,6 +158,28 @@ pub fn placement_in_frame(
     )
 }
 
+/// Whether the instance would refuse `picture` for its size.
+#[must_use]
+pub fn is_picture_too_large(picture: PictureSize) -> bool {
+    #[allow(clippy::cast_precision_loss)] // Small whole numbers, exact in an f32.
+    let (side, total) = (
+        MAXIMUM_PICTURE_SIDE_PIXELS as f32,
+        MAXIMUM_PICTURE_MEGAPIXELS as f32 * 1_000_000.0,
+    );
+    picture.width > side || picture.height > side || picture.width * picture.height > total
+}
+
+/// The size to decode `picture` at so it fits in a `side`-pixel square ("contain"), never
+/// larger than it is: a panorama keeps its whole width within the atlas's limits.
+#[must_use]
+pub fn contained_size(picture: PictureSize, side: f32) -> (u32, u32) {
+    let scale = (side / picture.width).min(side / picture.height).min(1.0);
+    // At most `side` by construction, and at least one pixel.
+    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+    let pixels = |length: f32| (length * scale).round().max(1.0) as u32;
+    (pixels(picture.width), pixels(picture.height))
+}
+
 /// The picture's size as the instance measures it: the decoder's size, turned by its EXIF
 /// orientation. Reads the header only. `None` for what cannot be decoded.
 #[must_use]
@@ -272,6 +298,75 @@ mod tests {
             placement_in_frame(crop, WIDE, 300.0),
             (-450.0, -150.0, 1200.0, 600.0)
         );
+    }
+
+    /// A 40 × 20 JPEG tagged with EXIF orientation 6 (turn right), as a phone writes it.
+    fn jpeg_tagged_to_turn_right() -> Vec<u8> {
+        use image::ImageEncoder as _;
+
+        let mut jpeg = Vec::new();
+        image::codecs::jpeg::JpegEncoder::new(&mut jpeg)
+            .write_image(
+                image::RgbImage::from_pixel(40, 20, image::Rgb([0, 120, 255])).as_raw(),
+                40,
+                20,
+                image::ExtendedColorType::Rgb8,
+            )
+            .unwrap();
+        // Big-endian TIFF with one IFD entry: Orientation (0x0112), SHORT, count 1, value 6.
+        let exif: &[u8] =
+            b"Exif\0\0MM\0\x2a\0\0\0\x08\0\x01\x01\x12\0\x03\0\0\0\x01\0\x06\0\0\0\0\0\0";
+        let segment_length = u16::try_from(exif.len() + 2).unwrap();
+        let mut tagged = jpeg[..2].to_vec();
+        tagged.extend_from_slice(&[0xFF, 0xE1]);
+        tagged.extend_from_slice(&segment_length.to_be_bytes());
+        tagged.extend_from_slice(exif);
+        tagged.extend_from_slice(&jpeg[2..]);
+        tagged
+    }
+
+    #[test]
+    fn a_turned_jpeg_measures_as_the_stage_draws_it() {
+        let jpeg = jpeg_tagged_to_turn_right();
+        let size = picture_size_of(&jpeg).unwrap();
+        assert_eq!(
+            size,
+            PictureSize {
+                width: 20.0,
+                height: 40.0
+            }
+        );
+        let (width, height) = contained_size(size, 1024.0);
+        let frames = crate::pictures::decode_frames(
+            &jpeg,
+            crate::pictures::Animation::StillFrame,
+            crate::pictures::DisplaySize { width, height },
+        )
+        .unwrap();
+        assert_eq!(frames[0].buffer().dimensions(), (20, 40));
+    }
+
+    #[test]
+    fn a_panorama_is_decoded_whole_within_the_stage_side() {
+        let panorama = PictureSize {
+            width: 8000.0,
+            height: 1000.0,
+        };
+        assert_eq!(contained_size(panorama, 1024.0), (1024, 128));
+        // Never enlarged.
+        let small = PictureSize {
+            width: 300.0,
+            height: 200.0,
+        };
+        assert_eq!(contained_size(small, 1024.0), (300, 200));
+    }
+
+    #[test]
+    fn pictures_past_the_instances_limits_are_refused_before_sending() {
+        let size = |width, height| PictureSize { width, height };
+        assert!(!is_picture_too_large(size(6000.0, 4000.0)));
+        assert!(is_picture_too_large(size(8193.0, 100.0)));
+        assert!(is_picture_too_large(size(6000.0, 4001.0)));
     }
 
     #[test]

@@ -206,7 +206,7 @@ impl Render for VoiceVideoSection {
         let are_names_hidden =
             listed.is_some_and(|listed| listed.iter().any(CameraDescription::is_unnamed));
         let toggle_voice = voice_entity.downgrade();
-        let is_menu_open = self.device_menu.is_some();
+        let open_menu_id = self.device_menu.as_ref().map(|(_, _, id)| *id);
         let problem_sentence: SharedString = problem
             .map_or_else(SharedString::default, |problem| {
                 problem.sentence(catalogue).into()
@@ -230,7 +230,7 @@ impl Render for VoiceVideoSection {
                     store: |settings, device_id| settings.camera_device_id = device_id,
                 },
                 |section: &mut Self| &mut section.device_menu,
-                is_menu_open,
+                open_menu_id,
                 window,
                 cx,
             ))
@@ -348,7 +348,7 @@ impl Render for VoiceVideoSection {
                     .child(controls)
                     .child(stage),
             )
-            .children(self.device_menu.as_ref().map(|(menu, _)| menu.clone()))
+            .children(self.device_menu.as_ref().map(|(menu, _, _)| menu.clone()))
     }
 }
 

@@ -822,6 +822,7 @@ impl SignInScreen {
         self.is_busy = false;
         self.step = Step::InstanceAddress;
         self.has_session_ended_by_itself = false;
+        self.is_instance_unreachable = false;
         self.error_message = None;
         self.field_errors.clear();
         self.set_value(SignInField::InstanceAddress, &address, window, cx);
@@ -1096,7 +1097,7 @@ impl SignInScreen {
                         .variant(ButtonVariant::Secondary)
                         .size(ButtonSize::Small)
                         .accessible_label(strings.change_instance_label)
-                        .disabled(self.is_busy)
+                        // Stays usable while busy: it is how a stuck sign-in is abandoned.
                         .on_click(move |window, cx| {
                             let _ = screen.update(cx, |screen, cx| {
                                 screen.use_another_instance(window, cx);

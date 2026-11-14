@@ -1308,3 +1308,37 @@ fn melli_connects_while_a_request_is_out_and_rains_when_the_instance_is_unreacha
     );
     runtime.shutdown_background();
 }
+
+#[gpui::test]
+fn change_abandons_a_sign_in_that_is_still_waiting(cx: &mut TestAppContext) {
+    let runtime = build_network_runtime().unwrap();
+    cx.executor().allow_parking();
+    let handle = runtime.handle().clone();
+    cx.update(|cx| install_network_runtime(handle, cx));
+    // Listens but never answers: the sign-in waits as on a stuck instance.
+    let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let address =
+        InstanceAddress::parse(&format!("http://{}", silent.local_addr().unwrap())).unwrap();
+    let (screen, cx) = sign_in_screen_without_instance(cx);
+    screen.update_in(cx, |screen, window, cx| {
+        screen.step = Step::Credentials {
+            instance: address,
+            is_registering: false,
+        };
+        screen.set_value(SignInField::Login, "ada", window, cx);
+        screen.set_value(SignInField::Password, "long enough password", window, cx);
+        screen.submit(window, cx);
+    });
+    cx.run_until_parked();
+    assert!(screen.read_with(cx, |screen, _| screen.is_busy && screen.request.is_some()));
+
+    screen.update_in(cx, SignInScreen::use_another_instance);
+    screen.read_with(cx, |screen, _| {
+        assert!(matches!(screen.step, Step::InstanceAddress));
+        assert!(!screen.is_busy);
+        assert!(screen.request.is_none(), "the waiting request is dropped");
+        assert_eq!(screen.melli_state(), MelliState::Idle);
+    });
+    drop(silent);
+    runtime.shutdown_background();
+}

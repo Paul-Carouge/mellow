@@ -26,8 +26,9 @@ use mellow_client_core::shared_logic::user_settings::MAXIMUM_PROFILE_IMAGE_BYTES
 use mellow_protocol::{IconCropQuery, ProfileImage, Snowflake};
 
 use super::picture_crop::{
-    CropSquare, PictureSize, crop_moved_by, crop_to_send, crop_zoomed_to, largest_centred_square,
-    maximum_zoom, picture_size_of, placement_in_frame, zoom_of,
+    CropSquare, PictureSize, contained_size, crop_moved_by, crop_to_send, crop_zoomed_to,
+    is_picture_too_large, largest_centred_square, maximum_zoom, picture_size_of,
+    placement_in_frame, zoom_of,
 };
 use super::picture_upload::{
     PictureReadProblem, describe_image_failure, describe_read_problem, read_picture,
@@ -39,7 +40,7 @@ use crate::components::{
 };
 use crate::i18n::strings;
 use crate::messages::{file_size_label, picture_animation, picture_for_box};
-use crate::pictures::{Animation, DisplaySize, decode_frames};
+use crate::pictures::{Animation, DisplaySize, PictureDecodeError, decode_frames};
 use crate::session::Session;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -66,9 +67,9 @@ const WHEEL_ZOOM_PER_PIXEL: f32 = 0.001;
 /// A wheel notch reported in lines, as a mouse wheel does on Linux.
 const WHEEL_PIXELS_PER_LINE: f32 = 100.0;
 const ZOOM_SLIDER_STEP: f32 = 0.01;
-/// The stage's picture is decoded for at most this many device pixels a side: the frame is
-/// never wider than a dialog, and the samples are smaller.
-const STAGE_DECODE_SIDE: u32 = 1024;
+/// The stage's picture is decoded to fit this many device pixels a side: the frame is never
+/// wider than a dialog, and the samples are smaller.
+const STAGE_DECODE_SIDE: f32 = 1024.0;
 
 /// Whose icon the editor changes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -133,26 +134,30 @@ fn icon_and_name(
     }
 }
 
-/// Measures and decodes a picked picture for the stage; `None` when it cannot be decoded.
-fn prepare_picture(bytes: Vec<u8>) -> Option<ChosenPicture> {
-    let size = picture_size_of(&bytes)?;
-    let frames = decode_frames(
-        &bytes,
-        Animation::StillFrame,
-        DisplaySize {
-            width: STAGE_DECODE_SIDE,
-            height: STAGE_DECODE_SIDE,
-        },
-    )
-    .ok()?;
-    Some(ChosenPicture {
+/// Measures and decodes a picked picture for the stage, fitted in its square so a panorama
+/// stays within the texture atlas's limits; refuses what the instance would refuse for its size.
+fn prepare_picture(bytes: Vec<u8>) -> Result<ChosenPicture, PictureReadProblem> {
+    let size = picture_size_of(&bytes).ok_or(PictureReadProblem::Unreadable)?;
+    if is_picture_too_large(size) {
+        return Err(PictureReadProblem::TooManyPixels);
+    }
+    let (width, height) = contained_size(size, STAGE_DECODE_SIDE);
+    let frames = decode_frames(&bytes, Animation::StillFrame, DisplaySize { width, height })
+        .map_err(|error| match error {
+            PictureDecodeError::TooLarge => PictureReadProblem::TooManyPixels,
+            PictureDecodeError::Undecodable | PictureDecodeError::ColourConversion => {
+                PictureReadProblem::Unreadable
+            }
+        })?;
+    Ok(ChosenPicture {
         bytes: Arc::new(bytes),
         size,
         still: Arc::new(RenderImage::new(frames)),
     })
 }
 
-/// The crop of the stage's still picture, `side` device pixels square, for the samples.
+/// The crop of the stage's still picture, `sample_side` device pixels square, for the samples.
+/// Reads the decoded frame in place (no copy of the whole picture) and scales only the crop.
 fn cropped_still(
     picture: &ChosenPicture,
     crop: CropSquare,
@@ -163,10 +168,13 @@ fn cropped_still(
         u32::try_from(size.width.0).ok()?,
         u32::try_from(size.height.0).ok()?,
     );
-    let bytes = picture.still.as_bytes(0)?.to_vec();
     // The decoded frame's own channel order (BGRA) is kept: cutting and scaling treat channels
     // alike.
-    let still = image::RgbaImage::from_raw(still_width, still_height, bytes)?;
+    let still = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(
+        still_width,
+        still_height,
+        picture.still.as_bytes(0)?,
+    )?;
     #[allow(clippy::cast_precision_loss)]
     let scale = still_width as f32 / picture.size.width;
     // Inside the decoded frame by construction; rounding is kept within it.
@@ -180,14 +188,15 @@ fn cropped_still(
         .min(still_height - y);
     #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
     let sample_side = sample_side.round().max(1.0) as u32;
-    let cut = image::imageops::crop_imm(&still, x, y, cut_side, cut_side).to_image();
-    let sample = image::imageops::resize(
-        &cut,
-        sample_side,
-        sample_side,
-        image::imageops::FilterType::Triangle,
-    );
+    let cut = image::imageops::crop_imm(&still, x, y, cut_side, cut_side);
+    let sample = image::imageops::thumbnail(&*cut, sample_side, sample_side);
     Some(RenderImage::new(vec![image::Frame::new(sample)]))
+}
+
+/// Frees `image`'s tiles in every window's atlas. Deferred, as `voice/video_view.rs` does: the
+/// window whose handler is running is out of the app's window list until it returns.
+fn free_atlas_tiles(image: Arc<RenderImage>, cx: &mut App) {
+    cx.defer(move |cx| cx.drop_image(image, None));
 }
 
 impl IconEditor {
@@ -210,7 +219,7 @@ impl IconEditor {
     }
 
     fn choose_picture(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.busy.is_some() || self.crop_dialog.is_some() {
             return;
         }
         let picked = cx.prompt_for_paths(PathPromptOptions {
@@ -243,7 +252,7 @@ impl IconEditor {
 
     /// Reads and measures the picked file off the UI thread, then opens the crop dialog on it.
     fn open_picked_file(&mut self, path: PathBuf, window: &mut Window, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+        if self.busy.is_some() || self.crop_dialog.is_some() {
             return;
         }
         self.busy = Some(IconBusy::Opening);
@@ -253,11 +262,7 @@ impl IconEditor {
         let window_handle = window.window_handle();
         cx.spawn(async move |editor, cx| {
             let prepared = cx
-                .background_spawn(async move {
-                    read_picture(&path).and_then(|bytes| {
-                        prepare_picture(bytes).ok_or(PictureReadProblem::Unreadable)
-                    })
-                })
+                .background_spawn(async move { read_picture(&path).and_then(prepare_picture) })
                 .await;
             let _ = window_handle.update(cx, |_, window, cx| {
                 let _ = editor.update(cx, |editor, cx| {
@@ -304,9 +309,7 @@ impl IconEditor {
             window,
             move |editor, dialog, event: &ModalDialogEvent, window, cx| match event {
                 ModalDialogEvent::Closed => {
-                    if let Some((_, stage, _)) = editor.crop_dialog.take() {
-                        stage.update(cx, |stage, _| stage.release_pictures(window));
-                    }
+                    editor.crop_dialog = None;
                     cx.notify();
                 }
                 ModalDialogEvent::Submitted => {
@@ -637,6 +640,17 @@ impl CropStage {
         cx: &mut Context<Self>,
     ) -> Self {
         let crop = largest_centred_square(picture.size);
+        // The textures go with the stage, however the dialog ends (Cancel, saved, the settings
+        // closed under it).
+        cx.on_release(|stage: &mut Self, cx| {
+            let still = Arc::clone(&stage.picture.still);
+            let sample = stage.sample.take().map(|(_, sample)| sample);
+            free_atlas_tiles(still, cx);
+            if let Some(sample) = sample {
+                free_atlas_tiles(sample, cx);
+            }
+        })
+        .detach();
         Self {
             picture,
             target,
@@ -647,14 +661,6 @@ impl CropStage {
             drag_from: None,
             sample: None,
         }
-    }
-
-    /// Frees the pictures' textures once the dialog is gone.
-    fn release_pictures(&mut self, window: &mut Window) {
-        if let Some((_, sample)) = self.sample.take() {
-            let _ = window.drop_image(sample);
-        }
-        let _ = window.drop_image(Arc::clone(&self.picture.still));
     }
 
     /// The sample picture for the current crop, cut again when the crop moved.
@@ -1057,6 +1063,8 @@ impl Render for CropStage {
                                 },
                                 |zoom| format!("{}\u{202f}%", (zoom * 100.0).round()).into(),
                             )
+                            // Nothing to zoom into: a tiny picture is shown whole.
+                            .disabled(zoom_limit <= 1.0)
                             .on_change(move |zoom, _, cx| {
                                 let _ = stage.update(cx, |stage, cx| stage.zoom_to(zoom, None, cx));
                             }),
@@ -1074,5 +1082,72 @@ impl Render for CropStage {
                     ),
             )
             .child(self.render_samples(window, cx))
+    }
+}
+
+#[cfg(test)]
+mod crop_stage_tests {
+    use gpui::{TestAppContext, WindowAppearance};
+
+    use super::*;
+
+    fn picture_of(width: u32, height: u32) -> ChosenPicture {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(width, height)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        prepare_picture(bytes).expect("a readable picture")
+    }
+
+    #[gpui::test]
+    fn the_keys_move_and_zoom_the_crop_as_dragging_does(cx: &mut TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::theme::ActiveTheme::for_appearance(
+                WindowAppearance::Dark,
+            ));
+        });
+        let picture = picture_of(400, 200);
+        let (stage, cx) = cx.add_window_view(|_, cx| {
+            CropStage::new(
+                picture,
+                IconTarget::Server(Snowflake::from_raw(1)),
+                "Kitchen".into(),
+                cx,
+            )
+        });
+        cx.update(|window, cx| {
+            window.activate_window();
+            let focus = stage.read(cx).focus.clone();
+            window.focus(&focus, cx);
+        });
+        cx.run_until_parked();
+        let crop = |cx: &mut gpui::VisualTestContext| stage.read_with(cx, |stage, _| stage.crop);
+        assert_eq!(crop(cx).x, 100.0);
+
+        // Right moves the picture right, so the square shows more of its left.
+        cx.simulate_keystrokes("right");
+        assert!((crop(cx).x - 96.0).abs() < 0.001);
+        cx.simulate_keystrokes("shift-left");
+        assert!((crop(cx).x - 116.0).abs() < 0.001);
+
+        cx.simulate_keystrokes("=");
+        assert!(
+            (stage.read_with(cx, |stage, _| stage.zoom()) - KEYBOARD_ZOOM_FACTOR).abs() < 0.001
+        );
+        cx.simulate_keystrokes("-");
+        assert!((stage.read_with(cx, |stage, _| stage.zoom()) - 1.0).abs() < 0.001);
+        // Untouched size and back to the centre: nothing is sent, the instance centres.
+        stage.update(cx, |stage, cx| {
+            let centred = largest_centred_square(stage.picture.size);
+            stage.set_crop(centred, cx);
+        });
+        assert_eq!(
+            stage.read_with(cx, |stage, _| stage.crop_to_send()),
+            IconCropQuery::default()
+        );
     }
 }

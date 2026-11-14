@@ -13,6 +13,7 @@ use mellow_protocol::ApiErrorCode;
 
 use crate::i18n::strings;
 use crate::messages::file_size_label;
+use crate::settings::picture_crop::{MAXIMUM_PICTURE_MEGAPIXELS, MAXIMUM_PICTURE_SIDE_PIXELS};
 use crate::sign_in_form::describe_error;
 use crate::strings_pending_i18n::strings as pending_strings;
 
@@ -21,6 +22,8 @@ use crate::strings_pending_i18n::strings as pending_strings;
 pub enum PictureReadProblem {
     File(ProfileImageFileProblem),
     Unreadable,
+    /// More pixels than the instance takes.
+    TooManyPixels,
 }
 
 /// Reads a picked file, never more than the instance takes. Blocking: call it off the UI thread.
@@ -66,6 +69,10 @@ pub fn describe_read_problem(problem: &PictureReadProblem, summary: &str, cx: &A
         }
         PictureReadProblem::File(ProfileImageFileProblem::TooLarge) => too_large_reason(cx),
         PictureReadProblem::Unreadable => catalogue.profile().unreadable().to_owned(),
+        PictureReadProblem::TooManyPixels => (pending_strings(cx).picture_too_many_pixels)(
+            MAXIMUM_PICTURE_MEGAPIXELS,
+            MAXIMUM_PICTURE_SIDE_PIXELS,
+        ),
     };
     (pending_strings(cx).error_with_reason)(summary, &reason)
 }

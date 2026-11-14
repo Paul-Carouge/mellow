@@ -553,7 +553,8 @@ fn device_options(
 }
 
 /// The open device menu of a page, closed by a choice, Esc or a click outside.
-pub(super) type DeviceMenu = Option<(Entity<ContextMenu>, Subscription)>;
+/// The id of the select that opened it says which field is expanded: the menu takes focus.
+pub(super) type DeviceMenu = Option<(Entity<ContextMenu>, Subscription, &'static str)>;
 
 /// What one device select shows and stores.
 pub(super) struct DeviceSelect<'a> {
@@ -612,7 +613,7 @@ fn open_device_menu<Host: 'static>(
 pub(super) fn device_select<Host: 'static>(
     select: &DeviceSelect<'_>,
     menu_of: fn(&mut Host) -> &mut DeviceMenu,
-    is_menu_open: bool,
+    open_menu_id: Option<&'static str>,
     window: &mut Window,
     cx: &mut Context<Host>,
 ) -> gpui::Div {
@@ -633,7 +634,8 @@ pub(super) fn device_select<Host: 'static>(
     let focus = remembered_focus_handle(&id, window, cx);
     let bounds = remembered_bounds(&id, window, cx);
     let is_ring_shown = is_focus_visible(&focus, window);
-    let is_open = is_menu_open && focus.is_focused(window);
+    let is_open = open_menu_id == Some(select.id);
+    let select_id = select.id;
     let host = cx.entity().downgrade();
     let (label, icon_name, store) = (select.label, select.icon, select.store);
     let open = {
@@ -657,7 +659,8 @@ pub(super) fn device_select<Host: 'static>(
                     window,
                     cx,
                 );
-                *menu_of(host) = Some(menu);
+                let (menu, subscription) = menu;
+                *menu_of(host) = Some((menu, subscription, select_id));
             });
         }
     };
@@ -845,7 +848,7 @@ impl Render for VoicePage {
         let outputs = device_choices(self.outputs.as_deref().unwrap_or_default(), |position| {
             words.unnamed_output(i64::try_from(position).unwrap_or(i64::MAX))
         });
-        let is_menu_open = self.device_menu.is_some();
+        let open_menu_id = self.device_menu.as_ref().map(|(_, _, id)| *id);
         let is_manual_sensitivity = settings.input_mode == VoiceInputMode::VoiceActivity
             && !settings.is_sensitivity_automatic;
         let column = || {
@@ -877,7 +880,7 @@ impl Render for VoicePage {
                             store: |settings, device_id| settings.input_device_id = device_id,
                         },
                         |page: &mut Self| &mut page.device_menu,
-                        is_menu_open,
+                        open_menu_id,
                         window,
                         cx,
                     ))
@@ -904,7 +907,7 @@ impl Render for VoicePage {
                             store: |settings, device_id| settings.output_device_id = device_id,
                         },
                         |page: &mut Self| &mut page.device_menu,
-                        is_menu_open,
+                        open_menu_id,
                         window,
                         cx,
                     ))
@@ -1201,7 +1204,7 @@ impl Render for VoicePage {
             .flex_col()
             .child(div().child(body_text(desktop_words.appearance_intro(), cx)))
             .child(devices)
-            .children(self.device_menu.as_ref().map(|(menu, _)| menu.clone()))
+            .children(self.device_menu.as_ref().map(|(menu, _, _)| menu.clone()))
             .child(input_mode)
             .child(mode_details)
             .child(processing)

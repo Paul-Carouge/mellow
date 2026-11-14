@@ -22,7 +22,9 @@ use mellow_protocol::{ChannelKind, Snowflake};
 
 use self::overview::ChannelOverviewPage;
 use self::permissions::ChannelPermissionsPage;
-use super::name_confirmation::{NameConfirmationWords, open_name_confirmation_dialog};
+use super::name_confirmation::{
+    NameConfirmation, NameConfirmationWords, open_name_confirmation_dialog,
+};
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
 use crate::components::{
     ModalDialog, ModalDialogEvent, SettingsNavEntry, SettingsNavItem, SettingsSheet,
@@ -71,7 +73,7 @@ pub struct ChannelSettings {
     navigation: SettingsNavigation<ChannelSettingsSection>,
     is_closing: bool,
     delete_focus: FocusHandle,
-    delete_dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    delete_dialog: Option<(Entity<ModalDialog>, Entity<NameConfirmation>, Subscription)>,
 }
 
 impl EventEmitter<SettingsClosed> for ChannelSettings {}
@@ -128,7 +130,9 @@ impl ChannelSettings {
             return;
         };
         let words = strings(cx).channel_removal();
-        let dialog = open_name_confirmation_dialog(
+        let session = self.session.downgrade();
+        let channel_id = self.channel_id;
+        let (dialog, field) = open_name_confirmation_dialog(
             NameConfirmationWords {
                 title: words.channel_title(&name),
                 body: words.channel_body().to_owned(),
@@ -136,7 +140,17 @@ impl ChannelSettings {
                 submit: words.delete_channel(),
                 busy_submit: words.deleting(),
             },
-            name,
+            move |cx| {
+                let session = session.upgrade()?;
+                let name = session
+                    .read(cx)
+                    .state()
+                    .guild_channel(channel_id)?
+                    .name
+                    .clone();
+                Some(name)
+            },
+            &self.session,
             window,
             cx,
         );
@@ -151,7 +165,7 @@ impl ChannelSettings {
                 ModalDialogEvent::Submitted => settings.delete_channel(dialog, window, cx),
             },
         );
-        self.delete_dialog = Some((dialog, subscription));
+        self.delete_dialog = Some((dialog, field, subscription));
         cx.notify();
     }
 
@@ -163,6 +177,15 @@ impl ChannelSettings {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Renamed since the last keystroke: the typed name no longer confirms.
+        if !self
+            .delete_dialog
+            .as_ref()
+            .is_some_and(|(_, field, _)| field.read(cx).is_confirmed(cx))
+        {
+            dialog.update(cx, |dialog, cx| dialog.set_submit_enabled(false, cx));
+            return;
+        }
         dialog.update(cx, |dialog, cx| {
             dialog.set_error(None, cx);
             dialog.set_busy(true, cx);
@@ -326,7 +349,7 @@ impl Render for ChannelSettings {
             .children(
                 self.delete_dialog
                     .as_ref()
-                    .map(|(dialog, _)| dialog.clone()),
+                    .map(|(dialog, _, _)| dialog.clone()),
             )
             .into_any_element()
     }

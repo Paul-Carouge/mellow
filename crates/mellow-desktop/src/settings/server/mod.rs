@@ -44,7 +44,9 @@ pub(crate) use self::{
     bans::ServerBansPage as BansPage, invites::ServerInvitesPage as InvitesPage,
     moderation_log::ServerModerationLogPage as ModerationLogPage,
 };
-use super::name_confirmation::{NameConfirmationWords, open_name_confirmation_dialog};
+use super::name_confirmation::{
+    NameConfirmation, NameConfirmationWords, open_name_confirmation_dialog,
+};
 use super::{SettingsClosed, SettingsNavigation, ShownPage, is_wide, shown_page};
 use crate::components::{
     ModalDialog, ModalDialogEvent, SettingsNavEntry, SettingsNavItem, SettingsSheet,
@@ -102,7 +104,7 @@ pub struct ServerSettings {
     navigation: SettingsNavigation<ServerSettingsSection>,
     is_closing: bool,
     delete_focus: FocusHandle,
-    delete_dialog: Option<(Entity<ModalDialog>, Subscription)>,
+    delete_dialog: Option<(Entity<ModalDialog>, Entity<NameConfirmation>, Subscription)>,
 }
 
 impl EventEmitter<SettingsClosed> for ServerSettings {}
@@ -175,7 +177,9 @@ impl ServerSettings {
             return;
         };
         let words = strings(cx).server_settings().delete_server_dialog();
-        let dialog = open_name_confirmation_dialog(
+        let session = self.session.downgrade();
+        let guild_id = self.guild_id;
+        let (dialog, field) = open_name_confirmation_dialog(
             NameConfirmationWords {
                 title: words.title(&name),
                 body: words.body(&name),
@@ -183,7 +187,12 @@ impl ServerSettings {
                 submit: words.submit(),
                 busy_submit: words.deleting(),
             },
-            name,
+            move |cx| {
+                let session = session.upgrade()?;
+                let name = session.read(cx).state().guild(guild_id)?.name.clone();
+                Some(name)
+            },
+            &self.session,
             window,
             cx,
         );
@@ -198,7 +207,7 @@ impl ServerSettings {
                 ModalDialogEvent::Submitted => settings.delete_server(dialog, window, cx),
             },
         );
-        self.delete_dialog = Some((dialog, subscription));
+        self.delete_dialog = Some((dialog, field, subscription));
         cx.notify();
     }
 
@@ -210,6 +219,15 @@ impl ServerSettings {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        // Renamed since the last keystroke: the typed name no longer confirms.
+        if !self
+            .delete_dialog
+            .as_ref()
+            .is_some_and(|(_, field, _)| field.read(cx).is_confirmed(cx))
+        {
+            dialog.update(cx, |dialog, cx| dialog.set_submit_enabled(false, cx));
+            return;
+        }
         dialog.update(cx, |dialog, cx| {
             dialog.set_error(None, cx);
             dialog.set_busy(true, cx);
@@ -428,8 +446,89 @@ impl Render for ServerSettings {
             .children(
                 self.delete_dialog
                     .as_ref()
-                    .map(|(dialog, _)| dialog.clone()),
+                    .map(|(dialog, _, _)| dialog.clone()),
             )
             .into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod delete_server_tests {
+    use gpui::{Focusable as _, TestAppContext, VisualTestContext};
+    use mellow_client_core::shared_logic::server_settings::ServerSettingsSection;
+    use mellow_protocol::GatewayEvent;
+
+    use super::ServerSettings;
+    use super::test_support::open_server_settings;
+    use crate::session::Session;
+    use crate::shell_fixtures::{GUILD_RUST, ME};
+
+    /// Gives the server to the reader, or renames it, as the gateway would.
+    fn change_guild(
+        session: &gpui::Entity<Session>,
+        change: impl FnOnce(&mut mellow_protocol::Guild),
+        cx: &mut VisualTestContext,
+    ) {
+        session.update(cx, |session, cx| {
+            let mut guild = session.state().guild(GUILD_RUST).cloned().unwrap();
+            change(&mut guild);
+            session
+                .state_mut()
+                .apply_event(GatewayEvent::GuildCreate(Box::new(guild)), 0);
+            cx.notify();
+        });
+        cx.run_until_parked();
+    }
+
+    #[gpui::test]
+    fn only_the_owner_is_offered_delete_server(cx: &mut TestAppContext) {
+        let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Overview);
+        // An administrator who does not own the server.
+        assert!(!settings.read_with(cx, ServerSettings::can_delete_server));
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_none()));
+
+        change_guild(&session, |guild| guild.owner_id = ME, cx);
+        assert!(settings.read_with(cx, ServerSettings::can_delete_server));
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_some()));
+    }
+
+    #[gpui::test]
+    fn delete_waits_for_the_current_name_and_enter_on_a_partial_one_sends_nothing(
+        cx: &mut TestAppContext,
+    ) {
+        let (session, settings, cx) = open_server_settings(cx, ServerSettingsSection::Overview);
+        change_guild(&session, |guild| guild.owner_id = ME, cx);
+        settings.update_in(cx, ServerSettings::open_delete_dialog);
+        let (dialog, field) = settings.read_with(cx, |settings, _| {
+            let (dialog, field, _) = settings.delete_dialog.as_ref().unwrap();
+            (dialog.clone(), field.clone())
+        });
+        let name = session.read_with(cx, |session, _| {
+            session.state().guild(GUILD_RUST).unwrap().name.clone()
+        });
+        cx.update(|window, cx| {
+            let focus = field.read(cx).input().focus_handle(cx);
+            window.focus(&focus, cx);
+        });
+        let (partial, rest) = name.split_at(name.len() / 2);
+        cx.simulate_input(partial);
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_busy()));
+        assert!(settings.read_with(cx, |settings, _| settings.delete_dialog.is_some()));
+
+        cx.simulate_input(rest);
+        cx.run_until_parked();
+        assert!(dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+
+        // Renamed meanwhile: the old name no longer wakes the button.
+        change_guild(&session, |guild| guild.name = "Renamed".to_owned(), cx);
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_submit_enabled()));
+        cx.simulate_keystrokes("enter");
+        cx.run_until_parked();
+        assert!(!dialog.read_with(cx, |dialog, _| dialog.is_busy()));
     }
 }
