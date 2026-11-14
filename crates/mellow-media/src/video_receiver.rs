@@ -510,7 +510,12 @@ mod tests {
         let h264 = crate::h264::tests::fixture_frames();
         // A delta frame first: it waits for the IDR instead of failing the decoder.
         receivers.deliver(mid, h264[1].clone().into(), ReceivedCodec::H264, true);
-        receivers.deliver(mid, h264[0].clone().into(), ReceivedCodec::H264, true);
+        // Then the stream from its IDR on, as a sender sends it: a decoder may hold a picture
+        // until the next frame comes, and this test, sending the IDR alone, timed out on
+        // Windows CI (Media Foundation's decoder, suspected).
+        for frame in &h264 {
+            receivers.deliver(mid, frame.clone().into(), ReceivedCodec::H264, true);
+        }
         was_woken.recv_timeout(Duration::from_secs(10)).unwrap();
         receivers.shut_down();
         let taken = frames.take_new_frames();
