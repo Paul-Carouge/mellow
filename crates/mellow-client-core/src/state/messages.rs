@@ -128,19 +128,20 @@ impl ClientState {
     pub(super) fn apply_message_update(&mut self, updated: Message) -> StateChange {
         let channel_id = updated.channel_id;
         let message_id = updated.id;
-        let are_pins_changed = self.apply_pinned_state(&updated);
+        // What changed when the history keeps its copy: the pins panel alone, or nothing.
+        let pins_only_change = if self.apply_pinned_state(&updated) {
+            StateChange::Message {
+                channel_id,
+                message_id,
+            }
+        } else {
+            StateChange::Nothing
+        };
         let Some(previous) = self.cached_history_message(channel_id, message_id).cloned() else {
-            return if are_pins_changed {
-                StateChange::Message {
-                    channel_id,
-                    message_id,
-                }
-            } else {
-                StateChange::Nothing
-            };
+            return pins_only_change;
         };
         if edit_time(&updated) < edit_time(&previous) {
-            return StateChange::Nothing;
+            return pins_only_change;
         }
         let merged = merged_update(&previous, updated);
         let is_mention_count_changed =

@@ -228,6 +228,30 @@ mod tests {
     }
 
     #[test]
+    fn an_older_edit_that_pins_still_reports_the_pins_change() {
+        let mut state = ready_state();
+        state.begin_loading_pins(GENERAL, false);
+        state.finish_loading_pins(GENERAL, Vec::new());
+        let mut edited_later = message(12, OTHER);
+        edited_later.edited_at_unix_milliseconds = Some(NOW + 1);
+        state.insert_messages(GENERAL, vec![edited_later]);
+        let older = Message {
+            edited_at_unix_milliseconds: Some(NOW),
+            ..pinned(12)
+        };
+
+        assert_eq!(
+            state.apply_event(GatewayEvent::MessageUpdate(older), NOW),
+            StateChange::Message {
+                channel_id: GENERAL,
+                message_id: Snowflake::from_raw(12),
+            },
+            "the history keeps the later edit, but the pins panel changed"
+        );
+        assert_eq!(state.pinned_messages(GENERAL).len(), 1);
+    }
+
+    #[test]
     fn loaded_pins_follow_pins_unpins_reactions_and_deletions() {
         let mut state = ready_state();
         state.begin_loading_pins(GENERAL, false);
