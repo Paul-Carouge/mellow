@@ -53,13 +53,10 @@ use crate::pictures::{Animation, DisplaySize, PictureFile, PictureRequest, pictu
 /// Lengths in tokens are logical pixels at the default 16 px root size; zoom changes the root.
 pub(crate) const TOKEN_PIXELS_PER_REM: f32 = 16.0;
 
-/// Animated pictures play unless motion is reduced, as `isPictureAnimationWanted` decides.
+/// The animation of a picture that plays by itself (custom emoji, banners, GIFs, attachments),
+/// as `isPictureAnimationWanted(true)` decides.
 pub(crate) fn picture_animation(cx: &App) -> Animation {
-    if cx.reduce_motion() {
-        Animation::StillFrame
-    } else {
-        Animation::Animate
-    }
+    crate::pictures::chosen_picture_animation(true, cx)
 }
 
 /// The request for `file` decoded for a box of `width` × `height` token pixels in this window.

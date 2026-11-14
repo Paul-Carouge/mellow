@@ -122,7 +122,7 @@ impl BlockContext<'_> {
         )
     }
 
-    fn text_element(&mut self, rich_text: RichText, window: &Window) -> RichTextElement {
+    fn text_element(&mut self, rich_text: RichText) -> RichTextElement {
         let picture_side = if self.is_jumbo {
             COMPONENT_CUSTOM_EMOJI_JUMBO_SIZE
         } else {
@@ -135,7 +135,6 @@ impl BlockContext<'_> {
             picture_side,
             Some(self.revealed_spoilers.clone()),
             self.tokens,
-            window,
         )
         .selection_order(self.selection_order + self.next_index as u64)
     }
@@ -150,7 +149,6 @@ impl MessageMarkdown {
         blocks: &[BlockNode],
         trailing: Option<&EditedMarker>,
         context: &mut BlockContext<'_>,
-        window: &Window,
     ) -> Vec<AnyElement> {
         let last_index = blocks.len().checked_sub(1);
         blocks
@@ -159,7 +157,7 @@ impl MessageMarkdown {
             .map(|(index, block)| {
                 // "(edited)" follows the last word when the body ends in a line of text.
                 let trailing = trailing.filter(|_| Some(index) == last_index);
-                Self::block(block, trailing, index == 0, context, window)
+                Self::block(block, trailing, index == 0, context)
             })
             .collect()
     }
@@ -169,7 +167,6 @@ impl MessageMarkdown {
         trailing: Option<&EditedMarker>,
         is_first: bool,
         context: &mut BlockContext<'_>,
-        window: &Window,
     ) -> AnyElement {
         let tokens = context.tokens;
         let with_trailing = |mut rich_text: RichText| {
@@ -191,7 +188,7 @@ impl MessageMarkdown {
                         .line_height(length(COMPONENT_CUSTOM_EMOJI_JUMBO_SIZE))
                 });
                 paragraph
-                    .child(context.text_element(rich_text, window))
+                    .child(context.text_element(rich_text))
                     .into_any_element()
             }
             BlockNode::Heading { level, children } => {
@@ -208,14 +205,14 @@ impl MessageMarkdown {
                     .when(!is_first, |heading| heading.mt(length(SPACE_XS)))
                     .mb(length(SPACE_2XS))
                     .text_color(color(tokens.color_text_heading))
-                    .child(context.text_element(rich_text, window))
+                    .child(context.text_element(rich_text))
                     .into_any_element()
             }
             BlockNode::Subtext(children) => {
                 let rich_text = with_trailing(context.rich_text(children));
                 typed(TYPE_MESSAGE_SUBTEXT)
                     .text_color(color(tokens.color_text_muted))
-                    .child(context.text_element(rich_text, window))
+                    .child(context.text_element(rich_text))
                     .into_any_element()
             }
             BlockNode::Quote(children) => div()
@@ -225,9 +222,9 @@ impl MessageMarkdown {
                 .border_color(color(tokens.component_message_quote_bar_color))
                 .rounded(length(RADIUS_XS))
                 .pl(length(SPACE_SM))
-                .children(Self::blocks(children, None, context, window))
+                .children(Self::blocks(children, None, context))
                 .into_any_element(),
-            BlockNode::List(list) => Self::list(list, false, context, window),
+            BlockNode::List(list) => Self::list(list, false, context),
             BlockNode::CodeBlock { text, .. } => {
                 // Keyed by its text too: an edit that changes the block starts it folded again,
                 // as the web's `{#key block.text}`.
@@ -239,12 +236,7 @@ impl MessageMarkdown {
         }
     }
 
-    fn list(
-        list: &MarkdownList,
-        is_nested: bool,
-        context: &mut BlockContext<'_>,
-        window: &Window,
-    ) -> AnyElement {
+    fn list(list: &MarkdownList, is_nested: bool, context: &mut BlockContext<'_>) -> AnyElement {
         let tokens = context.tokens;
         // Each digit past the first takes one more figure, so "10." lines up with "9.".
         let largest_number = list
@@ -292,11 +284,11 @@ impl MessageMarkdown {
                         .into_any_element(),
                 };
                 let rich_text = context.rich_text(&item.children);
-                let text = context.text_element(rich_text, window);
+                let text = context.text_element(rich_text);
                 let sublists: Vec<AnyElement> = item
                     .sublists
                     .iter()
-                    .map(|sublist| Self::list(sublist, true, context, window))
+                    .map(|sublist| Self::list(sublist, true, context))
                     .collect();
                 div()
                     .flex()
@@ -384,7 +376,7 @@ impl RenderOnce for MessageMarkdown {
                 Some(BlockNode::Paragraph(_) | BlockNode::Subtext(_))
             );
         let trailing_inline = self.edited.as_ref().filter(|_| ends_in_text);
-        let mut children = Self::blocks(&self.body.blocks, trailing_inline, &mut context, window);
+        let mut children = Self::blocks(&self.body.blocks, trailing_inline, &mut context);
         // After a heading, a quote, a list or a code block, or an empty body: on its own line.
         if let Some(edited) = self.edited.as_ref().filter(|_| !ends_in_text) {
             let mut rich_text = RichText::default();
@@ -393,7 +385,7 @@ impl RenderOnce for MessageMarkdown {
                 color(context.tokens.component_message_edited_text),
                 edited.tooltip.clone(),
             );
-            children.push(context.text_element(rich_text, window).into_any_element());
+            children.push(context.text_element(rich_text).into_any_element());
         }
         div().flex().flex_col().min_w_0().children(children)
     }

@@ -32,12 +32,12 @@ use mellow_protocol::CustomEmoji;
 use super::picture_for_box;
 use crate::components::Tooltip;
 use crate::i18n::Strings;
-use crate::pictures::Animation;
 use crate::theme::tokens::{
     COMPONENT_CUSTOM_EMOJI_MISSING_BORDER_WIDTH, COMPONENT_CUSTOM_EMOJI_MISSING_RADIUS,
     FONT_WEIGHT_BOLD, FONT_WEIGHT_MEDIUM, FONT_WEIGHT_SEMIBOLD, ThemeTokens,
 };
 use crate::theme::{MONOSPACE_FONT_FAMILY, color, length};
+use mellow_protocol::Snowflake;
 
 /// What the room of a server emoji is made of: no-break spaces never wrap apart.
 const PICTURE_ROOM_CHARACTER: char = '\u{00A0}';
@@ -549,7 +549,8 @@ pub(crate) struct RichTextElement {
     selection_colour: Hsla,
     accessible_text: String,
     layout: TextLayout,
-    pictures: Vec<(Range<usize>, ImageSource)>,
+    /// Each server emoji's room in the text and its picture's id.
+    pictures: Vec<(Range<usize>, Snowflake)>,
     covered_emoji: Vec<(Range<usize>, Hsla)>,
     picture_side: f32,
     missing_border: Hsla,
@@ -563,7 +564,6 @@ impl RichTextElement {
         picture_side: f32,
         revealed_spoilers: Option<Entity<HashSet<u32>>>,
         tokens: &ThemeTokens,
-        window: &Window,
     ) -> Self {
         let RichText {
             text,
@@ -622,19 +622,9 @@ impl RichTextElement {
                     .map(|(_, label)| Tooltip::view(label.clone(), cx))
             });
         }
-        // Painted from frame 0 only: an animated emoji shows its still frame in text.
         let pictures = pictures
             .into_iter()
-            .map(|picture| {
-                let source = picture_for_box(
-                    DownloadableFile::Icon(picture.emoji.id),
-                    picture_side,
-                    picture_side,
-                    Animation::StillFrame,
-                    window,
-                );
-                (picture.room, source)
-            })
+            .map(|picture| (picture.room, picture.emoji.id))
             .collect();
         Self {
             text: interactive,
@@ -709,7 +699,17 @@ impl RichTextElement {
     fn paint_pictures(&self, window: &mut Window, cx: &mut App) {
         let side = length(self.picture_side).to_pixels(window.rem_size());
         let line_height = self.layout.line_height();
-        for (room, source) in &self.pictures {
+        // Custom emoji play by themselves (`CustomEmojiImage.svelte`); the picture store hands
+        // over the frame due now and draws the view again for the next one.
+        let animation = super::picture_animation(cx);
+        for (room, emoji_id) in &self.pictures {
+            let source = picture_for_box(
+                DownloadableFile::Icon(*emoji_id),
+                self.picture_side,
+                self.picture_side,
+                animation,
+                window,
+            );
             let (Some(start), Some(end)) = (
                 self.layout.position_for_index(room.start),
                 self.layout.position_for_index(room.end),
@@ -729,7 +729,7 @@ impl RichTextElement {
                 ),
                 size(side, side),
             );
-            let picture = match source {
+            let picture = match &source {
                 ImageSource::Custom(load) => load(window, cx),
                 _ => None,
             };
@@ -1187,7 +1187,7 @@ mod tests {
     struct TwoTexts;
 
     impl gpui::Render for TwoTexts {
-        fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
             use gpui::{ParentElement as _, Styled as _};
             let text = |id: &'static str, value: &str, order: u64| {
                 RichTextElement::new(
@@ -1200,7 +1200,6 @@ mod tests {
                     COMPONENT_CUSTOM_EMOJI_INLINE_SIZE,
                     None,
                     &DARK_THEME,
-                    window,
                 )
                 .selection_order(order)
             };
@@ -1260,7 +1259,7 @@ mod tests {
     struct SpoilerText(Entity<HashSet<u32>>);
 
     impl gpui::Render for SpoilerText {
-        fn render(&mut self, window: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
+        fn render(&mut self, _: &mut Window, _: &mut gpui::Context<Self>) -> impl IntoElement {
             use gpui::{ParentElement as _, Styled as _};
             let element = RichTextElement::new(
                 "spoiler".into(),
@@ -1273,7 +1272,6 @@ mod tests {
                 COMPONENT_CUSTOM_EMOJI_INLINE_SIZE,
                 Some(self.0.clone()),
                 &DARK_THEME,
-                window,
             );
             gpui::div()
                 .size_full()
