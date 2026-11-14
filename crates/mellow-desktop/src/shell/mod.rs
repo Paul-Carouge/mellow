@@ -6,6 +6,7 @@
 //! navigator becomes a drawer and the member sheet an overlay. Every length and colour is a token.
 
 mod call_view;
+mod channel_marks;
 mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;

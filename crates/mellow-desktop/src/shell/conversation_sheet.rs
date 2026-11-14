@@ -10,12 +10,16 @@ use gpui::{
 };
 
 use mellow_client_core::shared_logic::format::display_name;
+use mellow_protocol::PublicUser;
 
+use super::channel_marks::{
+    ChannelNameMarks, channel_leading_mark, channel_name_marks, shown_channel_marks,
+};
 use super::channel_sidebar::can_send_in;
-use super::{DuskShell, ShellLayout};
+use super::{DuskShell, ShellLayout, profile_picture};
 use crate::components::{
-    IconButton, focus_ring, icon, is_focus_visible, remembered_focus_handle, remembered_hover,
-    with_type,
+    AvatarPerson, GroupAvatar, IconButton, focus_ring, icon, is_focus_visible,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::conversation::OpenConversation;
 use crate::home::FriendsPane;
@@ -24,14 +28,16 @@ use crate::i18n::strings;
 use crate::navigation::Place;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_CHAT_HEADER_BUTTON_SIZE, COMPONENT_CHAT_HEADER_DIVIDER_HEIGHT,
-    COMPONENT_CHAT_HEADER_HEIGHT, COMPONENT_CHAT_HEADER_ICON_SIZE,
-    COMPONENT_CHAT_HEADER_PADDING_INLINE, COMPONENT_COMPOSER_MARGIN_BOTTOM,
-    COMPONENT_COMPOSER_MARGIN_INLINE, COMPONENT_COMPOSER_MIN_HEIGHT, COMPONENT_COMPOSER_RADIUS,
-    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_QUICK_SWITCHER_TRIGGER_ICON_SIZE,
-    COMPONENT_QUICK_SWITCHER_TRIGGER_WIDTH, COMPONENT_SEARCH_FIELD_WIDTH, COMPONENT_SHEET_RADIUS,
-    RADIUS_SM, RADIUS_XS, SIZE_CHAT_MIN_WIDTH, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY,
-    TYPE_BODY_SM, TYPE_HEADING_MD, TYPE_HEADING_XL,
+    COMPONENT_CHANNEL_ROW_TRAILING_ICON_SIZE, COMPONENT_CHAT_HEADER_BUTTON_SIZE,
+    COMPONENT_CHAT_HEADER_DIVIDER_HEIGHT, COMPONENT_CHAT_HEADER_HEIGHT,
+    COMPONENT_CHAT_HEADER_ICON_SIZE, COMPONENT_CHAT_HEADER_PADDING_INLINE,
+    COMPONENT_COMPOSER_MARGIN_BOTTOM, COMPONENT_COMPOSER_MARGIN_INLINE,
+    COMPONENT_COMPOSER_MIN_HEIGHT, COMPONENT_COMPOSER_RADIUS,
+    COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+    COMPONENT_QUICK_SWITCHER_TRIGGER_ICON_SIZE, COMPONENT_QUICK_SWITCHER_TRIGGER_WIDTH,
+    COMPONENT_SEARCH_FIELD_WIDTH, COMPONENT_SHEET_RADIUS, RADIUS_SM, RADIUS_XS,
+    SIZE_CHAT_MIN_WIDTH, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_HEADING_MD,
+    TYPE_HEADING_XL,
 };
 use crate::theme::{color, length, theme};
 
@@ -153,11 +159,28 @@ pub(super) struct SheetSubject {
     /// The header's name: "general", "Ana", "Direct messages".
     pub name: String,
     pub icon: Option<IconName>,
+    /// A server channel's icon or glyph, and its lock after the name; replaces `icon`.
+    pub channel_marks: Option<ChannelNameMarks>,
+    /// A group's other people, whose faces replace `icon` (`GroupAvatar` in `ChatPane.svelte`).
+    pub group_people: Option<Vec<PublicUser>>,
     pub topic: Option<String>,
     /// The sentence the empty conversation opens with, until the message list lands.
     pub welcome: Option<String>,
     /// The member sheet toggle shows for a server channel.
     pub has_member_sheet: bool,
+}
+
+/// A conversation's people but the reader (`otherParticipants`).
+fn other_people(
+    conversation: &mellow_protocol::DirectMessageChannel,
+    current_user_id: Option<mellow_protocol::Snowflake>,
+) -> Vec<PublicUser> {
+    conversation
+        .recipients
+        .iter()
+        .filter(|recipient| Some(recipient.id) != current_user_id)
+        .cloned()
+        .collect()
 }
 
 impl DuskShell {
@@ -236,6 +259,8 @@ impl DuskShell {
             None => SheetSubject {
                 name: String::new(),
                 icon: None,
+                group_people: None,
+                channel_marks: None,
                 topic: None,
                 welcome: Some(strings.chat().loading_workspace().to_owned()),
                 has_member_sheet: false,
@@ -249,6 +274,8 @@ impl DuskShell {
                     .map(|guild| guild.name.clone())
                     .unwrap_or_default(),
                 icon: None,
+                group_people: None,
+                channel_marks: None,
                 topic: None,
                 welcome: Some(
                     state
@@ -276,11 +303,12 @@ impl DuskShell {
                     topic: channel
                         .map(|channel| channel.topic.trim().to_owned())
                         .filter(|topic| !topic.is_empty()),
-                    icon: Some(if can_send_in(state, channel_id) {
-                        IconName::Hash
-                    } else {
-                        IconName::Lock
-                    }),
+                    icon: None,
+                    group_people: None,
+                    channel_marks: Some(channel_name_marks(
+                        channel.and_then(|channel| channel.icon),
+                        can_send_in(state, channel_id),
+                    )),
                     name,
                     has_member_sheet: true,
                 }
@@ -302,11 +330,11 @@ impl DuskShell {
                     } else {
                         strings.chat().conversation_start(&name)
                     }),
-                    icon: Some(if is_group {
-                        IconName::Users
-                    } else {
-                        IconName::At
-                    }),
+                    icon: (!is_group).then_some(IconName::At),
+                    channel_marks: None,
+                    group_people: conversation
+                        .filter(|_| is_group)
+                        .map(|group| other_people(group, current_user_id)),
                     topic: None,
                     name,
                     // A group's members show in the side sheet (`GroupMembersSheet.svelte`).
@@ -318,6 +346,8 @@ impl DuskShell {
             }) => SheetSubject {
                 name: strings.friends().title().to_owned(),
                 icon: Some(IconName::Users),
+                group_people: None,
+                channel_marks: None,
                 topic: None,
                 welcome: None,
                 has_member_sheet: false,
@@ -334,7 +364,10 @@ impl DuskShell {
         let tokens = theme(cx);
         let is_full_bleed = layout == ShellLayout::SheetAlone;
         let call_view = self.sheet_call_view(cx);
-        let subject = self.sheet_subject(cx);
+        let mut subject = self.sheet_subject(cx);
+        subject.channel_marks = subject
+            .channel_marks
+            .map(|marks| shown_channel_marks(marks, COMPONENT_CHAT_HEADER_ICON_SIZE, window, cx));
         let header = self.render_chat_header(&subject, is_full_bleed, window, cx);
         let is_friends_space = self.navigation.place()
             == Some(Place::Home {
@@ -501,6 +534,36 @@ impl DuskShell {
                             color(tokens.color_text_muted),
                         ))
                     })
+                    .when_some(subject.group_people.clone(), |name, people| {
+                        name.child(GroupAvatar::new(
+                            people
+                                .iter()
+                                .map(|person| {
+                                    // The header is no hover area: still unless "Always animate".
+                                    let picture = person.avatar.map(|image| {
+                                        profile_picture(
+                                            image,
+                                            COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                                            false,
+                                            window,
+                                            cx,
+                                        )
+                                    });
+                                    AvatarPerson::from_user(person, picture)
+                                })
+                                .collect(),
+                            COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                            color(tokens.color_surface_chat),
+                        ))
+                    })
+                    .when_some(subject.channel_marks, |name, marks| {
+                        name.child(channel_leading_mark(
+                            marks,
+                            COMPONENT_CHAT_HEADER_ICON_SIZE,
+                            color(tokens.color_text_muted),
+                            window,
+                        ))
+                    })
                     .child(
                         with_type(div(), TYPE_HEADING_MD)
                             .id("chat-header-name")
@@ -510,6 +573,18 @@ impl DuskShell {
                             .min_w_0()
                             .truncate()
                             .child(subject.name.clone()),
+                    )
+                    .when(
+                        subject
+                            .channel_marks
+                            .is_some_and(|marks| marks.has_lock_after_name),
+                        |name| {
+                            name.child(icon(
+                                IconName::Lock,
+                                COMPONENT_CHANNEL_ROW_TRAILING_ICON_SIZE,
+                                color(tokens.color_text_muted),
+                            ))
+                        },
                     ),
             )
             .when_some(

@@ -18,6 +18,7 @@ use mellow_client_core::shared_logic::group_conversations::participant_count;
 use mellow_client_core::state::ClientState;
 use mellow_protocol::{Channel, ChannelKind, DirectMessageChannel, Permissions, Snowflake};
 
+use super::channel_marks::{channel_leading_mark, channel_name_marks, shown_channel_marks};
 use super::place_menus::{MenuRow, PlaceMenuTarget, is_target_muted, with_place_menu};
 use super::regions::{Region, RovingTabStop};
 use super::server_rail::name_with_unread_state;
@@ -39,16 +40,17 @@ use crate::theme::tokens::{
     COMPONENT_CHANNEL_ROW_MARGIN_INLINE, COMPONENT_CHANNEL_ROW_MUTED_ICON_SIZE,
     COMPONENT_CHANNEL_ROW_PADDING_INLINE, COMPONENT_CHANNEL_ROW_RADIUS,
     COMPONENT_CHANNEL_ROW_SETTINGS_BUTTON_SIZE, COMPONENT_CHANNEL_ROW_SETTINGS_ICON_SIZE,
-    COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT, COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET,
-    COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH, COMPONENT_CONVERSATION_ROW_AVATAR_GAP,
-    COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MEMBER_ROW_GAP, COMPONENT_MEMBER_ROW_HEIGHT,
-    COMPONENT_NAVIGATOR_RADIUS, COMPONENT_NAVIGATOR_STRIP_WIDTH,
-    COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE, COMPONENT_SIDEBAR_HEADER_HEIGHT,
-    COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, COMPONENT_VOICE_PARTICIPANT_GAP,
-    COMPONENT_VOICE_PARTICIPANT_INDENT, COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT,
-    COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP, COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH,
-    COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE, SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY,
-    TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_MD,
+    COMPONENT_CHANNEL_ROW_TRAILING_ICON_SIZE, COMPONENT_CHANNEL_ROW_UNREAD_PILL_HEIGHT,
+    COMPONENT_CHANNEL_ROW_UNREAD_PILL_OFFSET, COMPONENT_CHANNEL_ROW_UNREAD_PILL_WIDTH,
+    COMPONENT_CONVERSATION_ROW_AVATAR_GAP, COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+    COMPONENT_MEMBER_ROW_GAP, COMPONENT_MEMBER_ROW_HEIGHT, COMPONENT_NAVIGATOR_RADIUS,
+    COMPONENT_NAVIGATOR_STRIP_WIDTH, COMPONENT_SIDEBAR_HEADER_CHEVRON_SIZE,
+    COMPONENT_SIDEBAR_HEADER_HEIGHT, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE,
+    COMPONENT_VOICE_PARTICIPANT_GAP, COMPONENT_VOICE_PARTICIPANT_INDENT,
+    COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT, COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP,
+    COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH, COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE,
+    SPACE_2XS, SPACE_MD, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME,
+    TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 
@@ -68,6 +70,8 @@ struct SidebarRow {
     /// A group's "3 members" under its name.
     second_line: Option<SharedString>,
     leading: AnyElement,
+    /// The mark after the name: the lock of a read-only channel with an icon.
+    mark_after_name: Option<IconName>,
     height: f32,
     is_selected: bool,
     has_unread: bool,
@@ -485,6 +489,14 @@ impl DuskShell {
                 } else {
                     format!("{name_with_mute}, {}", strings.common().read_only())
                 };
+                let gear =
+                    has_channel_settings_page_for_reader(state, channel.id).then_some(channel.id);
+                let marks = shown_channel_marks(
+                    channel_name_marks(channel.icon, can_send),
+                    COMPONENT_CHANNEL_ROW_ICON_SIZE,
+                    window,
+                    cx,
+                );
                 rows.push(Self::sidebar_row(
                     SidebarRow {
                         id: ElementId::from(("channel-row", channel.id.raw())),
@@ -496,12 +508,8 @@ impl DuskShell {
                         ),
                         name: channel.name.clone().into(),
                         second_line: None,
-                        leading: icon(
-                            if can_send {
-                                IconName::Hash
-                            } else {
-                                IconName::Lock
-                            },
+                        leading: channel_leading_mark(
+                            marks,
                             COMPONENT_CHANNEL_ROW_ICON_SIZE,
                             row_ink(
                                 RowLook {
@@ -512,8 +520,9 @@ impl DuskShell {
                                 false,
                                 cx,
                             ),
-                        )
-                        .into_any_element(),
+                            window,
+                        ),
+                        mark_after_name: marks.has_lock_after_name.then_some(IconName::Lock),
                         height: COMPONENT_CHANNEL_ROW_HEIGHT,
                         is_selected,
                         has_unread,
@@ -524,8 +533,7 @@ impl DuskShell {
                         voice: None,
                         top_margin: COMPONENT_CHANNEL_ROW_GAP,
                         icon_gap: COMPONENT_CHANNEL_ROW_ICON_GAP,
-                        gear: has_channel_settings_page_for_reader(state, channel.id)
-                            .then_some(channel.id),
+                        gear,
                     },
                     (tab_stop, rows.len()),
                     window,
@@ -709,6 +717,7 @@ impl DuskShell {
                     leading_ink,
                 )
                 .into_any_element(),
+                mark_after_name: None,
                 height: COMPONENT_CHANNEL_ROW_HEIGHT,
                 is_selected: false,
                 has_unread: false,
@@ -1114,6 +1123,7 @@ impl DuskShell {
                         ),
                     ))
                     .into_any_element(),
+                mark_after_name: None,
                 height: COMPONENT_MEMBER_ROW_HEIGHT,
                 is_selected: is_friends_open,
                 has_unread: false,
@@ -1250,6 +1260,7 @@ impl DuskShell {
                     second_line: is_group
                         .then(|| strings.groups().member_count(member_count).into()),
                     leading,
+                    mark_after_name: None,
                     height: COMPONENT_MEMBER_ROW_HEIGHT,
                     is_selected,
                     has_unread,
@@ -1455,6 +1466,9 @@ impl DuskShell {
                                 )
                             }),
                     )
+                    .when_some(row.mark_after_name, |button, mark| {
+                        button.child(icon(mark, COMPONENT_CHANNEL_ROW_TRAILING_ICON_SIZE, ink))
+                    })
                     .when(row.is_muted, |button| {
                         button.child(icon(
                             IconName::BellSlash,
