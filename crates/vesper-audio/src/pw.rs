@@ -407,7 +407,7 @@ fn kind_of(source: &Source) -> &'static str {
         Source::Microphone => "microphone",
         Source::Output(_) => "output device",
         Source::Input(_) => "input device",
-        Source::App(_) => "app",
+        Source::App(_) | Source::Process(_) => "app",
     }
 }
 
@@ -561,10 +561,11 @@ impl Session {
             Source::Desktop => ("vesper-desktop-audio", None),
             Source::Microphone => ("vesper-microphone", None),
             Source::Output(node) | Source::Input(node) => ("vesper-device-audio", Some(node)),
-            Source::App(_) => ("vesper-app-audio", None),
+            Source::App(_) | Source::Process(_) => ("vesper-app-audio", None),
         };
         let wanted = match source {
             Source::App(app) => Some(Wanted::App(app.clone())),
+            Source::Process(pid) => Some(Wanted::Process(*pid)),
             Source::Desktop | Source::Output(_) if !except.is_empty() => Some(Wanted::SinkExcept {
                 sink: target.cloned(),
                 apps: except.to_vec(),
@@ -909,26 +910,132 @@ pub(crate) enum Wanted {
         sink: Option<String>,
         apps: Vec<String>,
     },
+    /// Every playback stream of this process and of its descendants (a
+    /// browser plays from a child process), by its PipeWire client's
+    /// process: decided in `AppLinks::update`, once the client is known.
+    Process(u32),
 }
 
 impl Wanted {
     /// Whether a node with these properties may be linked (the desktop's
     /// streams must also play to the default sink, see `AppLinks::update`).
-    /// `own_pid` is our process id: our own nodes are never recorded.
-    fn matches(&self, props: &spa::utils::dict::DictRef, own_pid: &str) -> bool {
+    /// Our own nodes (`own`) are never recorded.
+    fn matches(&self, props: &spa::utils::dict::DictRef, own: &OwnProcess) -> bool {
         match self {
             Self::App(app) => crate::nodes::is_app_stream(app, props),
             // Playback streams, a loopback's included; a node linked to
             // the sink by hand (rare) is left out.
             Self::SinkExcept { apps, .. } => {
                 props.get(*pw::keys::MEDIA_CLASS) == Some("Stream/Output/Audio")
-                    && props.get(*pw::keys::APP_PROCESS_ID) != Some(own_pid)
+                    && !own.owns(props)
                     && !apps
                         .iter()
                         .any(|app| crate::nodes::is_app_stream(app, props))
             }
+            Self::Process(_) => false,
         }
     }
+}
+
+/// Our process in the registry: its id, and the clients it connected with.
+/// A native stream's node global carries only its `client.id` (no process
+/// id), and its name is our binary's as PipeWire read it when connecting,
+/// which a package update replacing the binary since then no longer matches.
+/// Under Flatpak or another PID namespace our id is not the one PipeWire sees:
+/// the app name held out (`Exclusions`) is then what leaves us out.
+#[derive(Debug)]
+pub(crate) struct OwnProcess {
+    /// As in `application.process.id` and `pipewire.sec.pid`.
+    pid: String,
+    clients: HashSet<u32>,
+}
+
+impl OwnProcess {
+    pub(crate) fn new(pid: String) -> Self {
+        Self {
+            pid,
+            clients: HashSet::new(),
+        }
+    }
+
+    /// Remembers client `id` as ours when its process is, by the kernel's
+    /// peer credentials: a client global carries nothing else.
+    pub(crate) fn note_client(&mut self, id: u32, props: &spa::utils::dict::DictRef) {
+        if props.get(SECURE_PROCESS_ID) == Some(self.pid.as_str()) {
+            self.clients.insert(id);
+        }
+    }
+
+    pub(crate) fn forget_client(&mut self, id: u32) {
+        self.clients.remove(&id);
+    }
+
+    /// Whether a node with these properties is one of ours.
+    pub(crate) fn owns(&self, props: &spa::utils::dict::DictRef) -> bool {
+        props.get(*pw::keys::APP_PROCESS_ID) == Some(self.pid.as_str())
+            || props
+                .get(*pw::keys::CLIENT_ID)
+                .and_then(|id| id.parse().ok())
+                .is_some_and(|id| self.clients.contains(&id))
+    }
+}
+
+/// A client global's process id, from the kernel's peer credentials (a
+/// PipeWire-Pulse client's is the Pulse server's).
+pub(crate) const SECURE_PROCESS_ID: &str = "pipewire.sec.pid";
+/// Parents followed from a stream's process to a window's.
+const MAXIMUM_PROCESS_DEPTH: usize = 64;
+
+/// Whether `pid` is `ancestor` or descends from it; `parent_of` gives a
+/// process's parent.
+fn descends_from(mut pid: u32, ancestor: u32, parent_of: impl Fn(u32) -> Option<u32>) -> bool {
+    for _ in 0..MAXIMUM_PROCESS_DEPTH {
+        if pid == ancestor {
+            return true;
+        }
+        match parent_of(pid) {
+            Some(parent) if parent != 0 && parent != pid => pid = parent,
+            _ => return false,
+        }
+    }
+    false
+}
+
+/// The `client.api` of a client the PipeWire-Pulse server made for a Pulse app.
+const CLIENT_API: &str = "client.api";
+const PULSE_CLIENT_API: &str = "pipewire-pulse";
+
+/// The process a client plays for: its kernel credentials (`secure`), except
+/// for a PipeWire-Pulse client, whose credentials are the Pulse server's: then
+/// the process it declares. Any other client's declaration is ignored, so a
+/// native app cannot pass for another one. A Pulse app of the same user can
+/// still declare another process's id; that risk is accepted (ADR-0054).
+fn client_process(secure: Option<u32>, api: Option<&str>, declared: Option<u32>) -> Option<u32> {
+    if api == Some(PULSE_CLIENT_API) {
+        declared
+    } else {
+        secure
+    }
+}
+
+/// Whether a stream of process `pid` belongs to the window's process
+/// `ancestor`: it is that process or descends from it, and it is never ours
+/// (a terminal that started Mellow is its ancestor; Mellow's own output may
+/// reach PipeWire through a Pulse plugin, under its own process id).
+fn plays_for_process(
+    pid: u32,
+    ancestor: u32,
+    own: u32,
+    parent_of: impl Fn(u32) -> Option<u32>,
+) -> bool {
+    pid != own && descends_from(pid, ancestor, parent_of)
+}
+
+/// The parent of process `pid`, from `/proc/<pid>/stat` ("pid (comm) state ppid ...").
+fn parent_process(pid: u32) -> Option<u32> {
+    let stat = std::fs::read_to_string(format!("/proc/{pid}/stat")).ok()?;
+    let (_, after_name) = stat.rsplit_once(')')?;
+    after_name.split_whitespace().nth(1)?.parse().ok()
 }
 
 /// For logs.
@@ -942,6 +1049,7 @@ impl std::fmt::Display for Wanted {
                 sink.as_deref().unwrap_or("desktop"),
                 apps.join(", ")
             ),
+            Self::Process(pid) => write!(f, "process {pid}"),
         }
     }
 }
@@ -956,7 +1064,7 @@ fn streams_to_link<'a>(
     sink: Option<u32>,
 ) -> HashSet<u32> {
     match wanted {
-        Wanted::App(_) => nodes.clone(),
+        Wanted::App(_) | Wanted::Process(_) => nodes.clone(),
         Wanted::SinkExcept { .. } => graph
             .into_iter()
             .filter(|(out, inp)| Some(*inp) == sink && nodes.contains(out))
@@ -972,8 +1080,17 @@ fn streams_to_link<'a>(
 /// Also follows the sink they play to, for `AppTiming`.
 pub(crate) struct AppLinks {
     wanted: Wanted,
-    /// Our process id, as in `application.process.id`.
-    own_pid: String,
+    /// Our process, whose nodes are never linked.
+    own: OwnProcess,
+    /// For `Wanted::Process`: every other playback stream, by its client.
+    candidates: HashMap<u32, u32>,
+    /// Each client's process, see [`client_process`].
+    client_processes: HashMap<u32, u32>,
+    /// Bound clients, for their declared process; listener first (see `SinkWatch`).
+    client_watches: HashMap<u32, (pw::client::ClientListener, pw::client::Client)>,
+    /// Whether each client plays for the wanted process, decided once per
+    /// client and process (see [`plays_for_process`]).
+    verdicts: HashMap<u32, bool>,
     /// The playback stream nodes `wanted` matches.
     nodes: HashSet<u32>,
     ports: HashMap<u32, Port>,
@@ -1035,7 +1152,11 @@ impl AppLinks {
     ) -> Rc<RefCell<Self>> {
         Rc::new(RefCell::new(Self {
             wanted,
-            own_pid: std::process::id().to_string(),
+            own: OwnProcess::new(std::process::id().to_string()),
+            candidates: HashMap::new(),
+            client_processes: HashMap::new(),
+            client_watches: HashMap::new(),
+            verdicts: HashMap::new(),
             nodes: HashSet::new(),
             ports: HashMap::new(),
             links: HashMap::new(),
@@ -1096,7 +1217,34 @@ impl AppLinks {
                             s.sinks.insert(global.id, target.to_owned());
                         }
                         // After the sinks: a sink is never one of the streams.
-                        ObjectType::Node if s.wanted.matches(props, &s.own_pid) => {
+                        // Before its nodes: a client exists before what it creates.
+                        ObjectType::Client => {
+                            s.own.note_client(global.id, props);
+                            if let Some(pid) = props
+                                .get(SECURE_PROCESS_ID)
+                                .and_then(|pid| pid.parse().ok())
+                            {
+                                s.client_processes.insert(global.id, pid);
+                            }
+                            if matches!(s.wanted, Wanted::Process(_)) {
+                                match s.watch_client(global, &state, &core, &stream) {
+                                    Ok(watch) => {
+                                        s.client_watches.insert(global.id, watch);
+                                    }
+                                    Err(e) => warn!("cannot follow a client: {e}"),
+                                }
+                            }
+                        }
+                        ObjectType::Node if matches!(s.wanted, Wanted::Process(_)) => {
+                            let client = get(*pw::keys::CLIENT_ID).parse();
+                            if get(*pw::keys::MEDIA_CLASS) == "Stream/Output/Audio"
+                                && !s.own.owns(props)
+                                && let Ok(client) = client
+                            {
+                                s.candidates.insert(global.id, client);
+                            }
+                        }
+                        ObjectType::Node if s.wanted.matches(props, &s.own) => {
                             debug!("{}: following stream node {}", s.wanted, global.id);
                             s.nodes.insert(global.id);
                         }
@@ -1132,6 +1280,11 @@ impl AppLinks {
                 move |id| {
                     let mut s = state.borrow_mut();
                     s.nodes.remove(&id);
+                    s.own.forget_client(id);
+                    s.candidates.remove(&id);
+                    s.client_processes.remove(&id);
+                    s.verdicts.remove(&id);
+                    s.client_watches.remove(&id);
                     s.sinks.remove(&id);
                     s.monitors.remove(&id);
                     s.graph.remove(&id);
@@ -1208,9 +1361,70 @@ impl AppLinks {
         Ok((listener, proxy))
     }
 
+    /// Binds client `global` for the process it declares: a PipeWire-Pulse
+    /// client's kernel credentials name the Pulse server, not the app.
+    fn watch_client(
+        &self,
+        global: &GlobalObject<&spa::utils::dict::DictRef>,
+        state: &Rc<RefCell<Self>>,
+        core: &pw::core::CoreRc,
+        stream: &pw::stream::StreamRc,
+    ) -> Result<(pw::client::ClientListener, pw::client::Client), Error> {
+        let registry = self.registry.as_ref().ok_or("no registry")?;
+        let proxy: pw::client::Client = registry.bind(global)?;
+        let id = global.id;
+        // Weak: the state owns this listener.
+        let (state, core, stream) = (Rc::downgrade(state), core.clone(), stream.clone());
+        let listener = proxy
+            .add_listener_local()
+            .info(move |info| {
+                let Some(props) = info.props() else { return };
+                let pid = |key: &str| props.get(key).and_then(|pid| pid.parse().ok());
+                let process = client_process(
+                    pid(SECURE_PROCESS_ID),
+                    props.get(CLIENT_API),
+                    pid(*pw::keys::APP_PROCESS_ID),
+                );
+                if let (Some(pid), Some(state)) = (process, state.upgrade()) {
+                    let mut s = state.borrow_mut();
+                    if s.client_processes.insert(id, pid) != Some(pid) {
+                        s.verdicts.remove(&id);
+                        s.update(&core, stream.node_id());
+                    }
+                }
+            })
+            .register();
+        Ok((listener, proxy))
+    }
+
+    /// For `Wanted::Process`: the candidates whose process descends from it.
+    fn process_streams(&mut self, ancestor: u32) -> HashSet<u32> {
+        let Self {
+            candidates,
+            client_processes,
+            verdicts,
+            ..
+        } = self;
+        let own = std::process::id();
+        candidates
+            .iter()
+            .filter(|(_, client)| {
+                *verdicts.entry(**client).or_insert_with(|| {
+                    client_processes
+                        .get(client)
+                        .is_some_and(|&pid| plays_for_process(pid, ancestor, own, parent_process))
+                })
+            })
+            .map(|(&node, _)| node)
+            .collect()
+    }
+
     /// Creates the links still missing, removes the ones no longer wanted,
     /// and follows the sink.
     pub(crate) fn update(&mut self, core: &pw::core::Core, own: u32) {
+        if let Wanted::Process(ancestor) = self.wanted {
+            self.nodes = self.process_streams(ancestor);
+        }
         let sink = self.follow_sink();
         let Self {
             wanted,
@@ -1260,9 +1474,11 @@ impl AppLinks {
     /// sink keeps the old timing until its own arrives.
     fn follow_sink(&mut self) -> Option<u32> {
         let sink = match &self.wanted {
-            Wanted::App(_) => app_sink(self.graph.values(), &self.nodes, |id| {
-                self.sinks.contains_key(&id)
-            }),
+            Wanted::App(_) | Wanted::Process(_) => {
+                app_sink(self.graph.values(), &self.nodes, |id| {
+                    self.sinks.contains_key(&id)
+                })
+            }
             Wanted::SinkExcept { sink, .. } => self
                 .sinks
                 .iter()
@@ -1535,19 +1751,86 @@ mod tests {
             sink: None,
             apps: vec!["Firefox".into()],
         };
+        let (own7, own8) = (OwnProcess::new("7".into()), OwnProcess::new("8".into()));
         // Excluded by the same rule that gives the Firefox track its streams.
         let app = Wanted::App("Firefox".into());
-        assert!(app.matches(firefox.as_ref(), "7"));
-        assert!(!desktop.matches(firefox.as_ref(), "7"));
-        assert!(desktop.matches(spotify.as_ref(), "7"));
-        assert!(!app.matches(spotify.as_ref(), "7"));
+        assert!(app.matches(firefox.as_ref(), &own7));
+        assert!(!desktop.matches(firefox.as_ref(), &own7));
+        assert!(desktop.matches(spotify.as_ref(), &own7));
+        assert!(!app.matches(spotify.as_ref(), &own7));
         // Never our own nodes (no feedback loop).
-        assert!(!desktop.matches(ours.as_ref(), "7"));
-        assert!(desktop.matches(ours.as_ref(), "8"));
+        assert!(!desktop.matches(ours.as_ref(), &own7));
+        assert!(desktop.matches(ours.as_ref(), &own8));
         // Only playback streams.
-        assert!(!desktop.matches(capture.as_ref(), "7"));
-        assert!(!app.matches(capture.as_ref(), "7"));
+        assert!(!desktop.matches(capture.as_ref(), &own7));
+        assert!(!app.matches(capture.as_ref(), &own7));
         assert_eq!(desktop.to_string(), "desktop except Firefox");
+    }
+
+    #[test]
+    fn desktop_leaves_out_our_streams_named_after_a_replaced_binary() {
+        // A native stream's registry global names only its client: no process id, and a
+        // node name PipeWire took from our binary when it connected. After a package update
+        // replaced the binary, `/proc/self/exe` ends in " (deleted)" and the name no longer
+        // matches the app held out: the call's own voices went into the share (seen live).
+        let node = |props: &[(&str, &str)]| PropertiesBox::from_iter(props.iter().copied());
+        let our_client = node(&[("pipewire.sec.pid", "7"), ("application.name", "mellow")]);
+        let their_client = node(&[("pipewire.sec.pid", "41")]);
+        let our_stream = node(&[
+            ("media.class", "Stream/Output/Audio"),
+            ("client.id", "51"),
+            ("node.name", "mellow"),
+        ]);
+        let their_stream = node(&[
+            ("media.class", "Stream/Output/Audio"),
+            ("client.id", "60"),
+            ("node.name", "game"),
+        ]);
+        let mut own = OwnProcess::new("7".into());
+        own.note_client(51, our_client.as_ref());
+        own.note_client(60, their_client.as_ref());
+        let desktop = Wanted::SinkExcept {
+            sink: None,
+            apps: vec!["mellow (deleted)".into()],
+        };
+        assert!(!desktop.matches(our_stream.as_ref(), &own));
+        assert!(desktop.matches(their_stream.as_ref(), &own));
+        own.forget_client(51);
+        assert!(desktop.matches(our_stream.as_ref(), &own));
+    }
+
+    #[test]
+    fn a_window_s_process_takes_in_its_children_and_nothing_else() {
+        // A browser's audio service is a child of the window's process.
+        let parent_of = |pid| match pid {
+            30 => Some(20),
+            20 => Some(10),
+            10 | 40 => Some(1),
+            _ => None,
+        };
+        assert!(descends_from(20, 20, parent_of));
+        assert!(descends_from(30, 20, parent_of));
+        assert!(!descends_from(10, 20, parent_of), "not its parent");
+        assert!(!descends_from(40, 20, parent_of));
+        assert!(!descends_from(99, 20, parent_of), "an unknown process");
+        assert_eq!(
+            parent_process(std::process::id()),
+            Some(std::os::unix::process::parent_id())
+        );
+        // Mellow (30) started from the shared terminal (20) is never its stream.
+        assert!(plays_for_process(30, 20, 99, parent_of));
+        assert!(!plays_for_process(30, 20, 30, parent_of));
+    }
+
+    #[test]
+    fn only_a_pulse_client_s_declared_process_is_believed() {
+        assert_eq!(client_process(Some(7), None, Some(9)), Some(7));
+        assert_eq!(client_process(Some(7), Some("native"), Some(9)), Some(7));
+        assert_eq!(
+            client_process(Some(5), Some("pipewire-pulse"), Some(9)),
+            Some(9)
+        );
+        assert_eq!(client_process(Some(5), Some("pipewire-pulse"), None), None);
     }
 
     #[test]

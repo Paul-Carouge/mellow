@@ -27,7 +27,7 @@ use crate::screen_capture::{
     ScreenSourceDescription, ScreenSourceKind, ShareSound, ShareSoundState, pack_bgra_rows,
     thumbnail_of,
 };
-use crate::screen_capture_linux::{RunningShareSound, binary_of_process, start_sound_for};
+use crate::screen_capture_linux::{RunningShareSound, is_this_user_s_program, start_sound_for};
 use crate::session::ScreenShareEnd;
 use crate::simulcast::FRAMES_PER_SECOND;
 use crate::video_frame::CapturedFrame;
@@ -635,7 +635,7 @@ pub(crate) fn start(
     };
     let source = parse_source(id).ok_or(ScreenCaptureError::SourceGone)?;
     let (connection, root) = connect()?;
-    let window_application = match source {
+    let window_process = match source {
         Source::Monitor(_) => None,
         Source::Window(window) => {
             if !has_composite(&connection) {
@@ -649,13 +649,13 @@ pub(crate) fn start(
                 .into_iter()
                 .find(|described| described.window == window)
                 .and_then(|described| described.process)
-                .and_then(binary_of_process)
+                .filter(|&pid| is_this_user_s_program(pid))
         }
     };
     let pictures = share.start_pictures();
     let is_whole_screen = matches!(source, Source::Monitor(_));
     let (running_sound, sound_state) =
-        start_sound_for(sound, is_whole_screen, window_application, share);
+        start_sound_for(sound, is_whole_screen, window_process, share);
     let should_stop = Arc::new(AtomicBool::new(false));
     let thread = {
         let should_stop = Arc::clone(&should_stop);
