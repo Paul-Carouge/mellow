@@ -24,8 +24,8 @@ use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, child_id,
-    focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
-    remembered_hover, with_type,
+    focus_ring, icon, inset_focus_ring, is_focus_visible, is_row_hovered_or_focused,
+    remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::home::{conversation_display_name, shown_presence};
 use crate::i18n::strings;
@@ -758,6 +758,8 @@ impl DuskShell {
     ) -> AnyElement {
         let tokens = theme(cx);
         let strings = strings(cx);
+        let id = ElementId::from(("voice-participant", user_id.raw()));
+        let is_row_active = is_row_hovered_or_focused(&id, window, cx);
         let state = self.session.read(cx).state();
         let is_me = state.current_user().is_some_and(|user| user.id == user_id);
         let voice_state = state.voice_state_of(user_id).cloned();
@@ -787,7 +789,13 @@ impl DuskShell {
             });
         let (name, avatar) = if let Some(user) = person {
             let picture = user.avatar.map(|image| {
-                profile_picture(image, COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE, window)
+                profile_picture(
+                    image,
+                    COMPONENT_VOICE_PARTICIPANT_AVATAR_SIZE,
+                    is_row_active,
+                    window,
+                    cx,
+                )
             });
             (
                 display_name(&user).to_owned(),
@@ -869,7 +877,6 @@ impl DuskShell {
         .filter_map(|(is_shown, word)| is_shown.then_some(word))
         .collect();
         let label = strings.voice().participant_label(&name, &states);
-        let id = ElementId::from(("voice-participant", user_id.raw()));
         let focus_handle = remembered_focus_handle(&id, window, cx);
         let hover = remembered_hover(&id, window, cx);
         let is_hovered = *hover.read(cx);
@@ -1162,6 +1169,8 @@ impl DuskShell {
             return rows;
         }
         for conversation in conversations {
+            let row_id = ElementId::from(("conversation-row", conversation.id.raw()));
+            let is_row_active = is_row_hovered_or_focused(&row_id, window, cx);
             let state = self.session.read(cx).state();
             let is_selected = selected == Some(conversation.id);
             let is_muted = is_target_muted(&settings, conversation.id, now);
@@ -1178,7 +1187,13 @@ impl DuskShell {
                 .filter(|recipient| Some(recipient.id) != current_user_id)
                 .map(|recipient| {
                     let picture = recipient.avatar.map(|image| {
-                        profile_picture(image, COMPONENT_MEMBER_ROW_AVATAR_SIZE, window)
+                        profile_picture(
+                            image,
+                            COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+                            is_row_active,
+                            window,
+                            cx,
+                        )
                     });
                     AvatarPerson::from_user(recipient, picture)
                 })
@@ -1228,7 +1243,7 @@ impl DuskShell {
             let child_index = rows.len();
             let row = Self::sidebar_row(
                 SidebarRow {
-                    id: ElementId::from(("conversation-row", conversation.id.raw())),
+                    id: row_id,
                     label: name_with_unread_state(strings, &label, has_unread, mention_count),
                     name: name.into(),
                     // No presence on a group: its second line counts its people, as on Discord.

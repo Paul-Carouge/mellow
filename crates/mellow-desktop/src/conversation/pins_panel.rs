@@ -4,7 +4,7 @@
 //! to pin. It drops under the header's trailing end, as the web's popover does.
 
 use gpui::{
-    AnyElement, Context, InteractiveElement as _, IntoElement, ParentElement as _, Role,
+    AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, ParentElement as _, Role,
     SharedString, StatefulInteractiveElement as _, Styled as _, Window, deferred, div,
     prelude::FluentBuilder as _,
 };
@@ -13,13 +13,14 @@ use mellow_client_core::state::PinsStatus;
 
 use super::ConversationView;
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, LiveRegion as _, icon, shadow,
-    with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, LiveRegion as _, icon,
+    is_picture_row_pointed_at, shadow, track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
 use crate::messages::{
     full_timestamp_label, local_date_time, message_summary, message_timestamp_label,
 };
+use crate::pictures::chosen_profile_image_animation;
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -119,12 +120,14 @@ impl ConversationView {
                     } else {
                         message_summary(message, &self.sources.roles, catalogue)
                     };
+                    let row_id = ElementId::from(("pin-row", message_id.raw()));
+                    let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
                     let picture = message.author.avatar.as_ref().map(|avatar| {
                         crate::messages::picture_for_box(
                             mellow_client_core::DownloadableFile::ProfileImage(avatar.id),
                             COMPONENT_PINS_ITEM_AVATAR_SIZE,
                             COMPONENT_PINS_ITEM_AVATAR_SIZE,
-                            crate::messages::picture_animation(cx),
+                            chosen_profile_image_animation(avatar, is_row_pointed_at, cx),
                             window,
                         )
                     });
@@ -132,7 +135,7 @@ impl ConversationView {
                     let unpin_view = view.clone();
                     let unpinned = message.clone();
                     let full_time: SharedString = full_timestamp_label(sent, catalogue).into();
-                    div()
+                    track_picture_row_pointer(div().id(row_id.clone()), row_id, window)
                         .flex()
                         .gap(length(SPACE_SM))
                         .p(length(COMPONENT_PINS_ITEM_PADDING))

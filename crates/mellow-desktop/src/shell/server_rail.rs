@@ -24,6 +24,7 @@ use crate::components::{
     remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::i18n::{Strings, strings};
+use crate::pictures::chosen_profile_image_animation;
 use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -285,6 +286,9 @@ impl DuskShell {
         let hover = remembered_hover(&id, window, cx);
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let is_active = is_selected || is_menu_open || *hover.read(cx) || is_ring_shown;
+        // Animated icons play while pointed at or focused, as `ServerRail.svelte`'s
+        // `animatedGuildId`.
+        let is_icon_area_active = *hover.read(cx) || focus_handle.is_focused(window);
         // Three curves (ADR-0022 §3): the squircle settles, the pill moves on `standard`.
         let radius = transition(
             child_id(&id, "radius"),
@@ -357,19 +361,24 @@ impl DuskShell {
             RailMark::Server { guild, .. } => match guild.icon {
                 // Rounded itself: GPUI's `overflow_hidden` clips to the rectangle, not to the
                 // rounded corners of the button around it.
-                Some(picture) => img(icon_picture(picture, COMPONENT_RAIL_ITEM_SIZE, window))
-                    .size_full()
-                    .rounded(length(radius))
-                    .object_fit(ObjectFit::Cover)
-                    .with_fallback({
-                        let initials = server_initials(&guild.name);
-                        move || {
-                            with_type(div(), TYPE_BODY)
-                                .child(initials.clone())
-                                .into_any_element()
-                        }
-                    })
-                    .into_any_element(),
+                Some(picture) => img(icon_picture(
+                    picture,
+                    COMPONENT_RAIL_ITEM_SIZE,
+                    chosen_profile_image_animation(&picture, is_icon_area_active, cx),
+                    window,
+                ))
+                .size_full()
+                .rounded(length(radius))
+                .object_fit(ObjectFit::Cover)
+                .with_fallback({
+                    let initials = server_initials(&guild.name);
+                    move || {
+                        with_type(div(), TYPE_BODY)
+                            .child(initials.clone())
+                            .into_any_element()
+                    }
+                })
+                .into_any_element(),
                 None => with_type(div(), TYPE_BODY)
                     .font_weight(gpui::FontWeight::SEMIBOLD)
                     .child(server_initials(&guild.name))

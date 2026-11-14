@@ -656,6 +656,7 @@ impl ChannelPermissionsPage {
                 let id = ElementId::from(("overwrite-target", target_id.raw()));
                 let focus = self.row_focus_handle(target_id, cx);
                 let hover = remembered_hover(&id, window, cx);
+                let is_row_hovered = *hover.read(cx);
                 let is_selected = selected_id == Some(target_id);
                 let is_ring_shown = is_focus_visible(&focus, window);
                 let entity = entity.clone();
@@ -702,7 +703,7 @@ impl ChannelPermissionsPage {
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |page, cx| page.select(target_id, cx));
                     })
-                    .child(target_mark(&row.mark, window, cx))
+                    .child(target_mark(&row.mark, is_row_hovered, window, cx))
                     .child(div().min_w_0().flex_1().truncate().child(row.name.clone()))
                     .when(row.is_locked, |element| {
                         element.child(icon(
@@ -787,7 +788,9 @@ impl ChannelPermissionsPage {
                     .items_center()
                     .gap(length(COMPONENT_ROLES_ROW_ICON_GAP))
                     .text_color(color(tokens.component_settings_page_title_text))
-                    .child(target_mark(&editor.row.mark, window, cx))
+                    // The editor's title is no hover area: its avatar plays only with "Always
+                    // animate".
+                    .child(target_mark(&editor.row.mark, false, window, cx))
                     .child(div().truncate().child(editor.row.name.clone())),
             )
             .when(editor.can_remove, |header| {
@@ -935,7 +938,13 @@ fn state_icon(state: OverwriteState) -> IconName {
 }
 
 /// A role's dot or a member's avatar, at the target avatar size.
-pub(super) fn target_mark(mark: &TargetMark, window: &Window, cx: &App) -> AnyElement {
+/// A target's mark; a member's avatar plays while `is_row_active`.
+pub(super) fn target_mark(
+    mark: &TargetMark,
+    is_row_active: bool,
+    window: &Window,
+    cx: &App,
+) -> AnyElement {
     let tokens = theme(cx);
     match mark {
         TargetMark::Role(colour) => div()
@@ -956,7 +965,13 @@ pub(super) fn target_mark(mark: &TargetMark, window: &Window, cx: &App) -> AnyEl
             .into_any_element(),
         TargetMark::Member(Some(user)) => {
             let picture = user.avatar.map(|image| {
-                profile_picture(image, COMPONENT_CHANNEL_SETTINGS_TARGET_AVATAR_SIZE, window)
+                profile_picture(
+                    image,
+                    COMPONENT_CHANNEL_SETTINGS_TARGET_AVATAR_SIZE,
+                    is_row_active,
+                    window,
+                    cx,
+                )
             });
             Avatar::new(
                 AvatarPerson::from_user(user, picture),

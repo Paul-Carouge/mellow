@@ -2374,6 +2374,8 @@ export const en = {
     /** User settings, Appearance: the theme and the language, kept in the app on this computer. */
     appearance: "Appearance",
     appearanceIntro: "These settings stay on this computer.",
+    /** User settings, Accessibility: the animated pictures choice, kept in the app on this computer. */
+    accessibilityIntro: "This setting stays on this computer.",
     theme: "Theme",
     themeSystem: "Same as this computer",
     themeLight: "Light",

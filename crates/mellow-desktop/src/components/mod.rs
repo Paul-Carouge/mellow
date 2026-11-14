@@ -45,11 +45,13 @@ mod text_field;
 mod tooltip;
 mod unsaved_bar;
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use gpui::{
-    App, BoxShadow, ElementId, FocusHandle, FontWeight, Hsla, InteractiveElement, IntoElement,
-    KeyBinding, SharedString, Styled, Svg, Window, actions, div, point, svg,
+    App, BoxShadow, ElementId, FocusHandle, FontWeight, Global, Hsla, InteractiveElement,
+    IntoElement, KeyBinding, SharedString, StatefulInteractiveElement, Styled, Svg, Window,
+    actions, div, point, svg,
 };
 use gpui_base::motion::{Easing, Transition, transition};
 
@@ -193,6 +195,50 @@ pub fn child_id(parent: &ElementId, name: &'static str) -> ElementId {
 /// Whether the pointer is over the element, remembered between frames (set by `on_hover`).
 pub fn remembered_hover(id: &ElementId, window: &mut Window, cx: &mut App) -> gpui::Entity<bool> {
     window.use_keyed_state(child_id(id, "hover"), cx, |_, _| false)
+}
+
+/// Whether the row with `id` is pointed at or holds focus, read before the row is built: the
+/// hover area of the avatars and icons it shows (`Avatar.svelte`). The row must keep its hover
+/// with [`remembered_hover`] and its focus with [`remembered_focus_handle`], under that same id.
+pub fn is_row_hovered_or_focused(id: &ElementId, window: &mut Window, cx: &mut App) -> bool {
+    *remembered_hover(id, window, cx).read(cx)
+        || remembered_focus_handle(id, window, cx).contains_focused(window, cx)
+}
+
+/// The rows pointed at now, for rows built while a session is borrowed, where [`remembered_hover`]
+/// (which needs `&mut App`) cannot be reached. Only rows under the pointer are kept.
+#[derive(Default)]
+struct PointedPictureRows(HashSet<ElementId>);
+
+impl Global for PointedPictureRows {}
+
+/// Whether the row with `id`, tracked by [`track_picture_row_pointer`], is pointed at: the hover
+/// area of the animated avatar it shows (`Avatar.svelte`).
+#[must_use]
+pub fn is_picture_row_pointed_at(id: &ElementId, cx: &App) -> bool {
+    cx.try_global::<PointedPictureRows>()
+        .is_some_and(|rows| rows.0.contains(id))
+}
+
+/// Tracks the pointer over a row with id `id` for [`is_picture_row_pointed_at`], drawing the view
+/// again when it enters or leaves. The row must not have an `on_hover` of its own.
+pub fn track_picture_row_pointer<E: StatefulInteractiveElement>(
+    row: E,
+    id: ElementId,
+    window: &Window,
+) -> E {
+    let view = window.current_view();
+    row.on_hover(move |is_hovered, _, cx| {
+        let rows = &mut cx.default_global::<PointedPictureRows>().0;
+        let has_changed = if *is_hovered {
+            rows.insert(id.clone())
+        } else {
+            rows.remove(&id)
+        };
+        if has_changed {
+            cx.notify(view);
+        }
+    })
 }
 
 /// A focus handle that lives as long as the element keeps being drawn.

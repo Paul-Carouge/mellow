@@ -510,6 +510,7 @@ impl ForwardDialog {
         let id = ElementId::from(("forward-row", destination.channel_id.raw()));
         let focus = remembered_focus_handle(&id, window, cx);
         let hover = remembered_hover(&id, window, cx);
+        let is_row_active = *hover.read(cx) || focus.is_focused(window);
         let channel_id = destination.channel_id;
         let entity = cx.entity();
         let label = destination.label();
@@ -536,7 +537,13 @@ impl ForwardDialog {
                     .iter()
                     .map(|person| {
                         let picture = person.avatar.map(|image| {
-                            profile_picture(image, COMPONENT_PEOPLE_PICKER_AVATAR_SIZE, window)
+                            profile_picture(
+                                image,
+                                COMPONENT_PEOPLE_PICKER_AVATAR_SIZE,
+                                is_row_active,
+                                window,
+                                cx,
+                            )
                         });
                         AvatarPerson::from_user(person, picture)
                     })
@@ -548,7 +555,13 @@ impl ForwardDialog {
             ForwardDestinationKind::Person => match destination.people.first() {
                 Some(person) => {
                     let picture = person.avatar.map(|image| {
-                        profile_picture(image, COMPONENT_PEOPLE_PICKER_AVATAR_SIZE, window)
+                        profile_picture(
+                            image,
+                            COMPONENT_PEOPLE_PICKER_AVATAR_SIZE,
+                            is_row_active,
+                            window,
+                            cx,
+                        )
                     });
                     Avatar::new(
                         AvatarPerson::from_user(person, picture),

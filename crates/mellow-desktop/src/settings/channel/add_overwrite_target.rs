@@ -274,6 +274,7 @@ impl AddOverwriteTarget {
                 let id = ElementId::from(("overwrite-candidate", candidate.target.id.raw()));
                 let focus = remembered_focus_handle(&id, window, cx);
                 let hover = remembered_hover(&id, window, cx);
+                let is_row_hovered = *hover.read(cx);
                 let is_ring_shown = is_focus_visible(&focus, window);
                 let target = candidate.target;
                 let entity = entity.clone();
@@ -310,7 +311,7 @@ impl AddOverwriteTarget {
                     .on_click(move |_, _, cx| {
                         entity.update(cx, |picker, cx| picker.add(target, cx));
                     })
-                    .child(target_mark(&candidate.mark, window, cx))
+                    .child(target_mark(&candidate.mark, is_row_hovered, window, cx))
                     .child(div().min_w_0().truncate().child(candidate.name.clone()))
                     .when(is_ring_shown, |row| {
                         row.child(focus_ring(COMPONENT_ROLES_ROW_RADIUS, cx))

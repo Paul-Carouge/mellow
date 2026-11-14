@@ -23,8 +23,8 @@ use mellow_protocol::{
 use super::conversation_display_name;
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, ModalDialog, ModalDialogEvent,
-    TextField, focus_ring, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle,
-    remembered_hover, with_type,
+    TextField, focus_ring, icon, inset_focus_ring, is_focus_visible, is_picture_row_pointed_at,
+    remembered_focus_handle, remembered_hover, track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
 use crate::session::Session;
@@ -514,11 +514,17 @@ impl PeoplePicker {
                 let user_id = person.id;
                 let entity = entity.clone();
                 let search = self.search.clone();
+                let is_chip_active = is_picture_row_pointed_at(&id, cx) || focus.is_focused(window);
                 let picture = person.avatar.map(|image| {
-                    profile_picture(image, COMPONENT_PEOPLE_PICKER_CHIP_AVATAR_SIZE, window)
+                    profile_picture(
+                        image,
+                        COMPONENT_PEOPLE_PICKER_CHIP_AVATAR_SIZE,
+                        is_chip_active,
+                        window,
+                        cx,
+                    )
                 });
-                with_type(div(), TYPE_BODY)
-                    .id(id)
+                track_picture_row_pointer(with_type(div(), TYPE_BODY).id(id.clone()), id, window)
                     .role(Role::Button)
                     .aria_label(words.unpick(display_name(person)))
                     .track_focus(&focus)
@@ -584,7 +590,13 @@ impl PeoplePicker {
                     let entity = entity.clone();
                     let name = display_name(person).to_owned();
                     let picture = person.avatar.map(|image| {
-                        profile_picture(image, COMPONENT_PEOPLE_PICKER_AVATAR_SIZE, window)
+                        profile_picture(
+                            image,
+                            COMPONENT_PEOPLE_PICKER_AVATAR_SIZE,
+                            *hover.read(cx) || focus.is_focused(window),
+                            window,
+                            cx,
+                        )
                     });
                     let checkbox = div()
                         .flex_none()

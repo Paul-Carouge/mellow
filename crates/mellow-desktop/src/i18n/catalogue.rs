@@ -14730,6 +14730,13 @@ impl DesktopStrings {
         }
     }
 
+    pub fn accessibility_intro(self) -> &'static str {
+        match self.language {
+            Language::English => "This setting stays on this computer.",
+            Language::French => "Ce réglage reste sur cet ordinateur.",
+        }
+    }
+
     pub fn theme(self) -> &'static str {
         match self.language {
             Language::English => "Theme",

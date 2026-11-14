@@ -3,11 +3,11 @@
 //! the open form first (My account, Security), then the settings; focus goes back to the button
 //! that opened them.
 //!
-//! shortcut: the web's Accessibility section (animated pictures) is left out: the desktop has no
-//! "animate on hover" yet (pictures follow the system's reduced motion). The desktop's own
-//! Appearance section holds the theme and the language.
+//! Accessibility comes first in the app's group, as on the web; the desktop's own Appearance
+//! section holds the theme and the language.
 
 mod about;
+mod accessibility;
 mod account;
 mod appearance;
 mod notifications;
@@ -25,6 +25,7 @@ use gpui::{
 use mellow_client_core::shared_logic::user_settings::UserSettingsSection;
 
 use self::about::AboutPage;
+use self::accessibility::AccessibilityPage;
 use self::account::AccountPage;
 use self::appearance::AppearancePage;
 use self::notifications::NotificationsPage;
@@ -50,6 +51,7 @@ fn section_label(section: UserSettingsSection, catalogue: Strings) -> &'static s
         UserSettingsSection::MyAccount => settings.my_account(),
         UserSettingsSection::Profile => settings.profile(),
         UserSettingsSection::Security => catalogue.security().title(),
+        UserSettingsSection::Accessibility => settings.accessibility(),
         UserSettingsSection::Appearance => catalogue.desktop().appearance(),
         UserSettingsSection::Voice => settings.voice(),
         UserSettingsSection::Notifications => settings.notifications(),
@@ -125,6 +127,10 @@ impl UserSettings {
             UserSettingsSection::Security => {
                 let page = cx.new(|cx| SecurityPage::new(session, cx));
                 self.form_page = Some(FormPage::Security(page.downgrade()));
+                shown_page(section, page, Self::navigation, cx)
+            }
+            UserSettingsSection::Accessibility => {
+                let page = cx.new(AccessibilityPage::new);
                 shown_page(section, page, Self::navigation, cx)
             }
             UserSettingsSection::Appearance => {

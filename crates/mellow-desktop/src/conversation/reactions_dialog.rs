@@ -7,19 +7,21 @@
 use std::collections::HashMap;
 
 use gpui::{
-    Context, Entity, FocusHandle, InteractiveElement as _, IntoElement, ParentElement as _, Render,
-    Role, SharedString, StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
-    prelude::FluentBuilder as _,
+    Context, ElementId, Entity, FocusHandle, InteractiveElement as _, IntoElement,
+    ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    Subscription, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::display_name;
 use mellow_protocol::{CustomEmoji, PublicUser, ReactionSummary, Snowflake};
 
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tabs, icon, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, LiveRegion as _, Tabs, icon,
+    is_picture_row_pointed_at, track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
-use crate::messages::{picture_animation, picture_for_box};
+use crate::messages::picture_for_box;
+use crate::pictures::chosen_profile_image_animation;
 use crate::session::Session;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -241,12 +243,14 @@ impl ReactionsDialogBody {
                     .flex()
                     .flex_col()
                     .children(self.users.iter().enumerate().map(|(index, user)| {
+                        let row_id = ElementId::from(("reactions-person", index));
+                        let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
                         let picture = user.avatar.as_ref().map(|avatar| {
                             picture_for_box(
                                 DownloadableFile::ProfileImage(avatar.id),
                                 COMPONENT_MEMBER_ROW_AVATAR_SIZE,
                                 COMPONENT_MEMBER_ROW_AVATAR_SIZE,
-                                picture_animation(cx),
+                                chosen_profile_image_animation(avatar, is_row_pointed_at, cx),
                                 window,
                             )
                         });
@@ -271,8 +275,7 @@ impl ReactionsDialogBody {
                                     });
                                 })
                         });
-                        div()
-                            .id(("reactions-person", index))
+                        track_picture_row_pointer(div().id(row_id.clone()), row_id, window)
                             .role(Role::ListItem)
                             .aria_label(name.clone())
                             .aria_position_in_set(index + 1)

@@ -4,9 +4,10 @@
 //! reason. The list is the one the member sheet uses, kept current by the gateway.
 
 use gpui::{
-    App, AppContext as _, Context, Entity, EventEmitter, InteractiveElement as _, IntoElement,
-    ParentElement as _, Render, Role as AccessRole, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, div, prelude::FluentBuilder as _,
+    App, AppContext as _, Context, ElementId, Entity, EventEmitter, InteractiveElement as _,
+    IntoElement, ParentElement as _, Render, Role as AccessRole, SharedString,
+    StatefulInteractiveElement as _, Styled as _, Subscription, Window, div,
+    prelude::FluentBuilder as _,
 };
 use gpui_component::input::{InputEvent, InputState};
 use mellow_client_core::shared_logic::format::display_name;
@@ -19,7 +20,8 @@ use mellow_protocol::{CreateBanRequest, Member, Snowflake};
 use super::manage_member::{ConfirmMemberRemoval, ManageMemberBody, MemberRemoval};
 use crate::components::{
     Avatar, AvatarPerson, Button, LiveRegion as _, ModalDialog, ModalDialogEvent, RoleChip,
-    RoleChips, SettingsListStatus, SettingsListStatusKind, TextField, with_type,
+    RoleChips, SettingsListStatus, SettingsListStatusKind, TextField, is_picture_row_pointed_at,
+    track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
 use crate::session::{MembersLoad, Session};
@@ -400,13 +402,20 @@ impl MembersPage {
                     .collect();
                 (member_actions(guild, &manager, member, me).has_any(), chips)
             });
-        let picture = member
-            .user
-            .avatar
-            .map(|image| profile_picture(image, COMPONENT_SERVER_SETTINGS_AVATAR_SIZE, window));
+        let row_id = ElementId::from(("server-member-row", member.user.id.raw()));
+        let is_row_pointed_at = is_picture_row_pointed_at(&row_id, cx);
+        let picture = member.user.avatar.map(|image| {
+            profile_picture(
+                image,
+                COMPONENT_SERVER_SETTINGS_AVATAR_SIZE,
+                is_row_pointed_at,
+                window,
+                cx,
+            )
+        });
         let user_id = member.user.id;
         let page = cx.entity().downgrade();
-        div()
+        track_picture_row_pointer(div().id(row_id.clone()), row_id, window)
             .flex()
             .items_center()
             .min_h(length(COMPONENT_SERVER_SETTINGS_ROW_MIN_HEIGHT))

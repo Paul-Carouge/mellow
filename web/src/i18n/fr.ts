@@ -2331,6 +2331,7 @@ export const fr: Catalogue = {
     notificationsIntro: `Quand ton statut est «${NO_BREAK_SPACE}Ne pas déranger${NO_BREAK_SPACE}», rien ne te notifie. Ces réglages restent sur cet ordinateur.`,
     appearance: "Apparence",
     appearanceIntro: "Ces réglages restent sur cet ordinateur.",
+    accessibilityIntro: "Ce réglage reste sur cet ordinateur.",
     theme: "Thème",
     themeSystem: "Comme cet ordinateur",
     themeLight: "Clair",
