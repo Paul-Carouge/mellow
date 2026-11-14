@@ -27,6 +27,7 @@ pub mod rules;
 mod tests;
 
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 use gpui::{
     AnyView, App, AppContext as _, ClipboardItem, Context, Entity, FocusHandle, KeyDownEvent,
@@ -54,7 +55,7 @@ use crate::composer::{
     BlockedRecipient, Cancelled, Composer, ComposerEvent, ReplyTarget, SavedDraftsFile,
 };
 use crate::i18n::strings;
-use crate::messages::{MessageBodyCache, ReactionPill};
+use crate::messages::{MessageBodyCache, ReactionPill, ShownRoleIcon};
 use crate::session::{
     HistoryReach, HistoryStatus, SendRefused, Session, StateChanged, now_unix_milliseconds,
 };
@@ -125,6 +126,10 @@ struct MessageMarkupSources {
     roles: HashMap<Snowflake, Role>,
     /// Each author's highest coloured role colour (0xRRGGBB), made readable when drawn.
     role_colours: HashMap<Snowflake, u32>,
+    /// Each author's highest role with an icon, by user id: its role id (ADR-0050).
+    role_icons: HashMap<Snowflake, Snowflake>,
+    /// The open server's roles with an icon, by role id, shared by every row that shows one.
+    shown_role_icons: HashMap<Snowflake, Rc<ShownRoleIcon>>,
 }
 
 #[allow(clippy::struct_excessive_bools)] // Independent flags of one view, each read on its own.
