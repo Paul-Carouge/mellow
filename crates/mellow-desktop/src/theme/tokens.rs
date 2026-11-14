@@ -703,9 +703,19 @@ pub struct ThemeTokens {
     pub component_voice_participant_name_text_speaking: u32,
     pub component_voice_participant_speaking_ring: u32,
     pub component_voice_participant_state_icon: u32,
+    pub component_window_chrome_background_hover: u32,
+    pub component_window_chrome_background_pressed: u32,
+    pub component_window_chrome_close_background_hover: u32,
+    pub component_window_chrome_close_background_pressed: u32,
+    pub component_window_chrome_close_icon_hover: u32,
+    pub component_window_chrome_frame_border: u32,
+    pub component_window_chrome_frame_shadow: &'static [ShadowLayer],
+    pub component_window_chrome_icon: u32,
+    pub component_window_chrome_icon_hover: u32,
     pub elevation_high: &'static [ShadowLayer],
     pub elevation_low: &'static [ShadowLayer],
     pub elevation_medium: &'static [ShadowLayer],
+    pub elevation_window: &'static [ShadowLayer],
 }
 
 pub const DARK_THEME: ThemeTokens = ThemeTokens {
@@ -1376,9 +1386,19 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_voice_participant_name_text_speaking: 0xF8F4_F8FF,
     component_voice_participant_speaking_ring: 0xF2A4_6EFF,
     component_voice_participant_state_icon: 0xA99F_AAFF,
+    component_window_chrome_background_hover: 0x221B_23FF,
+    component_window_chrome_background_pressed: 0x362E_37FF,
+    component_window_chrome_close_background_hover: 0xDA37_3CFF,
+    component_window_chrome_close_background_pressed: 0xA128_29FF,
+    component_window_chrome_close_icon_hover: 0xFFFF_FFFF,
+    component_window_chrome_frame_border: 0x3C35_3EFF,
+    component_window_chrome_frame_shadow: &[ShadowLayer { color: 0x0000_0066, offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0 }],
+    component_window_chrome_icon: 0xC5BE_C6FF,
+    component_window_chrome_icon_hover: 0xF8F4_F8FF,
     elevation_high: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     elevation_low: &[ShadowLayer { color: 0x0202_0233, offset_x: 0.0, offset_y: 1.0, blur: 0.0, spread: 0.0 }],
     elevation_medium: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 4.0, blur: 4.0, spread: 0.0 }],
+    elevation_window: &[ShadowLayer { color: 0x0000_0066, offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0 }],
 };
 
 pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
@@ -2049,9 +2069,19 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_voice_participant_name_text_speaking: 0x221B_23FF,
     component_voice_participant_speaking_ring: 0xA84F_1AFF,
     component_voice_participant_state_icon: 0x695F_6BFF,
+    component_window_chrome_background_hover: 0xECE6_EDFF,
+    component_window_chrome_background_pressed: 0xDFD8_DFFF,
+    component_window_chrome_close_background_hover: 0xDA37_3CFF,
+    component_window_chrome_close_background_pressed: 0xA128_29FF,
+    component_window_chrome_close_icon_hover: 0xFFFF_FFFF,
+    component_window_chrome_frame_border: 0xE3DD_E4FF,
+    component_window_chrome_frame_shadow: &[ShadowLayer { color: 0x0000_0033, offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0 }],
+    component_window_chrome_icon: 0x594E_5BFF,
+    component_window_chrome_icon_hover: 0x221B_23FF,
     elevation_high: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     elevation_low: &[ShadowLayer { color: 0x0606_0714, offset_x: 0.0, offset_y: 1.0, blur: 0.0, spread: 0.0 }],
     elevation_medium: &[ShadowLayer { color: 0x0000_001A, offset_x: 0.0, offset_y: 4.0, blur: 4.0, spread: 0.0 }],
+    elevation_window: &[ShadowLayer { color: 0x0000_0033, offset_x: 0.0, offset_y: 1.0, blur: 3.0, spread: 0.0 }],
 };
 
 pub const COMPONENT_ACTION_BAR_BUTTON_SIZE: f32 = 32.0;
@@ -2773,6 +2803,16 @@ pub const COMPONENT_VOICE_PARTICIPANT_ROW_HEIGHT: f32 = 28.0;
 pub const COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP: f32 = 2.0;
 pub const COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_WIDTH: f32 = 2.0;
 pub const COMPONENT_VOICE_PARTICIPANT_STATE_ICON_SIZE: f32 = 14.0;
+pub const COMPONENT_WINDOW_CHROME_BAND_HEIGHT: f32 = 32.0;
+pub const COMPONENT_WINDOW_CHROME_BAND_PADDING_END: f32 = 6.0;
+pub const COMPONENT_WINDOW_CHROME_BUTTON_PILL_HEIGHT: f32 = 24.0;
+pub const COMPONENT_WINDOW_CHROME_BUTTON_PILL_INSET_INLINE: f32 = 2.0;
+pub const COMPONENT_WINDOW_CHROME_BUTTON_RADIUS: f32 = 8.0;
+pub const COMPONENT_WINDOW_CHROME_BUTTON_WIDTH: f32 = 44.0;
+pub const COMPONENT_WINDOW_CHROME_FRAME_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_WINDOW_CHROME_FRAME_INSET: f32 = 12.0;
+pub const COMPONENT_WINDOW_CHROME_FRAME_RADIUS: f32 = 16.0;
+pub const COMPONENT_WINDOW_CHROME_ICON_SIZE: f32 = 16.0;
 pub const FONT_FAMILY_EMOJI: &[&str] = &["Twemoji", "Noto Color Emoji"];
 pub const FONT_FAMILY_MONO: &[&str] = &["Source Code Pro", "ui-monospace", "Menlo", "Consolas", "Noto Sans Mono", "monospace"];
 pub const FONT_FAMILY_SANS: &[&str] = &["Figtree", "Noto Sans", "sans-serif"];

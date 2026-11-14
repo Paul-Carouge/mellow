@@ -1388,9 +1388,29 @@
   --mw-component-voice-participant-speaking-ring-width: 0.125rem;
   --mw-component-voice-participant-state-icon: #A99FAA;
   --mw-component-voice-participant-state-icon-size: 0.875rem;
+  --mw-component-window-chrome-background-hover: #221B23;
+  --mw-component-window-chrome-background-pressed: #362E37;
+  --mw-component-window-chrome-band-height: 2rem;
+  --mw-component-window-chrome-band-padding-end: 0.375rem;
+  --mw-component-window-chrome-button-pill-height: 1.5rem;
+  --mw-component-window-chrome-button-pill-inset-inline: 0.125rem;
+  --mw-component-window-chrome-button-radius: 0.5rem;
+  --mw-component-window-chrome-button-width: 2.75rem;
+  --mw-component-window-chrome-close-background-hover: #DA373C;
+  --mw-component-window-chrome-close-background-pressed: #A12829;
+  --mw-component-window-chrome-close-icon-hover: #FFFFFF;
+  --mw-component-window-chrome-frame-border: #3C353E;
+  --mw-component-window-chrome-frame-border-width: 0.0625rem;
+  --mw-component-window-chrome-frame-inset: 0.75rem;
+  --mw-component-window-chrome-frame-radius: 1rem;
+  --mw-component-window-chrome-frame-shadow: 0 0.0625rem 0.1875rem 0 #00000066;
+  --mw-component-window-chrome-icon: #C5BEC6;
+  --mw-component-window-chrome-icon-hover: #F8F4F8;
+  --mw-component-window-chrome-icon-size: 1rem;
   --mw-elevation-high: 0 0.5rem 1rem 0 #0000003D;
   --mw-elevation-low: 0 0.0625rem 0 0 #02020233;
   --mw-elevation-medium: 0 0.25rem 0.25rem 0 #00000029;
+  --mw-elevation-window: 0 0.0625rem 0.1875rem 0 #00000066;
   --mw-font-family-emoji: Twemoji, "Noto Color Emoji";
   --mw-font-family-mono: "Source Code Pro", ui-monospace, Menlo, Consolas, "Noto Sans Mono", monospace;
   --mw-font-family-sans: Figtree, "Noto Sans", sans-serif;
@@ -2159,9 +2179,16 @@
     --mw-component-voice-participant-name-text-speaking: #221B23;
     --mw-component-voice-participant-speaking-ring: #A84F1A;
     --mw-component-voice-participant-state-icon: #695F6B;
+    --mw-component-window-chrome-background-hover: #ECE6ED;
+    --mw-component-window-chrome-background-pressed: #DFD8DF;
+    --mw-component-window-chrome-frame-border: #E3DDE4;
+    --mw-component-window-chrome-frame-shadow: 0 0.0625rem 0.1875rem 0 #00000033;
+    --mw-component-window-chrome-icon: #594E5B;
+    --mw-component-window-chrome-icon-hover: #221B23;
     --mw-elevation-high: 0 0.5rem 1rem 0 #00000029;
     --mw-elevation-low: 0 0.0625rem 0 0 #06060714;
     --mw-elevation-medium: 0 0.25rem 0.25rem 0 #0000001A;
+    --mw-elevation-window: 0 0.0625rem 0.1875rem 0 #00000033;
   }
 }
 
@@ -2722,9 +2749,16 @@
   --mw-component-voice-participant-name-text-speaking: #221B23;
   --mw-component-voice-participant-speaking-ring: #A84F1A;
   --mw-component-voice-participant-state-icon: #695F6B;
+  --mw-component-window-chrome-background-hover: #ECE6ED;
+  --mw-component-window-chrome-background-pressed: #DFD8DF;
+  --mw-component-window-chrome-frame-border: #E3DDE4;
+  --mw-component-window-chrome-frame-shadow: 0 0.0625rem 0.1875rem 0 #00000033;
+  --mw-component-window-chrome-icon: #594E5B;
+  --mw-component-window-chrome-icon-hover: #221B23;
   --mw-elevation-high: 0 0.5rem 1rem 0 #00000029;
   --mw-elevation-low: 0 0.0625rem 0 0 #06060714;
   --mw-elevation-medium: 0 0.25rem 0.25rem 0 #0000001A;
+  --mw-elevation-window: 0 0.0625rem 0.1875rem 0 #00000033;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -2824,6 +2858,7 @@
   --shadow-high: var(--mw-elevation-high);
   --shadow-low: var(--mw-elevation-low);
   --shadow-medium: var(--mw-elevation-medium);
+  --shadow-window: var(--mw-elevation-window);
   --font-emoji: var(--mw-font-family-emoji);
   --font-mono: var(--mw-font-family-mono);
   --font-sans: var(--mw-font-family-sans);
