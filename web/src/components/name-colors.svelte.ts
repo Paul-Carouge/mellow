@@ -5,7 +5,9 @@ import { colorTokenValue } from "./tokens";
 
 /**
  * Each member's name colour on the given surface, by user id; members without a coloured role
- * are absent and keep the surface's text colour. Recomputed when the theme changes.
+ * are absent and keep the surface's text colour. Recomputed when the theme changes. Pass the
+ * least contrasting background the name sits on (a row's hover, not the sheet), so the name keeps
+ * 4.5:1 on every background of its row (DESIGN.md §2.3).
  */
 export function nameColorsByUserId(
   guild: Guild | null,
@@ -18,12 +20,16 @@ export function nameColorsByUserId(
     return colors;
   }
   const surface = colorTokenValue(surfaceToken);
+  // Worked out once per role: every member whose highest coloured role it is shares it.
   const byRoleId = new Map<Snowflake, string>();
   for (const member of members) {
     const role = highestColouredRole(guild, member.role_ids);
     if (role) {
-      const color = byRoleId.get(role.id) ?? readableRoleColor(role.color, surface);
-      byRoleId.set(role.id, color);
+      let color = byRoleId.get(role.id);
+      if (color === undefined) {
+        color = readableRoleColor(role.color, surface);
+        byRoleId.set(role.id, color);
+      }
       colors.set(member.user.id, color);
     }
   }
