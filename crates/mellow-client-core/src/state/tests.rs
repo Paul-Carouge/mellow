@@ -611,8 +611,18 @@ fn presence_and_typing_indicators() {
         "my own typing is not shown"
     );
     assert_eq!(
+        state.next_typing_notice_end(GENERAL, NOW + 1),
+        Some(NOW + TYPING_INDICATOR_LIFETIME_MILLISECONDS),
+        "the line changes when the notice ends"
+    );
+    assert_eq!(
         state.typing_user_ids(GENERAL, NOW + TYPING_INDICATOR_LIFETIME_MILLISECONDS),
         Vec::<Snowflake>::new()
+    );
+    assert_eq!(
+        state.next_typing_notice_end(GENERAL, NOW + TYPING_INDICATOR_LIFETIME_MILLISECONDS),
+        None,
+        "nothing left to wait for"
     );
     state.apply_event(
         GatewayEvent::TypingStart {
@@ -627,6 +637,33 @@ fn presence_and_typing_indicators() {
         state.typing_user_ids(GENERAL, NOW + 1),
         Vec::<Snowflake>::new(),
         "sending clears typing"
+    );
+}
+
+#[test]
+fn the_next_typing_notice_end_is_the_earliest_one_still_shown() {
+    let mut state = ready_state();
+    let later_typist = Snowflake::from_raw(3);
+    let typing = |user_id| GatewayEvent::TypingStart {
+        guild_id: Some(GUILD),
+        channel_id: GENERAL,
+        user_id,
+    };
+    state.apply_event(typing(OTHER), NOW);
+    state.apply_event(typing(later_typist), NOW + 3_000);
+    let first_end = NOW + TYPING_INDICATOR_LIFETIME_MILLISECONDS;
+    assert_eq!(
+        state.next_typing_notice_end(GENERAL, NOW + 3_000),
+        Some(first_end)
+    );
+    assert_eq!(
+        state.next_typing_notice_end(GENERAL, first_end),
+        Some(first_end + 3_000),
+        "once the first ends, the later one's end comes next"
+    );
+    assert_eq!(
+        state.next_typing_notice_end(Snowflake::from_raw(999), NOW),
+        None
     );
 }
 
