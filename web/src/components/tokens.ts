@@ -43,3 +43,12 @@ export function colorTokenValue(name: string): string {
 export function durationTokenInMilliseconds(name: string): number {
   return parseDurationInMilliseconds(tokenValue(name));
 }
+
+/** A unitless number token, for example "component-profile-hover-card-role-limit". */
+export function numberTokenValue(name: string): number {
+  const value = Number.parseFloat(tokenValue(name));
+  if (!Number.isFinite(value)) {
+    throw new Error(`expected a number token, got "${tokenValue(name)}" for --mw-${name}`);
+  }
+  return value;
+}

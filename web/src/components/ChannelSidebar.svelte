@@ -56,6 +56,7 @@
   import MoveToCategoryDialog from "./MoveToCategoryDialog.svelte";
   import RenameCategoryDialog from "./RenameCategoryDialog.svelte";
   import PersonContextMenu from "./PersonContextMenu.svelte";
+  import { profileTrigger } from "./profile-surfaces.svelte";
   import RenameGroupDialog from "./RenameGroupDialog.svelte";
   import { lengthTokenInPixels } from "./tokens";
   import { prepareChimeSound } from "./chime-sound";
@@ -932,6 +933,7 @@
                 ]}
                 onclick={(event) => openParticipantMenu(person, event.currentTarget)}
                 {@attach contextMenuTrigger((origin, invoker) => personMenu?.openFor(person, origin, invoker, { isInVoice: true }) ?? false)}
+                {@attach profileTrigger(person, { placement: "beside" })}
               >
               <!-- Speaking is shown, never announced (it would drown everything else out). -->
               <span class={["voice-avatar shrink-0 rounded-full", isSpeaking && "is-speaking"]}>

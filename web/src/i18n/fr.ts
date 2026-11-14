@@ -1157,8 +1157,6 @@ export const fr: Catalogue = {
   members: {
     members: "Membres",
     profile: "Profil",
-    profileOf: (person) => `Profil de ${person}`,
-    backToMembers: "Retour aux membres",
     sendMessage: "Envoyer un message",
     opening: "Ouverture…",
     openConversationFailed: "Impossible d’ouvrir la conversation",
@@ -2271,6 +2269,20 @@ export const fr: Catalogue = {
       expired: "Cette connexion a pris trop de temps. Saisis à nouveau ton mot de passe.",
       codesLocked: `Trop de codes erronés${NO_BREAK_SPACE}: les codes de l’application sont refusés pour un moment. Réessaie plus tard ou utilise un code de secours.`,
     },
+  },
+
+  profileCard: {
+    moreActionsFor: (person) => `Plus d’actions pour ${person}`,
+    editProfile: "Modifier le profil",
+    noDetailsYet: "Tu n’as pas encore de présentation ni de liens.",
+    roles: "Rôles",
+    rolesOf: (person) => `Rôles de ${person}`,
+    memberSince: "Membre depuis",
+    mellow: "Mellow",
+    memberSinceDate: (date) => `Membre depuis le ${date}`,
+    viewProfile: "Voir le profil",
+    viewProfileOf: (person) => `Voir le profil de ${person}`,
+    moreRoles: (roles) => `${count(roles)} ${plural(roles, { one: "autre rôle", other: "autres rôles" })}`,
   },
 
   profileDetails: {

@@ -7,6 +7,7 @@
   import type { BlockNode, InlineNode, MarkdownList } from "./markdown";
   import MessageCodeBlock from "./MessageCodeBlock.svelte";
   import { roleMentionChipColorsInTheme } from "./name-colors.svelte";
+  import { profileTrigger } from "./profile-surfaces.svelte";
   import { roleMentionLabel } from "./role-mentions";
   import { NO_ROLE_COLOR } from "./server-settings";
 
@@ -61,7 +62,10 @@
       >{:else if node.kind === "customEmoji"}<CustomEmojiImage
         emoji={node.emoji}
         class={isJumbo ? "size-(--mw-component-custom-emoji-jumbo-size)" : "size-(--mw-component-custom-emoji-inline-size)"}
-      />{:else if node.kind === "mention" || node.kind === "everyoneMention"}<span class={MENTION_CHIP_CLASS}>{node.text}</span
+      />{:else if node.kind === "mention" && areLinksActive}<span
+          class="{MENTION_CHIP_CLASS} cursor-pointer"
+          {@attach profileTrigger(node.user, { placement: "below", opensProfileOnClick: true })}>{node.text}</span
+        >{:else if node.kind === "mention" || node.kind === "everyoneMention"}<span class={MENTION_CHIP_CLASS}>{node.text}</span
       >{:else if node.kind === "roleMention"}{#if node.role === null}{roleMentionLabel(null)}{:else if node.role.color === NO_ROLE_COLOR}<span
             class={MENTION_CHIP_CLASS}>{roleMentionLabel(node.role)}</span
           >{:else}{@const chip = roleMentionChipColorsInTheme(node.role.color)}<span

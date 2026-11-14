@@ -265,6 +265,10 @@ impl Strings {
         SecurityStrings { language: self.language }
     }
 
+    pub fn profile_card(self) -> ProfileCardStrings {
+        ProfileCardStrings { language: self.language }
+    }
+
     pub fn profile_details(self) -> ProfileDetailsStrings {
         ProfileDetailsStrings { language: self.language }
     }
@@ -7022,20 +7026,6 @@ impl MembersStrings {
         match self.language {
             Language::English => "Profile",
             Language::French => "Profil",
-        }
-    }
-
-    pub fn profile_of(self, person: &str) -> String {
-        match self.language {
-            Language::English => format!("Profile of {person}"),
-            Language::French => format!("Profil de {person}"),
-        }
-    }
-
-    pub fn back_to_members(self) -> &'static str {
-        match self.language {
-            Language::English => "Back to members",
-            Language::French => "Retour aux membres",
         }
     }
 
@@ -14362,6 +14352,88 @@ impl SecuritySignInStrings {
         match self.language {
             Language::English => "Too many wrong codes: app codes are refused for a while. Try again later or use a recovery code.",
             Language::French => "Trop de codes erronés\u{a0}: les codes de l’application sont refusés pour un moment. Réessaie plus tard ou utilise un code de secours.",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ProfileCardStrings {
+    language: Language,
+}
+
+impl ProfileCardStrings {
+    pub fn more_actions_for(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("More actions for {person}"),
+            Language::French => format!("Plus d’actions pour {person}"),
+        }
+    }
+
+    pub fn edit_profile(self) -> &'static str {
+        match self.language {
+            Language::English => "Edit profile",
+            Language::French => "Modifier le profil",
+        }
+    }
+
+    pub fn no_details_yet(self) -> &'static str {
+        match self.language {
+            Language::English => "You have no About me or links yet.",
+            Language::French => "Tu n’as pas encore de présentation ni de liens.",
+        }
+    }
+
+    pub fn roles(self) -> &'static str {
+        match self.language {
+            Language::English => "Roles",
+            Language::French => "Rôles",
+        }
+    }
+
+    pub fn roles_of(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("Roles of {person}"),
+            Language::French => format!("Rôles de {person}"),
+        }
+    }
+
+    pub fn member_since(self) -> &'static str {
+        match self.language {
+            Language::English => "Member since",
+            Language::French => "Membre depuis",
+        }
+    }
+
+    pub fn mellow(self) -> &'static str {
+        "Mellow"
+    }
+
+    pub fn member_since_date(self, date: &str) -> String {
+        match self.language {
+            Language::English => format!("Member since {date}"),
+            Language::French => format!("Membre depuis le {date}"),
+        }
+    }
+
+    pub fn view_profile(self) -> &'static str {
+        match self.language {
+            Language::English => "View profile",
+            Language::French => "Voir le profil",
+        }
+    }
+
+    pub fn view_profile_of(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("View {person}'s profile"),
+            Language::French => format!("Voir le profil de {person}"),
+        }
+    }
+
+    pub fn more_roles(self, roles: i64) -> String {
+        let roles = roles as f64;
+        match self.language {
+            Language::English => format!("{} more {}", super::format_count(Language::English, roles), if super::is_plural_one(Language::English, roles) { "role" } else { "roles" }),
+            Language::French => format!("{} {}", super::format_count(Language::French, roles), if super::is_plural_one(Language::French, roles) { "autre rôle" } else { "autres rôles" }),
         }
     }
 }

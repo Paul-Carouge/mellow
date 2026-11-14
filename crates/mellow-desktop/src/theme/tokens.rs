@@ -484,6 +484,31 @@ pub struct ThemeTokens {
     pub component_poll_mark_glyph: u32,
     pub component_poll_percent_text: u32,
     pub component_poll_question_text: u32,
+    pub component_profile_hover_card_about_text: u32,
+    pub component_profile_hover_card_action_text: u32,
+    pub component_profile_hover_card_background: u32,
+    pub component_profile_hover_card_border: u32,
+    pub component_profile_hover_card_divider: u32,
+    pub component_profile_hover_card_footer_text: u32,
+    pub component_profile_hover_card_name_text: u32,
+    pub component_profile_hover_card_presence_text: u32,
+    pub component_profile_hover_card_shadow: &'static [ShadowLayer],
+    pub component_profile_hover_card_status_text: u32,
+    pub component_profile_modal_background: u32,
+    pub component_profile_modal_border: u32,
+    pub component_profile_modal_close_background_hover: u32,
+    pub component_profile_modal_close_icon: u32,
+    pub component_profile_modal_close_icon_hover: u32,
+    pub component_profile_modal_close_on_picture_background: u32,
+    pub component_profile_modal_close_on_picture_icon: u32,
+    pub component_profile_modal_date_label_text: u32,
+    pub component_profile_modal_date_text: u32,
+    pub component_profile_modal_details_background: u32,
+    pub component_profile_modal_presence_text: u32,
+    pub component_profile_modal_scrim: u32,
+    pub component_profile_modal_shadow: &'static [ShadowLayer],
+    pub component_profile_modal_status_background: u32,
+    pub component_profile_modal_status_text: u32,
     pub component_profile_popover_about_text: u32,
     pub component_profile_popover_background: u32,
     pub component_profile_popover_banner: u32,
@@ -1167,6 +1192,31 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_poll_mark_glyph: 0x221B_23FF,
     component_poll_percent_text: 0xF8F4_F8FF,
     component_poll_question_text: 0xF8F4_F8FF,
+    component_profile_hover_card_about_text: 0xD6D0_D7FF,
+    component_profile_hover_card_action_text: 0x33B8_FFFF,
+    component_profile_hover_card_background: 0x2B24_2CFF,
+    component_profile_hover_card_border: 0x3C35_3EFF,
+    component_profile_hover_card_divider: 0x3C35_3EFF,
+    component_profile_hover_card_footer_text: 0xA99F_AAFF,
+    component_profile_hover_card_name_text: 0xF8F4_F8FF,
+    component_profile_hover_card_presence_text: 0xA99F_AAFF,
+    component_profile_hover_card_shadow: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_profile_hover_card_status_text: 0xD6D0_D7FF,
+    component_profile_modal_background: 0x2B24_2CFF,
+    component_profile_modal_border: 0x3C35_3EFF,
+    component_profile_modal_close_background_hover: 0x362E_37FF,
+    component_profile_modal_close_icon: 0xC5BE_C6FF,
+    component_profile_modal_close_icon_hover: 0xF8F4_F8FF,
+    component_profile_modal_close_on_picture_background: 0x110B_11B8,
+    component_profile_modal_close_on_picture_icon: 0xFFFF_FFFF,
+    component_profile_modal_date_label_text: 0xA99F_AAFF,
+    component_profile_modal_date_text: 0xD6D0_D7FF,
+    component_profile_modal_details_background: 0x221B_23FF,
+    component_profile_modal_presence_text: 0xC5BE_C6FF,
+    component_profile_modal_scrim: 0x0804_09B8,
+    component_profile_modal_shadow: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_profile_modal_status_background: 0x312A_32FF,
+    component_profile_modal_status_text: 0xD6D0_D7FF,
     component_profile_popover_about_text: 0xD6D0_D7FF,
     component_profile_popover_background: 0x2B24_2CFF,
     component_profile_popover_banner: 0x554C_56FF,
@@ -1850,6 +1900,31 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_poll_mark_glyph: 0xFFFF_FFFF,
     component_poll_percent_text: 0x221B_23FF,
     component_poll_question_text: 0x221B_23FF,
+    component_profile_hover_card_about_text: 0x392F_3AFF,
+    component_profile_hover_card_action_text: 0x005F_CCFF,
+    component_profile_hover_card_background: 0xFFFF_FFFF,
+    component_profile_hover_card_border: 0xE3DD_E4FF,
+    component_profile_hover_card_divider: 0xE3DD_E4FF,
+    component_profile_hover_card_footer_text: 0x695F_6BFF,
+    component_profile_hover_card_name_text: 0x221B_23FF,
+    component_profile_hover_card_presence_text: 0x695F_6BFF,
+    component_profile_hover_card_shadow: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_profile_hover_card_status_text: 0x392F_3AFF,
+    component_profile_modal_background: 0xFFFF_FFFF,
+    component_profile_modal_border: 0xE3DD_E4FF,
+    component_profile_modal_close_background_hover: 0xDFD8_DFFF,
+    component_profile_modal_close_icon: 0x594E_5BFF,
+    component_profile_modal_close_icon_hover: 0x221B_23FF,
+    component_profile_modal_close_on_picture_background: 0x110B_11B8,
+    component_profile_modal_close_on_picture_icon: 0xFFFF_FFFF,
+    component_profile_modal_date_label_text: 0x695F_6BFF,
+    component_profile_modal_date_text: 0x392F_3AFF,
+    component_profile_modal_details_background: 0xF5F1_F6FF,
+    component_profile_modal_presence_text: 0x594E_5BFF,
+    component_profile_modal_scrim: 0x1B13_1C8C,
+    component_profile_modal_shadow: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_profile_modal_status_background: 0xF5F1_F6FF,
+    component_profile_modal_status_text: 0x392F_3AFF,
     component_profile_popover_about_text: 0x392F_3AFF,
     component_profile_popover_background: 0xFFFF_FFFF,
     component_profile_popover_banner: 0x695F_6BFF,
@@ -2542,6 +2617,42 @@ pub const COMPONENT_POLL_MARK_SIZE: f32 = 18.0;
 pub const COMPONENT_POLL_MAX_WIDTH: f32 = 432.0;
 pub const COMPONENT_POLL_PADDING: f32 = 12.0;
 pub const COMPONENT_POLL_RADIUS: f32 = 12.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_ABOUT_LINES: f32 = 2.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_AVATAR_SIZE: f32 = 56.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_CLOSE_DELAY: Delay = Delay(200);
+pub const COMPONENT_PROFILE_HOVER_CARD_DETAILS_DELAY: Delay = Delay(300);
+pub const COMPONENT_PROFILE_HOVER_CARD_ENTER_OFFSET: f32 = 4.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_GAP: f32 = 12.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_MARGIN: f32 = 8.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_OFFSET: f32 = 8.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_OPEN_DELAY: Delay = Delay(450);
+pub const COMPONENT_PROFILE_HOVER_CARD_PADDING: f32 = 12.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_RADIUS: f32 = 12.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_ROLE_LIMIT: f32 = 3.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_STATUS_SIZE: f32 = 12.0;
+pub const COMPONENT_PROFILE_HOVER_CARD_WIDTH: f32 = 300.0;
+pub const COMPONENT_PROFILE_MODAL_ACTION_GAP: f32 = 8.0;
+pub const COMPONENT_PROFILE_MODAL_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_PROFILE_MODAL_CLOSE_INSET: f32 = 12.0;
+pub const COMPONENT_PROFILE_MODAL_CLOSE_SIZE: f32 = 32.0;
+pub const COMPONENT_PROFILE_MODAL_DATES_GAP: f32 = 24.0;
+pub const COMPONENT_PROFILE_MODAL_DETAILS_PADDING: f32 = 24.0;
+pub const COMPONENT_PROFILE_MODAL_ENTER_SCALE: f32 = 0.96;
+pub const COMPONENT_PROFILE_MODAL_IDENTITY_PADDING: f32 = 16.0;
+pub const COMPONENT_PROFILE_MODAL_IDENTITY_WIDTH: f32 = 300.0;
+pub const COMPONENT_PROFILE_MODAL_MARGIN: f32 = 16.0;
+pub const COMPONENT_PROFILE_MODAL_MIN_HEIGHT: f32 = 440.0;
+pub const COMPONENT_PROFILE_MODAL_RADIUS: f32 = 16.0;
+pub const COMPONENT_PROFILE_MODAL_SCRIM_BLUR: f32 = 4.0;
+pub const COMPONENT_PROFILE_MODAL_SECTION_GAP: f32 = 24.0;
+pub const COMPONENT_PROFILE_MODAL_SECTION_LABEL_GAP: f32 = 8.0;
+pub const COMPONENT_PROFILE_MODAL_SHEET_RADIUS: f32 = 24.0;
+pub const COMPONENT_PROFILE_MODAL_SHEET_TOP_GAP: f32 = 48.0;
+pub const COMPONENT_PROFILE_MODAL_STATUS_PADDING_BLOCK: f32 = 8.0;
+pub const COMPONENT_PROFILE_MODAL_STATUS_PADDING_INLINE: f32 = 12.0;
+pub const COMPONENT_PROFILE_MODAL_STATUS_RADIUS: f32 = 12.0;
+pub const COMPONENT_PROFILE_MODAL_WIDTH: f32 = 720.0;
 pub const COMPONENT_PROFILE_POPOVER_AVATAR_RING_WIDTH: f32 = 6.0;
 pub const COMPONENT_PROFILE_POPOVER_AVATAR_SIZE: f32 = 80.0;
 pub const COMPONENT_PROFILE_POPOVER_BANNER_HEIGHT: f32 = 60.0;
@@ -2822,6 +2933,8 @@ pub const FONT_WEIGHT_MEDIUM: u16 = 500;
 pub const FONT_WEIGHT_REGULAR: u16 = 400;
 pub const FONT_WEIGHT_SEMIBOLD: u16 = 600;
 pub const MOTION_DELAY_COPIED_LABEL: Delay = Delay(2000);
+pub const MOTION_DELAY_HOVER_CARD: Delay = Delay(450);
+pub const MOTION_DELAY_HOVER_CARD_CLOSE: Delay = Delay(200);
 pub const MOTION_DELAY_JUMP_HIGHLIGHT: Delay = Delay(2000);
 pub const MOTION_DELAY_LOADING_NOTICE: Delay = Delay(340);
 pub const MOTION_DELAY_LONG_PRESS: Delay = Delay(500);

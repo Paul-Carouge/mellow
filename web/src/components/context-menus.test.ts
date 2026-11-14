@@ -36,6 +36,23 @@ describe("messageMenuActions", () => {
     expect(messageMenuActions(reader)).toEqual(["add-reaction", "separator", "reply", "forward", "copy-text"]);
   });
 
+  it("offers the author's profile in its own section, before the danger one, so the keyboard reaches it", () => {
+    expect(messageMenuActions({ ...reader, canViewAuthorProfile: true })).toEqual([
+      "add-reaction",
+      "separator",
+      "reply",
+      "forward",
+      "copy-text",
+      "separator",
+      "author-profile",
+    ]);
+    expect(messageMenuActions({ ...reader, isOwn: true, canViewAuthorProfile: true }).slice(-3)).toEqual([
+      "author-profile",
+      "separator",
+      "delete",
+    ]);
+  });
+
   it("adds Edit and Delete, last and separated, on your own message", () => {
     expect(messageMenuActions({ ...reader, isOwn: true })).toEqual([
       "add-reaction",
@@ -149,8 +166,11 @@ describe("personMenuActions", () => {
   });
 
   it("copies the conversation's ID too from its row, where Message is pointless", () => {
-    const row = personMenuActions({ ...stranger, relationship: "friend", canShowProfile: false, canOpenConversation: false, conversationChannel: true });
+    // "Profile" opens the profile modal from every person menu, a conversation's row included.
+    const row = personMenuActions({ ...stranger, relationship: "friend", canOpenConversation: false, conversationChannel: true });
     expect(row).toEqual([
+      "profile",
+      "separator",
       "mute",
       "notification-settings",
       "separator",
@@ -162,9 +182,28 @@ describe("personMenuActions", () => {
     ]);
   });
 
+  it("keeps in the profile's More menu only what the profile does not show as a button", () => {
+    const inProfile = { ...stranger, canShowProfile: false, isInProfile: true };
+    expect(personMenuActions(inProfile)).toEqual(["copy-user-id", "separator", "block"]);
+    expect(personMenuActions({ ...inProfile, relationship: "incoming_request" })).toEqual([
+      "ignore-request",
+      "separator",
+      "copy-user-id",
+      "separator",
+      "block",
+    ]);
+    expect(personMenuActions({ ...inProfile, relationship: "friend" })).toEqual([
+      "copy-user-id",
+      "separator",
+      "remove-friend",
+      "block",
+    ]);
+    expect(personMenuActions({ ...inProfile, relationship: "blocked" })).toEqual(["copy-user-id"]);
+  });
+
   it("unmutes a muted conversation from its row, and never mutes from elsewhere", () => {
-    const row = personMenuActions({ ...stranger, relationship: "friend", canShowProfile: false, canOpenConversation: false, conversationChannel: true, isConversationMuted: true });
-    expect(row.slice(0, 2)).toEqual(["unmute", "notification-settings"]);
+    const row = personMenuActions({ ...stranger, relationship: "friend", canOpenConversation: false, conversationChannel: true, isConversationMuted: true });
+    expect(row.slice(2, 4)).toEqual(["unmute", "notification-settings"]);
     expect(personMenuActions({ ...stranger, isConversationMuted: true })).not.toContain("unmute");
   });
 });
