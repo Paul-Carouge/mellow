@@ -112,12 +112,13 @@
   const messages = $derived(client.messages(channelId));
   const messagesById = $derived(new Map(messages.map((message) => [message.id, message])));
   const replyReferenceOf = createReplyReferenceLookup();
-  // Role colours on author names, readable on the sheet in the current theme (DESIGN.md §2.3).
+  // Role colours on author names, readable on a hovered message, the least contrasting of its
+  // backgrounds, in the current theme (DESIGN.md §2.3).
   const authorColors = $derived(
     nameColorsByUserId(
       client.selectedGuild,
       client.selectedGuild ? client.membersByGuild.get(client.selectedGuild.id) : undefined,
-      "color-surface-chat",
+      "component-message-background-hover",
     ),
   );
   // Each author's highest role with an icon, beside their name (ADR-0050).

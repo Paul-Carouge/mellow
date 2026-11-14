@@ -9,6 +9,7 @@
 
 use std::collections::HashMap;
 use std::hash::{DefaultHasher, Hash, Hasher as _};
+use std::rc::Rc;
 
 use gpui::{
     Animation, AnimationExt as _, AnyElement, App, Context, FontWeight, Hsla,
@@ -24,7 +25,8 @@ use mellow_client_core::shared_logic::message_rows::{
     build_message_rows, collapse_blocked_runs, is_unread_start_loaded,
 };
 use mellow_client_core::shared_logic::role_colors::{highest_coloured_role, readable_role_colour};
-use mellow_protocol::{Message, PublicUser, Snowflake};
+use mellow_client_core::shared_logic::role_icons::{has_role_icon, highest_role_with_icon};
+use mellow_protocol::{Member, Message, PublicUser, Role as GuildRole, Snowflake};
 
 use super::rules::{HoverBarAction, hover_bar_actions};
 use super::{ConversationView, MessageMarkupSources};
@@ -35,9 +37,9 @@ use crate::components::{
 use crate::home::{OpenPersonMenu, PersonMenuRequest};
 use crate::i18n::strings;
 use crate::messages::{
-    DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, UnreadDivider,
-    day_divider_label, local_date_time, local_day_of, message_gif_url, message_summary,
-    picture_for_box, reaction_pills, reply_reference, time_of_day_label,
+    DayDivider, MessageAuthor, MessageBodyKey, MessageItem, MessageItemContent, ShownRoleIcon,
+    UnreadDivider, day_divider_label, local_date_time, local_day_of, message_gif_url,
+    message_summary, picture_for_box, reaction_pills, reply_reference, time_of_day_label,
 };
 use crate::pictures::chosen_profile_image_animation;
 use crate::session::now_unix_milliseconds;
@@ -208,6 +210,8 @@ impl ConversationView {
             .into_iter()
             .collect();
         let mut role_colours = HashMap::new();
+        let mut role_icons = HashMap::new();
+        let mut shown_role_icons = HashMap::new();
         match self.open_conversation.as_ref() {
             Some(super::OpenConversation {
                 guild_id: Some(guild_id),
@@ -216,6 +220,12 @@ impl ConversationView {
                 let roles = state
                     .guild(*guild_id)
                     .map_or(&[][..], |guild| guild.roles.as_slice());
+                role_icons = author_role_icons(roles, state.members(*guild_id));
+                shown_role_icons = roles
+                    .iter()
+                    .filter(|role| has_role_icon(role))
+                    .map(|role| (role.id, Rc::new(ShownRoleIcon::new(role))))
+                    .collect();
                 for member in state.members(*guild_id) {
                     if let Some(role) = highest_coloured_role(roles, &member.role_ids) {
                         role_colours.insert(member.user.id, role.color);
@@ -242,6 +252,8 @@ impl ConversationView {
             custom_emojis,
             roles,
             role_colours,
+            role_icons,
+            shown_role_icons,
         };
         self.body_cache
             .use_sources_generation(self.sources.generation);
@@ -635,8 +647,15 @@ impl ConversationView {
         })
     }
 
+    /// The icon after the author's name: their highest role with one, shared, never cloned.
+    fn author_role_icon(&self, user_id: Snowflake) -> Option<Rc<ShownRoleIcon>> {
+        let role_id = self.sources.role_icons.get(&user_id)?;
+        self.sources.shown_role_icons.get(role_id).cloned()
+    }
+
     fn author_colour(&self, user_id: Snowflake, cx: &App) -> Option<Hsla> {
-        let surface = theme(cx).color_surface_chat >> 8;
+        // Readable on a hovered message, the least contrasting of its usual backgrounds (§2.3).
+        let surface = theme(cx).component_message_background_hover >> 8;
         self.sources
             .role_colours
             .get(&user_id)
@@ -772,6 +791,7 @@ impl ConversationView {
                                 cx,
                             ),
                             colour: self.author_colour(message.author.id, cx),
+                            role_icon: self.author_role_icon(message.author.id),
                         },
                         sent_at_unix_milliseconds: sent_at,
                         now_unix_milliseconds: now,
@@ -857,6 +877,7 @@ impl ConversationView {
                     MessageItemContent {
                         author: MessageAuthor {
                             colour: self.author_colour(author.id, cx),
+                            role_icon: self.author_role_icon(author.id),
                             user: author,
                             picture,
                         },
@@ -1195,5 +1216,93 @@ impl ConversationView {
                 .children(buttons)
                 .into_any_element(),
         )
+    }
+}
+
+/// Each member's highest role with an icon, by user id: its role id (`roleIconsByUserId` on the
+/// web, ADR-0050); members without one are absent.
+fn author_role_icons(roles: &[GuildRole], members: &[Member]) -> HashMap<Snowflake, Snowflake> {
+    if !roles.iter().any(has_role_icon) {
+        return HashMap::new();
+    }
+    members
+        .iter()
+        .filter_map(|member| {
+            highest_role_with_icon(roles, &member.role_ids).map(|role| (member.user.id, role.id))
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod author_role_icon_tests {
+    use mellow_protocol::{Permissions, ProfileImage};
+
+    use super::*;
+    use crate::shell_fixtures::person;
+
+    fn role(id: u64, position: u32, picture: Option<u64>, emoji: Option<&str>) -> GuildRole {
+        GuildRole {
+            id: Snowflake::from_raw(id),
+            name: id.to_string(),
+            color: 0,
+            position,
+            permissions: Permissions::empty(),
+            is_displayed_separately: false,
+            is_mentionable: false,
+            icon: picture.map(|id| ProfileImage {
+                id: Snowflake::from_raw(id),
+                is_animated: false,
+            }),
+            unicode_emoji: emoji.map(str::to_owned),
+        }
+    }
+
+    fn member(user_id: u64, role_ids: &[u64]) -> Member {
+        let id = Snowflake::from_raw(user_id);
+        Member {
+            user: person(id, &user_id.to_string(), &user_id.to_string()),
+            role_ids: role_ids.iter().copied().map(Snowflake::from_raw).collect(),
+            joined_at_unix_milliseconds: 0,
+        }
+    }
+
+    #[test]
+    fn each_author_shows_the_icon_of_their_highest_role_that_has_one() {
+        let roles = [
+            role(1, 9, None, None),
+            role(2, 3, Some(20), None),
+            role(3, 6, None, Some("🛡️")),
+            role(4, 8, Some(40), None),
+        ];
+        let icons = author_role_icons(
+            &roles,
+            &[
+                member(10, &[1, 2, 3]),
+                member(11, &[2]),
+                member(12, &[1]),
+                member(13, &[]),
+            ],
+        );
+        // Above 2, and 1 above it has no icon; 4 is higher but not held.
+        assert_eq!(
+            icons
+                .get(&Snowflake::from_raw(10))
+                .map(|role_id| role_id.raw()),
+            Some(3)
+        );
+        assert_eq!(
+            icons
+                .get(&Snowflake::from_raw(11))
+                .map(|role_id| role_id.raw()),
+            Some(2)
+        );
+        assert!(!icons.contains_key(&Snowflake::from_raw(12)));
+        assert!(!icons.contains_key(&Snowflake::from_raw(13)));
+    }
+
+    #[test]
+    fn a_server_without_role_icons_gives_no_one_an_icon() {
+        let icons = author_role_icons(&[role(1, 1, None, Some(""))], &[member(10, &[1])]);
+        assert!(icons.is_empty());
     }
 }
