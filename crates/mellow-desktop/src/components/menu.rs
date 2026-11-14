@@ -232,6 +232,83 @@ pub fn popover_position_beside_anchor(
     (top, left.max(0.0))
 }
 
+/// The part of the window menus and popovers stay inside, in the unit of the placement: the
+/// content under Mellow's title band and inside its frame (`window_chrome::client_content_bounds`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct PlacementArea {
+    pub left: f32,
+    pub top: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+impl PlacementArea {
+    /// The window's content area, in window pixels times `unit_per_pixel`.
+    #[must_use]
+    pub fn of_window_content(window: &Window, unit_per_pixel: f32) -> Self {
+        let bounds = crate::window_chrome::client_content_bounds(window);
+        Self {
+            left: f32::from(bounds.origin.x) * unit_per_pixel,
+            top: f32::from(bounds.origin.y) * unit_per_pixel,
+            width: f32::from(bounds.size.width) * unit_per_pixel,
+            height: f32::from(bounds.size.height) * unit_per_pixel,
+        }
+    }
+
+    fn anchor_inside(self, anchor: MenuAnchor) -> MenuAnchor {
+        MenuAnchor {
+            top: anchor.top - self.top,
+            bottom: anchor.bottom - self.top,
+            left: anchor.left - self.left,
+            right: anchor.right - self.left,
+        }
+    }
+}
+
+/// `place_menu` inside an area of the window; origin and placement in window coordinates.
+#[must_use]
+pub fn place_menu_in_area(
+    origin: MenuOrigin,
+    menu: (f32, f32),
+    area: PlacementArea,
+    gap: f32,
+    margin: f32,
+) -> MenuPlacement {
+    let origin_inside = match origin {
+        MenuOrigin::Point { x, y } => MenuOrigin::Point {
+            x: x - area.left,
+            y: y - area.top,
+        },
+        MenuOrigin::Anchor { bounds, alignment } => MenuOrigin::Anchor {
+            bounds: area.anchor_inside(bounds),
+            alignment,
+        },
+    };
+    let placement = place_menu(origin_inside, menu, (area.width, area.height), gap, margin);
+    MenuPlacement {
+        top: placement.top + area.top,
+        left: placement.left + area.left,
+        ..placement
+    }
+}
+
+/// `popover_position_beside_anchor` inside an area of the window, in window coordinates.
+#[must_use]
+pub fn popover_position_beside_anchor_in_area(
+    anchor: MenuAnchor,
+    panel: (f32, f32),
+    area: PlacementArea,
+    gap: f32,
+) -> (f32, f32) {
+    let (top, left) = popover_position_beside_anchor(
+        area.anchor_inside(anchor),
+        panel,
+        (area.width, area.height),
+        gap,
+    );
+    (top + area.top, left + area.left)
+}
+
 // ---- The menu ----
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -450,16 +527,15 @@ impl ContextMenu {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
-        let viewport = window.viewport_size();
         let rem_size = window.rem_size();
         let in_window = |pixels: f32| f32::from(length(pixels).to_pixels(rem_size));
-        let placement = place_menu(
+        let placement = place_menu_in_area(
             origin,
             (
                 in_window(COMPONENT_CONTEXT_MENU_MIN_WIDTH),
                 in_window(estimated_menu_height(&keys.keys, &entries)),
             ),
-            (f32::from(viewport.width), f32::from(viewport.height)),
+            PlacementArea::of_window_content(window, 1.0),
             0.0,
             in_window(COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN),
         );
@@ -1007,6 +1083,36 @@ mod tests {
         assert_eq!(
             popover_position_beside_anchor(button, (300.0, 200.0), (800.0, 600.0), 8.0),
             (148.0, 0.0)
+        );
+    }
+
+    #[test]
+    fn menus_and_popovers_stay_inside_the_window_content_under_the_title_band() {
+        // A floating window's content: 13 px of frame on the sides, a 32 px band on top.
+        let content = PlacementArea {
+            left: 13.0,
+            top: 45.0,
+            width: 774.0,
+            height: 542.0,
+        };
+        let near_the_top = place_menu_in_area(
+            MenuOrigin::Point { x: 790.0, y: 20.0 },
+            (188.0, 100.0),
+            content,
+            0.0,
+            4.0,
+        );
+        assert_eq!((near_the_top.top, near_the_top.left), (49.0, 595.0));
+        let button = MenuAnchor {
+            top: 100.0,
+            bottom: 140.0,
+            left: 50.0,
+            right: 80.0,
+        };
+        assert_eq!(
+            popover_position_beside_anchor_in_area(button, (300.0, 200.0), content, 8.0),
+            (148.0, 13.0),
+            "never in the frame's margin"
         );
     }
 

@@ -8,7 +8,7 @@ use std::time::Duration;
 use gpui::{
     Animation, AnimationExt as _, AnyElement, Context, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, ParentElement as _, Role, StatefulInteractiveElement as _,
-    Styled as _, Window, anchored, deferred, div, point, prelude::FluentBuilder as _, px,
+    Styled as _, Window, anchored, deferred, div, prelude::FluentBuilder as _,
 };
 
 use super::DuskShell;
@@ -75,9 +75,12 @@ impl DuskShell {
             .into_any_element();
         let label = self.member_sheet_label(cx);
         let panel = if is_full_window {
+            // Its bottom trailing corner is the window's: it follows a floating frame.
+            let window_corners = crate::window_chrome::client_frame_inner_corner_radii(window);
             div()
                 .size_full()
                 .pt(length(TITLE_BAR_BAND_HEIGHT))
+                .rounded_br(length(window_corners.bottom_right))
                 .bg(color(tokens.component_side_sheet_background))
                 .child(sheet)
         } else {
@@ -127,7 +130,8 @@ impl DuskShell {
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let tokens = theme(cx);
-        let viewport = window.viewport_size();
+        // Under the title band and inside the window's frame (DESIGN.md §4.2, Window chrome).
+        let content_bounds = crate::window_chrome::client_content_bounds(window);
         let duration = animation_duration(MOTION_DURATION_SLOW, cx).max(Duration::from_millis(1));
         let travel = match edge {
             Edge::Leading => -COMPONENT_SIDE_SHEET_ENTER_OFFSET,
@@ -170,8 +174,7 @@ impl DuskShell {
         let scrim = div()
             .id("overlay-scrim")
             .occlude()
-            .w(px(f32::from(viewport.width)))
-            .h(px(f32::from(viewport.height)))
+            .map(|scrim| crate::window_chrome::sized_to_window_content(scrim, window))
             .flex()
             .flex_row()
             .map(|scrim| match edge {
@@ -188,6 +191,6 @@ impl DuskShell {
                 }),
             )
             .child(sliding_panel);
-        deferred(anchored().position(point(px(0.0), px(0.0))).child(scrim)).with_priority(1)
+        deferred(anchored().position(content_bounds.origin).child(scrim)).with_priority(1)
     }
 }

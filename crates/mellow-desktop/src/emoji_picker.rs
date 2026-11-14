@@ -32,9 +32,9 @@ use mellow_client_core::shared_logic::emoji_picker::{
 use mellow_protocol::{CustomEmoji, Snowflake};
 
 use crate::components::{
-    FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, Tooltip, easing,
-    focus_next_inside, focus_previous_inside, icon, inset_focus_ring,
-    popover_position_beside_anchor, shadow, with_type,
+    FocusNextControl, FocusPreviousControl, LiveRegion as _, MenuAnchor, PlacementArea, Tooltip,
+    easing, focus_next_inside, focus_previous_inside, icon, inset_focus_ring,
+    popover_position_beside_anchor_in_area, shadow, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::{picture_animation, picture_for_box};
@@ -213,10 +213,9 @@ impl EmojiPicker {
         )];
         search.update(cx, |search, cx| search.focus(window, cx));
 
-        let viewport = window.viewport_size();
         let rem_size = window.rem_size();
         let in_window = |pixels: f32| f32::from(length(pixels).to_pixels(rem_size));
-        let (top, left) = popover_position_beside_anchor(
+        let (top, left) = popover_position_beside_anchor_in_area(
             MenuAnchor {
                 top: f32::from(anchor.top()),
                 bottom: f32::from(anchor.bottom()),
@@ -227,7 +226,7 @@ impl EmojiPicker {
                 in_window(COMPONENT_EMOJI_PICKER_WIDTH),
                 in_window(COMPONENT_EMOJI_PICKER_HEIGHT),
             ),
-            (f32::from(viewport.width), f32::from(viewport.height)),
+            PlacementArea::of_window_content(window, 1.0),
             in_window(COMPONENT_EMOJI_PICKER_GAP),
         );
 

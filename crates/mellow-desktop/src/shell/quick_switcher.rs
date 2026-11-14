@@ -8,8 +8,7 @@ use gpui::{
     Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, ElementId, Entity,
     EventEmitter, FocusHandle, Focusable as _, InteractiveElement as _, IntoElement, KeyDownEvent,
     MouseButton, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, Subscription, Window, anchored, deferred, div, point, prelude::FluentBuilder as _,
-    px,
+    Styled as _, Subscription, Window, anchored, deferred, div, prelude::FluentBuilder as _,
 };
 use gpui_component::input::{Input, InputEvent, InputState};
 use mellow_client_core::shared_logic::quick_switcher::{
@@ -268,7 +267,9 @@ impl Render for QuickSwitcher {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
         let strings = strings(cx);
-        let viewport = window.viewport_size();
+        // Under the title band and inside the window's frame (DESIGN.md §4.2, Window chrome).
+        let content_bounds = crate::window_chrome::client_content_bounds(window);
+        let viewport = content_bounds.size;
         let groups = self.results(cx);
         let count: usize = groups.iter().map(|(_, items)| items.len()).sum();
         let active_index = self.active_index.min(count.saturating_sub(1));
@@ -496,8 +497,7 @@ impl Render for QuickSwitcher {
         let scrim = div()
             .id("quick-switcher-scrim")
             .occlude()
-            .w(px(f32::from(viewport.width)))
-            .h(px(viewport_height))
+            .map(|scrim| crate::window_chrome::sized_to_window_content(scrim, window))
             .flex()
             .flex_col()
             .items_center()
@@ -507,6 +507,6 @@ impl Render for QuickSwitcher {
                 cx.listener(|switcher, _, window, cx| switcher.dismiss(window, cx)),
             )
             .child(card);
-        deferred(anchored().position(point(px(0.0), px(0.0))).child(scrim)).with_priority(2)
+        deferred(anchored().position(content_bounds.origin).child(scrim)).with_priority(2)
     }
 }

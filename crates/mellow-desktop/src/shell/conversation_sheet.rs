@@ -371,8 +371,18 @@ impl DuskShell {
             .flex()
             .flex_col()
             .bg(color(tokens.color_surface_chat))
-            .when(!is_full_bleed, |sheet| {
-                sheet.rounded(length(COMPONENT_SHEET_RADIUS))
+            .map(|sheet| {
+                if is_full_bleed {
+                    // Full bleed, the sheet reaches the window's bottom corners: it follows a
+                    // floating Linux window's rounding (none elsewhere).
+                    let window_corners =
+                        crate::window_chrome::client_frame_inner_corner_radii(window);
+                    sheet
+                        .rounded_bl(length(window_corners.bottom_left))
+                        .rounded_br(length(window_corners.bottom_right))
+                } else {
+                    sheet.rounded(length(COMPONENT_SHEET_RADIUS))
+                }
             })
             .overflow_hidden()
             .map(|sheet| match call_view {

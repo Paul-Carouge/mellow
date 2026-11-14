@@ -1208,7 +1208,8 @@ impl Render for SignInScreen {
             .items_center()
             .justify_center()
             .p(length(COMPONENT_AUTH_CARD_MARGIN))
-            .bg(color(tokens.component_auth_card_backdrop))
+            // The backdrop is the window's ground (`MainWindow`), which rounds a floating
+            // window's corners; a fill here would square them again.
             .font_family(SANS_FONT_FAMILY)
             .child(card)
     }
