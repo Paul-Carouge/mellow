@@ -169,9 +169,11 @@ print_stdout = "warn"
 # Logs go through `tracing`; only the command-line binaries talk to the operator on stderr.
 print_stderr = "warn"
 
-# The server binaries the release workflow publishes: whole-program optimisation makes the
-# download a quarter smaller at no measured speed cost (docs/server-performance-audit.md). Only the
-# server's release job uses it, which runs beside the much longer desktop jobs.
+# The binaries the release workflow publishes: whole-program optimisation makes the server's
+# download a quarter smaller at no measured speed cost (docs/server-performance-audit.md) and the
+# stripped desktop binary 18 % smaller (docs/desktop-performance-audit.md), for longer builds, so
+# everyday `--release` builds keep the defaults. `panic` stays "unwind": the media decoders
+# isolate a panicking frame with `catch_unwind`.
 [profile.dist]
 inherits = "release"
 lto = "fat"

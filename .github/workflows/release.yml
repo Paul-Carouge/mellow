@@ -170,19 +170,19 @@ jobs:
           header="$(pkg-config --variable=includedir libavutil)/libavutil/ffversion.h"
           major="$(sed -n 's/^#define FFMPEG_VERSION "n\{0,1\}\([0-9]*\)\..*/\1/p' "${header}")"
           test "${major}" = "${{ matrix.ffmpeg }}" || { echo "FFmpeg ${major} instead of ${{ matrix.ffmpeg }}"; exit 1; }
-      - run: cargo build --release --locked -p mellow-desktop
+      - run: cargo build --profile dist --locked -p mellow-desktop
       - name: The binary needs only system libraries, FFmpeg's among them
         shell: bash
         run: |
-          strip target/release/mellow
-          ldd target/release/mellow | tee linked-libraries.txt
+          strip target/dist/mellow
+          ldd target/dist/mellow | tee linked-libraries.txt
           if grep 'not found' linked-libraries.txt; then exit 1; fi
           grep --quiet 'libavcodec\.so\.' linked-libraries.txt
       - name: Lay out, check and archive the package
         shell: bash
         run: |
           name="mellow-desktop-${MELLOW_VERSION}-${PACKAGE_TARGET}-ffmpeg${{ matrix.ffmpeg }}"
-          cargo xtask linux-package --binary target/release/mellow --output "package/${name}"
+          cargo xtask linux-package --binary target/dist/mellow --output "package/${name}"
           desktop-file-validate "package/${name}/share/applications/mellow.desktop"
           appstreamcli validate --no-net "package/${name}/share/metainfo/org.mellow.desktop.metainfo.xml"
           # The installer, into a throwaway home, then out again.
@@ -226,11 +226,11 @@ jobs:
       - if: matrix.target == 'x86_64-apple-darwin'
         run: brew install nasm
       # Metal shaders compiled at build time, not at every start (ADR-0051).
-      - run: cargo build --release --locked -p mellow-desktop --no-default-features
+      - run: cargo build --profile dist --locked -p mellow-desktop --no-default-features
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: desktop-binary-${{ matrix.target }}
-          path: target/release/mellow
+          path: target/dist/mellow
           if-no-files-found: error
           retention-days: 7
 
