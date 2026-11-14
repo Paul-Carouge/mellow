@@ -9,7 +9,7 @@
 //! (`voice::leave_the_call_when_the_app_quits`).
 
 use anyhow::{Context as _, Result};
-use gpui::{App, AppContext as _, Bounds, Entity, Global, WindowBounds, WindowHandle};
+use gpui::{App, AppContext as _, Bounds, Entity, Global, QuitMode, WindowBounds, WindowHandle};
 
 use crate::dock_and_tray;
 use crate::main_window::MainWindow;
@@ -74,6 +74,9 @@ pub fn open_main_window_and_stay_in_background(
         window: None,
         bounds: None,
     });
+    // GPUI's default quits once the last window closes everywhere but macOS, before the handler
+    // below could keep Mellow running: the handler alone decides, and quits explicitly.
+    cx.set_quit_mode(QuitMode::Explicit);
     cx.on_window_closed(|cx, closed_window_id| {
         let is_main_window = cx
             .try_global::<MainWindowSlot>()
