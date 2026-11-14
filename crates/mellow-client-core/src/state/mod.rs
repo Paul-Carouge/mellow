@@ -329,14 +329,39 @@ impl ClientState {
         channel_id: Snowflake,
         now_unix_milliseconds: u64,
     ) -> Vec<Snowflake> {
+        self.typing_notices(channel_id, now_unix_milliseconds)
+            .map(|(user_id, _)| user_id)
+            .collect()
+    }
+
+    /// When the first of `channel_id`'s typing notices shown at `now_unix_milliseconds` ends:
+    /// the next moment `typing_user_ids` changes unless a typing event or a message comes first.
+    #[must_use]
+    pub fn next_typing_notice_end(
+        &self,
+        channel_id: Snowflake,
+        now_unix_milliseconds: u64,
+    ) -> Option<u64> {
+        self.typing_notices(channel_id, now_unix_milliseconds)
+            .map(|(_, until)| until)
+            .min()
+    }
+
+    /// `(user, shown until)` for each notice of `channel_id` still shown, but the user's own.
+    fn typing_notices(
+        &self,
+        channel_id: Snowflake,
+        now_unix_milliseconds: u64,
+    ) -> impl Iterator<Item = (Snowflake, u64)> {
         let me = self.current_user_id();
         self.typing_until
             .range(
                 (channel_id, Snowflake::from_raw(0))..=(channel_id, Snowflake::from_raw(u64::MAX)),
             )
-            .filter(|((_, user_id), until)| **until > now_unix_milliseconds && Some(*user_id) != me)
-            .map(|((_, user_id), _)| *user_id)
-            .collect()
+            .filter(move |((_, user_id), until)| {
+                **until > now_unix_milliseconds && Some(*user_id) != me
+            })
+            .map(|((_, user_id), until)| (*user_id, *until))
     }
 
     /// Replaces everything with a fresh `Ready` (identify after a lost session). What the user did
