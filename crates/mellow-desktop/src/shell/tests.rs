@@ -96,7 +96,14 @@ fn the_shell_draws_its_cards_with_the_token_layout(cx: &mut TestAppContext) {
     let side_sheet = bounds_of(cx, "side-sheet");
     let inset = px(SIZE_SHEET_INSET);
     assert_eq!(navigator.origin.x, inset);
-    assert_eq!(navigator.origin.y, px(TOP_BAND_HEIGHT));
+    // The band Mellow draws itself (Windows, Linux with client decorations) sits above the shell,
+    // in the main window: the cards then start right under it, so the shell leaves no ground.
+    let drawn_title_band_height =
+        cx.update(|window, _| crate::window_chrome::client_title_band_height(window));
+    assert_eq!(
+        navigator.origin.y,
+        px((TOP_BAND_HEIGHT - drawn_title_band_height).max(0.0))
+    );
     assert_eq!(
         navigator.size.width,
         px(COMPONENT_NAVIGATOR_STRIP_WIDTH + SIZE_SIDEBAR_WIDTH)
