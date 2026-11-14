@@ -237,6 +237,7 @@ impl RenderOnce for SuggestionList {
                                 .w(length(COMPONENT_COMPOSER_SUGGESTIONS_AVATAR_SIZE))
                                 .flex()
                                 .justify_center()
+                                .font_weight(crate::emoji_picker::emoji_glyph_weight())
                                 .child(emoji.emoji)
                                 .into_any_element(),
                             emoji.name.into(),

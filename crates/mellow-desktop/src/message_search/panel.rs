@@ -64,6 +64,8 @@ use crate::theme::{color, length, theme};
 
 const SKELETON_RESULT_COUNT: usize = 3;
 const MAXIMUM_FACETS_SHOWN: usize = 5;
+/// The hover group of a result slip: its "Voir" button shows while the pointer is on it.
+const SEARCH_SLIP_GROUP: &str = "search-slip";
 /// The skeleton's bars, as shares of the text column (`w-2/5`, `w-4/5`, `w-3/5`).
 const SKELETON_BAR_SHARES: [f32; 3] = [0.4, 0.8, 0.6];
 
@@ -1148,8 +1150,14 @@ impl MessageSearchView {
         let jump_view = cx.entity().downgrade();
         let slip_view = cx.entity().downgrade();
         let slip_id = SharedString::from(format!("search-result-{}", message_id.raw()));
+        let jump_id = ElementId::Name(format!("search-jump-{}", message_id.raw()).into());
+        let jump_focus = remembered_focus_handle(&jump_id, window, cx);
+        // "Voir" waits for the pointer on the slip or keyboard focus, as on the web: at rest the
+        // results read as messages, not as a column of buttons.
+        let is_jump_shown = is_focus_visible(&jump_focus, window);
         div()
             .id(ElementId::Name(slip_id))
+            .group(SEARCH_SLIP_GROUP)
             .role(Role::Article)
             .aria_label(catalogue.messages().author_said(&author_name, ""))
             .flex()
@@ -1218,26 +1226,26 @@ impl MessageSearchView {
                                 div()
                                     .flex_none()
                                     .debug_selector(|| "search-jump".to_owned())
+                                    // Overhangs the header line, as the web's `-my-2xs`: the
+                                    // button never pushes the words down.
+                                    .my(-length(SPACE_2XS))
+                                    .when(!is_jump_shown, |jump| jump.opacity(0.0))
+                                    .group_hover(SEARCH_SLIP_GROUP, |jump| jump.opacity(1.0))
                                     .child(
-                                        Button::new(
-                                            SharedString::from(format!(
-                                                "search-jump-{}",
-                                                message_id.raw()
-                                            )),
-                                            catalogue.search().jump(),
-                                        )
-                                        .variant(ButtonVariant::Secondary)
-                                        .size(ButtonSize::Small)
-                                        .accessible_label(catalogue.search().jump_to(&author_name))
-                                        .on_click(
-                                            move |_, cx| {
+                                        Button::new(jump_id, catalogue.search().jump())
+                                            .track_focus(&jump_focus)
+                                            .variant(ButtonVariant::Secondary)
+                                            .size(ButtonSize::Small)
+                                            .accessible_label(
+                                                catalogue.search().jump_to(&author_name),
+                                            )
+                                            .on_click(move |_, cx| {
                                                 // The slip under it would open the result a second time.
                                                 cx.stop_propagation();
                                                 let _ = jump_view.update(cx, |view, cx| {
                                                     view.open_result(channel_id, message_id, cx);
                                                 });
-                                            },
-                                        ),
+                                            }),
                                     ),
                             ),
                     )

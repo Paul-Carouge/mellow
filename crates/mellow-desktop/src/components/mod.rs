@@ -62,8 +62,8 @@ pub use friend_code::{FriendCode, FriendCodeCopyState};
 pub use live_region::{LiveRegion, assertive_live_region, polite_live_region};
 pub use melli::{Melli, MelliState};
 pub use menu::{
-    ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone,
-    MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
+    ContextMenu, MenuAlignment, MenuAnchor, MenuChoice, MenuEntry, MenuItem, MenuItemTone, MenuKey,
+    MenuKeys, MenuOrigin, MenuPlacement, menu_top_next_to_anchor, next_menu_item_index, place_menu,
     popover_position_beside_anchor, typeahead_menu_item_index,
 };
 pub use menu_opening::{

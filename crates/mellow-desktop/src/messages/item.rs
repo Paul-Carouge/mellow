@@ -50,6 +50,29 @@ use crate::theme::tokens::{
 };
 use crate::theme::{color, delay, length, theme};
 
+/// Figtree's ascent and descent (`hhea`, also its typo metrics), as shares of the em.
+const FIGTREE_ASCENT_SHARE_OF_EM: f32 = 0.95;
+const FIGTREE_DESCENT_SHARE_OF_EM: f32 = 0.25;
+
+/// How far the time sits below the name's line box so their baselines meet, as the web's
+/// `items-baseline` header does: both lines are 24 px tall, and the smaller text's baseline sits
+/// higher in its line. Whole pixels, as the browser lays it out (1 px), so the header is 25 px.
+fn timestamp_baseline_drop() -> f32 {
+    let baseline_in_line = |font_size: f32, line_height: f32| {
+        let content = (FIGTREE_ASCENT_SHARE_OF_EM + FIGTREE_DESCENT_SHARE_OF_EM) * font_size;
+        (line_height - content) / 2.0 + FIGTREE_ASCENT_SHARE_OF_EM * font_size
+    };
+    let author = baseline_in_line(
+        TYPE_MESSAGE_AUTHOR.font_size,
+        TYPE_MESSAGE_AUTHOR.font_size * TYPE_MESSAGE_AUTHOR.line_height,
+    );
+    let time = baseline_in_line(
+        TYPE_MESSAGE_TIMESTAMP.font_size,
+        TYPE_MESSAGE_TIMESTAMP.font_size * TYPE_MESSAGE_TIMESTAMP.line_height,
+    );
+    (author - time).max(0.0).floor()
+}
+
 /// The author header is an `<h3>` on the web; Markdown headings sit below it, at 4 to 6.
 pub(crate) const MESSAGE_HEADER_HEADING_LEVEL: usize = 3;
 
@@ -283,6 +306,8 @@ fn pinned_mark(id: ElementId, strings: Strings, tint: Hsla) -> impl IntoElement 
         .id(id)
         .role(Role::Image)
         .aria_label(label.clone())
+        // Centred on the header's line, as the web's `self-center`.
+        .self_center()
         .flex()
         .items_center()
         .tooltip(move |_, cx| Tooltip::view(label.clone(), cx))
@@ -354,6 +379,7 @@ impl RenderOnce for MessageItem {
                 let full: SharedString = full_timestamp_label(sent, strings).into();
                 with_type(div(), TYPE_MESSAGE_TIMESTAMP)
                     .id(child_id(&id, "time"))
+                    .mt(length(timestamp_baseline_drop()))
                     .aria_label(full.clone())
                     .text_color(color(tokens.component_message_timestamp_text))
                     .tooltip(move |_, cx| Tooltip::view(full.clone(), cx))
@@ -366,7 +392,8 @@ impl RenderOnce for MessageItem {
                 .aria_level(MESSAGE_HEADER_HEADING_LEVEL)
                 .flex()
                 .flex_wrap()
-                .items_baseline()
+                // GPUI text reports no baseline: the time is lowered by hand instead.
+                .items_start()
                 .gap_x(length(SPACE_XS))
                 .child(
                     with_author_menu(with_type(div(), TYPE_MESSAGE_AUTHOR))
@@ -620,5 +647,16 @@ impl std::fmt::Debug for MessageAuthor {
             .debug_struct("MessageAuthor")
             .field("user", &self.user.id)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::timestamp_baseline_drop;
+
+    #[test]
+    fn the_time_drops_one_pixel_so_its_baseline_meets_the_names_as_on_the_web() {
+        // Chrome lays the header out 25 px tall, the time 1 px below the name's top.
+        assert!((timestamp_baseline_drop() - 1.0).abs() < f32::EPSILON);
     }
 }

@@ -19,7 +19,10 @@ use gpui::{
 };
 use gpui_base::{TextSelectionHandle, TextSelectionRegistration, TextSelectionRun};
 use mellow_client_core::DownloadableFile;
-use mellow_client_core::shared_logic::markdown::{InlineNode, safe_http_url};
+use mellow_client_core::shared_logic::custom_emoji::emoji_grapheme_ranges;
+use mellow_client_core::shared_logic::markdown::{
+    BlockNode, InlineNode, MarkdownList, safe_http_url,
+};
 use mellow_client_core::shared_logic::role_colors::{
     RoleMentionChipColours, role_mention_chip_colours,
 };
@@ -28,6 +31,7 @@ use mellow_protocol::CustomEmoji;
 
 use super::picture_for_box;
 use crate::components::Tooltip;
+use crate::emoji_picker::EMOJI_GLYPH_WEIGHT_VALUE;
 use crate::i18n::Strings;
 use crate::pictures::Animation;
 use crate::theme::tokens::{
@@ -77,6 +81,76 @@ pub(crate) struct RichText {
     pub actions: Vec<(Range<usize>, InlineAction)>,
     pub tooltips: Vec<(Range<usize>, SharedString)>,
     pub pictures: Vec<InlinePicture>,
+    /// The emoji inside spoilers not revealed yet, with the bar's colour: a colour glyph ignores
+    /// the text colour that hides the words, so the bar is painted again over them.
+    pub covered_emoji: Vec<(Range<usize>, Hsla)>,
+}
+
+/// Where the emoji are in each text of a parsed body, found once per body rather than at every
+/// frame. Keyed by the text's address and length in the body, which outlives this map.
+#[derive(Debug, Default)]
+pub(crate) struct EmojiRangesByText {
+    ranges_by_text: HashMap<(usize, usize), Vec<Range<usize>>>,
+}
+
+impl EmojiRangesByText {
+    pub fn of_blocks(blocks: &[BlockNode]) -> Self {
+        let mut found = Self::default();
+        for block in blocks {
+            found.note_block(block);
+        }
+        found
+    }
+
+    fn note_block(&mut self, block: &BlockNode) {
+        match block {
+            BlockNode::Paragraph(children)
+            | BlockNode::Heading { children, .. }
+            | BlockNode::Subtext(children) => self.note_inlines(children),
+            BlockNode::Quote(blocks) => blocks.iter().for_each(|block| self.note_block(block)),
+            BlockNode::List(list) => self.note_list(list),
+            BlockNode::CodeBlock { .. } => {}
+        }
+    }
+
+    fn note_list(&mut self, list: &MarkdownList) {
+        for item in &list.items {
+            self.note_inlines(&item.children);
+            item.sublists
+                .iter()
+                .for_each(|sublist| self.note_list(sublist));
+        }
+    }
+
+    fn note_inlines(&mut self, nodes: &[InlineNode]) {
+        for node in nodes {
+            match node {
+                InlineNode::Text(text) | InlineNode::Match(text) | InlineNode::Code(text) => {
+                    self.ranges_by_text
+                        .insert(Self::key(text), emoji_grapheme_ranges(text));
+                }
+                InlineNode::Strong(children)
+                | InlineNode::Emphasis(children)
+                | InlineNode::Underline(children)
+                | InlineNode::Strikethrough(children)
+                | InlineNode::Spoiler { children, .. }
+                | InlineNode::Link { children, .. } => self.note_inlines(children),
+                InlineNode::Mention { .. }
+                | InlineNode::RoleMention(_)
+                | InlineNode::EveryoneMention(_)
+                | InlineNode::CustomEmoji(_) => {}
+            }
+        }
+    }
+
+    fn key(text: &str) -> (usize, usize) {
+        (text.as_ptr() as usize, text.len())
+    }
+
+    /// The emoji of `text` when it is one of the body's texts.
+    fn of(&self, text: &str) -> Option<&[Range<usize>]> {
+        self.ranges_by_text.get(&Self::key(text)).map(Vec::as_slice)
+    }
 }
 
 /// What the text is drawn with.
@@ -87,6 +161,8 @@ pub(crate) struct RichTextContext<'a> {
     pub revealed_spoilers: &'a HashSet<u32>,
     /// A server emoji's side as a share of the text's em: wider in jumbo messages' smaller ratio.
     pub picture_em: f32,
+    /// The body's emoji, found once; texts outside it are searched as they come.
+    pub emoji_ranges: Option<&'a EmojiRangesByText>,
 }
 
 /// The style of the nodes being walked, inherited by their children.
@@ -176,11 +252,29 @@ impl RichText {
     }
 
     fn push_text(&mut self, text: &str, style: InlineStyle) -> Range<usize> {
-        self.push_run(text, text, style)
+        self.push_run(text, text, style, None)
     }
 
-    /// `text` drawn, `spoken` read by a screen reader unless inside a hidden spoiler.
-    fn push_run(&mut self, text: &str, spoken: &str, style: InlineStyle) -> Range<usize> {
+    /// One of the body's texts, its emoji found beforehand when the context has them.
+    fn push_body_text(
+        &mut self,
+        text: &str,
+        style: InlineStyle,
+        context: RichTextContext<'_>,
+    ) -> Range<usize> {
+        let emoji = context.emoji_ranges.and_then(|found| found.of(text));
+        self.push_run(text, text, style, emoji)
+    }
+
+    /// `text` drawn, `spoken` read by a screen reader unless inside a hidden spoiler. Its emoji
+    /// are drawn at the weight that takes them from the colour emoji font.
+    fn push_run(
+        &mut self,
+        text: &str,
+        spoken: &str,
+        style: InlineStyle,
+        known_emoji: Option<&[Range<usize>]>,
+    ) -> Range<usize> {
         if !style.is_hidden {
             self.accessible_text.push_str(spoken);
         }
@@ -190,13 +284,42 @@ impl RichText {
         if range.is_empty() {
             return range;
         }
-        if let Some(highlight) = style.highlight() {
-            self.highlights.push((range.clone(), highlight));
+        let emoji_style = InlineStyle {
+            weight: Some(EMOJI_GLYPH_WEIGHT_VALUE),
+            ..style
+        };
+        let searched;
+        let emoji_ranges = if let Some(known) = known_emoji {
+            known
+        } else {
+            searched = emoji_grapheme_ranges(text);
+            searched.as_slice()
+        };
+        let mut drawn_up_to = start;
+        for emoji in emoji_ranges {
+            let emoji = start + emoji.start..start + emoji.end;
+            self.push_highlight(drawn_up_to..emoji.start, style);
+            drawn_up_to = emoji.end;
+            if style.is_hidden
+                && let Some(bar) = style.background
+            {
+                self.covered_emoji.push((emoji.clone(), bar));
+            }
+            self.push_highlight(emoji, emoji_style);
         }
+        self.push_highlight(drawn_up_to..range.end, style);
         if style.is_monospace {
             self.monospace.push(range.clone());
         }
         range
+    }
+
+    fn push_highlight(&mut self, range: Range<usize>, style: InlineStyle) {
+        if !range.is_empty()
+            && let Some(highlight) = style.highlight()
+        {
+            self.highlights.push((range, highlight));
+        }
     }
 
     fn push_chip(&mut self, text: &str, background: Hsla, colour: Hsla, style: InlineStyle) {
@@ -213,7 +336,12 @@ impl RichText {
                 ..chip
             }
         };
-        self.push_run(&format!("{CHIP_PADDING}{text}{CHIP_PADDING}"), text, chip);
+        self.push_run(
+            &format!("{CHIP_PADDING}{text}{CHIP_PADDING}"),
+            text,
+            chip,
+            None,
+        );
     }
 
     #[allow(clippy::too_many_lines)] // One arm per node kind, as the web's snippet.
@@ -227,7 +355,7 @@ impl RichText {
         for node in nodes {
             match node {
                 InlineNode::Text(text) => {
-                    self.push_text(text, style);
+                    self.push_body_text(text, style, context);
                 }
                 InlineNode::Match(text) => {
                     let matched = if style.is_hidden {
@@ -240,7 +368,7 @@ impl RichText {
                             ..style
                         }
                     };
-                    self.push_text(text, matched);
+                    self.push_body_text(text, matched, context);
                 }
                 InlineNode::Mention { text, .. } | InlineNode::EveryoneMention(text) => self
                     .push_chip(
@@ -284,7 +412,7 @@ impl RichText {
                             .or(style.background),
                         ..style
                     };
-                    self.push_text(text, code);
+                    self.push_body_text(text, code, context);
                 }
                 InlineNode::CustomEmoji(emoji) => {
                     let room_length = picture_room_length(context.picture_em);
@@ -297,6 +425,8 @@ impl RichText {
                             is_monospace: true,
                             ..style
                         },
+                        // No-break spaces: no emoji to look for.
+                        Some(&[]),
                     );
                     if !style.is_hidden {
                         self.tooltips
@@ -426,6 +556,7 @@ pub(crate) struct RichTextElement {
     accessible_text: String,
     layout: TextLayout,
     pictures: Vec<(Range<usize>, ImageSource)>,
+    covered_emoji: Vec<(Range<usize>, Hsla)>,
     picture_side: f32,
     missing_border: Hsla,
 }
@@ -448,6 +579,7 @@ impl RichTextElement {
             actions,
             tooltips,
             pictures,
+            covered_emoji,
         } = rich_text;
         let drawn_text = SharedString::from(text);
         let styled = StyledText::new(drawn_text.clone())
@@ -518,6 +650,7 @@ impl RichTextElement {
             accessible_text,
             layout,
             pictures,
+            covered_emoji,
             picture_side,
             missing_border: color(tokens.component_custom_emoji_missing_border),
         }
@@ -553,6 +686,29 @@ impl RichTextElement {
             for quad in selection_quads(start, end, bounds, line_height) {
                 window.paint_quad(gpui::fill(quad, self.selection_colour));
             }
+        }
+    }
+
+    /// The spoiler bar again over the colour emoji it hides, after the text is drawn.
+    fn paint_spoiler_covers(&self, window: &mut Window) {
+        let line_height = self.layout.line_height();
+        for (emoji, bar) in &self.covered_emoji {
+            let (Some(start), Some(end)) = (
+                self.layout.position_for_index(emoji.start),
+                self.layout.position_for_index(emoji.end),
+            ) else {
+                continue;
+            };
+            // An emoji never wraps; at a line's end its end may read as the next line's start.
+            let width = if end.y == start.y {
+                end.x - start.x
+            } else {
+                line_height
+            };
+            window.paint_quad(gpui::fill(
+                Bounds::new(start, size(width, line_height)),
+                *bar,
+            ));
         }
     }
 
@@ -727,6 +883,7 @@ impl gpui::Element for RichTextElement {
         self.paint_selection(handle, bounds, window, cx);
         self.text
             .paint(id, inspector_id, bounds, &mut (), hitbox, window, cx);
+        self.paint_spoiler_covers(window);
         self.paint_pictures(window, cx);
     }
 }
@@ -757,11 +914,82 @@ mod tests {
             strings: Strings::new(Language::English),
             revealed_spoilers: revealed,
             picture_em: COMPONENT_CUSTOM_EMOJI_INLINE_SIZE / TYPE_MESSAGE.font_size,
+            emoji_ranges: None,
         }
     }
 
     fn text(value: &str) -> InlineNode {
         InlineNode::Text(value.to_owned())
+    }
+
+    #[test]
+    fn a_bodys_emoji_found_beforehand_are_the_ones_drawn() {
+        let blocks = vec![BlockNode::Paragraph(vec![
+            text("Salut 😐 "),
+            InlineNode::Strong(vec![text("❤️")]),
+        ])];
+        let found = EmojiRangesByText::of_blocks(&blocks);
+        let BlockNode::Paragraph(children) = &blocks[0] else {
+            unreachable!("a paragraph was built above");
+        };
+        let revealed = HashSet::new();
+        let with_found = RichText::from_inlines(
+            children,
+            RichTextContext {
+                emoji_ranges: Some(&found),
+                ..context(&revealed)
+            },
+        );
+        let searched = RichText::from_inlines(children, context(&revealed));
+        assert_eq!(with_found, searched);
+        assert_eq!(with_found.highlights.len(), 2, "😐 and ❤️");
+    }
+
+    #[test]
+    fn a_hidden_spoiler_covers_its_colour_emoji_with_the_bar_and_a_revealed_one_does_not() {
+        let spoiler = InlineNode::Spoiler {
+            id: 1,
+            children: vec![text("😂 la chute")],
+        };
+        let bar = color(DARK_THEME.component_message_spoiler_background);
+        let hidden =
+            RichText::from_inlines(&[text("Avant "), spoiler.clone()], context(&HashSet::new()));
+        let covered: Vec<(&str, Hsla)> = hidden
+            .covered_emoji
+            .iter()
+            .map(|(range, colour)| (&hidden.text[range.clone()], *colour))
+            .collect();
+        assert_eq!(covered, [("😂", bar)]);
+
+        let revealed = HashSet::from([1]);
+        let shown = RichText::from_inlines(&[text("Avant "), spoiler], context(&revealed));
+        assert!(
+            shown.covered_emoji.is_empty(),
+            "a revealed spoiler shows its emoji"
+        );
+    }
+
+    #[test]
+    fn emoji_are_drawn_at_the_colour_emoji_weight_even_inside_bold() {
+        let revealed = HashSet::new();
+        let rich = RichText::from_inlines(
+            &[text("Salut 😐 "), InlineNode::Strong(vec![text("❤️ fort")])],
+            context(&revealed),
+        );
+        let emoji_weight = Some(FontWeight(f32::from(EMOJI_GLYPH_WEIGHT_VALUE)));
+        let runs: Vec<(&str, Option<FontWeight>)> = rich
+            .highlights
+            .iter()
+            .map(|(range, highlight)| (&rich.text[range.clone()], highlight.font_weight))
+            .collect();
+        assert_eq!(
+            runs,
+            [
+                ("😐", emoji_weight),
+                ("❤️", emoji_weight),
+                (" fort", Some(FontWeight(f32::from(FONT_WEIGHT_BOLD)))),
+            ]
+        );
     }
 
     #[test]

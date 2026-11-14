@@ -27,9 +27,9 @@ use crate::session::now_unix_milliseconds;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_COMPOSER_ERROR_PADDING_BLOCK, COMPONENT_COMPOSER_MARGIN_INLINE,
-    COMPONENT_COMPOSER_TYPING_HEIGHT, COMPONENT_DROP_OVERLAY_BORDER_INSET,
-    COMPONENT_DROP_OVERLAY_BORDER_WIDTH, COMPONENT_DROP_OVERLAY_GAP,
-    COMPONENT_DROP_OVERLAY_ICON_SIZE, COMPONENT_DROP_OVERLAY_MAX_WIDTH,
+    COMPONENT_COMPOSER_RADIUS, COMPONENT_COMPOSER_TYPING_HEIGHT,
+    COMPONENT_DROP_OVERLAY_BORDER_INSET, COMPONENT_DROP_OVERLAY_BORDER_WIDTH,
+    COMPONENT_DROP_OVERLAY_GAP, COMPONENT_DROP_OVERLAY_ICON_SIZE, COMPONENT_DROP_OVERLAY_MAX_WIDTH,
     COMPONENT_DROP_OVERLAY_PADDING, COMPONENT_DROP_OVERLAY_RADIUS, COMPONENT_JUMP_BAR_HEIGHT,
     COMPONENT_JUMP_BAR_ICON_SIZE, COMPONENT_JUMP_BAR_RADIUS, COMPONENT_NOTICE_BAR_ICON_SIZE,
     RADIUS_SM, SPACE_2XS, SPACE_3XS, SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BODY, TYPE_BUTTON,
@@ -164,7 +164,10 @@ impl ConversationView {
         )
     }
 
-    /// Over the list rather than above it: taking height would move the rows being read.
+    /// Over the list rather than above it: taking height would move the rows being read. As on
+    /// the web (`MessageList.svelte`), it rests on the composer like a tab of the same card: it
+    /// covers the typing row and runs a composer radius under the composer's top edge, which
+    /// draws over it.
     fn render_jump_bar(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
         if self.is_at_latest() || self.entries.len() <= 1 {
             return None;
@@ -194,15 +197,23 @@ impl ConversationView {
             with_type(div(), TYPE_BODY)
                 .id("jump-bar")
                 .absolute()
-                .bottom_0()
+                .bottom(-length(
+                    COMPONENT_COMPOSER_TYPING_HEIGHT + COMPONENT_COMPOSER_RADIUS,
+                ))
                 .left(length(COMPONENT_COMPOSER_MARGIN_INLINE))
                 .right(length(COMPONENT_COMPOSER_MARGIN_INLINE))
-                .min_h(length(COMPONENT_JUMP_BAR_HEIGHT))
+                .min_h(length(
+                    COMPONENT_JUMP_BAR_HEIGHT + COMPONENT_COMPOSER_RADIUS,
+                ))
                 .flex()
                 .items_center()
                 .gap(length(SPACE_XS))
                 .pl(length(SPACE_MD))
                 .pr(length(SPACE_2XS))
+                // The action is a button `2 × space.3xs` shorter than the bar: with `space.2xs`
+                // above it and the composer's radius below, the bar shows its 32 px.
+                .pt(length(SPACE_2XS))
+                .pb(length(COMPONENT_COMPOSER_RADIUS))
                 .rounded_t(length(COMPONENT_JUMP_BAR_RADIUS))
                 .bg(color(tokens.component_jump_bar_background))
                 .text_color(color(tokens.component_jump_bar_text))
@@ -239,8 +250,9 @@ impl ConversationView {
         )
     }
 
-    /// "Ana is typing…" above the composer; its row keeps its height, so nothing moves.
-    fn render_typing_line(&self, cx: &mut Context<Self>) -> impl IntoElement {
+    /// "Ana is typing…" above the composer; its row keeps its height, so nothing moves. Empty
+    /// while the jump bar covers it, as the web's bar hides it.
+    fn render_typing_line(&self, is_covered: bool, cx: &mut Context<Self>) -> impl IntoElement {
         let tokens = theme(cx);
         let catalogue = strings(cx);
         let state = self.session.read(cx).state();
@@ -249,8 +261,12 @@ impl ConversationView {
             .as_ref()
             .and_then(|open| open.guild_id);
         let channel_id = self.open_channel_id();
-        let names: Vec<String> = self
-            .typing_user_ids(cx)
+        let typing_user_ids = if is_covered {
+            Vec::new()
+        } else {
+            self.typing_user_ids(cx)
+        };
+        let names: Vec<String> = typing_user_ids
             .into_iter()
             .map(|user_id| {
                 let member = guild_id.and_then(|guild_id| {
@@ -397,6 +413,10 @@ impl ConversationView {
             .track_focus(&self.list_focus)
             .on_key_down(cx.listener(Self::on_list_key_down))
             .size_full()
+            // The web's list ends `space.xs` above the typing row (`MessageList.svelte`, `pb-xs`).
+            // Here it pads the list's box: a row's padding would stay measured on the row that
+            // was last once another comes.
+            .pb(length(SPACE_XS))
             .child(
                 list(self.list.clone(), move |index, window, cx| {
                     view.update(cx, |view, cx| view.render_entry(index, window, cx))
@@ -432,6 +452,7 @@ impl Render for ConversationView {
         let tokens = theme(cx);
         let unread_bar = self.render_unread_bar(window, cx);
         let jump_bar = self.render_jump_bar(window, cx);
+        let is_jump_bar_shown = jump_bar.is_some();
         let pins_panel = self.render_pins_panel(window, cx);
         let drop_overlay = self.render_drop_overlay(cx);
         // What went well (a forward sent), quietly above the composer; read out by the region below.
@@ -479,7 +500,7 @@ impl Render for ConversationView {
                     .children(unread_bar)
                     .children(jump_bar),
             )
-            .child(self.render_typing_line(cx))
+            .child(self.render_typing_line(is_jump_bar_shown, cx))
             .children(notice)
             .children(action_error)
             .child(div().flex_none().child(self.composer.clone()))

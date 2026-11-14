@@ -775,3 +775,83 @@ fn send_the_original_wins_over_a_result_that_arrives_after_the_click(cx: &mut Te
         "the original uploads as it is: {status:?}"
     );
 }
+
+#[test]
+fn a_picker_opens_from_the_composers_top_edge_above_its_button() {
+    use gpui::{Bounds, point, px, size};
+    let button = Bounds::new(point(px(1368.0), px(840.0)), size(px(32.0), px(32.0)));
+    let composer_box = Bounds::new(point(px(344.0), px(828.0)), size(px(1064.0), px(56.0)));
+
+    let anchor = super::picker_anchor_on_composer_edge(button, Some(composer_box));
+
+    assert_eq!(anchor.top(), px(828.0), "the composer's top edge");
+    assert_eq!(anchor.bottom(), button.bottom());
+    assert_eq!(
+        (anchor.left(), anchor.right()),
+        (button.left(), button.right())
+    );
+    assert_eq!(
+        super::picker_anchor_on_composer_edge(button, None),
+        button,
+        "the button alone before the composer is drawn"
+    );
+}
+
+#[gpui::test]
+fn the_ring_shows_when_the_keyboard_brings_focus_and_never_while_typing_in_a_clicked_field(
+    cx: &mut TestAppContext,
+) {
+    let (harness, cx) = open_composer(cx);
+    let composer = composer_of(&harness, cx);
+    let card = cx
+        .update(|_, cx| *composer.read(cx).card_bounds.read(cx))
+        .expect("the composer is drawn");
+    cx.simulate_click(card.center(), gpui::Modifiers::none());
+    cx.simulate_input("bonjour");
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert_eq!(
+        cx.debug_bounds("composer-focus-ring"),
+        None,
+        "typing in a clicked field draws no ring"
+    );
+
+    // Focus leaves, then comes back while the keyboard was the last input (as after Tab, F6
+    // or Esc in the list).
+    cx.update(|window, cx| {
+        let elsewhere = cx.focus_handle();
+        window.focus(&elsewhere, cx);
+    });
+    cx.run_until_parked();
+    cx.simulate_keystrokes("shift");
+    cx.update(|window, cx| composer.update(cx, |composer, cx| composer.focus(window, cx)));
+    cx.run_until_parked();
+    // The focus change is seen while a frame draws; the ring comes with the next one.
+    cx.update(|window, _| window.refresh());
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("composer-focus-ring").is_some(),
+        "focus brought back by the keyboard shows the ring"
+    );
+}
+
+#[gpui::test]
+fn several_lines_keep_the_fields_room_above_and_below(cx: &mut TestAppContext) {
+    use crate::theme::tokens::{SIZE_DOCK_HEIGHT, TYPE_MESSAGE};
+    let (_harness, cx) = open_composer(cx);
+    cx.simulate_input("un");
+    cx.simulate_keystrokes("shift-enter");
+    cx.simulate_input("deux");
+    cx.simulate_keystrokes("shift-enter");
+    cx.simulate_input("trois");
+    cx.run_until_parked();
+    let composer = cx
+        .debug_bounds("composer")
+        .expect("the composer's box is drawn");
+    let line_height = TYPE_MESSAGE.font_size * TYPE_MESSAGE.line_height;
+    // The dock row's room around one line, and two more lines.
+    assert_eq!(
+        composer.size.height,
+        gpui::px(SIZE_DOCK_HEIGHT + 2.0 * line_height)
+    );
+}
