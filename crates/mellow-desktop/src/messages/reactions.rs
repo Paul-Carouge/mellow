@@ -269,7 +269,6 @@ fn reaction_emoji(
         ReactionAppearance::Unicode(emoji) => div()
             .text_size(length(COMPONENT_REACTION_EMOJI_SIZE))
             .line_height(length(COMPONENT_REACTION_EMOJI_SIZE))
-            .font_weight(crate::emoji_picker::emoji_glyph_weight())
             .child(emoji.clone())
             .into_any_element(),
         // A dashed outline where the deleted emoji's picture was, as the web's `ReactionEmoji`.

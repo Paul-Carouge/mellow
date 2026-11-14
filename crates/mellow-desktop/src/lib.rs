@@ -86,6 +86,8 @@ pub fn start(
     // OS reduced-motion setting into `App::reduce_motion`, but follows it live on Linux only.
     gpui_component::init(cx);
     theme::register_embedded_fonts(cx)?;
+    #[cfg(target_os = "linux")]
+    theme::redraw_with_system_fonts_once_read(cx);
     components::bind_tab_navigation(cx);
     shell::bind_shell_keys(cx);
     composer::bind_composer_keys(cx);

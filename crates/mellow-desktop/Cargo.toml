@@ -116,5 +116,10 @@ zeroize.workspace = true
 # compiled out, so building it (and its vendored OpenSSL) would be wasted.
 mellow-server = { path = "../mellow-server" }
 
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+# GPUI's Linux text system and its font database, for the font tests; both already in the tree.
+cosmic-text = "=0.19.0"
+gpui_wgpu = { package = "gpui-pre-wgpu", version = "=0.3.11" }
+
 [lints]
 workspace = true

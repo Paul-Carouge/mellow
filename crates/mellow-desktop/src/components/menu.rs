@@ -681,7 +681,6 @@ impl ContextMenu {
                 .bg(color(background))
                 .text_size(length(COMPONENT_ACTION_BAR_ICON_SIZE))
                 .line_height(length(COMPONENT_ACTION_BAR_ICON_SIZE))
-                .font_weight(crate::emoji_picker::emoji_glyph_weight())
                 .cursor_pointer()
                 .on_hover(cx.listener(move |menu, is_hovered: &bool, _, cx| {
                     menu.hovered_key = if *is_hovered {
