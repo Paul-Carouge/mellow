@@ -103,6 +103,8 @@ pub enum HomeEvent {
     },
     /// A menu's change failed: why, in words, for the notice bar.
     MenuActionFailed(String),
+    /// "Add a server" in the empty Friends list: the rail's dialog.
+    AddServer,
 }
 
 /// A group dialog: rename, leave, or the owner removing someone.
@@ -152,6 +154,7 @@ impl Home {
                     FriendsPaneEvent::OpenPersonMenu(request) => {
                         home.open_person_menu(request.clone(), window, cx);
                     }
+                    FriendsPaneEvent::AddServer => cx.emit(HomeEvent::AddServer),
                 },
             ),
             // Its confirmation dialog and announcements are drawn here, over the whole window.

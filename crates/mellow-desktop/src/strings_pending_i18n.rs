@@ -155,6 +155,14 @@ pub struct Strings {
     pub change_instance_label: &'static str,
     /// Why a picture was refused before sending: its megapixels and longest side allowed.
     pub picture_too_many_pixels: fn(u32, u32) -> String,
+    // Desktop only: the rail's "+" toward another instance (DESIGN.md §5.1). One session is kept
+    // at a time, so it signs out first.
+    pub connect_another_instance: &'static str,
+    pub connect_another_instance_title: &'static str,
+    /// The instance left, twice.
+    pub connect_another_instance_body: fn(&str) -> String,
+    pub connect_another_instance_submit: &'static str,
+    pub connect_another_instance_signing_out: &'static str,
 }
 
 pub static ENGLISH: Strings = Strings {
@@ -262,6 +270,17 @@ pub static ENGLISH: Strings = Strings {
     picture_too_many_pixels: |megapixels, side| {
         format!("Pictures can be up to {megapixels} megapixels and {side} pixels on a side.")
     },
+    connect_another_instance: "Connect to another instance",
+    connect_another_instance_title: "Connect to another instance?",
+    connect_another_instance_body: |instance| {
+        format!(
+            "You'll be signed out of {instance} on this computer, then you can enter another \
+             instance's address. Your account and servers stay on {instance}: sign back in \
+             whenever you like."
+        )
+    },
+    connect_another_instance_submit: "Sign out and continue",
+    connect_another_instance_signing_out: "Signing out…",
 };
 
 pub static FRENCH: Strings = Strings {
@@ -381,6 +400,17 @@ pub static FRENCH: Strings = Strings {
             "Les images peuvent faire jusqu’à {megapixels}{NO_BREAK_SPACE}mégapixels et {grouped}{NO_BREAK_SPACE}pixels de côté."
         )
     },
+    connect_another_instance: "Se connecter à une autre instance",
+    connect_another_instance_title: "Se connecter à une autre instance\u{202f}?",
+    connect_another_instance_body: |instance| {
+        format!(
+            "Tu seras déconnecté de {instance} sur cet ordinateur, puis tu pourras saisir \
+             l’adresse d’une autre instance. Ton compte et tes serveurs restent sur \
+             {instance}\u{a0}: reconnecte-toi quand tu veux."
+        )
+    },
+    connect_another_instance_submit: "Me déconnecter et continuer",
+    connect_another_instance_signing_out: "Déconnexion…",
 };
 
 #[cfg(test)]

@@ -29,9 +29,9 @@ use mellow_protocol::{
 use super::{PersonMenuRequest, presence_name, shown_presence};
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, ContextMenu, FriendCode, FriendCodeCopyState,
-    LiveRegion as _, MentionBadge, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuItemTone,
-    MenuOrigin, ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder, focus_ring, icon,
-    is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
+    LiveRegion as _, Melli, MelliState, MentionBadge, MenuAlignment, MenuAnchor, MenuEntry,
+    MenuItem, MenuItemTone, MenuOrigin, ModalDialog, ModalDialogEvent, Tooltip, bounds_recorder,
+    focus_ring, icon, is_context_menu_keystroke, is_focus_visible, menu_origin_at_pointer,
     menu_origin_beside_remembered, next_tab_index, remembered_bounds, remembered_focus_handle,
     remembered_hover, with_type,
 };
@@ -44,7 +44,8 @@ use crate::theme::tokens::{
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_FRIENDS_ACTION_GAP,
     COMPONENT_FRIENDS_ACTION_ICON_SIZE, COMPONENT_FRIENDS_ACTION_SIZE,
     COMPONENT_FRIENDS_AVATAR_SIZE, COMPONENT_FRIENDS_CONTENT_MAX_WIDTH,
-    COMPONENT_FRIENDS_EMPTY_GAP, COMPONENT_FRIENDS_GROUP_HEIGHT,
+    COMPONENT_FRIENDS_EMPTY_GAP, COMPONENT_FRIENDS_EMPTY_MELLI_SIZE,
+    COMPONENT_FRIENDS_EMPTY_TEXT_MAX_WIDTH, COMPONENT_FRIENDS_GROUP_HEIGHT,
     COMPONENT_FRIENDS_LIST_PADDING_INLINE, COMPONENT_FRIENDS_RESULT_ICON_SIZE,
     COMPONENT_FRIENDS_ROW_GAP, COMPONENT_FRIENDS_ROW_HEIGHT, COMPONENT_FRIENDS_ROW_PADDING_INLINE,
     COMPONENT_FRIENDS_ROW_RADIUS, COMPONENT_FRIENDS_TAB_GAP, COMPONENT_FRIENDS_TAB_HEIGHT,
@@ -63,6 +64,8 @@ pub enum FriendsPaneEvent {
     OpenConversation(Snowflake),
     /// A right-click, Shift+F10 or the Menu key on a row: the person's menu.
     OpenPersonMenu(PersonMenuRequest),
+    /// "Add a server" in the empty list of an account in no server.
+    AddServer,
 }
 
 /// How an "Add friend" form looks the person up (ADR-0048).
@@ -1062,12 +1065,14 @@ impl FriendsPane {
                             .flex_1()
                             .min_w(length(COMPONENT_FRIENDS_USERNAME_MIN_WIDTH))
                             .text_color(color(tokens.component_text_field_text))
-                            .child(
+                            // On the input itself: gpui-component sets its own 14 px otherwise.
+                            .child(with_type(
                                 Input::new(&form.input)
                                     .appearance(false)
                                     .disabled(form.is_sending)
                                     .aria_label(SharedString::from(description)),
-                            ),
+                                TYPE_BODY_LG,
+                            )),
                     )
                     .child(
                         Button::new(
@@ -1131,14 +1136,18 @@ impl FriendsPane {
             .into_any_element()
     }
 
+    /// Melli keeps the empty tab company, above the sentence at a readable measure; the first
+    /// empty list offers "Add friend", and "Add a server" to an account in no server.
     fn render_empty_state(
         sentence: &'static str,
         with_add_friend: bool,
+        has_no_servers: bool,
         cx: &mut Context<Self>,
     ) -> AnyElement {
         let tokens = theme(cx);
         let words = strings(cx).friends();
         let add_friend_pane = cx.entity();
+        let add_server_pane = cx.entity();
         div()
             .flex_1()
             .flex()
@@ -1147,23 +1156,46 @@ impl FriendsPane {
             .justify_center()
             .gap(length(COMPONENT_FRIENDS_EMPTY_GAP))
             .p(length(SPACE_XL))
+            // shortcut: the web's sleeping Melli on an empty Online tab waits for the desktop's
+            // sleeping state (`components::melli`); it is idle here.
+            .child(Melli::new(
+                "friends-empty-melli",
+                MelliState::Idle,
+                COMPONENT_FRIENDS_EMPTY_MELLI_SIZE,
+            ))
             .child(
                 with_type(div(), TYPE_BODY_LG)
-                    .max_w(length(COMPONENT_FRIENDS_CONTENT_MAX_WIDTH))
+                    .max_w(length(COMPONENT_FRIENDS_EMPTY_TEXT_MAX_WIDTH))
                     .text_center()
                     .text_color(color(tokens.color_text_secondary))
                     .child(sentence),
             )
-            // shortcut: the web's "Add a server" beside it, for an account in no server, comes
-            // with server management (M3 step 6).
             .when(with_add_friend, |empty| {
                 empty.child(
-                    Button::new("friends-empty-add-friend", words.add_friend())
-                        .variant(ButtonVariant::Primary)
-                        .on_click(move |window, cx| {
-                            add_friend_pane.update(cx, |pane, cx| {
-                                pane.choose_tab(FriendsTab::Add, true, window, cx);
-                            });
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .justify_center()
+                        .gap(length(SPACE_XS))
+                        .child(
+                            Button::new("friends-empty-add-friend", words.add_friend())
+                                .variant(ButtonVariant::Primary)
+                                .on_click(move |window, cx| {
+                                    add_friend_pane.update(cx, |pane, cx| {
+                                        pane.choose_tab(FriendsTab::Add, true, window, cx);
+                                    });
+                                }),
+                        )
+                        .when(has_no_servers, |buttons| {
+                            buttons.child(
+                                Button::new("friends-empty-add-server", words.add_server())
+                                    .variant(ButtonVariant::Secondary)
+                                    .on_click(move |_, cx| {
+                                        add_server_pane.update(cx, |_, cx| {
+                                            cx.emit(FriendsPaneEvent::AddServer);
+                                        });
+                                    }),
+                            )
                         }),
                 )
             })
@@ -1445,7 +1477,13 @@ impl Render for FriendsPane {
                     _ => words.empty_blocked(),
                 }
             };
-            panel.push(Self::render_empty_state(sentence, is_invitation_shown, cx));
+            let has_no_servers = state.guilds().is_empty();
+            panel.push(Self::render_empty_state(
+                sentence,
+                is_invitation_shown,
+                has_no_servers,
+                cx,
+            ));
         } else {
             for (kind, relationships) in groups {
                 let label = group_label(catalogue, kind);

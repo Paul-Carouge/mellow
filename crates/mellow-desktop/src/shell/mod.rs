@@ -20,6 +20,7 @@ pub mod quick_switcher;
 mod regions;
 mod resize_handle;
 mod screen_share_host;
+mod server_dialogs;
 mod server_rail;
 mod settings_screens;
 mod soundboard_host;
@@ -222,6 +223,10 @@ pub struct DuskShell {
     conversation: Entity<ConversationView>,
     /// The Friends space, the people picker and the group dialogs.
     home: Entity<Home>,
+    /// The conversation and the Friends space as cached slots of the sheet: the shell's own
+    /// frames (Melli in the rail, a hover in the lists) do not redraw them.
+    conversation_slot: Entity<conversation_sheet::FilledSlot>,
+    friends_slot: Entity<conversation_sheet::FilledSlot>,
     /// Message search: the header's field and the results.
     message_search: Entity<MessageSearchView>,
     /// Why the last `OpenDirectConversation` or menu action failed, until the next place opens.
@@ -238,6 +243,8 @@ pub struct DuskShell {
     custom_status_dialog: Option<(Entity<ModalDialog>, Subscription)>,
     /// The menus of servers, channels, categories and the chat header, and their dialogs.
     place_menus: place_menus::PlaceMenus,
+    /// The rail's "+" menu, and the dialogs that add servers, invite, create and move channels.
+    server_dialogs: server_dialogs::ServerDialogs,
     /// The server or channel settings over the shell.
     open_settings: Option<settings_screens::OpenSettings>,
     /// The profile a member row opened in the side sheet.
@@ -282,6 +289,14 @@ impl DuskShell {
         let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
         let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
         let home = cx.new(|cx| Home::new(session.clone(), window, cx));
+        let conversation_slot = {
+            let conversation = conversation.clone();
+            cx.new(|_| conversation_sheet::FilledSlot::new(conversation))
+        };
+        let friends_slot = {
+            let friends_pane = home.read(cx).friends_pane().clone();
+            cx.new(|_| conversation_sheet::FilledSlot::new(friends_pane))
+        };
         let message_search = cx.new(|cx| MessageSearchView::new(session.clone(), window, cx));
         let voice = crate::voice::voice(cx);
         let mut subscriptions = vec![
@@ -321,6 +336,8 @@ impl DuskShell {
             banner,
             conversation,
             home,
+            conversation_slot,
+            friends_slot,
             message_search,
             conversation_error: None,
             navigation: Navigation::default(),
@@ -332,6 +349,7 @@ impl DuskShell {
             status_menu: None,
             custom_status_dialog: None,
             place_menus: place_menus::PlaceMenus::default(),
+            server_dialogs: server_dialogs::ServerDialogs::default(),
             open_settings: None,
             member_profile: member_profile::MemberProfileState::new(cx),
             user_card_bounds: Rc::new(Cell::new(None)),
@@ -756,6 +774,7 @@ impl DuskShell {
                 self.conversation_error = Some(reason.clone());
                 cx.notify();
             }
+            HomeEvent::AddServer => self.open_add_server(false, window, cx),
         }
     }
 
@@ -1267,6 +1286,7 @@ impl Render for DuskShell {
                 root.child(dialog.clone())
             })
             .children(self.render_place_menus(window, cx))
+            .children(self.render_server_dialogs(window, cx))
             .children(self.render_voice_person_popover(cx))
             .children(self.render_soundboard_popover(window, cx))
             .children(self.render_screen_share_overlays(window, cx))

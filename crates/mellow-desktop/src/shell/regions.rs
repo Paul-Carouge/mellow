@@ -345,7 +345,12 @@ impl DuskShell {
         self.focus_region(region, window, cx);
     }
 
-    fn focus_region(&mut self, region: Region, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn focus_region(
+        &mut self,
+        region: Region,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
         let is_navigator_region = matches!(region, Region::ServerRail | Region::ChannelList);
         // Leaving a layer for a region outside it: it closes, focus goes where F6 points.
         if self.is_member_overlay_open && region != Region::SideSheet {

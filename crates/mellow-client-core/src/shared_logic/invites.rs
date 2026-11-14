@@ -172,9 +172,52 @@ pub fn relative_future_label(locale: Locale, count: u64, unit: DurationUnit) -> 
     }
 }
 
+/// "AE8C-78A9-K2QF" as its groups, shown with the dashes stepping back (`inviteCodeGroups`).
+/// Codes from before v0.18.0 have no dash: one group, case kept.
+#[must_use]
+pub fn invite_code_groups(code: &str) -> Vec<&str> {
+    code.split('-').filter(|group| !group.is_empty()).collect()
+}
+
+/// "A E 8 C, 7 8 A 9, K 2 Q F": one symbol at a time, a pause between groups, for screen readers
+/// (`spokenInviteCode`).
+#[must_use]
+pub fn spoken_invite_code(code: &str) -> String {
+    invite_code_groups(code)
+        .iter()
+        .map(|group| {
+            group
+                .chars()
+                .map(String::from)
+                .collect::<Vec<_>>()
+                .join(" ")
+        })
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn splits_a_code_into_its_groups() {
+        assert_eq!(
+            invite_code_groups("AE8C-78A9-K2QF"),
+            ["AE8C", "78A9", "K2QF"]
+        );
+        // Codes from before v0.18.0 have no dash: one group, case kept.
+        assert_eq!(invite_code_groups("aB3dE5gH7k"), ["aB3dE5gH7k"]);
+    }
+
+    #[test]
+    fn spells_a_code_out_for_screen_readers_pausing_between_groups() {
+        assert_eq!(
+            spoken_invite_code("AE8C-78A9-K2QF"),
+            "A E 8 C, 7 8 A 9, K 2 Q F"
+        );
+        assert_eq!(spoken_invite_code("aB3"), "a B 3");
+    }
 
     // Ported from `invites.test.ts`.
 

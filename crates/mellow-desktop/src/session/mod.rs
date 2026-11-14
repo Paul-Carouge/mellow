@@ -70,6 +70,15 @@ pub enum ConnectionStatus {
     Reconnecting,
 }
 
+/// Where the sign-in card opens once a sign-out asked for here is done.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AfterSignOut {
+    /// Signing in again, to the same instance.
+    SignIn,
+    /// "Connect to another instance": the instance address, filled with the one just left.
+    AnotherInstance,
+}
+
 /// A server's member list on its way, or refused (the member sheet offers "Try again").
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum MembersLoad {
@@ -124,6 +133,8 @@ pub struct Session {
     is_signing_out: bool,
     /// Built with `describe_error`; `None` hides it.
     sign_out_error: Option<String>,
+    /// Where the sign-in card opens after a sign-out asked for here.
+    after_sign_out: AfterSignOut,
     /// Member lists asked for in this `Ready` (the web's `requestedMembers` and
     /// `failedMemberGuildIds`); a loaded list is in the state.
     member_loads: HashMap<Snowflake, MembersLoad>,
@@ -201,6 +212,7 @@ impl Session {
             has_ended_by_itself: false,
             is_signing_out: false,
             sign_out_error: None,
+            after_sign_out: AfterSignOut::SignIn,
             member_loads: HashMap::new(),
             status_error: None,
             is_kept_on_this_device,
@@ -486,6 +498,7 @@ impl Session {
                     Err(error) if error.needs_new_login() => session.end_session(false, cx),
                     Err(error) => {
                         let strings = strings(cx);
+                        session.after_sign_out = AfterSignOut::SignIn;
                         session.sign_out_error =
                             Some(describe_error(&error, strings.sign_out_failed, strings));
                         cx.notify();
@@ -942,6 +955,20 @@ mod tests {
     /// Unwinds without the panic hook, so the test log stays quiet.
     fn panicking_request() -> Result<(), ClientError> {
         std::panic::resume_unwind(Box::new(()))
+    }
+
+    #[gpui::test]
+    fn another_instance_is_remembered_only_for_a_sign_out_under_way(cx: &mut TestAppContext) {
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        // Signed out already: nothing to sign out of, so a later sign-out opens the usual card.
+        session.update(cx, Session::sign_out_for_another_instance);
+        assert!(!session.update(cx, |session, _| session.take_leaving_for_another_instance()));
+        session.update(cx, |session, _| {
+            session.after_sign_out = AfterSignOut::AnotherInstance;
+        });
+        // Read once: the next sign-in screen does not inherit it.
+        assert!(session.update(cx, |session, _| session.take_leaving_for_another_instance()));
+        assert!(!session.update(cx, |session, _| session.take_leaving_for_another_instance()));
     }
 
     #[gpui::test]

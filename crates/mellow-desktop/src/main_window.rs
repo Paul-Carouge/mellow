@@ -62,7 +62,16 @@ impl MainWindow {
                 self.shell = None;
                 if self.sign_in_screen.is_none() {
                     let session = self.session.clone();
-                    self.sign_in_screen = Some(cx.new(|cx| SignInScreen::new(session, window, cx)));
+                    let screen = cx.new(|cx| SignInScreen::new(session, window, cx));
+                    // "Connect to another instance": straight to the address, filled with the
+                    // one just left.
+                    if self
+                        .session
+                        .update(cx, |session, _| session.take_leaving_for_another_instance())
+                    {
+                        screen.update(cx, |screen, cx| screen.use_another_instance(window, cx));
+                    }
+                    self.sign_in_screen = Some(screen);
                 }
             }
             SessionPhase::RestoringStoredSession => self.sign_in_screen = None,

@@ -1342,3 +1342,42 @@ fn change_abandons_a_sign_in_that_is_still_waiting(cx: &mut TestAppContext) {
     drop(silent);
     runtime.shutdown_background();
 }
+
+#[gpui::test]
+fn connecting_to_another_instance_signs_out_and_opens_the_address_filled_in(
+    cx: &mut TestAppContext,
+) {
+    let (harness, cx) = start(cx);
+    let rest = register(&harness, "ida");
+    harness
+        .session
+        .update(cx, |session, cx| session.begin_signed_in_session(rest, cx));
+    wait_until(cx, |cx| {
+        harness
+            .main_window
+            .read_with(cx, |main_window, _| main_window.shell().is_some())
+    });
+    harness
+        .session
+        .update(cx, Session::sign_out_for_another_instance);
+    wait_until(cx, |cx| {
+        harness
+            .main_window
+            .read_with(cx, |main_window, _| main_window.sign_in_screen().is_some())
+    });
+    // The address step, filled with the instance just left; the next sign-out asks nothing.
+    assert!(harness.read_screen(cx, |screen| matches!(screen.step, Step::InstanceAddress)));
+    let filled = harness.screen(cx).read_with(cx, |screen, cx| {
+        screen.value(SignInField::InstanceAddress, cx)
+    });
+    assert_eq!(
+        filled.as_ref(),
+        instance_field_value(&harness.instance.address)
+    );
+    assert!(
+        !harness
+            .session
+            .update(cx, |session, _| session.take_leaving_for_another_instance())
+    );
+    harness.stop();
+}

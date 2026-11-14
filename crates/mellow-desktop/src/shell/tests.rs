@@ -360,7 +360,7 @@ fn f6_goes_round_the_regions_and_shift_f6_back(cx: &mut TestAppContext) {
 #[gpui::test]
 fn the_rail_is_one_tab_stop_whose_arrows_move_between_servers(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    // F6 lands on the open server; Up reaches Home, End the last server.
+    // F6 lands on the open server; Up reaches Home, End "Add a server" after the last server.
     press(cx, "f6");
     press(cx, "up");
     press(cx, "enter");
@@ -370,15 +370,23 @@ fn the_rail_is_one_tab_stop_whose_arrows_move_between_servers(cx: &mut TestAppCo
     );
     press(cx, "end");
     press(cx, "enter");
+    assert!(shell.read_with(cx, |shell, _| shell.is_add_server_menu_open()));
+    press(cx, "escape");
+    press(cx, "up");
+    press(cx, "enter");
     assert_eq!(
         shell.read_with(cx, |shell, _| shell.navigation().selected_guild_id()),
         Some(GUILD_BOOKS)
     );
-    // Tab leaves the rail at once, for the channel list's single stop: the open channel.
+    // Tab leaves the rail at once for the server's header (its menu), then the channel list's
+    // single stop: the open channel.
+    press(cx, "tab");
+    assert_eq!(focused_region(&shell, cx), None);
     press(cx, "tab");
     assert_eq!(focused_region(&shell, cx), Some(Region::ChannelList));
     press(cx, "enter");
     assert_eq!(selected_channel(&shell, cx), Some(BOOKS_READING));
+    press(cx, "shift-tab");
     press(cx, "shift-tab");
     assert_eq!(focused_region(&shell, cx), Some(Region::ServerRail));
 }

@@ -693,6 +693,8 @@ fn link_row(index: usize, link: ShownProfileLink, window: &mut Window, cx: &mut 
                     window,
                 ))
                 .size(length(COMPONENT_PROFILE_POPOVER_LINK_ICON_SIZE))
+                // Its plate's corners: GPUI does not clip children to rounded corners.
+                .rounded(length(COMPONENT_PROFILE_POPOVER_LINK_ICON_RADIUS))
                 .object_fit(ObjectFit::Contain)
                 .with_fallback(move || link_glyph(fallback_glyph_colour).into_any_element()),
             ),
