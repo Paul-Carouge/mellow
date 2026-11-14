@@ -17,9 +17,7 @@ use crate::notifier::{TURNED_ON_NOTIFICATION_TAG, notification_settings_of};
 use crate::preferences::{PreferencesStore, change_preferences};
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::length;
-use crate::theme::tokens::{
-    COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP, SPACE_SM,
-};
+use crate::theme::tokens::{COMPONENT_SETTINGS_PAGE_TITLE_GAP, COMPONENT_SETTINGS_SECTION_GAP};
 use crate::window_chrome::WINDOW_TITLE;
 
 /// The page's switches; they follow the preferences, so a change elsewhere shows at once.
@@ -75,7 +73,7 @@ impl Render for NotificationsPage {
             .mt(length(COMPONENT_SETTINGS_SECTION_GAP))
             .flex()
             .flex_col()
-            .gap(length(SPACE_SM))
+            // Each row carries its own padding and divider, as the web's list.
             .child(
                 Switch::new(
                     "notifications-desktop",

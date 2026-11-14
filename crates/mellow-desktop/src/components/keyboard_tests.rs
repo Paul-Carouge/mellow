@@ -8,10 +8,10 @@ use gpui::{
 };
 
 use super::{
-    Button, ContextMenu, MenuAlignment, MenuAnchor, MenuEntry, MenuItem, MenuKey, MenuKeys,
-    MenuOrigin, ModalDialog, ModalDialogEvent, RangeBounds, RangeField, SettingsNavEntry,
-    SettingsNavItem, SettingsSheet, SettingsSheetLabels, Switch, Tabs, bind_tab_navigation,
-    with_tab_navigation,
+    Button, ChoiceGroup, ChoiceLegend, ChoiceOption, ContextMenu, MenuAlignment, MenuAnchor,
+    MenuEntry, MenuItem, MenuKey, MenuKeys, MenuOrigin, ModalDialog, ModalDialogEvent, RangeBounds,
+    RangeField, SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels, Switch,
+    Tabs, bind_tab_navigation, with_tab_navigation,
 };
 use crate::theme::ActiveTheme;
 use crate::theme::icons::IconName;
@@ -90,6 +90,68 @@ fn space_and_enter_flip_a_switch_and_a_locked_one_stays(cx: &mut TestAppContext)
         harness.read_with(cx, |harness, _| harness.is_on),
         "a locked switch keeps its state"
     );
+}
+
+#[gpui::test]
+fn the_whole_switch_row_is_labelled_and_a_click_on_its_label_flips_it(cx: &mut TestAppContext) {
+    set_up(cx);
+    let (harness, cx) = cx.add_window_view(|_, cx| SwitchHarness {
+        root: cx.focus_handle(),
+        is_on: false,
+        is_locked: false,
+    });
+    cx.run_until_parked();
+    let row = cx
+        .debug_bounds("switch-row-switch")
+        .expect("the switch draws its labelled row");
+    assert!(
+        row.size.width > gpui::px(200.0),
+        "the row spans its host, the label at the leading end"
+    );
+    // The leading end of the row is the label, far from the track at the trailing end.
+    cx.simulate_click(
+        row.origin + gpui::point(gpui::px(4.0), row.size.height / 2.0),
+        gpui::Modifiers::default(),
+    );
+    cx.run_until_parked();
+    assert!(harness.read_with(cx, |harness, _| harness.is_on));
+}
+
+struct ChoiceLegendHarness {
+    legend: ChoiceLegend,
+}
+
+impl Render for ChoiceLegendHarness {
+    fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+        div().size_full().child(
+            ChoiceGroup::new(
+                "theme",
+                "Theme",
+                vec![ChoiceOption::new("Light"), ChoiceOption::new("Dark")],
+                0,
+            )
+            .legend(self.legend),
+        )
+    }
+}
+
+#[gpui::test]
+fn a_choice_group_shows_its_legend_unless_the_host_draws_it(cx: &mut TestAppContext) {
+    set_up(cx);
+    let (harness, cx) = cx.add_window_view(|_, _| ChoiceLegendHarness {
+        legend: ChoiceLegend::default(),
+    });
+    cx.run_until_parked();
+    assert!(
+        cx.debug_bounds("choice-legend-theme").is_some(),
+        "two groups of the same options must be told apart by sight"
+    );
+    harness.update(cx, |harness, cx| {
+        harness.legend = ChoiceLegend::Hidden;
+        cx.notify();
+    });
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("choice-legend-theme").is_none());
 }
 
 struct TabsHarness {

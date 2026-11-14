@@ -36,8 +36,8 @@ use mellow_protocol::{
 use super::ConversationView;
 use super::cards::CardDialogDone;
 use crate::components::{
-    Button, ButtonVariant, ChoiceGroup, ChoiceOption, IconButton, ModalDialog, ModalDialogEvent,
-    Switch, TextField, with_type,
+    Button, ButtonVariant, ChoiceGroup, ChoiceLegend, ChoiceOption, IconButton, ModalDialog,
+    ModalDialogEvent, Switch, TextField, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::theme::icons::IconName;
@@ -699,6 +699,7 @@ impl CardForm {
                     polls.allow_multiple(),
                 )
                 .description(polls.allow_multiple_hint())
+                .without_divider()
                 .on_change(move |is_on, _, cx| {
                     switch_entity.update(cx, |form, cx| {
                         form.allows_multiple_answers = is_on;
@@ -708,6 +709,7 @@ impl CardForm {
             )
             .child(
                 ChoiceGroup::new("card-dialog-duration", polls.duration(), options, checked)
+                    .legend(ChoiceLegend::Field)
                     .on_select(move |index, _, cx| {
                         duration_entity.update(cx, |form, cx| {
                             if let Some(hours) = POLL_DURATIONS_IN_HOURS.get(index) {

@@ -16,7 +16,7 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_BUTTON_HEIGHT, COMPONENT_BUTTON_HEIGHT_LARGE,
     COMPONENT_BUTTON_HEIGHT_SMALL, COMPONENT_BUTTON_PADDING_INLINE, COMPONENT_BUTTON_RADIUS,
-    RADIUS_SM, SIZE_HIT_WEB_MIN, TYPE_BUTTON, ThemeTokens,
+    RADIUS_SM, TYPE_BUTTON, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
 
@@ -227,7 +227,8 @@ impl RenderOnce for Button {
             .items_center()
             .justify_center()
             .h(length(self.size.height()))
-            .min_w(length(SIZE_HIT_WEB_MIN))
+            // A short label ("OK") still makes a square button at least.
+            .min_w(length(self.size.height()))
             .px(length(COMPONENT_BUTTON_PADDING_INLINE))
             .rounded(length(COMPONENT_BUTTON_RADIUS))
             .bg(background)

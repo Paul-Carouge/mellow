@@ -1085,6 +1085,7 @@ impl RolesPage {
                     shown.is_displayed_separately,
                     words.displayed_separately(),
                 )
+                .control_only()
                 .description(words.displayed_separately_description())
                 .locked(!is_editable)
                 .on_change(move |is_on, _, cx| {
@@ -1112,6 +1113,7 @@ impl RolesPage {
                     shown.is_mentionable,
                     words.mentionable(),
                 )
+                .control_only()
                 .description(words.mentionable_description())
                 .locked(!is_editable)
                 .on_change(move |is_on, _, cx| {
@@ -1188,6 +1190,7 @@ impl RolesPage {
                         shown.permissions.contains(bit),
                         label,
                     )
+                    .control_only()
                     .description(switch_description)
                     .locked(is_locked)
                     .on_change(move |_, _, cx| {

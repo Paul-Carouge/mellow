@@ -223,6 +223,7 @@ impl Render for ManageMemberBody {
                     .child({
                         let switch =
                             Switch::new(("member-role", role.id.raw()), is_on, role.name.clone())
+                                .control_only()
                                 .locked(is_locked || self.busy_role_id.is_some())
                                 .on_change(move |is_given, _, cx| {
                                     let _ = body.update(cx, |body, cx| {

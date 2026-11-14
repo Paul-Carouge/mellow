@@ -1,6 +1,7 @@
 //! The hidden component gallery (`MELLOW_COMPONENT_GALLERY=1`, or `=dark` / `=light` to force a
 //! theme): every primitive in its states, and sample messages, to compare with the web's
-//! components side by side.
+//! components side by side. `=melli` shows the Melli section alone, with nothing else moving, to
+//! measure what Melli's frames cost.
 //! Developer-facing, so its own words are English and not translated.
 
 use std::rc::Rc;
@@ -22,26 +23,29 @@ use super::text_field::PasswordToggle;
 use super::unsaved_bar::UnsavedChangesLabels;
 use super::{
     Avatar, Button, ButtonSize, ButtonVariant, ChoiceGroup, ChoiceOption, ContextMenu, GroupAvatar,
-    IconButton, IconButtonTone, MentionBadge, MenuEntry, MenuItem, MenuItemTone, MenuOrigin,
-    ModalDialog, ModalDialogEvent, ProgressMeter, RangeField, RoleChips, SettingsListStatus,
-    SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels, ShownStatus,
-    StatusIndicator, Switch, Tabs, TextField, Tooltip, UnsavedChangesBar, with_tab_navigation,
-    with_type,
+    IconButton, IconButtonTone, Melli, MelliState, MentionBadge, MenuEntry, MenuItem, MenuItemTone,
+    MenuOrigin, ModalDialog, ModalDialogEvent, ProgressMeter, RangeField, RoleChips,
+    SettingsListStatus, SettingsNavEntry, SettingsNavItem, SettingsSheet, SettingsSheetLabels,
+    ShownStatus, StatusIndicator, Switch, Tabs, TextField, Tooltip, UnsavedChangesBar,
+    with_tab_navigation, with_type,
 };
 use crate::composer::{Composer, ReplyTarget};
 use crate::messages::samples::{MessageSamples, SampleActionHandler};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_MEMBER_ROW_AVATAR_SIZE, COMPONENT_MESSAGE_AVATAR_SIZE,
-    COMPONENT_MESSAGE_REPLY_AVATAR_SIZE, COMPONENT_PROFILE_POPOVER_AVATAR_SIZE,
-    COMPONENT_STATUS_SIZE_LARGE, COMPONENT_STATUS_SIZE_MENU, COMPONENT_STATUS_SIZE_SMALL, SPACE_LG,
-    SPACE_MD, SPACE_SM, SPACE_XL, TYPE_CATEGORY, TYPE_HEADING_LG,
+    COMPONENT_AUTH_CARD_MELLI_SIZE, COMPONENT_MEMBER_ROW_AVATAR_SIZE,
+    COMPONENT_MESSAGE_AVATAR_SIZE, COMPONENT_MESSAGE_REPLY_AVATAR_SIZE,
+    COMPONENT_PROFILE_POPOVER_AVATAR_SIZE, COMPONENT_RAIL_ITEM_SIZE, COMPONENT_STATUS_SIZE_LARGE,
+    COMPONENT_STATUS_SIZE_MENU, COMPONENT_STATUS_SIZE_SMALL, SPACE_LG, SPACE_MD, SPACE_SM,
+    SPACE_XL, TYPE_CATEGORY, TYPE_HEADING_LG,
 };
 use crate::theme::{ActiveTheme, SANS_FONT_FAMILY, apply_theme, color, length, theme};
 use crate::window_chrome::{TITLE_BAR_BAND_HEIGHT, main_window_options};
 
 /// The environment variable that opens the gallery instead of the app.
 pub const COMPONENT_GALLERY_VARIABLE: &str = "MELLOW_COMPONENT_GALLERY";
+/// The variable's value that shows Melli alone.
+const MELLI_ALONE_VALUE: &str = "melli";
 
 /// How long the sample dialog stays busy before it shows its error.
 const SAMPLE_DIALOG_WORK: Duration = Duration::from_millis(1500);
@@ -58,6 +62,10 @@ pub fn forced_appearance(variable_value: &str) -> Option<WindowAppearance> {
 
 pub struct ComponentGallery {
     switch_on: bool,
+    /// "Still poses": every Melli shows its reduced-motion pose.
+    is_melli_still: bool,
+    /// Only the Melli section, so its frames are the only ones drawn.
+    is_melli_alone: bool,
     range_value: f32,
     choice_index: usize,
     tab_index: usize,
@@ -134,6 +142,9 @@ impl ComponentGallery {
         });
         Self {
             switch_on: true,
+            is_melli_still: false,
+            is_melli_alone: std::env::var(COMPONENT_GALLERY_VARIABLE)
+                .is_ok_and(|value| value == MELLI_ALONE_VALUE),
             range_value: 100.0,
             choice_index: 0,
             tab_index: 0,
@@ -412,21 +423,37 @@ impl Render for ComponentGallery {
 
         let switches = section("Switch, slider, choice", cx)
             .child(
-                row()
+                div()
+                    .w(length(SPACE_XL * 12.0))
+                    .flex()
+                    .flex_col()
                     .child(
-                        Switch::new("switch", self.switch_on, "Notifications").on_change({
-                            let entity = entity.clone();
-                            move |is_on, _, cx| {
-                                entity.update(cx, |gallery, cx| {
-                                    gallery.switch_on = is_on;
-                                    cx.notify();
-                                });
-                            }
-                        }),
+                        Switch::new("switch", self.switch_on, "Notifications")
+                            .description("A row: the label, its description, the switch")
+                            .on_change({
+                                let entity = entity.clone();
+                                move |is_on, _, cx| {
+                                    entity.update(cx, |gallery, cx| {
+                                        gallery.switch_on = is_on;
+                                        cx.notify();
+                                    });
+                                }
+                            }),
                     )
                     .child(Switch::new("switch-off", false, "Off"))
-                    .child(Switch::new("switch-locked-on", true, "Locked on").locked(true))
-                    .child(Switch::new("switch-locked-off", false, "Locked off").locked(true)),
+                    .child(
+                        row()
+                            .child(
+                                Switch::new("switch-locked-on", true, "Locked on")
+                                    .locked(true)
+                                    .control_only(),
+                            )
+                            .child(
+                                Switch::new("switch-locked-off", false, "Locked off")
+                                    .locked(true)
+                                    .control_only(),
+                            ),
+                    ),
             )
             .child(
                 div().w(length(SPACE_XL * 10.0)).child(
@@ -699,6 +726,68 @@ impl Render for ComponentGallery {
                     ),
             );
 
+        let melli_entity = entity.clone();
+        let mellis = section("Melli", cx)
+            .child(
+                Switch::new("melli-still", self.is_melli_still, "Still poses")
+                    .description("The reduced-motion pose of each state")
+                    .without_divider()
+                    .on_change(move |is_still, _, cx| {
+                        melli_entity.update(cx, |gallery, cx| {
+                            gallery.is_melli_still = is_still;
+                            cx.notify();
+                        });
+                    }),
+            )
+            .child(row().children(MelliState::ALL.into_iter().map(|state| {
+                let is_still = self.is_melli_still;
+                let tile = |suffix: &'static str, fill: u32, is_on_accent: bool| {
+                    div()
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .size(length(COMPONENT_RAIL_ITEM_SIZE))
+                        .rounded(length(
+                            crate::theme::tokens::COMPONENT_RAIL_ICON_RADIUS_ACTIVE,
+                        ))
+                        .bg(color(fill))
+                        .child(
+                            Melli::new(
+                                SharedString::from(format!("melli-{}-{suffix}", state.name())),
+                                state,
+                                COMPONENT_RAIL_ITEM_SIZE,
+                            )
+                            .still(is_still)
+                            .marks_on_accent(is_on_accent),
+                        )
+                };
+                div()
+                    .flex()
+                    .flex_col()
+                    .items_center()
+                    .gap(length(SPACE_SM))
+                    .child(
+                        Melli::new(
+                            SharedString::from(format!("melli-{}", state.name())),
+                            state,
+                            COMPONENT_AUTH_CARD_MELLI_SIZE,
+                        )
+                        .still(is_still),
+                    )
+                    .child(
+                        div()
+                            .flex()
+                            .gap(length(SPACE_SM))
+                            .child(tile("rail", tokens.color_surface_rail, false))
+                            .child(tile("accent", tokens.color_accent_fill, true)),
+                    )
+                    .child(
+                        with_type(div(), TYPE_CATEGORY)
+                            .text_color(color(tokens.color_text_muted))
+                            .child(state.name()),
+                    )
+            })));
+
         let feedback = section("Progress, loading, unsaved changes", cx)
             .child(div().w(length(SPACE_XL * 10.0)).child(ProgressMeter::new(
                 "progress",
@@ -792,6 +881,21 @@ impl Render for ComponentGallery {
             )
             .collect();
 
+        if self.is_melli_alone {
+            return with_tab_navigation(
+                div()
+                    .id("component-gallery")
+                    .size_full()
+                    .bg(color(tokens.color_surface_chat))
+                    .font_family(SANS_FONT_FAMILY)
+                    .text_color(color(tokens.color_text_normal))
+                    .p(length(SPACE_LG))
+                    .pt(length(TITLE_BAR_BAND_HEIGHT))
+                    .child(mellis),
+                &self.root_focus,
+            )
+            .into_any_element();
+        }
         let gallery = with_tab_navigation(
             div()
                 .id("component-gallery")
@@ -817,7 +921,7 @@ impl Render for ComponentGallery {
                         .gap(length(SPACE_XL))
                         .child(column().child(buttons).child(switches))
                         .child(column().child(identity).child(fields))
-                        .child(column().child(navigation).child(feedback)),
+                        .child(column().child(mellis).child(navigation).child(feedback)),
                 )
                 .child(messages)
                 // Type ":" or "@" and two letters for suggestions; files dropped on it fail to
@@ -831,6 +935,7 @@ impl Render for ComponentGallery {
             .size_full()
             .child(gallery)
             .children(settings_sheet)
+            .into_any_element()
     }
 }
 

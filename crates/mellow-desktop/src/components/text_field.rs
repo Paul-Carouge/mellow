@@ -17,8 +17,8 @@ use crate::theme::tokens::{
     COMPONENT_TEXT_FIELD_BORDER_WIDTH, COMPONENT_TEXT_FIELD_HEIGHT,
     COMPONENT_TEXT_FIELD_HELPER_GAP, COMPONENT_TEXT_FIELD_ICON_SIZE,
     COMPONENT_TEXT_FIELD_LABEL_GAP, COMPONENT_TEXT_FIELD_PADDING_INLINE,
-    COMPONENT_TEXT_FIELD_RADIUS, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_XS, TYPE_BODY, TYPE_BODY_LG,
-    TYPE_CATEGORY, ThemeTokens,
+    COMPONENT_TEXT_FIELD_RADIUS, SPACE_2XS, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_CATEGORY,
+    ThemeTokens,
 };
 use crate::theme::{MONOSPACE_FONT_FAMILY, color, length, theme};
 
@@ -165,25 +165,25 @@ impl RenderOnce for TextField {
                 ))
             })
             .child(
-                with_type(div(), TYPE_BODY_LG)
-                    .flex_1()
-                    .min_w_0()
-                    .text_color(color(tokens.component_text_field_text))
-                    .when(self.is_monospace, |text| {
-                        text.font_family(MONOSPACE_FONT_FAMILY)
-                    })
-                    .child(
-                        Input::new(&self.state)
-                            .appearance(false)
-                            .readonly(self.is_read_only)
-                            .aria_label(self.label.clone())
-                            .when_some(description, |input, description| {
-                                input.aria_label(SharedString::from(format!(
-                                    "{}, {description}",
-                                    self.label
-                                )))
-                            }),
-                    ),
+                div().flex_1().min_w_0().child(
+                    // The value in `type.body-lg` from the field's own padding, as the web's
+                    // `<input>`: the input's own text size and inline padding are replaced.
+                    with_type(Input::new(&self.state), TYPE_BODY_LG)
+                        .px_0()
+                        .text_color(color(tokens.component_text_field_text))
+                        .when(self.is_monospace, |input| {
+                            input.font_family(MONOSPACE_FONT_FAMILY)
+                        })
+                        .appearance(false)
+                        .readonly(self.is_read_only)
+                        .aria_label(self.label.clone())
+                        .when_some(description, |input, description| {
+                            input.aria_label(SharedString::from(format!(
+                                "{}, {description}",
+                                self.label
+                            )))
+                        }),
+                ),
             )
             .when_some(self.password_toggle, |field, toggle| {
                 let toggle_focus = window
@@ -214,7 +214,8 @@ impl RenderOnce for TextField {
                         .flex_none()
                         .items_center()
                         .justify_center()
-                        .size(length(SIZE_HIT_WEB_MIN))
+                        // As tall as the field, flush with its trailing edge.
+                        .size(length(COMPONENT_TEXT_FIELD_HEIGHT))
                         .mr(-length(COMPONENT_TEXT_FIELD_PADDING_INLINE))
                         .cursor_pointer()
                         .on_hover(move |is_hovered, _, cx| {

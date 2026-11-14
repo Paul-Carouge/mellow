@@ -1,6 +1,7 @@
-//! `ChoiceOption.svelte` (DESIGN.md §6.55): the radio rows of a dialog's choice (a channel type, a
-//! server template). The whole row is its label; a checked row is washed and edged, not only
-//! dotted. As native radios: one Tab stop on the checked row, arrows move and choose, wrapping.
+//! `ChoiceOption.svelte` in its `<fieldset>` (DESIGN.md §6.55): the legend above, then the radio
+//! rows of a choice (a theme, a channel type, a server template). The whole row is its label; a
+//! checked row is washed and edged, not only dotted. As native radios: one Tab stop on the checked
+//! row, arrows move and choose, wrapping.
 
 use std::sync::Arc;
 
@@ -18,7 +19,8 @@ use crate::theme::tokens::{
     COMPONENT_CHOICE_BORDER_WIDTH, COMPONENT_CHOICE_GAP, COMPONENT_CHOICE_ICON_SIZE,
     COMPONENT_CHOICE_INDICATOR_SIZE, COMPONENT_CHOICE_LIST_GAP, COMPONENT_CHOICE_MIN_HEIGHT,
     COMPONENT_CHOICE_PADDING_BLOCK, COMPONENT_CHOICE_PADDING_INLINE, COMPONENT_CHOICE_RADIUS,
-    SIZE_FOCUS_RING_WIDTH, SPACE_XS, TYPE_BODY_SM, TYPE_CHANNEL_NAME,
+    COMPONENT_SETTINGS_SECTION_LABEL_GAP, COMPONENT_TEXT_FIELD_LABEL_GAP, SIZE_FOCUS_RING_WIDTH,
+    SPACE_XS, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_CHANNEL_NAME,
 };
 use crate::theme::{color, length, theme};
 
@@ -68,6 +70,21 @@ pub fn next_choice_index(key: &str, current: usize, option_count: usize) -> Opti
     }
 }
 
+/// How the group's legend is drawn, as the web's `<legend>` classes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ChoiceLegend {
+    /// A settings page's group: `type.category` in the section label colour ("Input mode").
+    #[default]
+    Section,
+    /// A dialog's group, drawn like a text field's label ("Duration").
+    Field,
+    /// A group under a section label, in the row title's type ("Noise suppression" under
+    /// "Voice processing").
+    Subheading,
+    /// The host draws the heading itself; the legend is only the group's accessible name.
+    Hidden,
+}
+
 #[derive(IntoElement)]
 pub struct ChoiceGroup {
     id: ElementId,
@@ -76,6 +93,7 @@ pub struct ChoiceGroup {
     description: Option<SharedString>,
     options: Vec<ChoiceOption>,
     checked_index: usize,
+    legend: ChoiceLegend,
     on_select: Option<SelectHandler>,
     should_focus_checked: bool,
 }
@@ -94,9 +112,17 @@ impl ChoiceGroup {
             description: None,
             options,
             checked_index,
+            legend: ChoiceLegend::default(),
             on_select: None,
             should_focus_checked: false,
         }
+    }
+
+    /// How the legend (`label`) shows above the rows; a settings section's label by default.
+    #[must_use]
+    pub fn legend(mut self, legend: ChoiceLegend) -> Self {
+        self.legend = legend;
+        self
     }
 
     /// Puts focus on the checked row once drawn: the group a dialog opens on.
@@ -280,6 +306,32 @@ impl RenderOnce for ChoiceGroup {
                     })
             });
 
+        let legend = match self.legend {
+            ChoiceLegend::Section => Some((
+                TYPE_CATEGORY,
+                tokens.component_settings_section_label_text,
+                COMPONENT_SETTINGS_SECTION_LABEL_GAP,
+            )),
+            ChoiceLegend::Field => Some((
+                TYPE_CATEGORY,
+                tokens.component_text_field_label_text,
+                COMPONENT_TEXT_FIELD_LABEL_GAP,
+            )),
+            ChoiceLegend::Subheading => Some((
+                TYPE_CHANNEL_NAME,
+                tokens.color_text_heading,
+                COMPONENT_SETTINGS_SECTION_LABEL_GAP,
+            )),
+            ChoiceLegend::Hidden => None,
+        }
+        .map(|(type_token, text_colour, gap)| {
+            with_type(div(), type_token)
+                .debug_selector(|| format!("choice-legend-{}", self.id))
+                .mb(length(gap))
+                .text_color(color(text_colour))
+                .child(self.label.clone())
+        });
+
         div()
             .id(self.id)
             .role(Role::RadioGroup)
@@ -289,7 +341,7 @@ impl RenderOnce for ChoiceGroup {
             })
             .flex()
             .flex_col()
-            .gap(length(COMPONENT_CHOICE_LIST_GAP))
+            .children(legend)
             .on_key_down(move |event: &KeyDownEvent, window, cx| {
                 if event.keystroke.modifiers.modified() {
                     return;
@@ -307,7 +359,13 @@ impl RenderOnce for ChoiceGroup {
                     on_select(next, window, cx);
                 }
             })
-            .children(rows)
+            .child(
+                div()
+                    .flex()
+                    .flex_col()
+                    .gap(length(COMPONENT_CHOICE_LIST_GAP))
+                    .children(rows),
+            )
     }
 }
 

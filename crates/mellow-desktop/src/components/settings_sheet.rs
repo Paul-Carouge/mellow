@@ -37,7 +37,7 @@ use crate::theme::tokens::{
     SPACE_LG, SPACE_XS, TYPE_CATEGORY, TYPE_CHANNEL_NAME, TYPE_HEADING_LG, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
-use crate::window_chrome::TOP_BAND_HEIGHT;
+use crate::window_chrome::TITLE_BAR_BAND_HEIGHT;
 
 /// What a nav item reports when chosen: its index among the items.
 type ChooseHandler = Arc<dyn Fn(usize, &mut Window, &mut App) + 'static>;
@@ -264,10 +264,8 @@ fn nav_item(
         .flex()
         .items_center()
         .w_full()
-        // At least the web's coarse-pointer height, so a touch screen can hit it.
-        .h(length(
-            COMPONENT_SETTINGS_NAV_ITEM_HEIGHT.max(SIZE_HIT_WEB_MIN),
-        ))
+        // The pointer size (DESIGN.md §7.4); the web grows it to 44 px only under a coarse pointer.
+        .h(length(COMPONENT_SETTINGS_NAV_ITEM_HEIGHT))
         .px(length(COMPONENT_SETTINGS_NAV_ITEM_PADDING_INLINE))
         .rounded(length(COMPONENT_SETTINGS_NAV_ITEM_RADIUS))
         .when_some(background, |row, background| row.bg(color(background)))
@@ -551,13 +549,16 @@ impl RenderOnce for SettingsSheet {
                 focus_previous_inside(&previous_focus, window, cx);
             })
             .pt(length(if is_wide {
-                TOP_BAND_HEIGHT
+                SIZE_SHEET_INSET.max(TITLE_BAR_BAND_HEIGHT)
             } else {
-                crate::window_chrome::TITLE_BAR_BAND_HEIGHT
+                TITLE_BAR_BAND_HEIGHT
             }))
+            // The web's `sheet-inset-padding`: the card 8 px from every window edge, the
+            // navigation column included, so both columns split the same width as on the web.
             .when(is_wide, |sheet| {
                 sheet
                     .pb(length(SIZE_SHEET_INSET))
+                    .pl(length(SIZE_SHEET_INSET))
                     .pr(length(SIZE_SHEET_INSET))
                     .gap(length(SIZE_SHEET_INSET))
             })

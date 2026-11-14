@@ -23,6 +23,9 @@ type ValueText = Arc<dyn Fn(f32) -> SharedString + 'static>;
 // shortcut: the web draws the browser's own range input, so no slider tokens exist; the track and
 // thumb take spacing tokens. Add `component.slider.track-*` and `thumb-*` tokens with the next
 // token pass (design research §10 item 11).
+/// The web's range input height (DESIGN.md §6.7), with a mouse too: the slider's drawn box, which
+/// keeps the label, track and value spaced as on the web, not a touch minimum.
+const SLIDER_HEIGHT: f32 = SIZE_HIT_WEB_MIN;
 const TRACK_HEIGHT: f32 = SPACE_2XS;
 const THUMB_SIZE: f32 = SPACE_MD;
 /// Page Up and Page Down move a tenth of the range, as browsers do.
@@ -162,7 +165,7 @@ impl RenderOnce for RangeField {
             .aria_numeric_value_step(f64::from(bounds.step))
             .track_focus(&focus_handle)
             .relative()
-            .h(length(SIZE_HIT_WEB_MIN))
+            .h(length(SLIDER_HEIGHT))
             .w_full()
             .rounded(length(RADIUS_SM))
             .cursor_pointer()
@@ -227,7 +230,7 @@ impl RenderOnce for RangeField {
                     .absolute()
                     .left_0()
                     .right_0()
-                    .top(length((SIZE_HIT_WEB_MIN - TRACK_HEIGHT) / 2.0))
+                    .top(length((SLIDER_HEIGHT - TRACK_HEIGHT) / 2.0))
                     .h(length(TRACK_HEIGHT))
                     .rounded_full()
                     .bg(color(tokens.color_border_strong))
@@ -243,7 +246,7 @@ impl RenderOnce for RangeField {
                 // Centred on its value: the thumb's own half width is taken back.
                 div()
                     .absolute()
-                    .top(length((SIZE_HIT_WEB_MIN - THUMB_SIZE) / 2.0))
+                    .top(length((SLIDER_HEIGHT - THUMB_SIZE) / 2.0))
                     .left(thumb_left)
                     .ml(-length(THUMB_SIZE / 2.0))
                     .size(length(THUMB_SIZE))
