@@ -5,7 +5,7 @@
 use std::collections::{HashMap, HashSet};
 use std::io::ErrorKind;
 use std::net::UdpSocket;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -187,11 +187,17 @@ type ReceivedFrames = HashMap<(u8, u8), u32>;
 /// layer the server asks one of), and counts the camera frames it receives.
 struct CameraBot {
     received: Arc<Mutex<ReceivedFrames>>,
+    /// Frames of its own `h` layer written.
+    sent_high: Arc<AtomicU32>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl CameraBot {
+    fn sent_high(&self) -> u32 {
+        self.sent_high.load(Ordering::Relaxed)
+    }
+
     /// Sound frames of the screen shared by the bot with `marker`.
     fn heard(&self, marker: u8) -> u32 {
         self.received
@@ -315,22 +321,24 @@ async fn join_camera_bot(
         .accept_answer(pending, SdpAnswer::from_sdp_string(&answer).unwrap())
         .unwrap();
     let received = Arc::new(Mutex::new(HashMap::new()));
+    let sent_high = Arc::new(AtomicU32::new(0));
     let stop = Arc::new(AtomicBool::new(false));
     let thread = {
-        let (received, stop) = (received.clone(), stop.clone());
+        let (received, sent_high, stop) = (received.clone(), sent_high.clone(), stop.clone());
         std::thread::spawn(move || {
             run_camera_bot(
                 rtc,
                 &udp,
                 (camera_mid, screen_sound_mid, marker, frame_bytes),
                 link,
-                &received,
+                (&received, &sent_high),
                 &stop,
             );
         })
     };
     CameraBot {
         received,
+        sent_high,
         stop,
         thread: Some(thread),
     }
@@ -341,7 +349,7 @@ fn run_camera_bot(
     socket: &UdpSocket,
     (camera_mid, screen_sound_mid, marker, frame_bytes): (Mid, Option<Mid>, u8, FrameBytes),
     link: BotLink,
-    received: &Mutex<ReceivedFrames>,
+    (received, sent_high): (&Mutex<ReceivedFrames>, &AtomicU32),
     stop: &AtomicBool,
 ) {
     let local_address = socket.local_addr().unwrap();
@@ -399,6 +407,7 @@ fn run_camera_bot(
                 now,
                 rtp_time,
             );
+            sent_high.fetch_add(1, Ordering::Relaxed);
             rtp_time += VIDEO_CLOCK_TICKS_PER_FRAME;
             next_frame_at += VIDEO_FRAME_INTERVAL;
             continue;
@@ -1246,8 +1255,8 @@ const SCREEN_LIKE_FRAMES: FrameBytes = FrameBytes {
     low: 2_000,
     high: 12_000,
 };
-/// How long a lossy watcher is counted for.
-const LOSSY_WATCH_TIME: Duration = Duration::from_secs(3);
+/// Frames of the `h` layer a lossy watcher is counted for: three seconds of video.
+const LOSSY_WATCH_FRAMES: u32 = 90;
 
 /// A watcher across the Internet loses a few packets: the server retransmits them when asked
 /// (NACK, RTX), so its pictures keep coming whole instead of freezing at the first loss.
@@ -1256,7 +1265,7 @@ async fn a_watcher_losing_some_packets_keeps_receiving_whole_frames() {
     let fixture = fixture().await;
     let (mut owner, mut member) = identified_pair(&fixture).await;
     let owner_id = fixture.user_id("owner");
-    let _owner_bot = join_camera_bot(
+    let owner_bot = join_camera_bot(
         &mut owner,
         fixture.lounge,
         1,
@@ -1281,17 +1290,22 @@ async fn a_watcher_losing_some_packets_keeps_receiving_whole_frames() {
     wait_for_camera_in(&mut member, owner_id, VideoCodec::H264).await;
     send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
     member_bot.wait_until_receiving(1, "h").await;
-    let before = member_bot.received(1, "h");
-    tokio::time::sleep(LOSSY_WATCH_TIME).await;
-    let whole_frames = member_bot.received(1, "h") - before;
-    drop(member_bot);
+    let (sent_before, received_before) = (owner_bot.sent_high(), member_bot.received(1, "h"));
+    // The deadline only keeps a broken test from hanging; frames are counted, not time.
+    let deadline = Instant::now() + HEARING_TIMEOUT;
+    while owner_bot.sent_high() - sent_before < LOSSY_WATCH_FRAMES {
+        assert!(Instant::now() < deadline, "the camera stopped sending");
+        tokio::time::sleep(Duration::from_millis(30)).await;
+    }
+    let sent = owner_bot.sent_high() - sent_before;
+    let whole_frames = member_bot.received(1, "h") - received_before;
+    drop((owner_bot, member_bot));
     fixture.close().await;
 
-    // 30 frames a second are sent; at most a few may come too late.
-    let sent = u32::try_from(LOSSY_WATCH_TIME.as_millis() / VIDEO_FRAME_INTERVAL.as_millis())
-        .unwrap_or(u32::MAX);
+    // Without retransmissions a few whole frames come (4 of 90 measured); with them, all but
+    // the ones still on their way.
     assert!(
         whole_frames >= sent * 2 / 3,
-        "{whole_frames} whole frames of about {sent}"
+        "{whole_frames} whole frames of the {sent} sent"
     );
 }

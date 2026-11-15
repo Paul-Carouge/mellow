@@ -186,8 +186,8 @@ pub(crate) mod tests {
                 picture_count += 1;
             }
             assert!(
-                picture_count >= index,
-                "{picture_count} pictures after {} access units: more than one held back",
+                picture_count + pictures_late() > index,
+                "{picture_count} pictures after {} access units",
                 index + 1
             );
         }
@@ -211,6 +211,23 @@ pub(crate) mod tests {
         (
             include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-640x360.h264"),
             (640, 360),
+        ),
+    ];
+
+    /// The same pictures of a shared 1366 × 768 window, whose layers' widths are no multiple of
+    /// 16, so every one is cropped on the right (1376, 688 and 352 pixels coded).
+    pub(crate) const LINUX_WINDOW_LAYERS: [(&[u8], (u32, u32)); 3] = [
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-1366x768.h264"),
+            (1_366, 768),
+        ),
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-682x384.h264"),
+            (682, 384),
+        ),
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-340x192.h264"),
+            (340, 192),
         ),
     ];
 
@@ -241,59 +258,93 @@ pub(crate) mod tests {
         })
     }
 
-    /// Decodes every access unit of `stream`, one of [`LINUX_SHARE_LAYERS`], with `decoder` and
-    /// checks the pictures: at its size, in its colours, each a later access unit's than the last
-    /// (never the same again: a frozen picture), at most one access unit behind the input
-    /// (Media Foundation's decoder may give a picture at the next input), and every one out once
-    /// the stream's first IDR comes again.
+    /// Pictures a decoder may give late, one access unit after their own: Media Foundation's
+    /// (its worker threads may finish a picture after it was asked for); none elsewhere.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) fn pictures_late() -> usize {
+        usize::from(cfg!(windows))
+    }
+
+    /// Follows the pictures of a turning-quadrants stream of `access_units` access units fed
+    /// again with its first IDR at the end (input `access_units`, which pushes out a picture
+    /// held back): which input each picture is of, checked to be later than the last one (never
+    /// the same again: a frozen picture), skipping at most [`pictures_late`] (two out at once).
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) struct PictureOrder {
+        pub(crate) access_units: usize,
+        pub(crate) last_shown: Option<usize>,
+    }
+
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    impl PictureOrder {
+        pub(crate) fn new(access_units: usize) -> Self {
+            Self {
+                access_units,
+                last_shown: None,
+            }
+        }
+
+        /// Takes a picture whose quadrants are turned by `turn`; panics with `context` when it
+        /// is not of one of the next inputs.
+        pub(crate) fn shown(&mut self, turn: usize, context: &str) {
+            let next = self.last_shown.map_or(0, |shown| shown + 1);
+            // The closing IDR repeats the first access unit's picture.
+            let turn_of = |input: usize| (input % self.access_units) % 4;
+            let shown = (next..=(next + pictures_late()).min(self.access_units))
+                .find(|input| turn_of(*input) == turn)
+                .unwrap_or_else(|| panic!("{context}: turn {turn}, expected input {next}"));
+            self.last_shown = Some(shown);
+        }
+
+        /// Whether the pictures shown keep up with `inputs` inputs given, at most
+        /// [`pictures_late`] behind.
+        pub(crate) fn keeps_up_with(&self, inputs: usize) -> bool {
+            self.last_shown.map_or(0, |shown| shown + 1) + pictures_late() >= inputs
+        }
+    }
+
+    /// Decodes every access unit of `stream`, then its first IDR again, with `decoder` and checks
+    /// the pictures: at its size, in its colours, in order, never frozen, at most
+    /// [`pictures_late`] behind, and every one out by the end.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn assert_every_picture_shows(decoder: &mut H264Decoder, stream: &[u8], size: (u32, u32)) {
         let access_units = crate::h264_stream::tests::access_units(stream);
         assert_eq!(access_units.len(), 6, "{size:?}");
         let (width, height) = (size.0 as usize, size.1 as usize);
-        let mut last_shown: Option<usize> = None;
+        let mut order = PictureOrder::new(access_units.len());
         let inputs = access_units.iter().chain(&access_units[..1]);
         for (index, access_unit) in inputs.enumerate() {
             let picture = decoder
                 .decode(access_unit)
                 .unwrap_or_else(|error| panic!("{size:?} input {index}: {error}"));
-            let is_every_picture_out = last_shown == Some(access_units.len() - 1);
-            // After the last access unit's picture, only the closing IDR's may come.
-            if let Some(picture) = picture.filter(|_| !is_every_picture_out) {
+            if let Some(picture) = picture {
                 assert_eq!((picture.width(), picture.height()), size);
+                let context = format!("{size:?} input {index}");
                 let turn = quadrant_turn(&picture.to_bgra().unwrap(), width, height)
-                    .unwrap_or_else(|| panic!("{size:?} input {index}: not the quadrants"));
-                let next = last_shown.map_or(0, |shown| shown + 1);
-                // The next access unit's picture, or the one after when two came out at once.
-                let shown = (next..=next + 1)
-                    .find(|candidate| candidate % 4 == turn)
-                    .unwrap_or_else(|| {
-                        panic!("{size:?} input {index}: turn {turn}, expected access unit {next}")
-                    });
-                if shown < access_units.len() {
-                    last_shown = Some(shown);
-                }
+                    .unwrap_or_else(|| panic!("{context}: not the quadrants"));
+                order.shown(turn, &context);
             }
-            let behind = index.min(access_units.len());
             assert!(
-                last_shown.map_or(0, |shown| shown + 1) >= behind,
-                "{size:?}: after input {index}, last picture {last_shown:?}"
+                order.keeps_up_with(index + 1),
+                "{size:?}: after input {index}, last picture {:?}",
+                order.last_shown
             );
         }
-        assert_eq!(
-            last_shown,
-            Some(access_units.len() - 1),
-            "{size:?}: every picture"
+        assert!(
+            order.last_shown >= Some(access_units.len() - 1),
+            "{size:?}: every picture, last {:?}",
+            order.last_shown
         );
     }
 
     /// What a Windows watcher of a Linux share saw (a frozen, green, striped picture): every
-    /// access unit of the Linux sender's layers gives its own picture at its size, in its colours
-    /// (`vesper-encode`'s `real_time_h264_layers_of_a_4k_source_keep_its_colours` made them).
+    /// access unit of the Linux sender's layers, of a screen and of a window of any width, gives
+    /// its own picture at its size, in its colours (`vesper-encode`'s
+    /// `real_time_h264_layers_of_*_keep_its_colours` made them).
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn every_picture_of_a_linux_share_decodes_in_its_colours() {
-        for (stream, size) in LINUX_SHARE_LAYERS {
+        for (stream, size) in LINUX_SHARE_LAYERS.into_iter().chain(LINUX_WINDOW_LAYERS) {
             assert_every_picture_shows(&mut H264Decoder::new().unwrap(), stream, size);
         }
     }
@@ -303,13 +354,11 @@ pub(crate) mod tests {
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn one_decoder_follows_the_server_s_layer_switches() {
-        let mut decoder = H264Decoder::new().unwrap();
-        for (stream, size) in LINUX_SHARE_LAYERS
-            .into_iter()
-            .rev()
-            .chain(LINUX_SHARE_LAYERS)
-        {
-            assert_every_picture_shows(&mut decoder, stream, size);
+        for layers in [LINUX_SHARE_LAYERS, LINUX_WINDOW_LAYERS] {
+            let mut decoder = H264Decoder::new().unwrap();
+            for (stream, size) in layers.into_iter().rev().chain(layers) {
+                assert_every_picture_shows(&mut decoder, stream, size);
+            }
         }
     }
 }

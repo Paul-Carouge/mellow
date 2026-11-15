@@ -51,15 +51,25 @@ impl PictureLayout {
     }
 
     /// The I420 planes of `bytes` as the decoder wrote them: with the coded rows (whole
-    /// macroblocks) when the buffer holds them, else with the shown rows only, which the decoder
-    /// writes for a cropped picture (640 × 360, coded 368 rows high) when the buffer holds
-    /// exactly that.
+    /// macroblocks) when the buffer holds them; else packed at the shown size (stride the even
+    /// width, the even height's rows) when the buffer is exactly that, as for a window whose
+    /// width is no multiple of 16 (1366 × 768, coded 1376 wide); else with the shown rows only at
+    /// the coded stride, as for a cropped height (640 × 360, coded 368 rows high).
     fn written_view(self, bytes: &[u8]) -> Option<I420View<'_>> {
         if bytes.len() >= self.buffer_length()? {
             return self.view(bytes);
         }
+        let shown_rows = usize::try_from(self.height).ok()?.next_multiple_of(2);
+        let packed = Self {
+            stride: usize::try_from(self.width).ok()?.next_multiple_of(2),
+            rows: shown_rows,
+            ..self
+        };
+        if bytes.len() == packed.buffer_length()? {
+            return packed.view(bytes);
+        }
         let shown = Self {
-            rows: usize::try_from(self.height).ok()?.next_multiple_of(2),
+            rows: shown_rows,
             ..self
         };
         (bytes.len() >= shown.buffer_length()?)
@@ -433,6 +443,32 @@ mod tests {
         assert_eq!((view.width(), view.height()), (4, 2));
         assert_eq!(&view.luma()[..4], &[0, 1, 2, 3]);
         assert!(layout.view(&bytes[..23]).is_none(), "a short buffer");
+    }
+
+    #[test]
+    fn a_picture_cropped_on_the_right_written_packed_is_read_at_its_shown_size() {
+        // 6 × 2 shown out of 16 × 16 coded, written packed: luma 12, then two chroma planes of 3.
+        let layout = PictureLayout {
+            width: 6,
+            height: 2,
+            stride: 16,
+            rows: 16,
+        };
+        let mut bytes: Vec<u8> = (0..12).collect();
+        bytes.extend([100, 101, 102, 200, 201, 202]);
+        let view = layout.written_view(&bytes).unwrap();
+        assert_eq!((view.width(), view.height()), (6, 2));
+        assert_eq!(view.luma_stride(), 6);
+        assert_eq!(&view.luma()[6..12], &[6, 7, 8, 9, 10, 11], "second row");
+        assert_eq!(&view.blue_chroma()[..3], &[100, 101, 102]);
+        assert_eq!(&view.red_chroma()[..3], &[200, 201, 202]);
+        assert!(
+            layout.written_view(&bytes[..17]).is_none(),
+            "a buffer of no known layout"
+        );
+        // An odd width keeps whole chroma samples: 5 shown, rows of 6.
+        let odd = PictureLayout { width: 5, ..layout };
+        assert_eq!(odd.written_view(&bytes).unwrap().luma_stride(), 6);
     }
 
     #[test]

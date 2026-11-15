@@ -581,38 +581,36 @@ unsafe fn decode_h264_quadrants(packets: &[vesper_core::EncodedPacket]) -> Vec<Q
     }
 }
 
-/// A 4K screen shared at the 1440p quality (Mellow's ADR-0054 layers, 60
-/// frames a second): every picture of every layer keeps the source's
-/// colours, so a receiver showing a green or frozen picture was not sent one.
-/// (Its streams are `mellow-media`'s `vaapi-real-time-quadrants-*` fixtures.)
-#[test]
-fn real_time_h264_layers_of_a_4k_source_keep_its_colours() {
-    if !vesper_core::test_gpu() {
-        return;
-    }
-    let producer = unsafe { Producer::new(3_840, 2_160) };
-    let mut top = Encoder::new_real_time_h264(2_560, 1_440, 60, 12_000_000).unwrap();
-    let mut lower: Vec<Encoder> = [(1_280, 720), (640, 360)]
+/// Encodes six turning [`Producer::quadrants`] pictures of a `source`-sized
+/// screen as Mellow's real-time H.264 layers (`top` at 60 frames a second,
+/// `lower` scaled from it on the GPU) and checks every picture of every layer:
+/// at its size, in the source's colours, each its own.
+fn assert_layers_keep_the_colours(source: (u32, u32), top: (u32, u32), lower: [(u32, u32); 2]) {
+    let producer = unsafe { Producer::new(source.0, source.1) };
+    let mut top_encoder = Encoder::new_real_time_h264(top.0, top.1, 60, 12_000_000).unwrap();
+    let mut lower_encoders: Vec<Encoder> = lower
         .into_iter()
-        .map(|(w, h)| top.new_scaled_real_time_h264(w, h, 30, 1_500_000).unwrap())
+        .map(|(w, h)| {
+            top_encoder
+                .new_scaled_real_time_h264(w, h, 30, 1_500_000)
+                .unwrap()
+        })
         .collect();
     let ms = |t: u64| Duration::from_millis(1_000 + t * 16);
     let mut packets: Vec<Vec<vesper_core::EncodedPacket>> = vec![Vec::new(); 3];
     for t in 0..6 {
         let frame = unsafe { producer.quadrants(t as usize % POOL, t as usize, ms(t)) };
-        packets[0].extend(top.encode(frame).unwrap());
-        for (layer, encoder) in lower.iter_mut().enumerate() {
-            packets[layer + 1].extend(encoder.encode_scaled(&top, ms(t)).unwrap());
+        packets[0].extend(top_encoder.encode(frame).unwrap());
+        for (layer, encoder) in lower_encoders.iter_mut().enumerate() {
+            packets[layer + 1].extend(encoder.encode_scaled(&top_encoder, ms(t)).unwrap());
         }
     }
-    packets[0].extend(top.flush().unwrap());
-    for (layer, encoder) in lower.iter_mut().enumerate() {
+    packets[0].extend(top_encoder.flush().unwrap());
+    for (layer, encoder) in lower_encoders.iter_mut().enumerate() {
         packets[layer + 1].extend(encoder.flush().unwrap());
     }
-    for (packets, size) in packets
-        .iter()
-        .zip([(2_560, 1_440), (1_280, 720), (640, 360)])
-    {
+    for (packets, size) in packets.iter().zip([top, lower[0], lower[1]]) {
+        let size = (size.0 as usize, size.1 as usize);
         let pictures = unsafe { decode_h264_quadrants(packets) };
         assert_eq!(pictures.len(), 6, "{size:?}: one picture per frame");
         for (turn, picture) in pictures.iter().enumerate() {
@@ -627,4 +625,27 @@ fn real_time_h264_layers_of_a_4k_source_keep_its_colours() {
             }
         }
     }
+}
+
+/// A 4K screen shared at the 1440p quality (Mellow's ADR-0054 layers): every
+/// picture of every layer keeps the source's colours, so a receiver showing a
+/// green or frozen picture was not sent one. (Its streams are `mellow-media`'s
+/// `vaapi-real-time-quadrants-*` fixtures.)
+#[test]
+fn real_time_h264_layers_of_a_4k_source_keep_its_colours() {
+    if !vesper_core::test_gpu() {
+        return;
+    }
+    assert_layers_keep_the_colours((3_840, 2_160), (2_560, 1_440), [(1_280, 720), (640, 360)]);
+}
+
+/// A shared window whose width is no multiple of 16 (1366 × 768), so every
+/// layer is cropped horizontally: the same. (`mellow-media`'s
+/// `vaapi-real-time-quadrants-1366x768` fixtures.)
+#[test]
+fn real_time_h264_layers_of_a_window_of_any_width_keep_its_colours() {
+    if !vesper_core::test_gpu() {
+        return;
+    }
+    assert_layers_keep_the_colours((1_366, 768), (1_366, 768), [(682, 384), (340, 192)]);
 }
