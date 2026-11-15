@@ -69,6 +69,7 @@ pub enum IconName {
     PawPrint,
     PencilSimple,
     PhoneDisconnect,
+    PictureInPicture,
     Play,
     Plus,
     PlusCircle,
@@ -112,7 +113,7 @@ pub enum IconName {
 }
 
 impl IconName {
-    pub const ALL: [Self; 103] = [
+    pub const ALL: [Self; 104] = [
         Self::AirplaneTilt,
         Self::ArrowBendUpLeft,
         Self::ArrowBendUpRight,
@@ -176,6 +177,7 @@ impl IconName {
         Self::PawPrint,
         Self::PencilSimple,
         Self::PhoneDisconnect,
+        Self::PictureInPicture,
         Self::Play,
         Self::Plus,
         Self::PlusCircle,
@@ -285,6 +287,7 @@ impl IconName {
             Self::PawPrint => "icons/paw-print.svg",
             Self::PencilSimple => "icons/pencil-simple.svg",
             Self::PhoneDisconnect => "icons/phone-disconnect.svg",
+            Self::PictureInPicture => "icons/picture-in-picture.svg",
             Self::Play => "icons/play.svg",
             Self::Plus => "icons/plus.svg",
             Self::PlusCircle => "icons/plus-circle.svg",
@@ -394,6 +397,7 @@ impl IconName {
             "icons/paw-print.svg" => Some(Self::PawPrint),
             "icons/pencil-simple.svg" => Some(Self::PencilSimple),
             "icons/phone-disconnect.svg" => Some(Self::PhoneDisconnect),
+            "icons/picture-in-picture.svg" => Some(Self::PictureInPicture),
             "icons/play.svg" => Some(Self::Play),
             "icons/plus.svg" => Some(Self::Plus),
             "icons/plus-circle.svg" => Some(Self::PlusCircle),
@@ -504,6 +508,7 @@ impl IconName {
             Self::PawPrint => include_bytes!("../../../../design/icons/paw-print.svg"),
             Self::PencilSimple => include_bytes!("../../../../design/icons/pencil-simple.svg"),
             Self::PhoneDisconnect => include_bytes!("../../../../design/icons/phone-disconnect.svg"),
+            Self::PictureInPicture => include_bytes!("../../../../design/icons/picture-in-picture.svg"),
             Self::Play => include_bytes!("../../../../design/icons/play.svg"),
             Self::Plus => include_bytes!("../../../../design/icons/plus.svg"),
             Self::PlusCircle => include_bytes!("../../../../design/icons/plus-circle.svg"),

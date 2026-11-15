@@ -6,6 +6,7 @@
   import { retryImageOnceThenMarkFailed } from "../image-retry";
   import { thumbnailWidth } from "../link-previews";
   import { wikipediaLanguageName } from "./provider-cards";
+  import SiteLabel from "./SiteLabel.svelte";
 
   // A Wikipedia article (docs/design/web-provider-embeds.md §4.6): the thumbnail card with the
   // article's summary, six lines, and the wiki's language when it is not the reader's.
@@ -14,10 +15,10 @@
     embed: WikipediaArticleEmbed;
     /** The thumbnail as the instance stored it, or null. */
     imageUrl: string | null;
-    barColor: string | null;
+    pageColor: string | null;
   }
 
-  let { preview, embed, imageUrl, barColor }: Props = $props();
+  let { preview, embed, imageUrl, pageColor }: Props = $props();
 
   const languageName = $derived(wikipediaLanguageName(embed.language, language));
   const retriedImageIds = new SvelteSet<Snowflake>();
@@ -28,19 +29,11 @@
 <div
   role="group"
   aria-label={preview.title ?? preview.url}
-  class="flex w-full max-w-(--mw-component-link-preview-max-width) gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)"
+  class="flex w-full max-w-(--mw-component-link-preview-max-width) flex-col gap-(--mw-component-link-preview-gap) rounded-(--mw-component-link-preview-radius) border-(length:--mw-component-link-preview-border-width) border-(--mw-component-link-preview-border) bg-(--mw-component-link-preview-background) p-(--mw-component-link-preview-padding)"
 >
-  <!-- The page's colour is decoration only; without one, the quote bar's dusk. -->
-  <span
-    aria-hidden="true"
-    style:background-color={barColor}
-    class="w-(--mw-component-link-preview-bar-width) shrink-0 self-stretch rounded-full bg-(--mw-component-link-preview-bar-fallback)"
-  ></span>
   <div class="flex min-w-0 flex-1 items-start gap-(--mw-component-link-preview-gap)">
     <div class="flex min-w-0 flex-1 flex-col gap-(--mw-component-link-preview-text-gap)">
-      <p class="type-body-sm break-words text-(--mw-component-link-preview-site-text)">
-        {languageName === null ? strings.providerCards.wikipedia : strings.providerCards.wikipediaIn(languageName)}
-      </p>
+      <SiteLabel {pageColor} label={languageName === null ? strings.providerCards.wikipedia : strings.providerCards.wikipediaIn(languageName)} />
       <a
         href={preview.url}
         target="_blank"

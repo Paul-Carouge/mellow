@@ -182,6 +182,80 @@ export function linkPreviewBarColor(themeColor: number | undefined): string | nu
   return `#${themeColor.toString(16).padStart(6, "0")}`;
 }
 
+/** WCAG 2.2's text minimum: the seal's initial is text. */
+const MINIMUM_TEXT_CONTRAST = 4.5;
+
+/** WCAG 2.2's contrast ratio between two `0xRRGGBB` colours, 1 to 21. */
+export function contrastRatio(first: number, second: number): number {
+  const [lighter, darker] = [relativeLuminance(first), relativeLuminance(second)].sort((a, b) => b - a);
+  return ((lighter ?? 0) + 0.05) / ((darker ?? 0) + 0.05);
+}
+
+/** `0xRRGGBB` from `#rrggbb` (a page colour or a colour token's value), or null. */
+export function colorNumberOf(hex: string): number | null {
+  const match = /^#([0-9a-f]{6})(?:[0-9a-f]{2})?$/iu.exec(hex.trim());
+  return match?.[1] === undefined ? null : Number.parseInt(match[1], 16);
+}
+
+/** How a page card's seal is coloured (DESIGN.md 5.4 "Link cards"). */
+export type SiteSealInk = "dark" | "light";
+
+/**
+ * The ink for the seal's initial on the page's colour: whichever of the two seal inks contrasts more,
+ * or null when neither reaches 4.5:1 (a mid grey), and the card takes the fallback seal instead.
+ */
+export function siteSealInkOn(pageColor: number, inks: { dark: number; light: number }): SiteSealInk | null {
+  const darkContrast = contrastRatio(pageColor, inks.dark);
+  const lightContrast = contrastRatio(pageColor, inks.light);
+  const best = Math.max(darkContrast, lightContrast);
+  if (best < MINIMUM_TEXT_CONTRAST) {
+    return null;
+  }
+  return darkContrast >= lightContrast ? "dark" : "light";
+}
+
+/**
+ * What a page card names its site with: the page's site name, else its host without `www.`
+ * ("rust-lang.org"), so every card says where the link goes.
+ */
+export function siteLabelOf(preview: Pick<LinkPreview, "site_name" | "url">): string {
+  const siteName = preview.site_name?.trim();
+  if (siteName) {
+    return siteName;
+  }
+  return linkHostName(preview.url).replace(/^www\./iu, "");
+}
+
+/** The seal's letter: the label's first character, upper-cased ("R" for rust-lang.org). */
+export function siteInitialOf(label: string): string {
+  const [first = ""] = Array.from(label.trim());
+  return first.toLocaleUpperCase();
+}
+
+/**
+ * The channel's name for a video's band: oEmbed's author, which the instance stores as the
+ * description of a YouTube embed (ADR-0044). Null without an embed (older previews, oEmbed refused
+ * and the page read instead), where the description is the page's own text, not a channel.
+ */
+export function youTubeChannelNameOf(preview: Pick<LinkPreview, "description">, embed: LinkEmbed | null): string | null {
+  if (embed?.kind !== "youtube_video" && embed?.kind !== "youtube_music_track") {
+    return null;
+  }
+  return preview.description?.trim() || null;
+}
+
+/**
+ * The video's length when the instance knows it (`youtube_video.duration_seconds`), else null:
+ * no badge rather than a guess.
+ */
+export function youTubeDurationSecondsOf(embed: LinkEmbed | null, video: YouTubeEmbed): number | null {
+  if (embed?.kind !== "youtube_video" || embed.video_id !== video.videoId) {
+    return null;
+  }
+  const seconds = embed.duration_seconds;
+  return seconds !== undefined && Number.isInteger(seconds) && seconds > 0 ? seconds : null;
+}
+
 /** WCAG 2.2's relative luminance of `0xRRGGBB`. */
 function relativeLuminance(color: number): number {
   const linear = (channel: number) => {

@@ -1,25 +1,24 @@
-//! `MessageLinkPreviews.svelte` and `components/embeds/` (ADR-0041, ADR-0044, DESIGN.md §5.4,
-//! `docs/design/web-link-previews.md`, `web-provider-embeds.md`, `desktop-forwards-and-link-previews.md`):
-//! the previews the instance fetched for a message's links, under its files. A picture link alone,
-//! a provider's card by its kind (YouTube, YouTube Music, GitHub, Wikipedia), or the plain card
-//! with the page's colour, name, title, description and picture.
+//! `MessageLinkPreviews.svelte` (ADR-0041, ADR-0044, DESIGN.md 5.4 "Link cards"): the previews
+//! the instance fetched for a message's links, under its files. A picture link alone, a YouTube
+//! video as a screen, a provider's card by its kind (YouTube Music, GitHub, Wikipedia), or the
+//! page card with the site's seal, title, description and picture (`link_cards`).
 //!
-//! The desktop embeds no player: the play key, Listen and every title open the link in the
-//! system browser, through the messages' own opener (http and https only). Every text is plain;
-//! pictures come from the instance through the picture pipeline, in boxes sized before they load.
+//! Every title opens the link in the system browser, through the messages' own opener (http and
+//! https only); videos play in the Mellow player window. Every text is plain; pictures come from
+//! the instance through the picture pipeline, in boxes sized before they load.
 
 use gpui::{
-    AnyElement, App, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement, ObjectFit,
+    AnyElement, App, ElementId, FontWeight, InteractiveElement as _, IntoElement,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
+    Styled as _, Window, div, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::format_medium_date_without_repeated_year;
 use mellow_client_core::shared_logic::link_previews::{
-    IssueStateGlyph, IssueStateTone, LinkPreviewLayout, MAXIMUM_SHOWN_TOPICS, YouTubeEmbed,
-    clock_duration_label, compact_count, duration_parts, issue_state_badge, known_link_embed_of,
-    language_colour_of, link_host_name, link_preview_bar_colour, link_preview_layout,
-    wikipedia_language_name, youtube_embed_of,
+    IssueStateGlyph, IssueStateTone, LinkPreviewLayout, MAXIMUM_SHOWN_TOPICS, compact_count,
+    issue_state_badge, known_link_embed_of, language_colour_of, link_host_name,
+    link_preview_bar_colour, link_preview_layout, site_label_of, wikipedia_language_name,
+    youtube_channel_name_of, youtube_duration_seconds_of, youtube_embed_of,
 };
 use mellow_protocol::{
     GitHubIssueEmbed, GitHubIssueState, GitHubRepositoryEmbed, LinkEmbed, LinkPreview, Snowflake,
@@ -27,42 +26,33 @@ use mellow_protocol::{
 };
 
 use super::attachments::picture_box;
+use super::link_cards::{
+    Shown, description, link_address_tooltip, page_card, page_frame, picture, picture_link,
+    screen_card, site_label, thumbnail_box, title_link,
+};
 use super::rich_text::open_message_link;
 use super::time::{local_date_time, locale};
-use super::{picture_animation, picture_for_box};
 use crate::components::{
     Button, ButtonSize, ButtonVariant, Tooltip, child_id, focus_ring, icon, is_focus_visible,
-    polite_live_region, remembered_focus_handle, remembered_hover, with_type,
+    remembered_focus_handle, with_type,
 };
-use crate::i18n::{self, Strings};
+use crate::i18n;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_ATTACHMENT_GAP, COMPONENT_ATTACHMENT_IMAGE_RADIUS, COMPONENT_LINK_PREVIEW_BAR_WIDTH,
+    COMPONENT_ATTACHMENT_GAP, COMPONENT_ATTACHMENT_IMAGE_RADIUS,
     COMPONENT_LINK_PREVIEW_BORDER_WIDTH, COMPONENT_LINK_PREVIEW_COVER_RADIUS,
     COMPONENT_LINK_PREVIEW_COVER_SIZE, COMPONENT_LINK_PREVIEW_DESCRIPTION_LINES,
     COMPONENT_LINK_PREVIEW_GAP, COMPONENT_LINK_PREVIEW_LANGUAGE_DOT_SIZE,
-    COMPONENT_LINK_PREVIEW_MAX_WIDTH, COMPONENT_LINK_PREVIEW_OWNER_AVATAR_SIZE,
-    COMPONENT_LINK_PREVIEW_PADDING, COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-    COMPONENT_LINK_PREVIEW_PLAY_BUTTON_ICON_SIZE, COMPONENT_LINK_PREVIEW_PLAY_BUTTON_SIZE,
-    COMPONENT_LINK_PREVIEW_RADIUS, COMPONENT_LINK_PREVIEW_SHORT_PLAYER_MAX_HEIGHT,
-    COMPONENT_LINK_PREVIEW_START_CHIP_INSET, COMPONENT_LINK_PREVIEW_START_CHIP_RADIUS,
-    COMPONENT_LINK_PREVIEW_STAT_GAP, COMPONENT_LINK_PREVIEW_STAT_ICON_SIZE,
-    COMPONENT_LINK_PREVIEW_STATE_BADGE_HEIGHT, COMPONENT_LINK_PREVIEW_STATE_BADGE_ICON_SIZE,
-    COMPONENT_LINK_PREVIEW_STATE_BADGE_RADIUS, COMPONENT_LINK_PREVIEW_TEXT_GAP,
-    COMPONENT_LINK_PREVIEW_THUMBNAIL_SIZE, COMPONENT_LINK_PREVIEW_TOPIC_PADDING_BLOCK,
+    COMPONENT_LINK_PREVIEW_OWNER_AVATAR_SIZE, COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
+    COMPONENT_LINK_PREVIEW_PLAY_BUTTON_ICON_SIZE, COMPONENT_LINK_PREVIEW_STAT_GAP,
+    COMPONENT_LINK_PREVIEW_STAT_ICON_SIZE, COMPONENT_LINK_PREVIEW_STATE_BADGE_HEIGHT,
+    COMPONENT_LINK_PREVIEW_STATE_BADGE_ICON_SIZE, COMPONENT_LINK_PREVIEW_STATE_BADGE_RADIUS,
+    COMPONENT_LINK_PREVIEW_TEXT_GAP, COMPONENT_LINK_PREVIEW_TOPIC_PADDING_BLOCK,
     COMPONENT_LINK_PREVIEW_TOPIC_PADDING_INLINE, COMPONENT_LINK_PREVIEW_TOPIC_RADIUS,
-    COMPONENT_LINK_PREVIEW_VIDEO_PLAYER_WIDTH, COMPONENT_LINK_PREVIEW_WIKIPEDIA_EXTRACT_LINES,
-    FONT_WEIGHT_SEMIBOLD, RADIUS_XS, SIZE_FOCUS_RING_WIDTH, SIZE_HIT_DESKTOP_MIN, SPACE_2XS,
-    SPACE_3XS, SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, ThemeTokens,
+    COMPONENT_LINK_PREVIEW_WIKIPEDIA_EXTRACT_LINES, FONT_WEIGHT_SEMIBOLD, SPACE_2XS, SPACE_3XS,
+    SPACE_XS, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
-use crate::youtube_player::{
-    play_in_youtube_player, youtube_player_fallback, youtube_player_video,
-};
-
-/// A video's poster box, 16:9; a Short's, 9:16.
-const VIDEO_ASPECT_RATIO: f32 = 16.0 / 9.0;
-const SHORT_ASPECT_RATIO: f32 = 9.0 / 16.0;
 
 /// The previews of one sent message; a preview with nothing to show takes no room.
 #[derive(IntoElement)]
@@ -100,20 +90,43 @@ impl std::fmt::Debug for MessageLinkPreviews {
     }
 }
 
-/// What one preview needs to draw itself.
-struct Shown<'a> {
-    id: ElementId,
-    preview: &'a LinkPreview,
-    /// The page's colour for the pill, or the token's dusk.
-    bar: Hsla,
-    /// The title, else the site's host name: every card has its link.
-    title: SharedString,
-    picture: Option<DownloadableFile>,
+/// Which card a preview takes (`MessageLinkPreviews.svelte`'s branches, in their order).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CardKind {
+    GitHubRepository,
+    GitHubIssue { is_pull_request: bool },
+    Wikipedia,
+    PictureOnly,
+    Music,
+    Screen,
+    Page,
+}
+
+/// `None` for a preview with nothing worth a card.
+fn card_kind_of(
+    embed: Option<&LinkEmbed>,
+    layout: LinkPreviewLayout,
+    is_youtube: bool,
+) -> Option<CardKind> {
+    Some(match (embed, layout) {
+        (_, LinkPreviewLayout::None) => return None,
+        (Some(LinkEmbed::GitHubRepository(_)), _) => CardKind::GitHubRepository,
+        (Some(LinkEmbed::GitHubIssue(_)), _) => CardKind::GitHubIssue {
+            is_pull_request: false,
+        },
+        (Some(LinkEmbed::GitHubPullRequest(_)), _) => CardKind::GitHubIssue {
+            is_pull_request: true,
+        },
+        (Some(LinkEmbed::WikipediaArticle(_)), _) => CardKind::Wikipedia,
+        (_, LinkPreviewLayout::PictureOnly) => CardKind::PictureOnly,
+        (Some(LinkEmbed::YouTubeMusicTrack(_)), LinkPreviewLayout::YouTubeMusic) => CardKind::Music,
+        (_, LinkPreviewLayout::YouTube) if is_youtube => CardKind::Screen,
+        _ => CardKind::Page,
+    })
 }
 
 impl RenderOnce for MessageLinkPreviews {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let tokens = theme(cx);
         let strings = i18n::strings(cx);
         let cards: Vec<AnyElement> = self
             .previews
@@ -122,19 +135,14 @@ impl RenderOnce for MessageLinkPreviews {
                 let youtube = youtube_embed_of(&preview.url);
                 let embed = known_link_embed_of(preview);
                 let layout = link_preview_layout(preview, youtube.as_ref(), embed);
-                if layout == LinkPreviewLayout::None {
-                    return None;
-                }
+                let kind = card_kind_of(embed, layout, youtube.is_some())?;
                 let shown = Shown {
                     id: ElementId::NamedChild(
                         std::sync::Arc::new(self.id.clone()),
                         preview.id.to_string().into(),
                     ),
                     preview,
-                    bar: link_preview_bar_colour(preview.theme_color).map_or_else(
-                        || color(tokens.component_link_preview_bar_fallback),
-                        |rgb| color((rgb << 8) | 0xFF),
-                    ),
+                    page_colour: link_preview_bar_colour(preview.theme_color),
                     title: preview
                         .title
                         .clone()
@@ -148,29 +156,34 @@ impl RenderOnce for MessageLinkPreviews {
                         },
                     ),
                 };
-                Some(match (embed, layout, youtube) {
-                    (Some(LinkEmbed::GitHubRepository(repository)), _, _) => {
+                Some(match (kind, embed) {
+                    (CardKind::GitHubRepository, Some(LinkEmbed::GitHubRepository(repository))) => {
                         github_repository_card(&shown, repository, window, cx)
                     }
-                    (Some(LinkEmbed::GitHubIssue(issue)), _, _) => {
-                        github_issue_card(&shown, issue, false, window, cx)
-                    }
-                    (Some(LinkEmbed::GitHubPullRequest(issue)), _, _) => {
-                        github_issue_card(&shown, issue, true, window, cx)
-                    }
-                    (Some(LinkEmbed::WikipediaArticle(article)), _, _) => {
+                    (
+                        CardKind::GitHubIssue { is_pull_request },
+                        Some(LinkEmbed::GitHubIssue(issue) | LinkEmbed::GitHubPullRequest(issue)),
+                    ) => github_issue_card(&shown, issue, is_pull_request, window, cx),
+                    (CardKind::Wikipedia, Some(LinkEmbed::WikipediaArticle(article))) => {
                         wikipedia_card(&shown, article, window, cx)
                     }
-                    (_, LinkPreviewLayout::PictureOnly, _) => picture_only(&shown, window, cx),
-                    (
-                        Some(LinkEmbed::YouTubeMusicTrack(track)),
-                        LinkPreviewLayout::YouTubeMusic,
-                        _,
-                    ) => music_card(&shown, &track.artist, window, cx),
-                    (_, LinkPreviewLayout::YouTube, Some(video)) => {
-                        video_card(&shown, &video, strings, window, cx)
+                    (CardKind::PictureOnly, _) => picture_only(&shown, window, cx),
+                    (CardKind::Music, Some(LinkEmbed::YouTubeMusicTrack(track))) => {
+                        music_card(&shown, &track.artist, window, cx)
                     }
-                    _ => plain_card(&shown, layout, window, cx),
+                    (CardKind::Screen, _) => match youtube.as_ref() {
+                        Some(video) => screen_card(
+                            &shown,
+                            video,
+                            youtube_channel_name_of(preview, embed),
+                            youtube_duration_seconds_of(embed, video),
+                            strings,
+                            window,
+                            cx,
+                        ),
+                        None => page_card(&shown, &site_label_of(preview), layout, window, cx),
+                    },
+                    _ => page_card(&shown, &site_label_of(preview), layout, window, cx),
                 })
             })
             .collect();
@@ -183,172 +196,6 @@ impl RenderOnce for MessageLinkPreviews {
             .children(cards)
     }
 }
-
-// ---- Shared parts ----
-
-/// The frame every preview shares (`EmbedCard.svelte`): the page's colour as a pill, then the
-/// kind's content. `label` names the card for screen readers.
-fn card_frame(
-    shown: &Shown<'_>,
-    label: Option<SharedString>,
-    content: Vec<AnyElement>,
-    tokens: &ThemeTokens,
-) -> AnyElement {
-    div()
-        .id(child_id(&shown.id, "card"))
-        .when_some(label, |card, label| {
-            card.role(Role::Group).aria_label(label)
-        })
-        .flex()
-        .gap(length(COMPONENT_LINK_PREVIEW_GAP))
-        .w_full()
-        .max_w(length(COMPONENT_LINK_PREVIEW_MAX_WIDTH))
-        .p(length(COMPONENT_LINK_PREVIEW_PADDING))
-        .rounded(length(COMPONENT_LINK_PREVIEW_RADIUS))
-        .border(length(COMPONENT_LINK_PREVIEW_BORDER_WIDTH))
-        .border_color(color(tokens.component_link_preview_border))
-        .bg(color(tokens.component_link_preview_background))
-        // Decoration only: the page's colour is never checked for contrast (DESIGN.md 1.4).
-        .child(
-            div()
-                .flex_none()
-                .w(length(COMPONENT_LINK_PREVIEW_BAR_WIDTH))
-                .rounded_full()
-                .bg(shown.bar),
-        )
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(length(COMPONENT_LINK_PREVIEW_GAP))
-                .children(content),
-        )
-        .into_any_element()
-}
-
-fn site_line(text: impl Into<SharedString>, tokens: &ThemeTokens) -> AnyElement {
-    with_type(div(), TYPE_BODY_SM)
-        .text_color(color(tokens.component_link_preview_site_text))
-        .child(text.into())
-        .into_any_element()
-}
-
-fn description(text: &str, lines: f32, tokens: &ThemeTokens) -> AnyElement {
-    // Token line counts are small whole numbers.
-    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
-    let lines = lines as usize;
-    with_type(div(), TYPE_BODY)
-        .line_clamp(lines)
-        .text_color(color(tokens.component_link_preview_description_text))
-        .child(text.to_owned())
-        .into_any_element()
-}
-
-/// The card's one Tab stop: its title, opening the link in the browser.
-fn title_link(
-    id: ElementId,
-    url: &str,
-    title: SharedString,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let tokens = theme(cx);
-    let focus = remembered_focus_handle(&id, window, cx);
-    let hover = remembered_hover(&id, window, cx);
-    let is_hovered = *hover.read(cx);
-    let url = url.to_owned();
-    with_type(div(), TYPE_BODY_LG)
-        .id(id)
-        .role(Role::Link)
-        .aria_label(title.clone())
-        .track_focus(&focus)
-        .relative()
-        .min_h(length(SIZE_HIT_DESKTOP_MIN))
-        .rounded(length(RADIUS_XS))
-        .font_weight(FontWeight(f32::from(FONT_WEIGHT_SEMIBOLD)))
-        .text_color(color(tokens.component_link_preview_title_text))
-        .cursor_pointer()
-        .when(is_hovered, gpui::Styled::underline)
-        // The real address, as a browser's status bar shows it: the card's text is the page's own.
-        .tooltip(link_address_tooltip(&url))
-        .tooltip_show_delay(Tooltip::show_delay())
-        .on_hover(move |is_hovered, _, cx| {
-            hover.update(cx, |remembered, cx| {
-                *remembered = *is_hovered;
-                cx.notify();
-            });
-        })
-        .on_click(move |_, _, cx| open_message_link(&url, cx))
-        .child(title)
-        .when(is_focus_visible(&focus, window), |link| {
-            link.child(focus_ring(RADIUS_XS, cx))
-        })
-        .into_any_element()
-}
-
-/// A preview's picture in a box of `width` × `height` token pixels, cropped to fill it; a
-/// picture the instance cannot serve leaves the box's placeholder, never a blank focusable hole.
-fn picture(
-    file: DownloadableFile,
-    width: f32,
-    height: f32,
-    radius: f32,
-    window: &mut Window,
-    cx: &App,
-) -> AnyElement {
-    let tokens = theme(cx);
-    let source = picture_for_box(file, width, height, picture_animation(cx), window);
-    div()
-        .flex_none()
-        .w(length(width))
-        .max_w_full()
-        .aspect_ratio(width / height)
-        .overflow_hidden()
-        .rounded(length(radius))
-        .bg(color(tokens.component_link_preview_picture_placeholder))
-        .child(
-            img(source)
-                .size_full()
-                .object_fit(ObjectFit::Cover)
-                .with_fallback(|| div().into_any_element()),
-        )
-        .into_any_element()
-}
-
-/// The link's full address, shown before it opens.
-fn link_address_tooltip(url: &str) -> impl Fn(&mut Window, &mut App) -> gpui::AnyView + 'static {
-    let address = SharedString::from(url.to_owned());
-    move |_, cx| Tooltip::view(address.clone(), cx)
-}
-
-/// A picture that repeats the title link for the pointer only (`tabindex="-1"`, `aria-hidden`).
-fn picture_link(url: &str, picture: AnyElement, id: ElementId) -> AnyElement {
-    let url = url.to_owned();
-    div()
-        .id(id)
-        .flex_none()
-        .max_w_full()
-        .cursor_pointer()
-        .tooltip(link_address_tooltip(&url))
-        .tooltip_show_delay(Tooltip::show_delay())
-        .on_click(move |_, _, cx| open_message_link(&url, cx))
-        .child(picture)
-        .into_any_element()
-}
-
-/// The picture's width in the thumbnail square, never above its own pixels (`thumbnailWidth`).
-fn thumbnail_box(width: u32, height: u32) -> (f32, f32) {
-    #[allow(clippy::cast_precision_loss)] // Picture sides are far below 2^24.
-    let (width, height) = (width as f32, height as f32);
-    let shown_width = COMPONENT_LINK_PREVIEW_THUMBNAIL_SIZE
-        .min(COMPONENT_LINK_PREVIEW_THUMBNAIL_SIZE * width / height)
-        .min(width);
-    (shown_width, shown_width * height / width)
-}
-
-// ---- Layouts ----
 
 /// A link that is itself a picture, shown like an attached one; it opens the link.
 fn picture_only(shown: &Shown<'_>, window: &mut Window, cx: &mut App) -> AnyElement {
@@ -385,298 +232,6 @@ fn picture_only(shown: &Shown<'_>, window: &mut Window, cx: &mut App) -> AnyElem
             link.child(focus_ring(COMPONENT_ATTACHMENT_IMAGE_RADIUS, cx))
         })
         .into_any_element()
-}
-
-/// The plain card: site, title, description, and a thumbnail beside or a wide picture under.
-fn plain_card(
-    shown: &Shown<'_>,
-    layout: LinkPreviewLayout,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let tokens = theme(cx);
-    let preview = shown.preview;
-    let image = preview
-        .image
-        .filter(|image| image.width > 0 && image.height > 0);
-    let thumbnail = (layout == LinkPreviewLayout::Thumbnail)
-        .then_some(shown.picture.zip(image))
-        .flatten()
-        .map(|(file, image)| {
-            let (width, height) = thumbnail_box(image.width, image.height);
-            picture_link(
-                &preview.url,
-                picture(
-                    file,
-                    width,
-                    height,
-                    COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-                    window,
-                    cx,
-                ),
-                child_id(&shown.id, "thumbnail"),
-            )
-        });
-    let large_picture = (layout == LinkPreviewLayout::LargePicture)
-        .then_some(shown.picture.zip(image))
-        .flatten()
-        .map(|(file, image)| {
-            #[allow(clippy::cast_precision_loss)] // Picture sides are far below 2^24.
-            let (width, height) = (image.width as f32, image.height as f32);
-            let shown_width = width.min(COMPONENT_LINK_PREVIEW_MAX_WIDTH);
-            picture_link(
-                &preview.url,
-                picture(
-                    file,
-                    shown_width,
-                    shown_width * height / width,
-                    COMPONENT_LINK_PREVIEW_PICTURE_RADIUS,
-                    window,
-                    cx,
-                ),
-                child_id(&shown.id, "picture"),
-            )
-        });
-    let mut texts = Vec::new();
-    if let Some(site_name) = &preview.site_name {
-        texts.push(site_line(site_name.clone(), tokens));
-    }
-    texts.push(title_link(
-        child_id(&shown.id, "title"),
-        &preview.url,
-        shown.title.clone(),
-        window,
-        cx,
-    ));
-    if let Some(text) = &preview.description {
-        texts.push(description(
-            text,
-            COMPONENT_LINK_PREVIEW_DESCRIPTION_LINES,
-            tokens,
-        ));
-    }
-    let top = div()
-        .flex()
-        .items_start()
-        .gap(length(COMPONENT_LINK_PREVIEW_GAP))
-        .child(
-            div()
-                .flex_1()
-                .min_w_0()
-                .flex()
-                .flex_col()
-                .gap(length(COMPONENT_LINK_PREVIEW_TEXT_GAP))
-                .children(texts),
-        )
-        .children(thumbnail)
-        .into_any_element();
-    let mut content = vec![top];
-    content.extend(large_picture);
-    card_frame(shown, None, content, tokens)
-}
-
-/// A YouTube video or Short (`VideoEmbed.svelte`): the instance's poster with the play key, which
-/// plays the video in Mellow's player window (ADR-0061), or in the browser when that window cannot
-/// open; nothing comes from YouTube in this card.
-#[allow(clippy::too_many_lines)] // One card's element tree, in the order it is drawn.
-fn video_card(
-    shown: &Shown<'_>,
-    video: &YouTubeEmbed,
-    strings: Strings,
-    window: &mut Window,
-    cx: &mut App,
-) -> AnyElement {
-    let tokens = theme(cx);
-    let preview = shown.preview;
-    let words = strings.link_previews();
-    let name = if video.is_short {
-        words.play_you_tube_short(&shown.title)
-    } else {
-        words.play_you_tube_video(&shown.title)
-    };
-    let play_label: SharedString = match video.start_seconds {
-        None => name.into(),
-        Some(start) => {
-            let parts = duration_parts(start);
-            let spoken = words.spoken_duration(
-                i64::from(parts.hours),
-                i64::from(parts.minutes),
-                i64::from(parts.seconds),
-            );
-            format!("{name}{}", words.starting_at(&spoken)).into()
-        }
-    };
-    let (box_width, aspect_ratio) = if video.is_short {
-        (
-            COMPONENT_LINK_PREVIEW_SHORT_PLAYER_MAX_HEIGHT * SHORT_ASPECT_RATIO,
-            SHORT_ASPECT_RATIO,
-        )
-    } else {
-        (
-            COMPONENT_LINK_PREVIEW_VIDEO_PLAYER_WIDTH,
-            VIDEO_ASPECT_RATIO,
-        )
-    };
-    let poster = shown.picture.map(|file| {
-        let source = picture_for_box(
-            file,
-            box_width,
-            box_width / aspect_ratio,
-            picture_animation(cx),
-            window,
-        );
-        img(source)
-            .absolute()
-            .inset_0()
-            .size_full()
-            .object_fit(ObjectFit::Cover)
-            .with_fallback(|| div().into_any_element())
-    });
-    // shortcut: a plain chip says the video plays in the player window; the card design track
-    // gives it its look (DESIGN.md §5.4). A click on the card brings the window forward.
-    let in_player_note: Option<SharedString> = (youtube_player_video(cx)
-        == Some(video.video_id.as_str()))
-    .then(|| strings.desktop().you_tube_playing_in_player_window().into());
-    let play_label: SharedString = match &in_player_note {
-        Some(note) => format!("{play_label}. {note}").into(),
-        None => play_label,
-    };
-    let in_player_chip = in_player_note.map(|note| {
-        with_type(div(), TYPE_BODY_SM)
-            .absolute()
-            .left(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
-            .top(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
-            .px(length(SPACE_XS))
-            .py(length(SPACE_3XS))
-            .rounded(length(COMPONENT_LINK_PREVIEW_START_CHIP_RADIUS))
-            .bg(color(tokens.component_link_preview_start_chip_background))
-            .text_color(color(tokens.component_link_preview_start_chip_text))
-            .child(note)
-    });
-    let start_chip = video.start_seconds.map(|start| {
-        // Said in the play key's name; shown for the eye.
-        with_type(div(), TYPE_BODY_SM)
-            .absolute()
-            .left(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
-            .bottom(length(COMPONENT_LINK_PREVIEW_START_CHIP_INSET))
-            .px(length(SPACE_XS))
-            .py(length(SPACE_3XS))
-            .rounded(length(COMPONENT_LINK_PREVIEW_START_CHIP_RADIUS))
-            .bg(color(tokens.component_link_preview_start_chip_background))
-            .text_color(color(tokens.component_link_preview_start_chip_text))
-            .child(words.starts_at(&clock_duration_label(start)))
-    });
-    let key_id = child_id(&shown.id, "play");
-    let focus = remembered_focus_handle(&key_id, window, cx);
-    let hover = remembered_hover(&key_id, window, cx);
-    let is_hovered = *hover.read(cx);
-    let url = preview.url.clone();
-    let played_video = video.clone();
-    let played_title = shown.title.clone();
-    let tooltip = play_label.clone();
-    // The whole box is the key, as on the web; the disc is opaque so it reads on any picture.
-    let stage = div()
-        .id(key_id)
-        .role(Role::Button)
-        .aria_label(play_label)
-        .track_focus(&focus)
-        .relative()
-        .map(|stage| {
-            if video.is_short {
-                stage.w(length(box_width))
-            } else {
-                stage.w_full()
-            }
-        })
-        .max_w_full()
-        .aspect_ratio(aspect_ratio)
-        .overflow_hidden()
-        .rounded(length(COMPONENT_LINK_PREVIEW_PICTURE_RADIUS))
-        .bg(color(tokens.component_link_preview_player_background))
-        .flex()
-        .items_center()
-        .justify_center()
-        .cursor_pointer()
-        .tooltip(move |_, cx| Tooltip::view(tooltip.clone(), cx))
-        .tooltip_show_delay(Tooltip::show_delay())
-        .on_hover(move |is_hovered, _, cx| {
-            hover.update(cx, |remembered, cx| {
-                *remembered = *is_hovered;
-                cx.notify();
-            });
-        })
-        .on_click(move |_, _, cx| play_in_youtube_player(&url, &played_video, &played_title, cx))
-        .children(poster)
-        .child(
-            div()
-                .size(length(COMPONENT_LINK_PREVIEW_PLAY_BUTTON_SIZE))
-                .flex()
-                .items_center()
-                .justify_center()
-                .rounded_full()
-                .bg(color(if is_hovered {
-                    tokens.component_link_preview_play_button_background_hover
-                } else {
-                    tokens.component_link_preview_play_button_background
-                }))
-                .child(icon(
-                    IconName::Play,
-                    COMPONENT_LINK_PREVIEW_PLAY_BUTTON_ICON_SIZE,
-                    color(tokens.component_link_preview_play_button_icon),
-                )),
-        )
-        .children(start_chip)
-        .children(in_player_chip)
-        .when(is_focus_visible(&focus, window), |stage| {
-            // Inside the box, in the media stage's own focus colour.
-            stage.child(
-                div()
-                    .absolute()
-                    .inset_0()
-                    .rounded(length(COMPONENT_LINK_PREVIEW_PICTURE_RADIUS))
-                    .border(length(SIZE_FOCUS_RING_WIDTH))
-                    .border_color(color(tokens.component_link_preview_play_button_focus_ring)),
-            )
-        })
-        .into_any_element();
-    let mut texts = vec![title_link(
-        child_id(&shown.id, "title"),
-        &preview.url,
-        shown.title.clone(),
-        window,
-        cx,
-    )];
-    if let Some(text) = &preview.description {
-        texts.push(description(
-            text,
-            COMPONENT_LINK_PREVIEW_DESCRIPTION_LINES,
-            tokens,
-        ));
-    }
-    let mut content = Vec::new();
-    if let Some(site_name) = &preview.site_name {
-        content.push(site_line(site_name.clone(), tokens));
-    }
-    content.push(
-        div()
-            .flex()
-            .flex_col()
-            .gap(length(COMPONENT_LINK_PREVIEW_TEXT_GAP))
-            .children(texts)
-            .into_any_element(),
-    );
-    content.push(stage);
-    if youtube_player_fallback(&video.video_id, cx) {
-        let note: SharedString = strings.desktop().you_tube_player_unavailable().into();
-        content.push(
-            with_type(div(), TYPE_BODY_SM)
-                .text_color(color(tokens.component_link_preview_player_error_text))
-                .child(note.clone())
-                .child(polite_live_region(child_id(&shown.id, "player-note"), note))
-                .into_any_element(),
-        );
-    }
-    card_frame(shown, Some(shown.title.clone()), content, tokens)
 }
 
 /// A YouTube Music track (`MusicCard.svelte`): cover, title, artist and Listen, which opens the
@@ -731,6 +286,8 @@ fn music_card(shown: &Shown<'_>, artist: &str, window: &mut Window, cx: &mut App
             child_id(&shown.id, "title"),
             &preview.url,
             shown.title.clone(),
+            color(tokens.component_link_preview_title_text),
+            None,
             window,
             cx,
         ))
@@ -752,10 +309,13 @@ fn music_card(shown: &Shown<'_>, artist: &str, window: &mut Window, cx: &mut App
         .child(cover)
         .child(column)
         .into_any_element();
-    card_frame(
-        shown,
+    page_frame(
+        &shown.id,
         Some(label),
-        vec![site_line(service, tokens), row],
+        vec![
+            site_label(shown.page_colour, &service, None, None, tokens),
+            row,
+        ],
         tokens,
     )
 }
@@ -907,6 +467,8 @@ fn github_repository_card(
                     child_id(&shown.id, "title"),
                     &preview.url,
                     format!("{} / {}", repository.owner, repository.name).into(),
+                    color(tokens.component_link_preview_title_text),
+                    None,
                     window,
                     cx,
                 ))
@@ -920,11 +482,16 @@ fn github_repository_card(
                 }),
         )
         .into_any_element();
-    let mut content = Vec::new();
-    if let Some(site_name) = &preview.site_name {
-        content.push(site_line(site_name.clone(), tokens));
-    }
-    content.push(heading);
+    let mut content = vec![
+        site_label(
+            shown.page_colour,
+            &site_label_of(preview),
+            None,
+            None,
+            tokens,
+        ),
+        heading,
+    ];
     if let Some(text) = &preview.description {
         content.push(description(
             text,
@@ -1011,8 +578,8 @@ fn github_repository_card(
         ));
     }
     content.push(stats_row(stats, tokens));
-    card_frame(
-        shown,
+    page_frame(
+        &shown.id,
         Some(
             preview
                 .title
@@ -1042,16 +609,13 @@ fn github_issue_card(
     let preview = shown.preview;
     let mut content = Vec::new();
     let repository_path = format!("{}/{}", issue.owner, issue.repository);
-    content.push(
-        with_type(div(), TYPE_BODY_SM)
-            .flex()
-            .flex_wrap()
-            .gap_x(length(SPACE_XS))
-            .text_color(color(tokens.component_link_preview_site_text))
-            .children(preview.site_name.clone())
-            .child(repository_path.clone())
-            .into_any_element(),
-    );
+    content.push(site_label(
+        shown.page_colour,
+        &site_label_of(preview),
+        Some(repository_path.clone()),
+        None,
+        tokens,
+    ));
     if let Some((glyph, tone)) = issue_state_badge(issue.state, is_pull_request) {
         let label = match issue.state {
             GitHubIssueState::Open => states.open(),
@@ -1091,6 +655,8 @@ fn github_issue_card(
         child_id(&shown.id, "title"),
         &preview.url,
         title.into(),
+        color(tokens.component_link_preview_title_text),
+        None,
         window,
         cx,
     ));
@@ -1132,8 +698,8 @@ fn github_issue_card(
         cx,
     ));
     content.push(stats_row(facts, tokens));
-    card_frame(
-        shown,
+    page_frame(
+        &shown.id,
         Some(
             preview
                 .title
@@ -1190,7 +756,7 @@ fn wikipedia_card(
             )
         });
     let mut texts = vec![
-        site_line(wiki, tokens),
+        site_label(shown.page_colour, &wiki, None, None, tokens),
         title_link(
             child_id(&shown.id, "title"),
             &preview.url,
@@ -1199,6 +765,8 @@ fn wikipedia_card(
                 .clone()
                 .unwrap_or_else(|| preview.url.clone())
                 .into(),
+            color(tokens.component_link_preview_title_text),
+            None,
             window,
             cx,
         ),
@@ -1225,8 +793,8 @@ fn wikipedia_card(
         )
         .children(thumbnail)
         .into_any_element();
-    card_frame(
-        shown,
+    page_frame(
+        &shown.id,
         Some(
             preview
                 .title
@@ -1241,12 +809,73 @@ fn wikipedia_card(
 
 #[cfg(test)]
 mod tests {
+    use mellow_protocol::{GitHubIssueEmbed, YouTubeMusicTrackEmbed};
+
     use super::*;
 
+    fn issue() -> GitHubIssueEmbed {
+        GitHubIssueEmbed {
+            owner: "rust-lang".to_owned(),
+            repository: "rust".to_owned(),
+            number: 1,
+            state: GitHubIssueState::Open,
+            author: String::new(),
+            opened_at_unix_milliseconds: None,
+            merged_at_unix_milliseconds: None,
+            comments: 0,
+        }
+    }
+
     #[test]
-    fn a_thumbnail_fits_the_square_without_upscaling() {
-        assert_eq!(thumbnail_box(64, 32), (64.0, 32.0));
-        assert_eq!(thumbnail_box(400, 200), (80.0, 40.0));
-        assert_eq!(thumbnail_box(200, 400), (40.0, 80.0));
+    fn each_preview_takes_its_card_in_the_web_s_order() {
+        use LinkPreviewLayout as Layout;
+        assert_eq!(card_kind_of(None, Layout::None, false), None);
+        assert_eq!(
+            card_kind_of(
+                Some(&LinkEmbed::GitHubPullRequest(issue())),
+                Layout::TextOnly,
+                false
+            ),
+            Some(CardKind::GitHubIssue {
+                is_pull_request: true
+            })
+        );
+        assert_eq!(
+            card_kind_of(
+                Some(&LinkEmbed::GitHubIssue(issue())),
+                Layout::Thumbnail,
+                false
+            ),
+            Some(CardKind::GitHubIssue {
+                is_pull_request: false
+            })
+        );
+        assert_eq!(
+            card_kind_of(None, Layout::PictureOnly, false),
+            Some(CardKind::PictureOnly)
+        );
+        let track = LinkEmbed::YouTubeMusicTrack(YouTubeMusicTrackEmbed {
+            video_id: "dQw4w9WgXcQ".to_owned(),
+            artist: "Blender".to_owned(),
+            album: None,
+            duration_seconds: None,
+        });
+        assert_eq!(
+            card_kind_of(Some(&track), Layout::YouTubeMusic, true),
+            Some(CardKind::Music)
+        );
+        // A YouTube link is a screen, whatever its embed says; a music embed on a video's
+        // layout too.
+        assert_eq!(
+            card_kind_of(None, Layout::YouTube, true),
+            Some(CardKind::Screen)
+        );
+        assert_eq!(
+            card_kind_of(Some(&track), Layout::YouTube, true),
+            Some(CardKind::Screen)
+        );
+        for layout in [Layout::LargePicture, Layout::Thumbnail, Layout::TextOnly] {
+            assert_eq!(card_kind_of(None, layout, false), Some(CardKind::Page));
+        }
     }
 }

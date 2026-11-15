@@ -124,8 +124,9 @@ export default defineConfig({
         configure: (proxy) => proxy.on("proxyReqWs", presentDevelopmentPagesAsTheInstance),
       },
     },
-    // Figtree and the Phosphor icons are bundled with the desktop client; the web client reads the same files.
-    fs: { allow: [".", "../design/fonts", "../design/icons"] },
+    // Figtree and the Phosphor icons are bundled with the desktop client; the web client reads the same
+    // files, and the brand marks of design/brands (DESIGN.md 5.4, Link cards).
+    fs: { allow: [".", "../design/fonts", "../design/icons", "../design/brands"] },
   },
   build: { target: "es2022", sourcemap: false },
   test: { setupFiles: ["src/test-setup.ts"] },
