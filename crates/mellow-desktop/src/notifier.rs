@@ -177,6 +177,15 @@ impl Notifier {
         ];
         let notifier = cx.entity().downgrade();
         cx.on_system_notification_response(move |response, cx| {
+            // GPUI keeps one handler: a call's notification is passed on to the calls.
+            if let Some(channel_id) = crate::calls::call_of_notification_tag(&response.tag) {
+                crate::calls::follow_call_notification(
+                    channel_id,
+                    response.action_id.as_deref(),
+                    cx,
+                );
+                return;
+            }
             let Some(channel_id) = channel_of_tag(&response.tag) else {
                 return;
             };
@@ -539,7 +548,9 @@ fn place_title(state: &ClientState, place: NotificationPlace, strings: Strings) 
 
 /// The message as one line: a poll's or tracker's summary, else its text without Markdown.
 fn preview_of(state: &ClientState, message: &Message, strings: Strings) -> MessagePreview {
-    let text = if let Some(poll) = &message.poll {
+    let text = if message.call.is_some() {
+        strings.calls().call_noun().to_owned()
+    } else if let Some(poll) = &message.poll {
         strings.polls().summary(&poll.question)
     } else if let Some(checklist) = &message.checklist {
         strings.checklists().summary(&checklist.title)
@@ -615,7 +626,7 @@ fn notification_for(
 
 /// Names and messages come from other people: no control characters, and no bidirectional
 /// overrides that would make the text read as something else.
-fn plain_text_for_the_system(text: &str) -> String {
+pub(crate) fn plain_text_for_the_system(text: &str) -> String {
     text.chars()
         .map(|character| {
             if character.is_control() || is_bidirectional_control(character) {

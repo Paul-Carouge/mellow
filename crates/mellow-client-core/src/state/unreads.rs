@@ -376,6 +376,8 @@ mod tests {
             voice_states: Vec::new(),
             voice_enabled: false,
             maximum_attachment_bytes: None,
+            calls: Vec::new(),
+            calls_enabled: false,
         }
     }
 

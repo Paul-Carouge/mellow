@@ -125,8 +125,9 @@ export default defineConfig({
       },
     },
     // Figtree and the Phosphor icons are bundled with the desktop client; the web client reads the same
-    // files, and the brand marks of design/brands (DESIGN.md 5.4, Link cards).
-    fs: { allow: [".", "../design/fonts", "../design/icons", "../design/brands"] },
+    // files, the brand marks of design/brands (DESIGN.md 5.4, Link cards) and the ringtones of
+    // design/sounds (ADR-0062).
+    fs: { allow: [".", "../design/fonts", "../design/icons", "../design/brands", "../design/sounds"] },
   },
   build: { target: "es2022", sourcemap: false },
   test: { setupFiles: ["src/test-setup.ts"] },

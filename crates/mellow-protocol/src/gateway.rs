@@ -6,7 +6,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::{
-    Channel, ChannelUnread, Checklist, CurrentUser, CustomEmoji, DirectMessageChannel, Guild,
+    Call, Channel, ChannelUnread, Checklist, CurrentUser, CustomEmoji, DirectMessageChannel, Guild,
     GuildSummary, LinkPreview, Member, Message, ProgressBar, PublicUser, ReadState, Relationship,
     Role, Snowflake, SoundboardSound,
 };
@@ -290,6 +290,14 @@ pub struct Ready {
     /// `v0.45.0`: absent from older servers, where the upload's answer tells.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub maximum_attachment_bytes: Option<u64>,
+    /// The calls going on in the user's conversations (ADR-0062). Added after `v0.52.0`: absent
+    /// from older servers.
+    #[serde(default)]
+    pub calls: Vec<Call>,
+    /// Whether the server knows calls and voice works on it: clients hide the call button
+    /// otherwise. Added after `v0.52.0`: older servers have no calls.
+    #[serde(default)]
+    pub calls_enabled: bool,
 }
 
 /// One person connected to a voice channel, as the channel's viewers see it.
@@ -368,6 +376,12 @@ pub enum VoiceDisconnectReason {
     RemovedFromGuild,
     /// The media connection never came up within 15 s, or carried nothing for 30 s.
     MediaTimeout,
+    /// The conversation's call ended while this session was in it: nobody answered (ADR-0062).
+    /// Added after `v0.52.0`; only clients that know calls join one.
+    CallEnded,
+    /// The instance is stopping and ended the calls going on (ADR-0062). Sent only to call
+    /// participants, so only clients that know calls receive it.
+    ServerStopping,
 }
 
 const fn may_create_guilds_on_older_servers() -> bool {
@@ -651,6 +665,24 @@ pub enum GatewayEvent {
         channel_id: Snowflake,
         user_id: Snowflake,
         sound_id: Snowflake,
+    },
+    /// A call started in a conversation of the user, or the user can now see one going on (they
+    /// were added to the group). Sent to the conversation's participants (ADR-0062); older
+    /// clients skip every call event.
+    CallCreate(Call),
+    /// Someone joined, left, changed their mute, deafen, camera or screen, answered, declined,
+    /// or stopped being rung: the whole call after the change.
+    CallUpdate(Call),
+    /// The call ended, or the user can no longer see it (they left the group or lost access).
+    CallDelete {
+        channel_id: Snowflake,
+    },
+    /// Someone started or stopped speaking in a call, as `SPEAKING` in a voice channel. Sent to
+    /// the conversation's participants.
+    CallSpeaking {
+        channel_id: Snowflake,
+        user_id: Snowflake,
+        speaking: bool,
     },
 }
 

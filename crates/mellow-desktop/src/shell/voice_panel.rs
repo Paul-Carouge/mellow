@@ -15,7 +15,7 @@ use mellow_client_core::shared_logic::voice_panel::{
     LatencyQuality, VoiceProblem, latency_quality,
 };
 use mellow_client_core::shared_logic::voice_settings::{
-    MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT, VoiceInputMode,
+    MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT, PersonVoiceSetting, VoiceInputMode,
 };
 use mellow_protocol::{Snowflake, VoiceDisconnectReason, VoiceJoinRefusal};
 
@@ -54,6 +54,13 @@ pub(super) struct VoicePersonPopover {
     focus: FocusHandle,
     /// The participant row, which gets focus back.
     opener: Option<FocusHandle>,
+}
+
+/// What the problem card offers: joining again, or calling again (ADR-0062).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PanelRecovery {
+    TryAgain,
+    CallAgain(Snowflake),
 }
 
 /// What the panel's live regions say: the connection, then the latest join or leave.
@@ -214,6 +221,8 @@ fn problem_words(
                 VoiceDisconnectReason::ChannelDeleted => disconnections.channel_deleted(),
                 VoiceDisconnectReason::RemovedFromGuild => disconnections.removed_from_guild(),
                 VoiceDisconnectReason::MediaTimeout => disconnections.media_timeout(),
+                VoiceDisconnectReason::CallEnded => disconnections.call_ended(),
+                VoiceDisconnectReason::ServerStopping => disconnections.server_stopping(),
             };
             let title = if reason == VoiceDisconnectReason::MovedElsewhere {
                 voice.moved_elsewhere().to_owned()
@@ -256,8 +265,18 @@ fn device_sentences(voice: &Voice, strings: Strings) -> Vec<&'static str> {
 }
 
 impl DuskShell {
+    /// A voice channel's name, or a conversation's for its call (ADR-0062).
     fn channel_name(&self, channel_id: Snowflake, cx: &App) -> String {
-        self.state(cx).guild_channel(channel_id).map_or_else(
+        let state = self.state(cx);
+        if let Some(conversation) = state.direct_message_channel(channel_id) {
+            let current_user_id = state.current_user().map(|user| user.id);
+            return crate::home::conversation_display_name(
+                conversation,
+                current_user_id,
+                strings(cx),
+            );
+        }
+        state.guild_channel(channel_id).map_or_else(
             || strings(cx).voice().voice_channel().to_owned(),
             |channel| channel.name.clone(),
         )
@@ -372,13 +391,33 @@ impl DuskShell {
                 })
                 .child(div().min_w_0().child(text))
         };
-        if let (Some(phase), Some((guild_id, channel_id))) = (phase, place) {
+        let conversation_id = voice.call_conversation_id();
+        let panel_place = place
+            .map(|(guild_id, channel_id)| (Some(guild_id), channel_id))
+            .or(conversation_id.map(|conversation_id| (None, conversation_id)));
+        if let (Some(phase), Some((guild_id, channel_id))) = (phase, panel_place) {
             let channel_name = self.channel_name(channel_id, cx);
-            let guild_name = self
-                .state(cx)
-                .guild(guild_id)
+            let guild_name = guild_id
+                .and_then(|guild_id| self.state(cx).guild(guild_id))
                 .map(|guild| guild.name.clone())
                 .unwrap_or_default();
+            // A call rings the others: its second line says so instead of the link.
+            let ringing_sentence = guild_id
+                .is_none()
+                .then(|| {
+                    let state = self.state(cx);
+                    let call = state.call(channel_id)?;
+                    (state.call_phase(channel_id)
+                        == Some(mellow_client_core::state::CallPhase::Outgoing))
+                    .then(|| {
+                        strings.calls().ringing(&crate::calls::words::ringing_names(
+                            call,
+                            state.direct_message_channel(channel_id),
+                            strings,
+                        ))
+                    })
+                })
+                .flatten();
             let round_trip = round_trip
                 .map(|round_trip| u64::try_from(round_trip.as_millis()).unwrap_or(u64::MAX));
             let (signal_icon, quality, signal_description) = signal_look(strings, round_trip);
@@ -457,47 +496,76 @@ impl DuskShell {
                                 ))
                                 .child(div().truncate().child(status)),
                         )
-                        .child(
-                            with_type(div(), TYPE_BODY_SM)
-                                .id(link_id)
-                                .role(Role::Link)
-                                .aria_label(strings.voice().open_server(&channel_name, &guild_name))
-                                .track_focus(&link_focus)
-                                .relative()
-                                .self_start()
-                                .min_w_0()
-                                .truncate()
-                                .rounded(length(RADIUS_XS))
-                                .cursor_pointer()
-                                .text_color(color(if is_link_hovered {
-                                    tokens.component_voice_panel_channel_text_hover
-                                } else {
-                                    tokens.component_voice_panel_channel_text
-                                }))
-                                .when(is_link_hovered, gpui::Styled::underline)
-                                .on_hover(move |is_hovered, _, cx| {
-                                    link_hover.update(cx, |remembered, cx| {
-                                        *remembered = *is_hovered;
-                                        cx.notify();
-                                    });
-                                })
-                                .on_click(move |_, window, cx| {
-                                    let _ = shell.update(cx, |shell, cx| {
-                                        shell.open_voice_server(guild_id, window, cx);
-                                    });
-                                })
-                                .child(format!("{channel_name} / {guild_name}"))
-                                .when(is_link_ring_shown, |link| {
-                                    link.child(focus_ring(RADIUS_XS, cx))
-                                }),
-                        ),
+                        .when_some(ringing_sentence.clone(), |column, sentence| {
+                            column.child(
+                                with_type(div(), TYPE_BODY_SM)
+                                    .min_w_0()
+                                    .truncate()
+                                    .text_color(color(tokens.component_voice_panel_channel_text))
+                                    .child(sentence),
+                            )
+                        })
+                        .when(ringing_sentence.is_none(), |column| {
+                            column.child(
+                                with_type(div(), TYPE_BODY_SM)
+                                    .id(link_id)
+                                    .role(Role::Link)
+                                    .aria_label(if guild_id.is_some() {
+                                        strings.voice().open_server(&channel_name, &guild_name)
+                                    } else {
+                                        strings.calls().open_conversation(&channel_name)
+                                    })
+                                    .track_focus(&link_focus)
+                                    .relative()
+                                    .self_start()
+                                    .min_w_0()
+                                    .truncate()
+                                    .rounded(length(RADIUS_XS))
+                                    .cursor_pointer()
+                                    .text_color(color(if is_link_hovered {
+                                        tokens.component_voice_panel_channel_text_hover
+                                    } else {
+                                        tokens.component_voice_panel_channel_text
+                                    }))
+                                    .when(is_link_hovered, gpui::Styled::underline)
+                                    .on_hover(move |is_hovered, _, cx| {
+                                        link_hover.update(cx, |remembered, cx| {
+                                            *remembered = *is_hovered;
+                                            cx.notify();
+                                        });
+                                    })
+                                    .on_click(move |_, window, cx| {
+                                        let _ = shell.update(cx, |shell, cx| match guild_id {
+                                            Some(guild_id) => {
+                                                shell.open_voice_server(guild_id, window, cx);
+                                            }
+                                            None => shell.open_channel(channel_id, window, cx),
+                                        });
+                                    })
+                                    .child(if guild_id.is_some() {
+                                        format!("{channel_name} / {guild_name}")
+                                    } else {
+                                        strings.calls().call_with(&channel_name)
+                                    })
+                                    .when(is_link_ring_shown, |link| {
+                                        link.child(focus_ring(RADIUS_XS, cx))
+                                    }),
+                            )
+                        }),
                 )
-                .child(self.render_soundboard_button(cx))
+                // A conversation's call has no soundboard (ADR-0062).
+                .when(guild_id.is_some(), |row| {
+                    row.child(self.render_soundboard_button(cx))
+                })
                 .child(
                     IconButton::new(
                         "voice-disconnect",
                         IconName::PhoneDisconnect,
-                        strings.voice().disconnect(),
+                        if guild_id.is_some() {
+                            strings.voice().disconnect()
+                        } else {
+                            strings.calls().hang_up()
+                        },
                     )
                     .sizes(
                         COMPONENT_USER_PANEL_BUTTON_SIZE,
@@ -549,13 +617,66 @@ impl DuskShell {
                     .into_any_element(),
             );
         }
-        let problem = problem?;
-        let (title, sentence) = problem_words(
-            strings,
-            problem,
-            &self.channel_name(problem.channel_id(), cx),
-        );
-        let is_notice = problem.is_notice();
+        // What went wrong last: the voice's problem, or a call that could not start (ADR-0062).
+        let start_problem =
+            crate::calls::calls(cx).and_then(|calls| calls.read(cx).start_problem());
+        let (title, sentence, is_notice, problem_icon, recovery) = if let Some(problem) = problem {
+            let place = self.channel_name(problem.channel_id(), cx);
+            let is_call = self
+                .state(cx)
+                .direct_message_channel(problem.channel_id())
+                .is_some();
+            let call_look = is_call
+                .then(|| crate::calls::words::call_problem_look(problem, &place, strings))
+                .flatten();
+            if let Some(look) = call_look {
+                // A call says some problems in its own words: nobody answered is not an error.
+                (
+                    look.title,
+                    look.sentence,
+                    look.is_notice,
+                    if look.is_notice {
+                        IconName::PhoneX
+                    } else {
+                        IconName::WarningCircle
+                    },
+                    look.can_call_again
+                        .then_some(PanelRecovery::CallAgain(problem.channel_id())),
+                )
+            } else {
+                let (title, sentence) = problem_words(
+                    strings,
+                    problem,
+                    &self.channel_name(problem.channel_id(), cx),
+                );
+                let is_notice = problem.is_notice();
+                (
+                    title,
+                    sentence,
+                    is_notice,
+                    if is_notice {
+                        IconName::SpeakerHigh
+                    } else {
+                        IconName::WarningCircle
+                    },
+                    problem.can_retry().then_some(PanelRecovery::TryAgain),
+                )
+            }
+        } else {
+            let start_problem = start_problem?;
+            (
+                strings
+                    .calls()
+                    .could_not_call(&self.channel_name(start_problem.channel_id, cx)),
+                crate::calls::words::call_start_failure_sentence(start_problem.failure, strings),
+                false,
+                IconName::WarningCircle,
+                start_problem
+                    .failure
+                    .may_work_again()
+                    .then_some(PanelRecovery::CallAgain(start_problem.channel_id)),
+            )
+        };
         let retry_voice = voice_entity.downgrade();
         let dismiss_voice = voice_entity.downgrade();
         Some(
@@ -566,11 +687,7 @@ impl DuskShell {
                     .items_start()
                     .gap(length(SPACE_XS))
                     .child(div().mt(length(SPACE_3XS)).child(icon(
-                        if is_notice {
-                            IconName::SpeakerHigh
-                        } else {
-                            IconName::WarningCircle
-                        },
+                        problem_icon,
                         COMPONENT_VOICE_PANEL_SIGNAL_ICON_SIZE,
                         color(if is_notice {
                             tokens.component_voice_panel_notice_icon
@@ -610,17 +727,34 @@ impl DuskShell {
                         )
                         .on_click(move |_, cx| {
                             let _ = dismiss_voice.update(cx, Voice::dismiss_problem);
+                            if let Some(calls) = crate::calls::calls(cx) {
+                                calls.update(cx, crate::calls::Calls::dismiss_start_problem);
+                            }
                         }),
                     ),
             )
-            .when(problem.can_retry(), |card| {
+            .when_some(recovery, |card, recovery| {
+                let label = match recovery {
+                    PanelRecovery::TryAgain => strings.common().try_again(),
+                    PanelRecovery::CallAgain(_) => strings.calls().call_again(),
+                };
                 card.child(
                     div().mt(length(SPACE_XS)).flex().child(
-                        Button::new("voice-retry", strings.common().try_again())
+                        Button::new("voice-retry", label)
                             .variant(ButtonVariant::Secondary)
                             .full_width()
-                            .on_click(move |_, cx| {
-                                let _ = retry_voice.update(cx, Voice::retry);
+                            .on_click(move |_, cx| match recovery {
+                                PanelRecovery::TryAgain => {
+                                    let _ = retry_voice.update(cx, Voice::retry);
+                                }
+                                PanelRecovery::CallAgain(channel_id) => {
+                                    let _ = retry_voice.update(cx, Voice::dismiss_problem);
+                                    if let Some(calls) = crate::calls::calls(cx) {
+                                        calls.update(cx, |calls, cx| {
+                                            calls.start_call(channel_id, cx, |_, _| {});
+                                        });
+                                    }
+                                }
                             }),
                     ),
                 )
@@ -750,7 +884,12 @@ impl DuskShell {
         let tokens = theme(cx);
         let strings = strings(cx);
         let user_id = popover.user_id;
-        let setting = Voice::person_setting(user_id, cx);
+        let setting = self
+            .voice
+            .as_ref()
+            .map_or_else(PersonVoiceSetting::default, |voice| {
+                voice.read(cx).effective_person_setting(user_id, cx)
+            });
         let volume_voice = voice.downgrade();
         let mute_voice = voice.downgrade();
         let bounds = RangeBounds {

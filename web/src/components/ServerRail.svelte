@@ -187,7 +187,7 @@
   <!-- Melli sits on the strip at rest; hover, focus and selection fill the button apricot, which
        morphs like the other icons, and switch Melli's marks to ink (DESIGN.md §2.10). -->
   <Melli
-    state={homeMelliState(client.status, hasSomethingForTheReader, isDoNotDisturb)}
+    state={homeMelliState(client.status, hasSomethingForTheReader, isDoNotDisturb, client.incomingCalls.length > 0)}
     chime={melliChimeCount()}
     sizeToken="--mw-component-rail-item-size"
   />

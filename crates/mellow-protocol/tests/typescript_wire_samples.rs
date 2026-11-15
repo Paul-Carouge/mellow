@@ -12,31 +12,32 @@ use std::path::PathBuf;
 
 use mellow_protocol::{
     ApiErrorCode, Attachment, AuditAction, AuditChange, AuditChangeKey, AuditLogEntry,
-    AuthorSearchFacet, Ban, Channel, ChannelKind, ChannelPlacement, ChannelSearchFacet,
-    ChannelUnread, Checklist, ChecklistItem, ChecklistTick, ChosenStatus, ClientFrame, CurrentUser,
-    CustomEmoji, DirectMessageChannel, ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed,
-    GitHubIssueState, GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello,
-    HighlightRange, InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview,
-    LinkPreviewImage, MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_CHECKLIST_ITEM_LENGTH,
-    MAXIMUM_CHECKLIST_ITEMS, MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS,
-    MAXIMUM_GIF_FAVOURITES, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
-    MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS,
-    MAXIMUM_POLL_QUESTION_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH,
-    MAXIMUM_PROFILE_LINK_URL_LENGTH, MAXIMUM_PROFILE_LINKS, MAXIMUM_PROGRESS_BAR_LABEL_LENGTH,
-    MAXIMUM_PROGRESS_BAR_MAXIMUM, MAXIMUM_REACHABLE_SEARCH_RESULTS,
-    MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS, MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS,
-    MAXIMUM_SEARCH_RESULTS_PER_PAGE, MAXIMUM_SOUND_SAMPLES, MAXIMUM_VIDEO_RECEIVE_SLOTS,
-    MAXIMUM_VOICE_CHANNEL_PARTICIPANTS, MAXIMUM_VOICE_RECEIVE_SLOTS,
-    MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member, Message, MessageReaction,
-    MessageSearchHit, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicEmbed,
-    MusicItem, MusicProvider, NameAvailability, OverwriteKind, PermissionOverwrite, Permissions,
-    Poll, PollAnswer, PollVote, Presence, PresenceStatus, ProfileImage, ProfileLink, ProgressBar,
-    PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role,
-    SOUND_SAMPLE_RATE_HERTZ, ServerFrame, SessionCreated, SimulcastLayer, Snowflake,
-    SoundboardSound, TwitchEmbed, TwitchItem, TwoFactorChallenge, TwoFactorEnrolment,
-    TwoFactorRecoveryCodes, TwoFactorStatus, UserProfile, VideoCodec, VideoTileSize,
-    VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal,
-    WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed, YouTubeVideoEmbed,
+    AuthorSearchFacet, Ban, CALL_RING_TIMEOUT_MILLISECONDS, Call, CallParticipant, Channel,
+    ChannelKind, ChannelPlacement, ChannelSearchFacet, ChannelUnread, Checklist, ChecklistItem,
+    ChecklistTick, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel,
+    ForwardOrigin, GatewayEvent, GifSettings, GitHubIssueEmbed, GitHubIssueState,
+    GitHubRepositoryEmbed, Guild, GuildInvite, GuildSummary, Hello, HighlightRange,
+    InitialCategory, InitialTextChannel, Invite, LinkEmbed, LinkPreview, LinkPreviewImage,
+    MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_CHECKLIST_ITEM_LENGTH, MAXIMUM_CHECKLIST_ITEMS,
+    MAXIMUM_CHECKLIST_TITLE_LENGTH, MAXIMUM_COUNTED_UNREAD_MENTIONS, MAXIMUM_GIF_FAVOURITES,
+    MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH, MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS,
+    MAXIMUM_POLL_ANSWER_LENGTH, MAXIMUM_POLL_ANSWERS, MAXIMUM_POLL_QUESTION_LENGTH,
+    MAXIMUM_PROFILE_LINK_LABEL_LENGTH, MAXIMUM_PROFILE_LINK_URL_LENGTH, MAXIMUM_PROFILE_LINKS,
+    MAXIMUM_PROGRESS_BAR_LABEL_LENGTH, MAXIMUM_PROGRESS_BAR_MAXIMUM,
+    MAXIMUM_REACHABLE_SEARCH_RESULTS, MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
+    MAXIMUM_SEARCH_QUERY_LENGTH, MAXIMUM_SEARCH_QUERY_PARTS, MAXIMUM_SEARCH_RESULTS_PER_PAGE,
+    MAXIMUM_SOUND_SAMPLES, MAXIMUM_VIDEO_RECEIVE_SLOTS, MAXIMUM_VOICE_CHANNEL_PARTICIPANTS,
+    MAXIMUM_VOICE_RECEIVE_SLOTS, MINIMUM_MILLISECONDS_BETWEEN_SOUNDS, MINIMUM_POLL_ANSWERS, Member,
+    Message, MessageCall, MessageReaction, MessageSearchHit, MessageSearchQuery,
+    MessageSearchResults, MessageSearchSort, MusicEmbed, MusicItem, MusicProvider,
+    NameAvailability, OverwriteKind, PermissionOverwrite, Permissions, Poll, PollAnswer, PollVote,
+    Presence, PresenceStatus, ProfileImage, ProfileLink, ProgressBar, PublicUser, ReactionSummary,
+    ReadState, Ready, Relationship, RelationshipKind, Role, SOUND_SAMPLE_RATE_HERTZ, ServerFrame,
+    SessionCreated, SimulcastLayer, Snowflake, SoundboardSound, TwitchEmbed, TwitchItem,
+    TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, UserProfile,
+    VideoCodec, VideoTileSize, VimeoVideoEmbed, VoiceDisconnectReason, VoiceJoinRefusal,
+    VoiceState, VoiceVideoRefusal, WatchedCamera, WikipediaArticleEmbed, YouTubeMusicTrackEmbed,
+    YouTubeVideoEmbed,
 };
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -540,6 +541,44 @@ fn message() -> Message {
             channel_id: id(31),
             message_id: id(700),
         }),
+        call: Some(MessageCall {
+            participant_ids: vec![id(10), id(11)],
+            ended_at_unix_milliseconds: Some(1_700_000_720_000),
+        }),
+    }
+}
+
+fn call() -> Call {
+    Call {
+        channel_id: id(30),
+        message_id: id(800),
+        caller_id: id(10),
+        ringing_user_ids: vec![id(11)],
+        participants: vec![
+            CallParticipant {
+                user_id: id(10),
+                self_mute: true,
+                self_deaf: false,
+                self_video: false,
+                self_stream: true,
+                video_codec: Some(VideoCodec::Vp8),
+            },
+            CallParticipant {
+                user_id: id(12),
+                self_mute: false,
+                self_deaf: false,
+                self_video: false,
+                self_stream: false,
+                video_codec: None,
+            },
+        ],
+    }
+}
+
+fn ongoing_message_call() -> MessageCall {
+    MessageCall {
+        participant_ids: Vec::new(),
+        ended_at_unix_milliseconds: None,
     }
 }
 
@@ -590,6 +629,7 @@ fn sparse_message() -> Message {
         checklist: None,
         progress_bar: None,
         forwarded_from: None,
+        call: None,
         ..message()
     }
 }
@@ -692,6 +732,8 @@ fn ready() -> Ready {
         voice_states: vec![voice_state(), sparse_voice_state()],
         voice_enabled: true,
         maximum_attachment_bytes: Some(26_214_400),
+        calls: vec![call()],
+        calls_enabled: true,
     }
 }
 
@@ -709,6 +751,8 @@ fn sparse_ready() -> Ready {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
         ..ready()
     }
 }
@@ -984,6 +1028,18 @@ fn gateway_events() -> Vec<GatewayEvent> {
             channel_id: id(30),
             user_id: id(10),
             sound_id: id(600),
+        },
+        GatewayEvent::CallCreate(_) => GatewayEvent::CallCreate(call()),
+        GatewayEvent::CallUpdate(_) => GatewayEvent::CallUpdate(Call {
+            ringing_user_ids: Vec::new(),
+            participants: Vec::new(),
+            ..call()
+        }),
+        GatewayEvent::CallDelete { .. } => GatewayEvent::CallDelete { channel_id: id(30) },
+        GatewayEvent::CallSpeaking { .. } => GatewayEvent::CallSpeaking {
+            channel_id: id(30),
+            user_id: id(10),
+            speaking: false,
         },
     })
 }
@@ -1318,6 +1374,15 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             &[audit_log_entry(), sparse_audit_log_entry()],
         )?,
         sampled("Ready", Interface, &[ready(), sparse_ready()])?,
+        sampled("Call", Interface, &[call()])?,
+        sampled(
+            "MessageCall",
+            Interface,
+            &[
+                message().call.unwrap_or_else(ongoing_message_call),
+                ongoing_message_call(),
+            ],
+        )?,
         sampled(
             "VoiceState",
             Interface,
@@ -1353,6 +1418,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             StringUnion,
             &every_variant!(VoiceDisconnectReason:
                 MovedElsewhere, PermissionsChanged, ChannelDeleted, RemovedFromGuild, MediaTimeout,
+                CallEnded, ServerStopping,
             ),
         )?,
         sampled(
@@ -1408,6 +1474,7 @@ fn shared_constants() -> Value {
         "VOICE_RECEIVE_SLOTS": MAXIMUM_VOICE_RECEIVE_SLOTS,
         "VIDEO_RECEIVE_SLOTS": MAXIMUM_VIDEO_RECEIVE_SLOTS,
         "SCREEN_SOUND_RECEIVE_SLOTS": MAXIMUM_SCREEN_SOUND_RECEIVE_SLOTS,
+        "CALL_RING_TIMEOUT_MILLISECONDS": CALL_RING_TIMEOUT_MILLISECONDS,
     })
 }
 

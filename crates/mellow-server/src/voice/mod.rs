@@ -3,6 +3,9 @@
 //! `domain`. Logs never carry SDP, addresses or `Host` values.
 
 mod address;
+#[cfg(test)]
+mod call_tests;
+mod calls;
 mod media;
 #[cfg(test)]
 mod tests;
@@ -23,13 +26,16 @@ use tokio::sync::mpsc::{UnboundedReceiver, unbounded_channel};
 
 use crate::config::VoiceConfig;
 use crate::domain::guilds::{ChannelAudience, Guilds};
+use crate::domain::messages::Messages;
 use crate::domain::video_rules::{layer_for_tile, missing_room_for_a_camera};
 use crate::domain::voice_rules::{
     VoiceAccess, has_room_for_one_more, may_play_another_sound, validate_voice_offer,
 };
-use crate::events::{EventHub, SessionKey};
+use crate::events::{AccessChanges, EventHub, SessionKey};
 pub(crate) use address::is_valid_host;
 use address::{HostResolutions, announced_address, host_from_header};
+use calls::ActiveCall;
+pub(crate) use calls::CallError;
 use media::{MediaCommand, MediaEvent, MediaJoin, ScreenSoundMids, SessionVideoCodecs};
 
 /// A `voice_join` frame, with what the gateway knows of its sender.
@@ -75,6 +81,14 @@ pub(crate) struct SelfVoiceState {
     pub(crate) video: Option<VideoSource>,
 }
 
+/// Where a voice connection is: a guild's voice channel, or a conversation's call (ADR-0062),
+/// whose virtual voice channel has the conversation's id.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VoiceScope {
+    Guild(Snowflake),
+    Call,
+}
+
 /// A join checked and answered, waiting for room in the channel.
 struct PreparedJoin {
     candidate_address: std::net::SocketAddr,
@@ -92,7 +106,7 @@ struct PreparedJoin {
 /// What a join is allowed, read again under the participants lock.
 #[derive(Debug, Clone, Copy)]
 struct AdmittedVoiceAccess {
-    guild_id: Snowflake,
+    scope: VoiceScope,
     user_limit: Option<u8>,
     may_speak: bool,
     may_use_soundboard: bool,
@@ -104,7 +118,7 @@ struct Participant {
     /// The gateway session the voice connection belongs to: it ends with that session.
     session: SessionKey,
     connection_id: u64,
-    guild_id: Snowflake,
+    scope: VoiceScope,
     channel_id: Snowflake,
     /// Their own mute and deafen, and their camera, on and forwarded (ADR-0035).
     self_state: SelfVoiceState,
@@ -119,10 +133,12 @@ struct Participant {
 }
 
 impl Participant {
-    fn voice_state(&self, user_id: Snowflake) -> VoiceState {
+    /// As a guild voice channel's viewers see them; never sent for a call, whose participants
+    /// are in `Call`.
+    fn voice_state(&self, user_id: Snowflake, guild_id: Snowflake) -> VoiceState {
         VoiceState {
             user_id,
-            guild_id: self.guild_id,
+            guild_id,
             channel_id: self.channel_id,
             self_mute: self.self_state.self_mute,
             self_deaf: self.self_state.self_deaf,
@@ -134,6 +150,16 @@ impl Participant {
             // never replay it (ADR-0032).
             join_sound_id: None,
         }
+    }
+
+    /// What others are told of them changed: mute, deafen, suppression, camera, screen, codec.
+    fn has_announced_change_from(&self, previous: &Self) -> bool {
+        (self.self_state, self.suppressed, self.video_codec)
+            != (
+                previous.self_state,
+                previous.suppressed,
+                previous.video_codec,
+            )
     }
 
     /// Whether others hear them: deafening oneself mutes too, as on Discord.
@@ -187,7 +213,20 @@ struct VoiceShared {
     /// `[voice] video_upload_mbps` is above 0: cameras may be turned on (ADR-0035).
     is_video_enabled: bool,
     guilds: Arc<Guilds>,
+    /// Conversations' access and call messages (ADR-0062).
+    messages: Arc<Messages>,
     events: Arc<EventHub>,
+    /// The calls going on, by conversation (ADR-0062). Taken after `participants` when both are,
+    /// and never held across an await.
+    calls: std::sync::Mutex<HashMap<Snowflake, ActiveCall>>,
+    /// Held while a call is started and while calls are checked again: two starts in one
+    /// conversation post one message, and a start never misses an access change.
+    call_starts: tokio::sync::Mutex<()>,
+    /// The instance's limits, for the rings a callee receives from strangers (ADR-0062).
+    rate_limiter: Arc<crate::http::rate_limit::RateLimiter>,
+    /// How long a call rings: `CALL_RING_TIMEOUT_MILLISECONDS`, longer in tests that end
+    /// ringing themselves.
+    ring_timeout_milliseconds: AtomicU64,
     /// By user: one voice connection per user. An async lock, held across the audience reads,
     /// so the events of one change go out before those of the next.
     participants: tokio::sync::Mutex<HashMap<Snowflake, Participant>>,
@@ -208,7 +247,9 @@ impl VoiceService {
         config: &VoiceConfig,
         is_development_listener: bool,
         guilds: Arc<Guilds>,
+        messages: Arc<Messages>,
         events: Arc<EventHub>,
+        rate_limiter: Arc<crate::http::rate_limit::RateLimiter>,
     ) -> Self {
         let started = if config.enabled {
             start_media_loop(
@@ -224,7 +265,9 @@ impl VoiceService {
             is_development_listener,
             media,
             guilds,
+            messages,
             events.clone(),
+            rate_limiter,
         );
         if let Some(media_events) = media_events {
             tokio::spawn(run_voice_events(
@@ -238,12 +281,24 @@ impl VoiceService {
 
     /// No voice at all: every join is refused with `voice_unavailable`.
     #[cfg(test)]
-    pub(crate) fn disabled(guilds: Arc<Guilds>, events: Arc<EventHub>) -> Self {
+    pub(crate) fn disabled(
+        guilds: Arc<Guilds>,
+        messages: Arc<Messages>,
+        events: Arc<EventHub>,
+    ) -> Self {
         let config = VoiceConfig {
             enabled: false,
             ..VoiceConfig::default()
         };
-        Self::with_media(&config, false, None, guilds, events)
+        Self::with_media(
+            &config,
+            false,
+            None,
+            guilds,
+            messages,
+            events,
+            Arc::default(),
+        )
     }
 
     fn with_media(
@@ -251,7 +306,9 @@ impl VoiceService {
         is_development_listener: bool,
         media: Option<MediaHandle>,
         guilds: Arc<Guilds>,
+        messages: Arc<Messages>,
         events: Arc<EventHub>,
+        rate_limiter: Arc<crate::http::rate_limit::RateLimiter>,
     ) -> Self {
         Self {
             shared: Arc::new(VoiceShared {
@@ -262,7 +319,14 @@ impl VoiceService {
                 max_participants: usize::try_from(config.max_participants).unwrap_or(usize::MAX),
                 is_video_enabled: config.video_upload_mbps > 0,
                 guilds,
+                messages,
                 events,
+                calls: std::sync::Mutex::default(),
+                call_starts: tokio::sync::Mutex::const_new(()),
+                rate_limiter,
+                ring_timeout_milliseconds: AtomicU64::new(
+                    mellow_protocol::CALL_RING_TIMEOUT_MILLISECONDS,
+                ),
                 participants: tokio::sync::Mutex::default(),
                 next_connection_id: AtomicU64::new(1),
             }),
@@ -306,28 +370,21 @@ impl VoiceService {
             validate_voice_offer(&request.sdp_offer).map_err(|_| VoiceJoinRefusal::InvalidOffer)?;
         // Checked early so a refused join costs no DNS lookup or session; checked again under
         // the lock by `admit`.
-        let guild_id = match shared
-            .guilds
-            .voice_access(request.user_id, request.channel_id)
-            .await
-        {
-            Ok(VoiceAccess::Allowed { guild_id, .. }) => guild_id,
-            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
-                return Err(VoiceJoinRefusal::MissingPermissions);
-            }
-            Err(error) => {
-                tracing::warn!(%error, "voice join: cannot read the channel");
-                return Err(VoiceJoinRefusal::VoiceUnavailable);
-            }
+        let access = shared
+            .join_access(request.user_id, request.channel_id)
+            .await?;
+        // Join sounds are a guild's (ADR-0032): none in a call.
+        let member_join_sound_id = match access.scope {
+            VoiceScope::Guild(guild_id) => shared
+                .guilds
+                .join_sound_of_member(guild_id, request.user_id)
+                .await
+                .unwrap_or_else(|error| {
+                    tracing::warn!(%error, "voice join: cannot read the join sound");
+                    None
+                }),
+            VoiceScope::Call => None,
         };
-        let member_join_sound_id = shared
-            .guilds
-            .join_sound_of_member(guild_id, request.user_id)
-            .await
-            .unwrap_or_else(|error| {
-                tracing::warn!(%error, "voice join: cannot read the join sound");
-                None
-            });
         // An address the administrator wrote is announced as is. One taken from the Host the
         // client used may be `localhost`: replaced by the machine's network address only on a
         // development instance, never on an exposed one (it would reveal its network address).
@@ -397,43 +454,14 @@ impl VoiceService {
         }
     }
 
-    /// The guild, user limit, `SPEAK` and soundboard rights of a join, read under the lock.
-    async fn admitted_access(
-        &self,
-        request: &VoiceJoinRequest,
-    ) -> Result<AdmittedVoiceAccess, VoiceJoinRefusal> {
-        match self
-            .shared
-            .guilds
-            .voice_access(request.user_id, request.channel_id)
-            .await
-        {
-            Ok(VoiceAccess::Allowed {
-                guild_id,
-                user_limit,
-                may_speak,
-                may_use_soundboard,
-                ..
-            }) => Ok(AdmittedVoiceAccess {
-                guild_id,
-                user_limit,
-                may_speak,
-                may_use_soundboard,
-            }),
-            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
-                Err(VoiceJoinRefusal::MissingPermissions)
-            }
-            Err(error) => {
-                tracing::warn!(%error, "voice join: cannot read the channel");
-                Err(VoiceJoinRefusal::VoiceUnavailable)
-            }
-        }
-    }
-
     /// Adds the prepared participant under the participants lock. Access is read again there:
     /// a permission revoked while the offer was being answered is re-checked only for those
     /// already inserted, so a join racing it must see it here. A session that ended meanwhile
     /// (its `end_session` already ran) gets nothing.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one join, step by step, under one lock"
+    )]
     async fn admit(&self, request: VoiceJoinRequest, prepared: PreparedJoin) {
         let shared = &self.shared;
         let refuse = |reason| {
@@ -461,11 +489,14 @@ impl VoiceService {
             return;
         }
         let AdmittedVoiceAccess {
-            guild_id,
+            scope,
             user_limit,
             may_speak,
             may_use_soundboard,
-        } = match self.admitted_access(&request).await {
+        } = match shared
+            .join_access(request.user_id, request.channel_id)
+            .await
+        {
             Ok(access) => access,
             Err(refusal) => return refuse(refusal),
         };
@@ -482,7 +513,7 @@ impl VoiceService {
         let participant = Participant {
             session: request.session,
             connection_id: shared.next_connection_id.fetch_add(1, Ordering::Relaxed),
-            guild_id,
+            scope,
             channel_id: request.channel_id,
             // Every join starts with the camera off; the client turns it on again.
             self_state: SelfVoiceState {
@@ -527,7 +558,13 @@ impl VoiceService {
             },
         );
         shared
-            .announce_join(request.user_id, previous, &participant, arrival_sound_id)
+            .announce_join(
+                &mut participants,
+                request.user_id,
+                previous,
+                &participant,
+                arrival_sound_id,
+            )
             .await;
     }
 
@@ -595,7 +632,9 @@ impl VoiceService {
             }
             _ => shared.send_media_command(updated.camera_command(user_id)),
         }
-        shared.publish_state_updated(user_id, &updated).await;
+        shared
+            .publish_state_updated(&participants, user_id, &updated)
+            .await;
     }
 
     /// The cameras the session connected to voice shows, and how large (ADR-0035). A list longer
@@ -719,13 +758,50 @@ impl VoiceService {
             .lock()
             .await
             .iter()
-            .filter(|(_, participant)| channel_ids.contains(&participant.channel_id))
-            .map(|(user_id, participant)| participant.voice_state(*user_id))
+            .filter_map(|(user_id, participant)| match participant.scope {
+                VoiceScope::Guild(guild_id) if channel_ids.contains(&participant.channel_id) => {
+                    Some(participant.voice_state(*user_id, guild_id))
+                }
+                VoiceScope::Guild(_) | VoiceScope::Call => None,
+            })
             .collect()
     }
 }
 
 impl VoiceShared {
+    /// What a join may do where it goes, read fresh: a conversation's call going on (ADR-0062),
+    /// or a guild's voice channel.
+    async fn join_access(
+        &self,
+        user_id: Snowflake,
+        channel_id: Snowflake,
+    ) -> Result<AdmittedVoiceAccess, VoiceJoinRefusal> {
+        if self.has_call(channel_id) {
+            return self.call_join_access(user_id, channel_id).await;
+        }
+        match self.guilds.voice_access(user_id, channel_id).await {
+            Ok(VoiceAccess::Allowed {
+                guild_id,
+                user_limit,
+                may_speak,
+                may_use_soundboard,
+                ..
+            }) => Ok(AdmittedVoiceAccess {
+                scope: VoiceScope::Guild(guild_id),
+                user_limit,
+                may_speak,
+                may_use_soundboard,
+            }),
+            Ok(VoiceAccess::ChannelGone | VoiceAccess::NotMember | VoiceAccess::Denied) => {
+                Err(VoiceJoinRefusal::MissingPermissions)
+            }
+            Err(error) => {
+                tracing::warn!(%error, "voice join: cannot read the channel");
+                Err(VoiceJoinRefusal::VoiceUnavailable)
+            }
+        }
+    }
+
     /// Why `participant` may not turn their camera on now, if they may not: no video in their
     /// offer, no `STREAM` in the channel (read fresh), or as many cameras on as allowed.
     async fn camera_refusal(
@@ -736,6 +812,14 @@ impl VoiceShared {
     ) -> Option<VoiceVideoRefusal> {
         if !self.is_video_enabled || !participant.has_video {
             return Some(VoiceVideoRefusal::VideoUnavailable);
+        }
+        // Everyone in a call may show a camera or a screen (ADR-0062).
+        if participant.scope == VoiceScope::Call {
+            return missing_room_for_a_camera(
+                cameras_on_in(participants),
+                user_id,
+                participant.channel_id,
+            );
         }
         match self
             .guilds
@@ -752,23 +836,23 @@ impl VoiceShared {
                 return Some(VoiceVideoRefusal::VideoUnavailable);
             }
         }
-        let cameras_on = participants
-            .iter()
-            .filter(|(_, other)| other.self_state.video.is_some())
-            .map(|(other_id, other)| (*other_id, other.channel_id));
-        missing_room_for_a_camera(cameras_on, user_id, participant.channel_id)
+        missing_room_for_a_camera(cameras_on_in(participants), user_id, participant.channel_id)
     }
 
     /// Tells the others what a join changed: the session it replaced, a move, a new state.
     async fn announce_join(
         &self,
+        participants: &mut HashMap<Snowflake, Participant>,
         user_id: Snowflake,
         previous: Option<Participant>,
         participant: &Participant,
         arrival_sound_id: Option<Snowflake>,
     ) {
+        if participant.scope == VoiceScope::Call {
+            self.call_joined(participants, user_id, participant.channel_id);
+        }
         let Some(previous) = previous else {
-            self.publish_state(user_id, participant, arrival_sound_id)
+            self.publish_state(participants, user_id, participant, arrival_sound_id)
                 .await;
             return;
         };
@@ -782,10 +866,21 @@ impl VoiceShared {
             );
         }
         if previous.channel_id != participant.channel_id {
-            self.publish_move(user_id, &previous, participant, arrival_sound_id)
+            if let (VoiceScope::Guild(_), VoiceScope::Guild(guild_id)) =
+                (previous.scope, participant.scope)
+            {
+                self.publish_move(user_id, &previous, participant, guild_id, arrival_sound_id)
+                    .await;
+            } else {
+                // Into or out of a call: a departure from one place and an arrival in the other.
+                self.publish_departure(participants, user_id, &previous)
+                    .await;
+                self.publish_state(participants, user_id, participant, arrival_sound_id)
+                    .await;
+            }
+        } else if participant.has_announced_change_from(&previous) {
+            self.publish_state_updated(participants, user_id, participant)
                 .await;
-        } else if previous.voice_state(user_id) != participant.voice_state(user_id) {
-            self.publish_state_updated(user_id, participant).await;
         }
         // Joining the same channel again with the same state reconnects the media (an ICE
         // restart): nothing is announced, so the client does not react to its own reconnection.
@@ -820,7 +915,24 @@ impl VoiceShared {
                 },
             );
         }
-        self.publish_state_deleted(user_id, &participant).await;
+        self.publish_departure(participants, user_id, &participant)
+            .await;
+    }
+
+    /// Tells the place someone left: a guild channel's viewers, or the call (which may end).
+    async fn publish_departure(
+        &self,
+        participants: &mut HashMap<Snowflake, Participant>,
+        user_id: Snowflake,
+        departed: &Participant,
+    ) {
+        match departed.scope {
+            VoiceScope::Guild(guild_id) => {
+                self.publish_state_deleted(user_id, guild_id, departed)
+                    .await;
+            }
+            VoiceScope::Call => self.call_left(participants, departed.channel_id),
+        }
     }
 
     async fn publish_to_viewers(
@@ -844,9 +956,14 @@ impl VoiceShared {
         user_id: Snowflake,
         previous: &Participant,
         current: &Participant,
+        current_guild_id: Snowflake,
         arrival_sound_id: Option<Snowflake>,
     ) {
-        self.publish_state(user_id, current, arrival_sound_id).await;
+        let VoiceScope::Guild(previous_guild_id) = previous.scope else {
+            return;
+        };
+        self.publish_guild_state(user_id, current_guild_id, current, arrival_sound_id)
+            .await;
         let audiences = (
             self.guilds
                 .audience_of_guild_channel(previous.channel_id)
@@ -863,9 +980,9 @@ impl VoiceShared {
         let viewers_left_behind: HashSet<Snowflake> = match audiences {
             (Ok(None), _) => return,
             (Ok(Some(old)), Ok(new)) => {
-                let old_viewers = viewers_of(old, previous.guild_id);
+                let old_viewers = viewers_of(old, previous_guild_id);
                 let new_viewers = new
-                    .map(|new| viewers_of(new, current.guild_id))
+                    .map(|new| viewers_of(new, current_guild_id))
                     .unwrap_or_default();
                 old_viewers.difference(&new_viewers).copied().collect()
             }
@@ -875,44 +992,74 @@ impl VoiceShared {
             }
         };
         self.events.publish_to_guild_members(
-            previous.guild_id,
+            previous_guild_id,
             &viewers_left_behind,
             &GatewayEvent::VoiceStateDelete {
-                guild_id: previous.guild_id,
+                guild_id: previous_guild_id,
                 channel_id: previous.channel_id,
                 user_id,
             },
         );
     }
 
-    async fn publish_state_updated(&self, user_id: Snowflake, participant: &Participant) {
-        self.publish_state(user_id, participant, None).await;
+    async fn publish_state_updated(
+        &self,
+        participants: &HashMap<Snowflake, Participant>,
+        user_id: Snowflake,
+        participant: &Participant,
+    ) {
+        self.publish_state(participants, user_id, participant, None)
+            .await;
+    }
+
+    /// An arrival or a change, where the participant is: `VOICE_STATE_UPDATE` to a guild
+    /// channel's viewers, or the call as it is now (`CALL_UPDATE`).
+    async fn publish_state(
+        &self,
+        participants: &HashMap<Snowflake, Participant>,
+        user_id: Snowflake,
+        participant: &Participant,
+        join_sound_id: Option<Snowflake>,
+    ) {
+        match participant.scope {
+            VoiceScope::Guild(guild_id) => {
+                self.publish_guild_state(user_id, guild_id, participant, join_sound_id)
+                    .await;
+            }
+            VoiceScope::Call => self.publish_call_update(participants, participant.channel_id),
+        }
     }
 
     /// `VOICE_STATE_UPDATE`, carrying `join_sound_id` only for an arrival (ADR-0032).
-    async fn publish_state(
+    async fn publish_guild_state(
         &self,
         user_id: Snowflake,
+        guild_id: Snowflake,
         participant: &Participant,
         join_sound_id: Option<Snowflake>,
     ) {
         let event = GatewayEvent::VoiceStateUpdate {
             voice_state: VoiceState {
                 join_sound_id,
-                ..participant.voice_state(user_id)
+                ..participant.voice_state(user_id, guild_id)
             },
         };
-        self.publish_to_viewers(participant.guild_id, participant.channel_id, &event)
+        self.publish_to_viewers(guild_id, participant.channel_id, &event)
             .await;
     }
 
-    async fn publish_state_deleted(&self, user_id: Snowflake, participant: &Participant) {
+    async fn publish_state_deleted(
+        &self,
+        user_id: Snowflake,
+        guild_id: Snowflake,
+        participant: &Participant,
+    ) {
         let event = GatewayEvent::VoiceStateDelete {
-            guild_id: participant.guild_id,
+            guild_id,
             channel_id: participant.channel_id,
             user_id,
         };
-        self.publish_to_viewers(participant.guild_id, participant.channel_id, &event)
+        self.publish_to_viewers(guild_id, participant.channel_id, &event)
             .await;
     }
 
@@ -999,7 +1146,8 @@ impl VoiceShared {
                 // The service stays the authority: the media loop turned the camera off, but an
                 // off and on in between may have turned it on again there.
                 self.send_media_command(camera.camera_command(user_id));
-                self.publish_state_updated(user_id, &camera).await;
+                self.publish_state_updated(&participants, user_id, &camera)
+                    .await;
             }
             MediaEvent::CameraLayers {
                 user_id,
@@ -1019,14 +1167,41 @@ impl VoiceShared {
                 }) else {
                     return;
                 };
+                self.publish_speaking(user_id, participant, is_speaking)
+                    .await;
+            }
+        }
+    }
+
+    /// Re-checks the guilds that changed, then the calls the changes may concern (ADR-0062).
+    async fn apply_access_changes(&self, changes: AccessChanges) {
+        if !changes.guild_ids.is_empty() {
+            self.reevaluate(&changes.guild_ids).await;
+        }
+        self.recheck_calls(&changes).await;
+    }
+
+    /// A speaking edge, where the participant is: `SPEAKING` to a guild channel's viewers, or
+    /// `CALL_SPEAKING` to the call's conversation.
+    async fn publish_speaking(
+        &self,
+        user_id: Snowflake,
+        participant: &Participant,
+        is_speaking: bool,
+    ) {
+        match participant.scope {
+            VoiceScope::Guild(guild_id) => {
                 let event = GatewayEvent::Speaking {
-                    guild_id: participant.guild_id,
+                    guild_id,
                     channel_id: participant.channel_id,
                     user_id,
                     speaking: is_speaking,
                 };
-                self.publish_to_viewers(participant.guild_id, participant.channel_id, &event)
+                self.publish_to_viewers(guild_id, participant.channel_id, &event)
                     .await;
+            }
+            VoiceScope::Call => {
+                self.publish_call_speaking(participant.channel_id, user_id, is_speaking);
             }
         }
     }
@@ -1041,7 +1216,9 @@ impl VoiceShared {
         let mut participants = self.participants.lock().await;
         let affected: Vec<(Snowflake, Snowflake)> = participants
             .iter()
-            .filter(|(_, participant)| guild_ids.contains(&participant.guild_id))
+            .filter(|(_, participant)| {
+                matches!(participant.scope, VoiceScope::Guild(guild_id) if guild_ids.contains(&guild_id))
+            })
             .map(|(user_id, participant)| (*user_id, participant.channel_id))
             .collect();
         for (user_id, channel_id) in &affected {
@@ -1090,10 +1267,21 @@ impl VoiceShared {
         }
         for (user_id, _) in affected {
             if let Some(participant) = participants.get(&user_id) {
-                self.publish_state_updated(user_id, participant).await;
+                self.publish_state_updated(&participants, user_id, participant)
+                    .await;
             }
         }
     }
+}
+
+/// Who has a camera or a screen on, and where, for the camera caps (ADR-0035).
+fn cameras_on_in(
+    participants: &HashMap<Snowflake, Participant>,
+) -> impl Iterator<Item = (Snowflake, Snowflake)> + '_ {
+    participants
+        .iter()
+        .filter(|(_, other)| other.self_state.video.is_some())
+        .map(|(other_id, other)| (*other_id, other.channel_id))
 }
 
 /// Why there is no room for the user joining with `request`, if there is none: in the channel
@@ -1218,11 +1406,11 @@ async fn run_voice_events(
                 };
                 tokio::spawn(async move { shared.apply_media_event(event).await })
             }
-            guild_ids = events.next_guild_access_changes() => {
+            changes = events.next_access_changes() => {
                 let Some(shared) = shared.upgrade() else {
                     return;
                 };
-                tokio::spawn(async move { shared.reevaluate(&guild_ids).await })
+                tokio::spawn(async move { shared.apply_access_changes(changes).await })
             }
         };
         if let Err(error) = step.await {

@@ -21,6 +21,7 @@ use mellow_protocol::{PublicUser, RelationshipKind, SendFriendRequest, SetRelati
 
 use super::facts::{ProfileFacts, profile_facts};
 use super::{ProfileSurfaces, ProfileSurfacesEvent};
+use crate::calls::CallStartFailure;
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, FocusNextControl, FocusPreviousControl,
     IconButton, LiveRegion as _, MenuAlignment, Tooltip, avatar_tint, bounds_recorder, easing,
@@ -178,6 +179,98 @@ impl ProfileSurfaces {
         cx.notify();
     }
 
+    /// "Appeler" (ADR-0062): the one-to-one conversation opens and rings. A refusal stays here,
+    /// where the reader asked.
+    fn call(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(modal) = self.modal.as_mut() else {
+            return;
+        };
+        if modal.is_opening_conversation {
+            return;
+        }
+        modal.is_opening_conversation = true;
+        modal.error = None;
+        let user_id = modal.user.id;
+        let person = display_name(&modal.user).to_owned();
+        let failure = strings(cx).calls().could_not_call(&person);
+        let surfaces = cx.entity().downgrade();
+        let window_handle = window.window_handle();
+        self.session.update(cx, |session, cx| {
+            session.open_direct_message(user_id, failure.clone(), cx, move |answer, cx| {
+                let conversation_id = match answer {
+                    Ok(conversation_id) => conversation_id,
+                    Err(message) => {
+                        let _ = surfaces.update(cx, |surfaces, cx| {
+                            if let Some(modal) = surfaces.modal.as_mut() {
+                                modal.is_opening_conversation = false;
+                                modal.error = Some(message);
+                            }
+                            cx.notify();
+                        });
+                        return;
+                    }
+                };
+                let Some(calls) = crate::calls::calls(cx) else {
+                    return;
+                };
+                calls.update(cx, |calls, cx| {
+                    calls.start_call(conversation_id, cx, move |outcome, cx| {
+                        let _ = window_handle.update(cx, |_, _, cx| {
+                            let _ = surfaces.update(cx, |surfaces, cx| {
+                                let Some(modal) = surfaces
+                                    .modal
+                                    .as_mut()
+                                    .filter(|modal| modal.user.id == user_id)
+                                else {
+                                    return;
+                                };
+                                modal.is_opening_conversation = false;
+                                match outcome {
+                                    Ok(()) => {
+                                        surfaces.modal = None;
+                                        surfaces.modal_details.show(None);
+                                        cx.emit(ProfileSurfacesEvent::OpenedConversation(
+                                            conversation_id,
+                                        ));
+                                        // Opening the conversation closes the call view: it
+                                        // opens again over it.
+                                        cx.defer(|cx| {
+                                            if let Some(voice) = crate::voice::voice(cx) {
+                                                voice.update(
+                                                    cx,
+                                                    crate::voice::Voice::open_call_view,
+                                                );
+                                            }
+                                        });
+                                    }
+                                    // The start already under way ends this wait too.
+                                    Err(CallStartFailure::AlreadyStarting) => {}
+                                    Err(start_failure) => {
+                                        modal.error = Some(format!(
+                                            "{failure}. {}",
+                                            crate::calls::words::call_start_failure_sentence(
+                                                start_failure,
+                                                strings(cx),
+                                            )
+                                        ));
+                                        if let Some(calls) = crate::calls::calls(cx) {
+                                            calls.update(
+                                                cx,
+                                                crate::calls::Calls::dismiss_start_problem,
+                                            );
+                                        }
+                                    }
+                                }
+                                cx.notify();
+                            });
+                        });
+                    });
+                });
+            });
+        });
+        cx.notify();
+    }
+
     /// Add friend, Accept or Unblock: the button pressed is replaced once the instance answers,
     /// so focus moves on to the next control if it was still on it.
     pub(crate) fn change_relationship(
@@ -304,7 +397,8 @@ impl ProfileSurfaces {
         }
     }
 
-    /// The actions under the status: the primary button and More, then the friend button.
+    /// The actions under the status: the primary button, Call and More, then the friend button.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn modal_actions(&self, facts: &ProfileFacts, cx: &mut Context<Self>) -> Vec<AnyElement> {
         let Some(modal) = self.modal.as_ref() else {
             return Vec::new();
@@ -369,10 +463,23 @@ impl ProfileSurfaces {
         .track_focus(&modal.more_focus)
         .on_click(move |_, cx| more_entity.update(cx, Self::open_more_menu));
         let more_bounds = modal.more_bounds.clone();
+        // Calling: hidden where the instance has no calls, and for someone blocked.
+        let can_call =
+            !facts.is_self && !is_blocked && self.session.read(cx).state().is_calls_enabled();
+        let call = can_call.then(|| {
+            let entity = entity.clone();
+            Button::new("profile-call", catalogue.calls().call_person(&person))
+                .icon_only(IconName::Phone, COMPONENT_CHAT_HEADER_ICON_SIZE)
+                .disabled(modal.is_opening_conversation)
+                .on_click(move |window, cx| {
+                    entity.update(cx, |surfaces, cx| surfaces.call(window, cx));
+                })
+        });
         let row_one = div()
             .flex()
             .gap(length(COMPONENT_PROFILE_MODAL_ACTION_GAP))
             .child(div().flex_1().min_w_0().child(primary))
+            .children(call)
             .child(
                 div()
                     .relative()

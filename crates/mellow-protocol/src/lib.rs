@@ -1,6 +1,7 @@
 //! Wire types shared by the Mellow server and clients. No I/O lives here (ADR-0001).
 
 mod accounts;
+mod calls;
 mod canonical_decimal;
 mod direct_messages;
 mod gateway;
@@ -20,6 +21,7 @@ pub use accounts::{
     MAXIMUM_CUSTOM_STATUS_LENGTH, NameAvailability, RegisterRequest, SessionCreated,
     UpdateCurrentUserRequest, UpdatePresenceRequest,
 };
+pub use calls::{CALL_RING_TIMEOUT_MILLISECONDS, Call, CallParticipant, MessageCall};
 pub use direct_messages::{
     CreateGroupConversationRequest, DirectMessageChannel, MAXIMUM_GROUP_CONVERSATION_NAME_LENGTH,
     MAXIMUM_GROUP_CONVERSATION_PARTICIPANTS, OpenDirectMessageRequest,

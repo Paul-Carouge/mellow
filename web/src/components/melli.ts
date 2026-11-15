@@ -14,12 +14,14 @@ export type MelliState =
 
 /**
  * The Home button's Melli: connection trouble first, then Do not disturb (quiet even with unread
- * messages), then unread conversations or mentions.
+ * messages or a call ringing), then a call ringing the reader, then unread conversations or
+ * mentions.
  */
 export function homeMelliState(
   status: ConnectionStatus,
   hasSomethingForTheReader: boolean,
   isDoNotDisturb: boolean,
+  isCallRinging = false,
 ): MelliState {
   if (status === "reconnecting") {
     return "connection-lost";
@@ -29,6 +31,9 @@ export function homeMelliState(
   }
   if (isDoNotDisturb) {
     return "do-not-disturb";
+  }
+  if (isCallRinging) {
+    return "incoming-call";
   }
   return hasSomethingForTheReader ? "notification" : "idle";
 }

@@ -33,7 +33,8 @@ pub(crate) fn test_state(database: Database, registration_mode: RegistrationMode
         crate::domain::account_rules::GuildCreationPolicy::Everyone,
     ));
     let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
-    let voice = crate::voice::VoiceService::disabled(guilds.clone(), events.clone());
+    let voice =
+        crate::voice::VoiceService::disabled(guilds.clone(), messages.clone(), events.clone());
     let files = test_attachment_files();
     let attachments = Arc::new(crate::domain::attachments::Attachments::new(
         database.clone(),

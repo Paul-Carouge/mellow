@@ -187,7 +187,8 @@
   tabindex="-1"
   aria-label={strings.screenShare.screenOf(name)}
   class={[
-    "absolute inset-0 flex min-w-0 flex-col overflow-hidden bg-(--mw-component-stream-view-background) outline-none",
+    // Over the conversation underneath, whose unread bar and call banner float at z-10.
+    "absolute inset-0 z-20 flex min-w-0 flex-col overflow-hidden bg-(--mw-component-stream-view-background) outline-none",
     !hasNavigationDrawer && !isFullscreen && "rounded-(--mw-component-sheet-radius)",
   ]}
 >

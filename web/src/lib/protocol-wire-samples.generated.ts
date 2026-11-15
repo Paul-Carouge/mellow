@@ -3,7 +3,7 @@
 // `npm run check` type-checks every sample against protocol.ts; protocol.test.ts compares
 // the constants and permission bits.
 
-import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, NameAvailability, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, UserProfile, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
+import type { ApiErrorCode, Attachment, AuditAction, AuditChange, AuditLogEntry, Ban, Call, Channel, ChannelKind, ChannelPlacement, ChannelUnread, ChosenStatus, ClientFrame, CurrentUser, CustomEmoji, DirectMessageChannel, GatewayEvent, GifSettings, GitHubIssueState, Guild, GuildInvite, InitialCategory, Invite, LinkEmbed, Member, Message, MessageCall, MessageReaction, MessageSearchQuery, MessageSearchResults, MessageSearchSort, MusicItem, MusicProvider, NameAvailability, PermissionOverwrite, Presence, PresenceStatus, ProfileImage, PublicUser, ReactionSummary, ReadState, Ready, Relationship, RelationshipKind, Role, ServerFrame, SessionCreated, SimulcastLayer, SoundboardSound, TwitchItem, TwoFactorChallenge, TwoFactorEnrolment, TwoFactorRecoveryCodes, TwoFactorStatus, UserProfile, VideoTileSize, VoiceDisconnectReason, VoiceJoinRefusal, VoiceState, VoiceVideoRefusal } from "./protocol";
 
 /** `true` only when every member of `Union` has a sample. */
 type HasEveryMember<Union, Sampled> = [Exclude<Union, Sampled>] extends [never] ? true : false;
@@ -476,6 +476,13 @@ export const messageSamples = [
       "id": "10",
       "username": "ada"
     },
+    "call": {
+      "ended_at_unix_milliseconds": 1700000720000,
+      "participant_ids": [
+        "10",
+        "11"
+      ]
+    },
     "channel_id": "30",
     "checklist": {
       "items": [
@@ -851,6 +858,13 @@ export const messageSearchResultsSamples = [
             "id": "10",
             "username": "ada"
           },
+          "call": {
+            "ended_at_unix_milliseconds": 1700000720000,
+            "participant_ids": [
+              "10",
+              "11"
+            ]
+          },
           "channel_id": "30",
           "checklist": {
             "items": [
@@ -1209,6 +1223,34 @@ export const auditLogEntrySamples = [
 
 export const readySamples = [
   {
+    "calls": [
+      {
+        "caller_id": "10",
+        "channel_id": "30",
+        "message_id": "800",
+        "participants": [
+          {
+            "self_deaf": false,
+            "self_mute": true,
+            "self_stream": true,
+            "self_video": false,
+            "user_id": "10",
+            "video_codec": "vp8"
+          },
+          {
+            "self_deaf": false,
+            "self_mute": false,
+            "self_stream": false,
+            "self_video": false,
+            "user_id": "12"
+          }
+        ],
+        "ringing_user_ids": [
+          "11"
+        ]
+      }
+    ],
+    "calls_enabled": true,
     "channel_unreads": [
       {
         "channel_id": "30",
@@ -1427,6 +1469,8 @@ export const readySamples = [
     ]
   },
   {
+    "calls": [],
+    "calls_enabled": false,
     "channel_unreads": [],
     "direct_message_channels": [],
     "guilds": [],
@@ -1448,6 +1492,47 @@ export const readySamples = [
     "voice_states": []
   }
 ] satisfies Ready[];
+
+export const callSamples = [
+  {
+    "caller_id": "10",
+    "channel_id": "30",
+    "message_id": "800",
+    "participants": [
+      {
+        "self_deaf": false,
+        "self_mute": true,
+        "self_stream": true,
+        "self_video": false,
+        "user_id": "10",
+        "video_codec": "vp8"
+      },
+      {
+        "self_deaf": false,
+        "self_mute": false,
+        "self_stream": false,
+        "self_video": false,
+        "user_id": "12"
+      }
+    ],
+    "ringing_user_ids": [
+      "11"
+    ]
+  }
+] satisfies Call[];
+
+export const messageCallSamples = [
+  {
+    "ended_at_unix_milliseconds": 1700000720000,
+    "participant_ids": [
+      "10",
+      "11"
+    ]
+  },
+  {
+    "participant_ids": []
+  }
+] satisfies MessageCall[];
 
 export const voiceStateSamples = [
   {
@@ -1510,7 +1595,9 @@ export const voiceDisconnectReasonSamples = [
   "permissions_changed",
   "channel_deleted",
   "removed_from_guild",
-  "media_timeout"
+  "media_timeout",
+  "call_ended",
+  "server_stopping"
 ] satisfies VoiceDisconnectReason[];
 export const voiceDisconnectReasonSamplesHaveEveryMember: HasEveryMember<VoiceDisconnectReason, (typeof voiceDisconnectReasonSamples)[number]> = true;
 
@@ -1595,6 +1682,13 @@ export const gatewayEventSamples = [
         "display_name": "Ada",
         "id": "10",
         "username": "ada"
+      },
+      "call": {
+        "ended_at_unix_milliseconds": 1700000720000,
+        "participant_ids": [
+          "10",
+          "11"
+        ]
       },
       "channel_id": "30",
       "checklist": {
@@ -1741,6 +1835,13 @@ export const gatewayEventSamples = [
         "display_name": "Ada",
         "id": "10",
         "username": "ada"
+      },
+      "call": {
+        "ended_at_unix_milliseconds": 1700000720000,
+        "participant_ids": [
+          "10",
+          "11"
+        ]
       },
       "channel_id": "30",
       "checklist": {
@@ -2477,6 +2578,58 @@ export const gatewayEventSamples = [
       "user_id": "10"
     },
     "t": "VOICE_SOUND_PLAYED"
+  },
+  {
+    "data": {
+      "caller_id": "10",
+      "channel_id": "30",
+      "message_id": "800",
+      "participants": [
+        {
+          "self_deaf": false,
+          "self_mute": true,
+          "self_stream": true,
+          "self_video": false,
+          "user_id": "10",
+          "video_codec": "vp8"
+        },
+        {
+          "self_deaf": false,
+          "self_mute": false,
+          "self_stream": false,
+          "self_video": false,
+          "user_id": "12"
+        }
+      ],
+      "ringing_user_ids": [
+        "11"
+      ]
+    },
+    "t": "CALL_CREATE"
+  },
+  {
+    "data": {
+      "caller_id": "10",
+      "channel_id": "30",
+      "message_id": "800",
+      "participants": [],
+      "ringing_user_ids": []
+    },
+    "t": "CALL_UPDATE"
+  },
+  {
+    "data": {
+      "channel_id": "30"
+    },
+    "t": "CALL_DELETE"
+  },
+  {
+    "data": {
+      "channel_id": "30",
+      "speaking": false,
+      "user_id": "10"
+    },
+    "t": "CALL_SPEAKING"
   }
 ] satisfies GatewayEvent[];
 export const gatewayEventSamplesHaveEveryMember: HasEveryMember<GatewayEvent["t"], (typeof gatewayEventSamples)[number]["t"]> = true;
@@ -2490,6 +2643,34 @@ export const serverFrameSamples = [
   },
   {
     "d": {
+      "calls": [
+        {
+          "caller_id": "10",
+          "channel_id": "30",
+          "message_id": "800",
+          "participants": [
+            {
+              "self_deaf": false,
+              "self_mute": true,
+              "self_stream": true,
+              "self_video": false,
+              "user_id": "10",
+              "video_codec": "vp8"
+            },
+            {
+              "self_deaf": false,
+              "self_mute": false,
+              "self_stream": false,
+              "self_video": false,
+              "user_id": "12"
+            }
+          ],
+          "ringing_user_ids": [
+            "11"
+          ]
+        }
+      ],
+      "calls_enabled": true,
       "channel_unreads": [
         {
           "channel_id": "30",
@@ -2796,6 +2977,7 @@ export const clientFrameSamples = [
 export const clientFrameSamplesHaveEveryMember: HasEveryMember<ClientFrame["op"], (typeof clientFrameSamples)[number]["op"]> = true;
 
 export const sharedConstants = {
+  "CALL_RING_TIMEOUT_MILLISECONDS": 30000,
   "MAXIMUM_ABOUT_ME_LENGTH": 190,
   "MAXIMUM_CHECKLIST_ITEMS": 25,
   "MAXIMUM_CHECKLIST_ITEM_LENGTH": 200,

@@ -194,6 +194,10 @@
         : null,
   );
   const isTracker = $derived(checklist !== null || progressBar !== null);
+  // A call's trace (ADR-0062): never edited, forwarded or copied as text, as a poll.
+  const callRecord = $derived(message?.call ?? null);
+  // Its own small chunk, fetched once with the first call message on screen.
+  const loadCallMessage = () => import("./CallMessage.svelte");
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
@@ -256,7 +260,7 @@
       ? messageMenuActions({
           isOwn,
           isForward: forwardedFrom !== null,
-          isPoll: poll !== null,
+          isPoll: poll !== null || callRecord !== null,
           isTracker,
           isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
@@ -300,7 +304,7 @@
           isOwn,
           isForward: forwardedFrom !== null,
           // Checklists and progress bars follow polls here (ADR-0047).
-          isPoll: poll !== null || isTracker,
+          isPoll: poll !== null || isTracker || callRecord !== null,
           hasText: message.content.trim() !== "",
           canSendMessages,
           canManageMessages,
@@ -569,6 +573,16 @@
     {#if message}
       {@render reactionsOf(message)}
     {/if}
+  {:else if callRecord && message}
+    {#await loadCallMessage()}
+      <!-- The line's height while its chunk arrives, so the list does not move. -->
+      <div class="min-h-(--mw-component-call-message-disc-size)"></div>
+    {:then { default: CallMessage }}
+      <CallMessage call={callRecord} messageId={message.id} readerId={currentUser.id} />
+    {:catch}
+      <p class="type-message text-(--mw-component-call-message-text)">{strings.calls.callNoun}</p>
+    {/await}
+    {@render reactionsOf(message)}
   {:else if poll}
     <PollCard
       {poll}

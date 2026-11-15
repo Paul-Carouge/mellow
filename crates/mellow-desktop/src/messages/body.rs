@@ -125,6 +125,10 @@ pub fn message_summary<S: BuildHasher>(
     roles: &HashMap<Snowflake, Role, S>,
     strings: Strings,
 ) -> String {
+    // A call's trace reads "Appel" in a reply's quote (ADR-0062).
+    if message.call.is_some() {
+        return strings.calls().call_noun().to_owned();
+    }
     if let Some(poll) = &message.poll {
         return strings.polls().summary(&poll.question);
     }

@@ -182,6 +182,8 @@ pub(crate) struct NewMessage {
     pub(crate) poll: Option<crate::storage::polls::NewStoredPoll>,
     /// A checklist or a progress bar (ADR-0047), stored in the same transaction.
     pub(crate) tracker: Option<crate::storage::checklists::NewTracker>,
+    /// A call's message (ADR-0062): its record is stored in the same transaction.
+    pub(crate) is_call: bool,
 }
 
 /// What a forward copies, decided by the domain before the write.
@@ -297,6 +299,9 @@ pub(crate) async fn insert_message(
     }
     if let Some(tracker) = &message.tracker {
         crate::storage::checklists::insert_tracker(&mut transaction, message.id, tracker).await?;
+    }
+    if message.is_call {
+        crate::storage::call_messages::insert_call_record(&mut transaction, message.id).await?;
     }
     insert_mentions(
         &mut transaction,

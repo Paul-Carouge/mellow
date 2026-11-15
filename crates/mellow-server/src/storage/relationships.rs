@@ -1,6 +1,8 @@
 //! Friends, friend requests and blocks (migration 0018, ADR-0025). A friendship or a pending
 //! request is written on both sides in one transaction; a block only on the blocker's.
 
+use std::collections::HashSet;
+
 use mellow_protocol::{RelationshipKind, Snowflake};
 
 use super::Database;
@@ -154,6 +156,33 @@ pub(crate) async fn may_reach_each_other(
     .fetch_one(database.readers())
     .await?;
     Ok(may_reach)
+}
+
+/// Those of `other_user_ids` with a block either way with `user_id` (ADR-0025), in one query.
+///
+/// # Errors
+/// Fails on database errors.
+pub(crate) async fn ids_with_a_block_either_way(
+    database: &Database,
+    user_id: Snowflake,
+    other_user_ids: &[Snowflake],
+) -> Result<HashSet<Snowflake>, RelationshipStorageError> {
+    let Some(user_id) = lookup_integer(user_id) else {
+        return Ok(HashSet::new());
+    };
+    let ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT other_user_id FROM relationships WHERE kind = 'blocked' AND user_id = ?1 \
+             AND other_user_id IN (SELECT value FROM json_each(?2)) \
+         UNION SELECT user_id FROM relationships WHERE kind = 'blocked' AND other_user_id = ?1 \
+             AND user_id IN (SELECT value FROM json_each(?2))",
+    )
+    .bind(user_id)
+    .bind(crate::storage::messages::json_array_of_ids(other_user_ids))
+    .fetch_all(database.readers())
+    .await?;
+    ids.into_iter()
+        .map(|id| to_snowflake(id).map_err(RelationshipStorageError::from))
+        .collect()
 }
 
 async fn kind_between(

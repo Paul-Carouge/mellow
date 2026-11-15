@@ -8,6 +8,7 @@
 //! The shell fills its conversation slot with this view and tells it the place
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
+mod call_banner;
 mod card_dialogs;
 mod cards;
 #[cfg(test)]
@@ -139,6 +140,8 @@ pub struct ConversationView {
     open_conversation: Option<OpenConversation>,
     /// Asked by the shell; applied by the next render.
     requested_place: Option<OpenConversation>,
+    /// The voice's call, its view and a watched screen, as the call banner last read them.
+    shown_call_look: (Option<Snowflake>, bool, bool),
     list: ListState,
     entries: Vec<Entry>,
     /// Each entry's key and version, to splice and remeasure only what changed.
@@ -228,7 +231,7 @@ impl ConversationView {
                 view.note_reader_scrolled(!event.is_scrolled, cx);
             });
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::follow_composer),
             cx.subscribe_in(
                 &session,
@@ -259,9 +262,30 @@ impl ConversationView {
                 cx.notify();
             }),
         ];
+        // The call banner follows the call view opening and closing.
+        // A call stopping ringing here makes it joinable in the banner.
+        if let Some(calls) = crate::calls::calls(cx) {
+            subscriptions.push(cx.observe(&calls, |_, _, cx| cx.notify()));
+        }
+        // Only what the banner reads: the voice changes a few times a second during a call.
+        if let Some(voice) = crate::voice::voice(cx) {
+            subscriptions.push(cx.observe(&voice, |view, voice, cx| {
+                let voice = voice.read(cx);
+                let look = (
+                    voice.call_conversation_id(),
+                    voice.is_call_view_open(),
+                    voice.watched_stream_user_id().is_some(),
+                );
+                if look != view.shown_call_look {
+                    view.shown_call_look = look;
+                    cx.notify();
+                }
+            }));
+        }
         Self {
             session,
             composer,
+            shown_call_look: (None, false, false),
             open_conversation: None,
             requested_place: None,
             list,
@@ -621,9 +645,11 @@ impl ConversationView {
         MessageMenuFacts {
             is_own: Some(message.author.id) == current_user_id,
             is_forward: message.forwarded_from.is_some(),
+            // A call's trace is neither edited, forwarded nor copied, as a poll (ADR-0062).
             is_rich: message.poll.is_some()
                 || message.checklist.is_some()
-                || message.progress_bar.is_some(),
+                || message.progress_bar.is_some()
+                || message.call.is_some(),
             is_poll_open: message
                 .poll
                 .as_ref()

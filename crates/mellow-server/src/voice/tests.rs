@@ -81,16 +81,13 @@ impl Fixture {
 }
 
 /// Real time: the gateway validates sessions against the clock.
-fn now() -> u64 {
+pub(super) fn now() -> u64 {
     now_unix_milliseconds()
 }
 
-/// The owner, three members (`muted` lacks SPEAK in the lounge, `outsider` cannot view it), a
-/// text channel, the lounge (no limit) and a booth for one person.
-pub(super) async fn fixture() -> Fixture {
-    let (directory, database) = migrated_database().await;
-    let mut state = test_state(database, RegistrationMode::Open);
-    state.voice = VoiceService::start(
+/// Voice on an ephemeral UDP port, announcing loopback.
+fn voice_on_loopback(state: &AppState) -> VoiceService {
+    VoiceService::start(
         &VoiceConfig {
             enabled: true,
             udp_port: 0,
@@ -100,8 +97,18 @@ pub(super) async fn fixture() -> Fixture {
         },
         false,
         state.guilds.clone(),
+        state.messages.clone(),
         state.events.clone(),
-    );
+        state.rate_limiter.clone(),
+    )
+}
+
+/// The owner, three members (`muted` lacks SPEAK in the lounge, `outsider` cannot view it), a
+/// text channel, the lounge (no limit) and a booth for one person.
+pub(super) async fn fixture() -> Fixture {
+    let (directory, database) = migrated_database().await;
+    let mut state = test_state(database, RegistrationMode::Open);
+    state.voice = voice_on_loopback(&state);
     let mut tokens = HashMap::new();
     let mut user_ids = HashMap::new();
     for name in ["owner", "member", "muted", "outsider", "newcomer"] {
@@ -221,14 +228,14 @@ pub(super) fn pending_bot() -> PendingBot {
 
 /// A running headless participant: sends a frame tagged with `marker` every 20 ms while
 /// `is_sending`, and counts the frames it hears by their marker.
-struct Bot {
+pub(super) struct Bot {
     heard: Arc<Mutex<HashMap<u8, u32>>>,
     stop: Arc<AtomicBool>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl Bot {
-    fn heard_from(&self, marker: u8) -> u32 {
+    pub(super) fn heard_from(&self, marker: u8) -> u32 {
         self.heard
             .lock()
             .unwrap()
@@ -237,7 +244,7 @@ impl Bot {
             .unwrap_or(0)
     }
 
-    async fn wait_until_hearing(&self, marker: u8) {
+    pub(super) async fn wait_until_hearing(&self, marker: u8) {
         let deadline = Instant::now() + HEARING_TIMEOUT;
         while self.heard_from(marker) == 0 {
             assert!(Instant::now() < deadline, "never heard {marker}");
@@ -255,7 +262,7 @@ impl Drop for Bot {
     }
 }
 
-fn start_bot(bot: PendingBot, answer: &str, marker: u8) -> Bot {
+pub(super) fn start_bot(bot: PendingBot, answer: &str, marker: u8) -> Bot {
     let PendingBot {
         mut rtc,
         pending,
@@ -400,7 +407,11 @@ pub(super) async fn join(socket: &mut ClientSocket, channel_id: Snowflake, offer
     }
 }
 
-async fn join_and_start(socket: &mut ClientSocket, channel_id: Snowflake, marker: u8) -> Bot {
+pub(super) async fn join_and_start(
+    socket: &mut ClientSocket,
+    channel_id: Snowflake,
+    marker: u8,
+) -> Bot {
     let bot = pending_bot();
     let answer = join(socket, channel_id, &bot.offer).await;
     start_bot(bot, &answer, marker)

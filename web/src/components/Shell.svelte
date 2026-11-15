@@ -30,7 +30,6 @@
   import LazyComponent from "./LazyComponent.svelte";
   import { closePictureViewer, pictureViewerRequest } from "./picture-viewer-request.svelte";
   import ProfileHoverCard from "./ProfileHoverCard.svelte";
-  import ProfileModal from "./ProfileModal.svelte";
   import { closeProfileModal, profileModalRequest } from "./profile-surfaces.svelte";
   import LeaveServerDialog from "./LeaveServerDialog.svelte";
   import MemberList from "./MemberList.svelte";
@@ -54,6 +53,7 @@
   import { prepareChimeSound } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceSoundsWhileMounted } from "./voice-sound-playback.svelte";
+  import { incomingCallAnnouncement } from "./call-announcement.svelte";
 
   // The signed-in shell (ADR-0022 §1): cards on the dusk ground. The navigator card and the
   // conversation sheet sit side by side inside the inset; the members side sheet opens on demand,
@@ -122,6 +122,34 @@
   // Voice (docs/design/web-voice-channels.md): its sounds and the soundboard's, push-to-talk, and a
   // fresh offer when the network returns.
   playVoiceSoundsWhileMounted(() => client);
+  // Private calls (ADR-0062): the ringtone, the waiting tone and the background notification.
+  const ringingCall = $derived(client.incomingCalls[0] ?? null);
+  // The alerts' chunk while a call rings the reader or holds them; their words go to a region that
+  // is always there, so the first one is read out.
+  const hasCallAlerts = $derived(ringingCall !== null || client.callConversation !== null);
+  let areCallAlertsUnavailable = $state(false);
+  // Audio may start only from a gesture: each one prepares the context, so a call arriving later
+  // rings at once (the notifier does so only while message sounds are on).
+  onMount(() => {
+    const prepareAudio = () => void prepareChimeSound();
+    window.addEventListener("pointerup", prepareAudio, { capture: true });
+    window.addEventListener("keydown", prepareAudio, { capture: true });
+    return () => {
+      window.removeEventListener("pointerup", prepareAudio, { capture: true });
+      window.removeEventListener("keydown", prepareAudio, { capture: true });
+    };
+  });
+  /** The card's chunk is gone (a tab opened before an update) and the reader declined to reload:
+   * the call still rings, is read out and answers with Ctrl+Enter, until the next reload. */
+  let isIncomingCallCardUnavailable = $state(false);
+  /** Ctrl+Enter (Cmd+Enter) answers the ringing call from anywhere, as on Discord, before the composer sees it. */
+  function answerCallWithShortcut(event: KeyboardEvent) {
+    if (ringingCall && event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      void client.answerCall(ringingCall.channel_id);
+    }
+  }
   onMount(() => {
     const noteBackOnline = () => client.voice.noteBackOnline();
     window.addEventListener("online", noteBackOnline);
@@ -584,6 +612,7 @@
 </script>
 
 <svelte:window
+  onkeydowncapture={answerCallWithShortcut}
   onkeydown={(event) => {
     toggleMemberSheetWithShortcut(event);
     toggleQuickSwitcherWithShortcut(event);
@@ -971,15 +1000,20 @@
 {#if profileModalRequest()}
   {@const request = profileModalRequest()}
   {#if request}
-    {#key request}
-      <ProfileModal
-        {client}
-        {request}
-        onclose={closeProfileModal}
-        onopenedconversation={() => void focusComposerAfterProfile()}
-        oneditprofile={editMyProfile}
-      />
-    {/key}
+    <!-- Its own chunk, fetched with the first profile opened (the hover card stays in the app). -->
+    <LazyComponent load={() => import("./ProfileModal.svelte")} onclose={closeProfileModal}>
+      {#snippet children({ default: ProfileModal })}
+        {#key request}
+          <ProfileModal
+            {client}
+            {request}
+            onclose={closeProfileModal}
+            onopenedconversation={() => void focusComposerAfterProfile()}
+            oneditprofile={editMyProfile}
+          />
+        {/key}
+      {/snippet}
+    </LazyComponent>
   {/if}
 {/if}
 
@@ -1004,4 +1038,21 @@
 
 {#if isQuickSwitcherOpen}
   <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+{/if}
+
+<!-- Last, so it floats over whatever is open: a call reaches the reader anywhere in the app. -->
+<p class="sr-only" aria-live="assertive">{incomingCallAnnouncement()}</p>
+{#if hasCallAlerts && !areCallAlertsUnavailable}
+  <LazyComponent load={() => import("./CallAlerts.svelte")} onclose={() => (areCallAlertsUnavailable = true)}>
+    {#snippet children({ default: CallAlerts })}
+      <CallAlerts {client} />
+    {/snippet}
+  </LazyComponent>
+{/if}
+{#if ringingCall && !isIncomingCallCardUnavailable}
+  <LazyComponent load={() => import("./IncomingCallCard.svelte")} onclose={() => (isIncomingCallCardUnavailable = true)}>
+    {#snippet children({ default: IncomingCallCard })}
+      <IncomingCallCard {client} />
+    {/snippet}
+  </LazyComponent>
 {/if}

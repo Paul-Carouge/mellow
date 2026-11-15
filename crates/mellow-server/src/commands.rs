@@ -250,6 +250,17 @@ pub async fn serve_instance_on_listener(
                 gif_customer_key,
             ));
         }
+        // No call goes on before the first connection: one a stop interrupted ends now
+        // (ADR-0062). A failure leaves them showing as going on, never stops the server.
+        match state
+            .messages
+            .end_unfinished_calls(crate::domain::clock::now_unix_milliseconds())
+            .await
+        {
+            Ok(0) => {}
+            Ok(ended) => tracing::info!(ended, "calls interrupted by the last stop ended"),
+            Err(error) => tracing::warn!(%error, "cannot end the calls the last stop interrupted"),
+        }
         let session_purge = tokio::spawn(purge_expired_sessions_periodically(database.clone()));
         let attachment_purge = tokio::spawn(
             crate::domain::attachments::purge_attachments_periodically(state.attachments.clone()),
@@ -266,10 +277,14 @@ pub async fn serve_instance_on_listener(
             ),
         );
         let link_preview_fetcher = start_link_previews(config, &state)?;
+        let voice = state.voice.clone();
         let served = match &config.tls {
             Some(tls) => crate::tls::serve_tls_until_shutdown(listener, state, tls, shutdown).await,
             None => serve_until_shutdown(listener, state, shutdown).await,
         };
+        // No call outlives the server: each ends with an honest record before the database
+        // closes (ADR-0062).
+        voice.end_all_calls().await;
         // Awaited, so the purge holds no connection when the database closes.
         session_purge.abort();
         let _cancelled = session_purge.await;

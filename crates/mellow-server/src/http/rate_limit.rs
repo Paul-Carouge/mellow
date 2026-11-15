@@ -152,6 +152,32 @@ pub(crate) const GROUP_CONVERSATION_WRITES_PER_USER: RateLimit = RateLimit {
     maximum_events: 30,
     window: Duration::from_secs(60),
 };
+/// Calls started per user (ADR-0062): each posts a message and rings people.
+pub(crate) const CALL_STARTS_PER_USER: RateLimit = RateLimit {
+    maximum_events: 6,
+    window: Duration::from_secs(60),
+};
+/// The hourly ceiling behind it.
+pub(crate) const CALL_STARTS_PER_USER_PER_HOUR: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_hours(1),
+};
+/// Calls started per conversation (ADR-0062), whoever starts them: each rings its people.
+pub(crate) const CALL_STARTS_PER_CONVERSATION: RateLimit = RateLimit {
+    maximum_events: 3,
+    window: Duration::from_secs(600),
+};
+/// Calls that ring one person from people who are not their friends (ADR-0062). Past it, such a
+/// call still starts but stays silent on their devices, which the caller cannot tell.
+pub(crate) const CALL_RINGS_RECEIVED_FROM_STRANGERS: RateLimit = RateLimit {
+    maximum_events: 10,
+    window: Duration::from_secs(600),
+};
+/// Calls declined per user (ADR-0062).
+pub(crate) const CALL_DECLINES_PER_USER: RateLimit = RateLimit {
+    maximum_events: 30,
+    window: Duration::from_secs(60),
+};
 /// Friend requests per user (ADR-0025): each names a username, so this also bounds probing.
 pub(crate) const FRIEND_REQUESTS_PER_USER: RateLimit = RateLimit {
     maximum_events: 10,

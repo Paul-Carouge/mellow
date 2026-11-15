@@ -90,6 +90,30 @@
     }
   }
 
+  // Calling (ADR-0062): the one-to-one conversation opens and rings; a refusal stays here, where
+  // the reader asked.
+  const canCall = $derived(!isSelf && client.isCallsEnabled && relationship?.kind !== "blocked");
+  let isCalling = $state(false);
+  async function call() {
+    isCalling = true;
+    errorMessage = "";
+    try {
+      await client.callUser(userId);
+    } catch (error) {
+      errorMessage = describeError(error, strings.calls.couldNotCall(person));
+      return;
+    } finally {
+      isCalling = false;
+    }
+    const failed = client.callProblem;
+    if (failed) {
+      errorMessage = `${strings.calls.couldNotCall(person)}. ${strings.calls.failures[failed.failure]}`;
+      client.dismissCallProblem();
+      return;
+    }
+    onopenedconversation();
+  }
+
   type ProfileAction = "send-message" | "unblock" | "more";
 
   /** The button pressed is replaced once the relationship changes: focus goes to `next`. */
@@ -229,6 +253,16 @@
                 isDisabled={isOpening}
                 onclick={() => void sendMessage()}>{isOpening ? strings.members.opening : strings.members.sendMessage}</Button
               >
+            {/if}
+            {#if canCall}
+              <IconButton
+                icon="phone"
+                label={strings.calls.callPerson(person)}
+                aria-disabled={isCalling || undefined}
+                class={moreButtonClass}
+                iconClass="size-(--mw-component-chat-header-icon-size)"
+                onclick={() => void (isCalling ? undefined : call())}
+              />
             {/if}
             <IconButton
               bind:element={moreButton}

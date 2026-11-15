@@ -29,6 +29,8 @@ enum SoundPlayerCommand {
     StopPreviews,
     PlayCue(VoiceCue),
     PlayNotificationChime,
+    PlayCallSound { sound: LocalSound, gain: f32 },
+    StopCallSounds,
     SetOutputDevice(Option<String>),
 }
 
@@ -75,6 +77,16 @@ impl SoundPlayer {
 
     pub fn stop_soundboard_previews(&self) {
         self.send(SoundPlayerCommand::StopPreviews);
+    }
+
+    /// A private call's ringtone or waiting tone, on a channel of its own: only
+    /// [`Self::stop_call_sounds`] stops it.
+    pub fn play_call_sound(&self, sound: LocalSound, gain: f32) {
+        self.send(SoundPlayerCommand::PlayCallSound { sound, gain });
+    }
+
+    pub fn stop_call_sounds(&self) {
+        self.send(SoundPlayerCommand::StopCallSounds);
     }
 
     /// Sounds play where voices do; `None` is the system's default output.
@@ -130,6 +142,8 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<SoundPlayerCommand>) {
                 SoundPlayerCommand::PlayPreview { sound, gain } => {
                     sounds.play_soundboard(sound, gain, SoundboardPlayer::Preview);
                 }
+                SoundPlayerCommand::PlayCallSound { sound, gain } => sounds.play_call(sound, gain),
+                SoundPlayerCommand::StopCallSounds => sounds.stop_call(),
                 SoundPlayerCommand::StopPreviews => {
                     sounds.stop_soundboard(SoundboardSoundsToStop::Previews);
                 }

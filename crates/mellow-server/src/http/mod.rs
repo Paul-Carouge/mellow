@@ -5,6 +5,7 @@ mod account_routes;
 pub(crate) mod api_error;
 pub(crate) mod attachment_routes;
 pub(crate) mod authentication;
+mod call_routes;
 pub(crate) mod client_address;
 mod compression;
 mod emoji_routes;
@@ -112,11 +113,14 @@ impl AppState {
             config.guild_creation,
         ));
         let messages = Arc::new(Messages::new(database.clone(), ids.clone(), guilds.clone()));
+        let rate_limiter = Arc::new(RateLimiter::default());
         let voice = crate::voice::VoiceService::start(
             &config.voice,
             config.is_development_listener(),
             guilds.clone(),
+            messages.clone(),
             events.clone(),
+            rate_limiter.clone(),
         );
         let attachments = Arc::new(crate::domain::attachments::Attachments::new(
             database.clone(),
@@ -156,7 +160,7 @@ impl AppState {
             gateway_sessions: Arc::default(),
             guilds,
             database,
-            rate_limiter: Arc::default(),
+            rate_limiter,
             unauthenticated_rate_limiter: Arc::default(),
             gateway_rate_limiter: Arc::default(),
             trusted_proxy_networks: client_address::build_trusted_proxy_networks(
@@ -169,6 +173,19 @@ impl AppState {
             gif_content_security_policy: None,
         }
     }
+}
+
+/// Calls in conversations (ADR-0062); answering and hanging up use the gateway's voice frames.
+fn call_router() -> Router<AppState> {
+    Router::new()
+        .route(
+            "/api/v1/channels/{channel_id}/call",
+            post(call_routes::start_call),
+        )
+        .route(
+            "/api/v1/channels/{channel_id}/call/decline",
+            post(call_routes::decline_call),
+        )
 }
 
 /// Group conversations (ADR-0026); their messages use the channel routes.
@@ -449,6 +466,7 @@ pub(crate) fn router(state: AppState) -> Router {
         .merge(relationship_router())
         .merge(profile_router())
         .merge(group_conversation_router())
+        .merge(call_router())
         .route(
             "/api/v1/users/@me/channels",
             post(message_routes::open_direct_message),

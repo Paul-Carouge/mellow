@@ -250,6 +250,9 @@ impl Relationships {
 
     /// Tells the other person their side went, and stops sharing presence between former friends.
     fn after_removal(&self, user_id: Snowflake, other_id: Snowflake, removal: Removal) {
+        // A block or an ended friendship may end a one-to-one call, or stop a group call ringing
+        // across a new block (ADR-0062).
+        self.events.note_relationship_changed(user_id, other_id);
         if removal.other_side_removed.is_some() {
             self.events
                 .publish_to_user(other_id, &GatewayEvent::RelationshipRemove { user_id });

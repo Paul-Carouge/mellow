@@ -24,6 +24,7 @@ use zeroize::Zeroizing;
 
 mod account;
 mod blocks;
+mod calls;
 mod cards;
 mod forwards;
 mod gifs;

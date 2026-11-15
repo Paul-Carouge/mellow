@@ -144,9 +144,12 @@ impl DuskShell {
         let is_do_not_disturb = state
             .current_user()
             .is_some_and(|user| user.status == ChosenStatus::DoNotDisturb);
+        let is_call_ringing =
+            crate::calls::calls(cx).is_some_and(|calls| calls.read(cx).ringing_call(cx).is_some());
         let melli_state = MelliState::for_home(
             session.status(),
             is_do_not_disturb,
+            is_call_ringing,
             has_unread_conversation || attention_count > 0,
         );
         (

@@ -24,6 +24,9 @@ export type ReplyReferenceLookup = (
  * question for a poll (ADR-0043), a checklist's title or a progress bar's label (ADR-0047).
  */
 export function messageSummary(message: Message, roles: ReadonlyMap<Snowflake, Role>): string {
+  if (message.call) {
+    return strings.calls.callNoun;
+  }
   if (message.poll) {
     return pollSummary(message.poll);
   }

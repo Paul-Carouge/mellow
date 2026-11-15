@@ -113,6 +113,43 @@
     blockedRecipient === null &&
       (channelPermissions === null || hasPermission(channelPermissions, Permission.SEND_MESSAGES)),
   );
+  // Private calls (ADR-0062): the header's phone starts the conversation's call, joins the one going
+  // on, or shows the one the reader is in. Hidden where the instance has no calls, and in a
+  // one-to-one conversation with someone the reader blocked (no conversation, no call).
+  const callPhase = $derived(conversation ? client.callPhaseOf(conversation.id) : null);
+  const isInThisCall = $derived(conversation !== null && client.voice.channelId === conversation.id && client.voice.phase !== "idle");
+  const canCall = $derived(conversation !== null && client.isCallsEnabled && blockedRecipient === null);
+  const callButtonLabel = $derived(
+    isInThisCall
+      ? strings.calls.showCall
+      : callPhase !== null
+        ? strings.calls.joinCall
+        : isGroup
+          ? strings.calls.callGroup(conversationName)
+          : strings.calls.callPerson(conversationName),
+  );
+  /** Its chunk is gone and the reader declined to reload: the header's phone still joins. */
+  let isCallBannerUnavailable = $state(false);
+  function pressCallButton() {
+    if (!conversation) {
+      return;
+    }
+    if (isInThisCall) {
+      client.voice.openCallView();
+    } else if (callPhase !== null) {
+      void client.joinCall(conversation.id);
+    } else {
+      void startCall(conversation.id, conversationName);
+    }
+  }
+  /** On phones the voice panel is in the drawer: a call that could not start says so here too. */
+  async function startCall(conversationId: Snowflake, name: string) {
+    await client.startCall(conversationId);
+    const failed = client.callProblem;
+    if (hasNavigationDrawer && failed?.channelId === conversationId) {
+      showActionError(conversationId, `${strings.calls.couldNotCall(name)}. ${strings.calls.failures[failed.failure]}`);
+    }
+  }
   const canManageMessages = $derived(
     channelPermissions !== null && hasPermission(channelPermissions, Permission.MANAGE_MESSAGES),
   );
@@ -755,6 +792,16 @@
     {:else if !hasNavigationDrawer || !(channel || conversation)}
       <span class="flex-1"></span>
     {/if}
+    {#if canCall}
+      <!-- First of the keys, on phones too: calling is what a conversation's header is for. -->
+      <IconButton
+        icon={callPhase !== null ? "phone-call" : "phone"}
+        label={callButtonLabel}
+        class="{headerButtonClass} {callPhase !== null ? 'text-(--mw-component-call-banner-icon)' : ''}"
+        iconClass="size-(--mw-component-chat-header-icon-size)"
+        onclick={pressCallButton}
+      />
+    {/if}
     <!-- Where Discord has it; Ctrl+K stays the quick switcher, offered again in its suggestions. -->
     <!-- "Go to" folds into "More options" only where that key exists. -->
     {@render searchControl(hasNavigationDrawer && Boolean(channel || conversation))}
@@ -832,8 +879,18 @@
     />
   {/if}
 
+  {#if conversation && client.callsByChannelId.has(conversation.id) && !isCallBannerUnavailable}
+    {@const callChannelId = conversation.id}
+    <!-- Its own chunk: most conversations never hold a call. -->
+    <LazyComponent load={() => import("./CallBanner.svelte")} onclose={() => (isCallBannerUnavailable = true)}>
+      {#snippet children({ default: CallBanner })}
+        <CallBanner {client} channelId={callChannelId} />
+      {/snippet}
+    </LazyComponent>
+  {/if}
+
   {#if unreadBar}
-    <!-- Over the list, under the header, so the rows being read do not move. -->
+    <!-- Over the list, under the header, so the rows being read do not move; under the call banner when one shows. -->
     <div
       bind:this={unreadBarElement}
       class="unread-bar absolute inset-x-md top-[calc(var(--mw-component-chat-header-height)_+_var(--mw-space-2xs))] z-10 flex min-h-(--mw-component-jump-bar-height) items-center justify-between gap-xs rounded-(--mw-component-jump-bar-radius) bg-(--mw-component-jump-bar-background) ps-sm pe-2xs type-body font-semibold text-(--mw-component-jump-bar-text) pointer-coarse:min-h-(--mw-size-hit-web-min)"
@@ -1193,6 +1250,12 @@
 <style>
   .unread-bar {
     animation: unread-bar-in var(--mw-motion-duration-base) var(--mw-motion-easing-enter) both;
+  }
+  /* Under the call banner when one shows, so both stay readable. */
+  :global(.call-banner) ~ :global(.unread-bar) {
+    top: calc(
+      var(--mw-component-chat-header-height) + var(--mw-space-3xs) + var(--mw-component-call-banner-height) + var(--mw-space-2xs)
+    );
   }
   @keyframes unread-bar-in {
     from {

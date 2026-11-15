@@ -539,17 +539,45 @@ export class VoiceSession {
     this.refreshMonitor();
   }
 
+  /**
+   * Someone this session starts with their sound off until the user turns them up: in a call, the
+   * people the user blocked (ADR-0062). Set by the client. Only an overlay: it is never stored, so
+   * the same person is heard as usual in a voice channel.
+   */
+  isMutedByDefault: ((userId: Snowflake) => boolean) | null = null;
+  /** People muted by default whom the user turned up in this connection; forgotten when it ends. */
+  private turnedUpUserIds = $state.raw<ReadonlySet<Snowflake>>(new Set());
+
   personSetting(userId: Snowflake): PersonVoiceSetting {
-    return this.personSettings.get(userId) ?? DEFAULT_PERSON_VOICE_SETTING;
+    const stored = this.storedPersonSetting(userId);
+    return this.isMutedOnlyByDefault(userId) ? { ...stored, isLocallyMuted: true } : stored;
   }
 
   setPersonVolume(userId: Snowflake, volumePercent: number): void {
-    this.setPersonSetting(userId, { ...this.personSetting(userId), volumePercent });
+    this.setPersonSetting(userId, { ...this.storedPersonSetting(userId), volumePercent });
   }
 
   togglePersonMuted(userId: Snowflake): void {
-    const current = this.personSetting(userId);
-    this.setPersonSetting(userId, { ...current, isLocallyMuted: !current.isLocallyMuted });
+    const stored = this.storedPersonSetting(userId);
+    if (!stored.isLocallyMuted && this.isMutedByDefault?.(userId) === true) {
+      // Turning a default mute up (or back down) lasts for this connection only.
+      const turnedUp = new Set(this.turnedUpUserIds);
+      if (!turnedUp.delete(userId)) {
+        turnedUp.add(userId);
+      }
+      this.turnedUpUserIds = turnedUp;
+      this.applyGains();
+      return;
+    }
+    this.setPersonSetting(userId, { ...stored, isLocallyMuted: !stored.isLocallyMuted });
+  }
+
+  private storedPersonSetting(userId: Snowflake): PersonVoiceSetting {
+    return this.personSettings.get(userId) ?? DEFAULT_PERSON_VOICE_SETTING;
+  }
+
+  private isMutedOnlyByDefault(userId: Snowflake): boolean {
+    return this.isMutedByDefault?.(userId) === true && !this.turnedUpUserIds.has(userId);
   }
 
   /** The push-to-talk key went down (repeats included): the microphone opens while connected. */
@@ -2016,8 +2044,11 @@ export class VoiceSession {
     return playbackGain(this.settings.outputVolumePercent, person, this.toggles.isDeafened);
   }
 
-  /** Output volume, each person's volume and local mute, and deafen (which wins). */
-  private applyGains(): void {
+  /**
+   * Output volume, each person's volume and local mute, and deafen (which wins). Public for the
+   * client: who is muted by default changes with blocks and with who is in the call.
+   */
+  applyGains(): void {
     for (const { mid, output } of this.outputs) {
       output.setGain(this.gainOfSlot(mid));
     }
@@ -2111,6 +2142,7 @@ export class VoiceSession {
     this.watchedStreamUserId = null;
     this.watchedCameras = [];
     this.isCallViewOpen = false;
+    this.turnedUpUserIds = new Set();
     this.stopStreamSoundSampling();
     this.pausedVideoUserIds = new Set();
     this.stopWatchingDevices?.();

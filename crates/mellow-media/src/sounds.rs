@@ -210,14 +210,24 @@ impl SoundboardSoundsToStop {
     }
 }
 
+/// Who a playing sound belongs to, which says what may stop it.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum SoundOwner {
+    /// The app's own sounds (cues, the chime): never stopped.
+    App,
+    Soundboard(SoundboardPlayer),
+    /// A private call's ringtone or waiting tone (ADR-0062): stopped only with the call sounds,
+    /// never by a soundboard preview's Stop, and the other way round.
+    Call,
+}
+
 /// One sound being played.
 #[derive(Debug)]
 struct PlayingSound {
     samples: LocalSound,
     position: usize,
     gain: f32,
-    /// `None` for the app's own sounds (cues, the chime), which are never stopped.
-    soundboard_player: Option<SoundboardPlayer>,
+    owner: SoundOwner,
 }
 
 /// The sounds playing on an output, mixed 10 ms at a time.
@@ -228,7 +238,15 @@ pub(crate) struct PlayingSounds {
 
 impl PlayingSounds {
     pub(crate) fn play(&mut self, samples: LocalSound, gain: f32) {
-        self.start(samples, gain, None);
+        self.start(samples, gain, SoundOwner::App);
+    }
+
+    pub(crate) fn play_call(&mut self, samples: LocalSound, gain: f32) {
+        self.start(samples, gain, SoundOwner::Call);
+    }
+
+    pub(crate) fn stop_call(&mut self) {
+        self.sounds.retain(|sound| sound.owner != SoundOwner::Call);
     }
 
     pub(crate) fn play_soundboard(
@@ -237,15 +255,10 @@ impl PlayingSounds {
         gain: f32,
         player: SoundboardPlayer,
     ) {
-        self.start(samples, gain, Some(player));
+        self.start(samples, gain, SoundOwner::Soundboard(player));
     }
 
-    fn start(
-        &mut self,
-        samples: LocalSound,
-        gain: f32,
-        soundboard_player: Option<SoundboardPlayer>,
-    ) {
+    fn start(&mut self, samples: LocalSound, gain: f32, owner: SoundOwner) {
         if self.sounds.len() >= MAXIMUM_SOUNDS_PLAYING {
             self.sounds.remove(0);
         }
@@ -253,15 +266,14 @@ impl PlayingSounds {
             samples,
             position: 0,
             gain,
-            soundboard_player,
+            owner,
         });
     }
 
     pub(crate) fn stop_soundboard(&mut self, which: SoundboardSoundsToStop) {
-        self.sounds.retain(|sound| {
-            sound
-                .soundboard_player
-                .is_none_or(|player| !which.includes(player))
+        self.sounds.retain(|sound| match sound.owner {
+            SoundOwner::Soundboard(player) => !which.includes(player),
+            SoundOwner::App | SoundOwner::Call => true,
         });
     }
 
@@ -292,6 +304,33 @@ mod tests {
         samples
             .iter()
             .fold(0.0, |peak, sample| peak.max(sample.abs()))
+    }
+
+    #[test]
+    fn call_sounds_and_soundboard_previews_stop_apart() {
+        let mut playing = PlayingSounds::default();
+        let mixed = |playing: &mut PlayingSounds| {
+            let mut frame = [0.0; SAMPLES_PER_FRAME];
+            playing.mix_into(&mut frame);
+            frame[0]
+        };
+        let long = || -> LocalSound { vec![0.25; SAMPLES_PER_FRAME * 10].into() };
+        playing.play_call(long(), 1.0);
+        playing.play_soundboard(long(), 2.0, SoundboardPlayer::Preview);
+        assert!((mixed(&mut playing) - 0.75).abs() < 1e-6);
+        playing.stop_soundboard(SoundboardSoundsToStop::Previews);
+        assert!(
+            (mixed(&mut playing) - 0.25).abs() < 1e-6,
+            "the ring goes on"
+        );
+        playing.play_soundboard(long(), 2.0, SoundboardPlayer::Preview);
+        playing.stop_call();
+        assert!(
+            (mixed(&mut playing) - 0.5).abs() < 1e-6,
+            "the preview goes on"
+        );
+        playing.stop_soundboard(SoundboardSoundsToStop::All);
+        assert!(playing.is_empty());
     }
 
     #[test]

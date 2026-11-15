@@ -12,6 +12,8 @@
   } from "../lib/screen-share";
   import { screenSoundPlatform } from "../lib/voice-browser";
   import Button from "./Button.svelte";
+  import { callProblemLook, ringingNames } from "./calls-view";
+  import { conversationDisplayName } from "./group-conversations";
   import ContextMenu from "./ContextMenu.svelte";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
@@ -28,6 +30,9 @@
   // and server (a link to the server), and Disconnect. After a problem: what happened, how to fix
   // it, Try again when it may pass, and Close. Loaded only while voice is in use or a problem shows;
   // its live regions are `VoiceAnnouncements`, which always exist so their first change is read out.
+  // In a private call (ADR-0062) the second line names the conversation and opens it, or says who
+  // is being rung; there is no soundboard; a call that could not start, or that nobody answered,
+  // says so here with "Rappeler" when calling again may work.
   interface Props {
     client: MellowClient;
     /** After the channel line opened its server (the narrow layout closes its drawer). */
@@ -106,6 +111,10 @@
 
   const voice = $derived(client.voice);
   const place = $derived(client.voiceChannel);
+  const conversation = $derived(place ? null : client.callConversation);
+  const conversationName = $derived(conversation ? conversationDisplayName(conversation, client.user?.id ?? null) : "");
+  const ownCall = $derived(conversation ? (client.callsByChannelId.get(conversation.id) ?? null) : null);
+  const isRinging = $derived(conversation !== null && client.callPhaseOf(conversation.id) === "outgoing");
   const chosenCameraLabel = $derived(
     voice.cameraDevices.find((device) => device.deviceId === voice.cameraDeviceId)?.label ?? strings.camera.defaultCamera,
   );
@@ -114,12 +123,54 @@
   );
   const signal = $derived(signalLook(voice.roundTripMilliseconds));
   const problem = $derived(voice.problem);
+  const problemChannelId = $derived(problem && "channelId" in problem ? problem.channelId : null);
+  const problemConversation = $derived(client.conversations.find((candidate) => candidate.id === problemChannelId) ?? null);
   const problemChannelName = $derived.by(() => {
-    const channelId = problem && "channelId" in problem ? problem.channelId : null;
-    const channel = client.guilds.flatMap((guild) => guild.channels).find((candidate) => candidate.id === channelId);
+    if (problemConversation) {
+      return conversationDisplayName(problemConversation, client.user?.id ?? null);
+    }
+    const channel = client.guilds.flatMap((guild) => guild.channels).find((candidate) => candidate.id === problemChannelId);
     return channel?.name ?? strings.voice.voiceChannel;
   });
-  const look = $derived(problem ? problemLook(problem, problemChannelName) : null);
+  /** A call says some problems in its own words (nobody answered is not an error), and may offer to call again. */
+  const callLook = $derived(problem && problemConversation ? callProblemLook(problem, problemChannelName) : null);
+  const look = $derived.by(() => {
+    if (callLook) {
+      return { title: callLook.title, sentence: callLook.sentence, tone: callLook.tone, canRetry: false };
+    }
+    if (problem) {
+      return problemLook(problem, problemChannelName);
+    }
+    const failed = client.callProblem;
+    if (failed) {
+      const failedConversation = client.conversations.find((candidate) => candidate.id === failed.channelId);
+      const name = failedConversation ? conversationDisplayName(failedConversation, client.user?.id ?? null) : strings.voice.someone;
+      return { title: strings.calls.couldNotCall(name), sentence: strings.calls.failures[failed.failure], tone: "error" as const, canRetry: false };
+    }
+    return null;
+  });
+  /** "Rappeler": after nobody answered, or a call that may start on a second try. */
+  const callAgainChannelId = $derived(
+    callLook?.canCallAgain && problemConversation
+      ? problemConversation.id
+      : !problem && client.callProblem && (client.callProblem.failure === "other" || client.callProblem.failure === "rate-limited")
+        ? client.callProblem.channelId
+        : null,
+  );
+  function dismissLook() {
+    voice.dismissProblem();
+    client.dismissCallProblem();
+  }
+  function callAgain(channelId: Snowflake) {
+    voice.dismissProblem();
+    void client.startCall(channelId);
+  }
+  function openConversation() {
+    if (conversation) {
+      client.selectGuild(null, conversation.id);
+      onnavigate();
+    }
+  }
   const soundNoticeSentence = $derived(screenSoundNoticeSentence(voice.screenSoundNotice, soundAdvice));
   const shownSoundDeviceId = $derived(shownScreenSoundDeviceId(voice.screenSoundDevices, voice.screenSoundDeviceId));
   const sharedSoundLine = $derived(describeSharedSound(voice));
@@ -166,6 +217,8 @@
   // Underlined like the channel link above: these are actions inside a sentence's block.
   const noticeActionClass =
     "rounded-xs text-start underline text-(--mw-component-voice-panel-channel-text) hover:text-(--mw-component-voice-panel-channel-text-hover) pointer-coarse:min-h-(--mw-size-hit-web-min)";
+  const placeLinkClass =
+    "min-w-0 self-start truncate rounded-xs text-start type-body-sm text-(--mw-component-voice-panel-channel-text) hover:text-(--mw-component-voice-panel-channel-text-hover) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)";
   const buttonClass =
     "size-(--mw-component-user-panel-button-size) text-(--mw-component-user-panel-button-icon) hover:bg-(--mw-component-user-panel-button-background-hover)";
 </script>
@@ -183,7 +236,7 @@
 {/snippet}
 
 <div class="min-w-0">
-  {#if voice.phase !== "idle" && place}
+  {#if voice.phase !== "idle" && (place || conversation)}
     <section aria-label={strings.voice.panel} class={cardClass}>
       <div class="flex min-w-0 items-center gap-xs">
         <div class="flex min-w-0 flex-1 flex-col">
@@ -201,15 +254,26 @@
             <span class="truncate">{statusLabel}</span>
             {#if voice.phase === "connected"}<span class="sr-only">, {signal.description}</span>{/if}
           </p>
-          <button
-            type="button"
-            aria-label={strings.voice.openServer(place.channel.name, place.guild.name)}
-            class="min-w-0 self-start truncate rounded-xs text-start type-body-sm text-(--mw-component-voice-panel-channel-text) hover:text-(--mw-component-voice-panel-channel-text-hover) hover:underline pointer-coarse:min-h-(--mw-size-hit-web-min)"
-            onclick={openServer}
-          >
-            {place.channel.name} / {place.guild.name}
-          </button>
+          {#if place}
+            <button
+              type="button"
+              aria-label={strings.voice.openServer(place.channel.name, place.guild.name)}
+              class={placeLinkClass}
+              onclick={openServer}
+            >
+              {place.channel.name} / {place.guild.name}
+            </button>
+          {:else if isRinging && ownCall}
+            <p class="min-w-0 truncate type-body-sm text-(--mw-component-voice-panel-channel-text)">
+              {strings.calls.ringing(ringingNames(ownCall, conversation))}
+            </p>
+          {:else}
+            <button type="button" aria-label={strings.calls.openConversation(conversationName)} class={placeLinkClass} onclick={openConversation}>
+              {strings.calls.callWith(conversationName)}
+            </button>
+          {/if}
         </div>
+        {#if place}
         <IconButton
           bind:element={soundboardButton}
           icon="speaker-high"
@@ -225,9 +289,10 @@
             }
           }}
         />
+        {/if}
         <IconButton
           icon="phone-disconnect"
-          label={strings.voice.disconnect}
+          label={place ? strings.voice.disconnect : strings.calls.hangUp}
           class="{buttonClass} hover:text-(--mw-component-voice-panel-hang-up-icon-hover)"
           iconClass="size-(--mw-component-user-panel-button-icon-size)"
           onclick={() => voice.leave()}
@@ -415,7 +480,7 @@
     <section aria-label={strings.voice.panel} class={cardClass}>
       <div role="alert" class="flex min-w-0 items-start gap-xs">
         <Icon
-          name={look.tone === "error" ? "warning-circle" : "speaker-high"}
+          name={callLook ? callLook.icon : look.tone === "error" ? "warning-circle" : "speaker-high"}
           class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0 {look.tone === 'error'
             ? 'text-(--mw-component-voice-panel-problem-icon)'
             : 'text-(--mw-component-voice-panel-notice-icon)'}"
@@ -429,10 +494,15 @@
           label={strings.common.close}
           class="-me-2xs -mt-2xs {buttonClass}"
           iconClass="size-(--mw-component-voice-panel-signal-icon-size)"
-          onclick={() => voice.dismissProblem()}
+          onclick={dismissLook}
         />
       </div>
-      {#if look.canRetry}
+      {#if callAgainChannelId}
+        {@const channelId = callAgainChannelId}
+        <div class="mt-xs flex">
+          <Button variant="secondary" isFullWidth onclick={() => callAgain(channelId)}>{strings.calls.callAgain}</Button>
+        </div>
+      {:else if look.canRetry}
         <div class="mt-xs flex">
           <Button variant="secondary" isFullWidth onclick={() => voice.retry()}>{strings.common.tryAgain}</Button>
         </div>

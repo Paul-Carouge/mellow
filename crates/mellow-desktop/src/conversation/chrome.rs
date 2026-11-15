@@ -132,11 +132,17 @@ impl ConversationView {
         let sentence = self.unread_bar_sentence(cx)?;
         let tokens = theme(cx);
         let mark_as_read = strings(cx).chat().mark_as_read();
+        // Under the call banner when one shows, so both stay readable.
+        let top = if self.is_call_banner_shown(cx) {
+            super::call_banner::UNREAD_BAR_TOP_UNDER_CALL_BANNER
+        } else {
+            SPACE_2XS
+        };
         Some(
             with_type(div(), TYPE_BODY)
                 .id("unread-bar")
                 .absolute()
-                .top(length(SPACE_2XS))
+                .top(length(top))
                 .left(length(SPACE_MD))
                 .right(length(SPACE_MD))
                 .min_h(length(COMPONENT_JUMP_BAR_HEIGHT))
@@ -452,6 +458,7 @@ impl Render for ConversationView {
         self.follow_reading(window, cx);
         let tokens = theme(cx);
         let unread_bar = self.render_unread_bar(window, cx);
+        let call_banner = self.render_call_banner(cx);
         let jump_bar = self.render_jump_bar(window, cx);
         let is_jump_bar_shown = jump_bar.is_some();
         let pins_panel = self.render_pins_panel(window, cx);
@@ -498,6 +505,7 @@ impl Render for ConversationView {
                     .flex_1()
                     .min_h_0()
                     .child(self.render_list(cx))
+                    .children(call_banner)
                     .children(unread_bar)
                     .children(jump_bar),
             )

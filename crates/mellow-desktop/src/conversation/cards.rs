@@ -93,6 +93,10 @@ pub(super) fn card_version(message: &Message, cards: &CardsState) -> u64 {
     if let Some(bar) = &message.progress_bar {
         bar.revision.hash(&mut hasher);
     }
+    if let Some(call) = &message.call {
+        call.ended_at_unix_milliseconds.hash(&mut hasher);
+        call.participant_ids.hash(&mut hasher);
+    }
     hasher.finish()
 }
 
@@ -222,6 +226,13 @@ impl ConversationView {
         let rights = self.card_rights(channel_id, cx);
         let view = cx.entity().downgrade();
         let id = gpui::SharedString::from(format!("card-{message_id}"));
+        if let Some(call) = &message.call {
+            let reader_id = self.session.read(cx).state().current_user()?.id;
+            return Some(
+                crate::messages::CallMessage::new(call.clone(), message_id, reader_id)
+                    .into_any_element(),
+            );
+        }
         if let Some(poll) = &message.poll {
             let now = self.poll_clock_now();
             if !is_poll_ended(poll, now) {

@@ -16,7 +16,10 @@
     nextSpeaker,
     watchedCamerasOf,
   } from "./call-view";
+  import { callPersonOf, ringingNames } from "./calls-view";
   import { displayName } from "./format";
+  import GroupAvatar from "./GroupAvatar.svelte";
+  import { conversationDisplayName, isGroupConversation, otherParticipants } from "./group-conversations";
   import Icon from "./Icon.svelte";
   import IconButton from "./IconButton.svelte";
   import { lengthTokenInPixels } from "./tokens";
@@ -27,7 +30,9 @@
   // avatars under them), and a band of call controls as tall as the header. The grid is the
   // default; the speaker view puts one person large, the one picked or else whoever talks, over a
   // strip of the others. A shared screen is a tile too; opening it watches it in the stream view.
-  // Esc goes back to the chat.
+  // Esc goes back to the chat. A private call (ADR-0062) is the same view for a conversation: its
+  // name and the phone in the header, and while the others are rung, their faces and "Ça sonne
+  // chez Ada…" on the stage instead of your lone tile.
   interface Props {
     client: MellowClient;
     /** Phones: the navigator is a drawer, opened from the header as in the chat. */
@@ -48,8 +53,20 @@
 
   const voice = $derived(client.voice);
   const place = $derived(client.voiceChannel);
+  const conversation = $derived(place ? null : client.callConversation);
   const ownUserId = $derived(client.user?.id ?? null);
-  const states = $derived(place ? client.voiceParticipants(place.channel.id) : []);
+  const placeName = $derived(
+    place ? place.channel.name : conversation ? conversationDisplayName(conversation, ownUserId) : strings.voice.voiceChannel,
+  );
+  const call = $derived(conversation ? (client.callsByChannelId.get(conversation.id) ?? null) : null);
+  const isRinging = $derived(conversation !== null && client.callPhaseOf(conversation.id) === "outgoing");
+  /** What tiles need of a voice state, from a voice channel or from a call's participants. */
+  const states = $derived.by(() => {
+    if (place) {
+      return client.voiceParticipants(place.channel.id);
+    }
+    return (call?.participants ?? []).map((participant) => ({ ...participant, suppressed: false }));
+  });
   const ownVideo = $derived(voice.isSharingScreen ? "screen" : voice.isCameraOn || voice.isCameraStarting ? "camera" : null);
   const people = $derived.by((): CallPerson[] => {
     const listed = states.map(
@@ -89,6 +106,9 @@
   }
 
   function personOf(userId: Snowflake): Pick<PublicUser, "id" | "display_name" | "username" | "avatar"> {
+    if (conversation) {
+      return userId === ownUserId && client.user ? client.user : callPersonOf(conversation, userId);
+    }
     const guildId = place?.guild.id;
     const member = guildId ? client.membersByGuild.get(guildId)?.find((candidate) => candidate.user.id === userId) : undefined;
     if (member) {
@@ -207,9 +227,10 @@
 <section
   bind:this={view}
   tabindex="-1"
-  aria-label={strings.call.viewOf(place?.channel.name ?? strings.voice.voiceChannel)}
+  aria-label={conversation ? strings.calls.callWith(placeName) : strings.call.viewOf(placeName)}
   class={[
-    "absolute inset-0 flex min-w-0 flex-col overflow-hidden bg-(--mw-component-call-view-background) outline-none",
+    // Over the conversation underneath, whose unread bar and call banner float at z-10.
+    "absolute inset-0 z-20 flex min-w-0 flex-col overflow-hidden bg-(--mw-component-call-view-background) outline-none",
     !hasNavigationDrawer && "rounded-(--mw-component-sheet-radius)",
   ]}
 >
@@ -223,11 +244,15 @@
         onclick={onopennavigation}
       />
     {/if}
-    <Icon name="speaker-high" class="size-(--mw-component-chat-header-icon-size) shrink-0 text-(--mw-component-chat-header-icon)" />
-    <h1 class="min-w-0 truncate type-heading-md text-(--mw-component-chat-header-name-text)">{place?.channel.name ?? ""}</h1>
+    <Icon
+      name={conversation ? "phone-call" : "speaker-high"}
+      class="size-(--mw-component-chat-header-icon-size) shrink-0 text-(--mw-component-chat-header-icon)"
+    />
+    <h1 class="min-w-0 truncate type-heading-md text-(--mw-component-chat-header-name-text)">{placeName}</h1>
     <span class="flex-1"></span>
     <!-- Two toggles, the one in use pressed; their names say the layout, the icons draw it. -->
-    <div role="group" aria-label={strings.call.layout} class="flex shrink-0 gap-3xs">
+    <!-- Nothing to lay out while the others are rung. -->
+    <div role="group" aria-label={strings.call.layout} class={["flex shrink-0 gap-3xs", isRinging && "hidden"]}>
       <IconButton
         icon="squares-four"
         label={strings.call.grid}
@@ -257,11 +282,28 @@
   <div
     class="mx-(--mw-component-call-view-stage-inset) flex min-h-0 flex-1 flex-col gap-(--mw-component-call-view-tile-gap) overflow-hidden rounded-(--mw-component-call-view-stage-radius) bg-(--mw-component-call-view-stage) p-(--mw-component-call-view-stage-padding)"
   >
-    {#if layout === "grid"}
+    {#if isRinging && call && conversation}
+      <!-- Ringing: the faces of those being called, still (only Melli loops), and the words. -->
+      <div class="flex min-h-0 flex-1 flex-col items-center justify-center gap-md text-center text-(--mw-component-call-view-tile-text)">
+        {#if isGroupConversation(conversation)}
+          <GroupAvatar
+            people={otherParticipants(conversation, ownUserId)}
+            sizeToken="--mw-component-call-view-avatar-size-large"
+            ringColorToken="--mw-component-call-view-stage"
+          />
+        {:else}
+          {@const callee = otherParticipants(conversation, ownUserId)[0]}
+          {#if callee}
+            <Avatar user={callee} sizeToken="--mw-component-call-view-avatar-size-large" animation="always" />
+          {/if}
+        {/if}
+        <p role="status" class="max-w-full px-md type-heading-md break-words">{strings.calls.ringing(ringingNames(call, conversation))}</p>
+      </div>
+    {:else if layout === "grid"}
       <ul
         bind:clientWidth={gridWidth}
         bind:clientHeight={gridHeight}
-        aria-label={strings.voice.participantsIn(place?.channel.name ?? "")}
+        aria-label={strings.voice.participantsIn(placeName)}
         class="flex min-h-0 flex-1 flex-wrap content-center justify-center gap-(--mw-component-call-view-tile-gap)"
       >
         <!-- Rows of the computed width, the last one centred as on Discord. -->
@@ -278,7 +320,7 @@
       {/if}
       {#if stripTiles.length > 0}
         <ul
-          aria-label={strings.voice.participantsIn(place?.channel.name ?? "")}
+          aria-label={strings.voice.participantsIn(placeName)}
           class="flex h-(--mw-component-call-view-strip-tile-height) shrink-0 justify-center-safe gap-(--mw-component-call-view-tile-gap) overflow-x-auto"
         >
           {#each stripTiles as person (person.userId)}
@@ -340,7 +382,7 @@
     {/if}
     <IconButton
       icon="phone-disconnect"
-      label={strings.voice.disconnect}
+      label={conversation ? strings.calls.hangUp : strings.voice.disconnect}
       class="{controlClass} {restingControlClass} hover:text-(--mw-component-call-view-hang-up-text-hover)"
       iconClass="size-(--mw-component-chat-header-icon-size)"
       onclick={() => voice.leave()}

@@ -3,6 +3,7 @@
   import type { MellowClient } from "../lib/client.svelte";
   import { soundlessShareAdvice } from "../lib/screen-share";
   import { screenSoundPlatform } from "../lib/voice-browser";
+  import { conversationDisplayName } from "./group-conversations";
   import { describeMissingDevices, describeSharedSound, screenSoundNoticeSentence } from "./voice-panel";
 
   // The voice panel's live regions, kept out of its lazily loaded chunk: they exist before voice
@@ -21,7 +22,8 @@
     pushToTalkKey ? `${strings.voice.pushToTalkHint(pushToTalkKey.label)}.` : strings.voice.pushToTalkNoKey,
   );
   const phaseSentence = $derived.by(() => {
-    const name = client.voiceChannel?.channel.name;
+    const conversation = client.callConversation;
+    const name = client.voiceChannel?.channel.name ?? (conversation ? conversationDisplayName(conversation, client.user?.id ?? null) : null);
     if (!name) {
       return "";
     }

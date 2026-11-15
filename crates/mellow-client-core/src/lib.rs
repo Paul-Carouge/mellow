@@ -7,6 +7,7 @@ mod instance;
 mod klipy;
 mod nonce;
 mod rest;
+pub mod ringtones;
 pub mod shared_logic;
 pub mod state;
 

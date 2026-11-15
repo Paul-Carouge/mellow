@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{PublicUser, Snowflake};
+use crate::{MessageCall, PublicUser, Snowflake};
 
 /// Body of `POST /api/v1/channels/{channel_id}/messages`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -494,6 +494,10 @@ pub struct Message {
     /// when it was forwarded. Absent otherwise and from older servers' payloads.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub forwarded_from: Option<ForwardOrigin>,
+    /// Set on a call's message (ADR-0062), whose `content` is empty: who joined and when it
+    /// ended. Absent otherwise and from older servers' payloads.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub call: Option<MessageCall>,
 }
 
 /// One emoji's reactions on a message.
@@ -587,6 +591,7 @@ mod tests {
                 channel_id: Snowflake::from_raw(7),
                 message_id: Snowflake::from_raw(8),
             }),
+            call: None,
         };
         let json = serde_json::to_value(&message).unwrap();
         assert_eq!(json["id"], "9");

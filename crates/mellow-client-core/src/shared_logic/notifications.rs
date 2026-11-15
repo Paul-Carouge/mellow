@@ -206,8 +206,10 @@ pub fn should_alert_about(facts: IncomingMessageFacts<'_>) -> bool {
     let Some(current_user_id) = facts.current_user_id else {
         return false;
     };
+    // A call's message rings by itself, with the call (ADR-0062): no chime over the ringtone.
     if facts.message.author.id == current_user_id
         || facts.is_author_blocked
+        || facts.message.call.is_some()
         || facts.chosen_status == Some(ChosenStatus::DoNotDisturb)
     {
         return false;
@@ -553,6 +555,20 @@ mod tests {
         assert!(alert(&message(ANA, &[ME], &[]), IN_SERVER, &defaults));
         assert!(!alert(&message(ANA, &[], &[]), IN_SERVER, &defaults));
         assert!(alert(&message(ANA, &[], &[]), IN_CONVERSATION, &defaults));
+    }
+
+    #[test]
+    fn a_call_message_never_alerts_since_the_call_rings_by_itself() {
+        let mut call_message = message(ANA, &[ME], &[]);
+        call_message.call = Some(mellow_protocol::MessageCall {
+            participant_ids: Vec::new(),
+            ended_at_unix_milliseconds: None,
+        });
+        assert!(!alert(
+            &call_message,
+            IN_CONVERSATION,
+            &NotificationSettings::default()
+        ));
     }
 
     #[test]

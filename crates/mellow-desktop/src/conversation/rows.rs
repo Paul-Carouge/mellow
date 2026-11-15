@@ -769,7 +769,8 @@ impl ConversationView {
                 // Cloned out of the session, which the card's rights read again.
                 let card_message = (message.poll.is_some()
                     || message.checklist.is_some()
-                    || message.progress_bar.is_some())
+                    || message.progress_bar.is_some()
+                    || message.call.is_some())
                 .then(|| message.clone());
                 let add_reaction = self.reactions_add_button(
                     message_id,

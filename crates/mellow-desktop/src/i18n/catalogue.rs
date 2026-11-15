@@ -105,6 +105,10 @@ impl Strings {
         CameraStrings { language: self.language }
     }
 
+    pub fn calls(self) -> CallsStrings {
+        CallsStrings { language: self.language }
+    }
+
     pub fn call(self) -> CallStrings {
         CallStrings { language: self.language }
     }
@@ -2020,6 +2024,20 @@ impl VoiceDisconnectionsStrings {
             Language::French => "Ton son n’arrivait plus à l’instance.",
         }
     }
+
+    pub fn call_ended(self) -> &'static str {
+        match self.language {
+            Language::English => "The call ended: nobody answered.",
+            Language::French => "L’appel est terminé : personne n’a répondu.",
+        }
+    }
+
+    pub fn server_stopping(self) -> &'static str {
+        match self.language {
+            Language::English => "The instance is restarting.",
+            Language::French => "L’instance redémarre.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2733,6 +2751,335 @@ impl CameraProblemsStrings {
         match self.language {
             Language::English => "Video is turned off on this instance. Its administrator can turn it on.",
             Language::French => "La vidéo est désactivée sur cette instance. Son administrateur peut l’activer.",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallsStrings {
+    language: Language,
+}
+
+impl CallsStrings {
+    pub fn call(self) -> &'static str {
+        match self.language {
+            Language::English => "Call",
+            Language::French => "Appeler",
+        }
+    }
+
+    pub fn call_noun(self) -> &'static str {
+        match self.language {
+            Language::English => "Call",
+            Language::French => "Appel",
+        }
+    }
+
+    pub fn call_person(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("Call {person}"),
+            Language::French => format!("Appeler {person}"),
+        }
+    }
+
+    pub fn call_group(self, group: &str) -> String {
+        match self.language {
+            Language::English => format!("Call {group}"),
+            Language::French => format!("Appeler {group}"),
+        }
+    }
+
+    pub fn join(self) -> &'static str {
+        match self.language {
+            Language::English => "Join",
+            Language::French => "Rejoindre",
+        }
+    }
+
+    pub fn join_call(self) -> &'static str {
+        match self.language {
+            Language::English => "Join the call",
+            Language::French => "Rejoindre l’appel",
+        }
+    }
+
+    pub fn show_call(self) -> &'static str {
+        match self.language {
+            Language::English => "Show the call",
+            Language::French => "Afficher l’appel",
+        }
+    }
+
+    pub fn incoming(self) -> &'static str {
+        match self.language {
+            Language::English => "Incoming call",
+            Language::French => "Appel entrant",
+        }
+    }
+
+    pub fn calls_you(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("{person} is calling you"),
+            Language::French => format!("{person} t’appelle"),
+        }
+    }
+
+    pub fn calls_you_in(self, person: &str, group: &str) -> String {
+        match self.language {
+            Language::English => format!("{person} is calling you in {group}"),
+            Language::French => format!("{person} t’appelle dans {group}"),
+        }
+    }
+
+    pub fn is_calling_you(self) -> &'static str {
+        match self.language {
+            Language::English => "is calling you",
+            Language::French => "t’appelle",
+        }
+    }
+
+    pub fn in_group(self, group: &str) -> String {
+        match self.language {
+            Language::English => format!("in {group}"),
+            Language::French => format!("dans {group}"),
+        }
+    }
+
+    pub fn answer(self) -> &'static str {
+        match self.language {
+            Language::English => "Answer",
+            Language::French => "Décrocher",
+        }
+    }
+
+    pub fn decline(self) -> &'static str {
+        match self.language {
+            Language::English => "Decline",
+            Language::French => "Refuser",
+        }
+    }
+
+    pub fn answer_leaves(self, place: &str) -> String {
+        match self.language {
+            Language::English => format!("Answering leaves {place}."),
+            Language::French => format!("Décrocher te fera quitter {place}."),
+        }
+    }
+
+    pub fn silent_for_do_not_disturb(self) -> &'static str {
+        match self.language {
+            Language::English => "Do not disturb: no ringtone",
+            Language::French => "Ne pas déranger\u{a0}: sans sonnerie",
+        }
+    }
+
+    pub fn announcement(self, sentence: &str) -> String {
+        match self.language {
+            Language::English => format!("{sentence}. Ctrl+Enter to answer."),
+            Language::French => format!("{sentence}. Ctrl+Entrée pour décrocher."),
+        }
+    }
+
+    pub fn ringing(self, people: &str) -> String {
+        match self.language {
+            Language::English => format!("Ringing {people}…"),
+            Language::French => format!("Ça sonne chez {people}…"),
+        }
+    }
+
+    pub fn hang_up(self) -> &'static str {
+        match self.language {
+            Language::English => "Hang up",
+            Language::French => "Raccrocher",
+        }
+    }
+
+    pub fn call_with(self, place: &str) -> String {
+        match self.language {
+            Language::English => format!("Call with {place}"),
+            Language::French => format!("Appel avec {place}"),
+        }
+    }
+
+    pub fn open_conversation(self, place: &str) -> String {
+        match self.language {
+            Language::English => format!("Call with {place}. Open the conversation"),
+            Language::French => format!("Appel avec {place}. Ouvrir la conversation"),
+        }
+    }
+
+    pub fn ongoing(self) -> &'static str {
+        match self.language {
+            Language::English => "Ongoing call",
+            Language::French => "Appel en cours",
+        }
+    }
+
+    pub fn people_in_call(self, people: i64) -> String {
+        let people = people as f64;
+        match self.language {
+            Language::English => format!("{} {} in it", super::format_count(Language::English, people), if super::is_plural_one(Language::English, people) { "person" } else { "people" }),
+            Language::French => format!("{} {} dedans", super::format_count(Language::French, people), if super::is_plural_one(Language::French, people) { "personne" } else { "personnes" }),
+        }
+    }
+
+    pub fn missed(self) -> &'static str {
+        match self.language {
+            Language::English => "Missed call",
+            Language::French => "Appel manqué",
+        }
+    }
+
+    pub fn unanswered(self) -> &'static str {
+        match self.language {
+            Language::English => "Unanswered call",
+            Language::French => "Appel sans réponse",
+        }
+    }
+
+    pub fn ended(self, duration: &str) -> String {
+        match self.language {
+            Language::English => format!("Call · {duration}"),
+            Language::French => format!("Appel · {duration}"),
+        }
+    }
+
+    pub fn under_a_minute(self) -> &'static str {
+        match self.language {
+            Language::English => "under a minute",
+            Language::French => "moins d’une minute",
+        }
+    }
+
+    pub fn minutes(self, minutes: i64) -> String {
+        let minutes = minutes as f64;
+        match self.language {
+            Language::English => format!("{} min", super::format_count(Language::English, minutes)),
+            Language::French => format!("{}\u{a0}min", super::format_count(Language::French, minutes)),
+        }
+    }
+
+    pub fn hours_and_minutes(self, hours: i64, minutes: &str) -> String {
+        let hours = hours as f64;
+        match self.language {
+            Language::English => format!("{} h {minutes}", super::format_count(Language::English, hours)),
+            Language::French => format!("{}\u{a0}h\u{a0}{minutes}", super::format_count(Language::French, hours)),
+        }
+    }
+
+    pub fn peer_joined(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("{person} joined the call."),
+            Language::French => format!("{person} a rejoint l’appel."),
+        }
+    }
+
+    pub fn peer_left(self, person: &str) -> String {
+        match self.language {
+            Language::English => format!("{person} left the call."),
+            Language::French => format!("{person} a quitté l’appel."),
+        }
+    }
+
+    pub fn could_not_call(self, place: &str) -> String {
+        match self.language {
+            Language::English => format!("Couldn't call {place}"),
+            Language::French => format!("Impossible d’appeler {place}"),
+        }
+    }
+
+    pub fn failures(self) -> CallsFailuresStrings {
+        CallsFailuresStrings { language: self.language }
+    }
+
+    pub fn interrupted_title(self) -> &'static str {
+        match self.language {
+            Language::English => "Call interrupted",
+            Language::French => "Appel interrompu",
+        }
+    }
+
+    pub fn interrupted(self) -> &'static str {
+        match self.language {
+            Language::English => "The instance is restarting and ended the call. Call again in a moment.",
+            Language::French => "L’instance redémarre et a coupé l’appel. Rappelle dans un instant.",
+        }
+    }
+
+    pub fn cannot_join(self) -> &'static str {
+        match self.language {
+            Language::English => "You can no longer take part in this call.",
+            Language::French => "Tu ne peux plus participer à cet appel.",
+        }
+    }
+
+    pub fn no_answer_title(self) -> &'static str {
+        match self.language {
+            Language::English => "Nobody answered",
+            Language::French => "Personne n’a répondu",
+        }
+    }
+
+    pub fn no_answer(self) -> &'static str {
+        match self.language {
+            Language::English => "The call ended unanswered: declined, or 30 seconds of ringing without an answer.",
+            Language::French => "L’appel s’est arrêté sans réponse : refusé, ou resté 30 secondes sans qu’on décroche.",
+        }
+    }
+
+    pub fn call_again(self) -> &'static str {
+        match self.language {
+            Language::English => "Call again",
+            Language::French => "Rappeler",
+        }
+    }
+
+    pub fn notification_body(self) -> &'static str {
+        match self.language {
+            Language::English => "Incoming call on Mellow",
+            Language::French => "Appel entrant sur Mellow",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CallsFailuresStrings {
+    language: Language,
+}
+
+impl CallsFailuresStrings {
+    pub fn already_calling(self) -> &'static str {
+        match self.language {
+            Language::English => "One of your calls is still ringing. Hang it up, or wait for an answer.",
+            Language::French => "Un de tes appels sonne encore. Raccroche-le, ou attends qu’on te réponde.",
+        }
+    }
+
+    pub fn rate_limited(self) -> &'static str {
+        match self.language {
+            Language::English => "Too many calls at once. Wait a minute, then try again.",
+            Language::French => "Trop d’appels d’un coup. Attends une minute, puis réessaie.",
+        }
+    }
+
+    pub fn unreachable(self) -> &'static str {
+        match self.language {
+            Language::English => "You can no longer call this conversation.",
+            Language::French => "Tu ne peux plus appeler cette conversation.",
+        }
+    }
+
+    pub fn voice_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "Voice is off on this instance. Its administrator can turn it on.",
+            Language::French => "La voix est coupée sur cette instance. Son administrateur peut l’activer.",
+        }
+    }
+
+    pub fn other(self) -> &'static str {
+        match self.language {
+            Language::English => "The instance couldn't start the call. Check your connection, then try again.",
+            Language::French => "L’instance n’a pas pu lancer l’appel. Vérifie ta connexion, puis réessaie.",
         }
     }
 }
