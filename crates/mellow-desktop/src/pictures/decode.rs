@@ -165,11 +165,20 @@ fn still_frame(picture: RgbaImage, display: DisplaySize) -> Vec<Frame> {
     )]
 }
 
+/// Whether `format`'s EXIF and ICC profile are read, as the instance does
+/// (`image_processing.rs`): only JPEG and PNG. The WebP decoder sizes those buffers from the
+/// declared chunk length without any limit, and the instance ignores a WebP's orientation and
+/// profile, so honouring them here would show a picture other than the one stored.
+pub(crate) fn has_bounded_metadata(format: Option<ImageFormat>) -> bool {
+    matches!(format, Some(ImageFormat::Jpeg | ImageFormat::Png))
+}
+
 fn decode_still_raster(bytes: &[u8]) -> Result<RgbaImage, PictureDecodeError> {
     let mut reader = ImageReader::new(Cursor::new(bytes))
         .with_guessed_format()
         .map_err(|_| PictureDecodeError::Undecodable)?;
     reader.limits(decoder_limits());
+    let has_bounded_metadata = has_bounded_metadata(reader.format());
     let mut decoder = reader
         .into_decoder()
         .map_err(|_| PictureDecodeError::Undecodable)?;
@@ -177,9 +186,16 @@ fn decode_still_raster(bytes: &[u8]) -> Result<RgbaImage, PictureDecodeError> {
     if u64::from(width) * u64::from(height) > u64::from(MAXIMUM_DECODED_PIXELS) {
         return Err(PictureDecodeError::TooLarge);
     }
-    let icc_profile = decoder.icc_profile().ok().flatten();
-    // Attachments over 16 MP keep their JPEG with its orientation tag (ADR-0033); browsers honour it.
-    let orientation = decoder.orientation().unwrap_or(Orientation::NoTransforms);
+    let (icc_profile, orientation) = if has_bounded_metadata {
+        // Attachments over 16 MP keep their JPEG with its orientation tag (ADR-0033); browsers
+        // honour it.
+        (
+            decoder.icc_profile().ok().flatten(),
+            decoder.orientation().unwrap_or(Orientation::NoTransforms),
+        )
+    } else {
+        (None, Orientation::NoTransforms)
+    };
     let mut picture =
         DynamicImage::from_decoder(decoder).map_err(|_| PictureDecodeError::Undecodable)?;
     picture.apply_orientation(orientation);
