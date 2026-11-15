@@ -18,7 +18,6 @@
   } from "./column-widths";
   import ColumnResizeHandle from "./ColumnResizeHandle.svelte";
   import ConnectionBanner from "./ConnectionBanner.svelte";
-  import CreateChannelDialog from "./CreateChannelDialog.svelte";
   import Drawer from "./Drawer.svelte";
   import type { FriendsTab } from "./friends";
   import { forwardOriginPlace } from "./forward-messages";
@@ -46,7 +45,6 @@
   import { attentionCount, noteChannelSeen, showAttentionCount, startNotifier } from "./notifier.svelte";
   // Not lazy: Ctrl+K is followed by typing at once, and keys typed before a chunk arrived would
   // land in the composer.
-  import QuickSwitcher from "./QuickSwitcher.svelte";
   import QuickSwitcherTrigger from "./QuickSwitcherTrigger.svelte";
   import type { ServerSettingsSection } from "./server-settings";
   import { lengthTokenInPixels, minimumWidthQueryForPanes } from "./tokens";
@@ -916,13 +914,18 @@
     {/snippet}
   </LazyComponent>
 {:else if openDialog === "create-channel" || openDialog === "create-category"}
-  <CreateChannelDialog
-    {client}
-    category={newChannelCategory}
-    initialKind={openDialog === "create-category" ? "category" : "text"}
-    onclose={() => (openDialog = null)}
-    fallbackFocus={focusComposer}
-  />
+  {@const initialKind = openDialog === "create-category" ? "category" : "text"}
+  <LazyComponent load={() => import("./CreateChannelDialog.svelte")} onclose={() => (openDialog = null)}>
+    {#snippet children({ default: CreateChannelDialog })}
+      <CreateChannelDialog
+        {client}
+        category={newChannelCategory}
+        {initialKind}
+        onclose={() => (openDialog = null)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
 {:else if openDialog === "server-settings" && dialogGuildId}
   {@const guildId = dialogGuildId}
   <LazyComponent load={() => import("./ServerSettings.svelte")} onclose={() => (openDialog = null)}>
@@ -1037,7 +1040,11 @@
 {/if}
 
 {#if isQuickSwitcherOpen}
-  <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+  <LazyComponent load={() => import("./QuickSwitcher.svelte")} onclose={() => (isQuickSwitcherOpen = false)}>
+    {#snippet children({ default: QuickSwitcher })}
+      <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 <!-- Last, so it floats over whatever is open: a call reaches the reader anywhere in the app. -->

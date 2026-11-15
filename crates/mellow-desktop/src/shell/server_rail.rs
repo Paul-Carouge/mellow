@@ -357,6 +357,9 @@ impl DuskShell {
                 COMPONENT_RAIL_ITEM_SIZE,
             )
             .marks_on_accent(is_active)
+            // Melli plays while it can be seen (DESIGN.md 2.10). Under the media viewer's opaque
+            // ground it cannot, and each of its frames would rebuild the whole shell.
+            .still(crate::media_viewer::is_media_viewer_open(cx))
             .into_any_element(),
             RailMark::AddServer { .. } => {
                 icon(IconName::Plus, COMPONENT_RAIL_ITEM_SIZE / 2.0, color(ink)).into_any_element()

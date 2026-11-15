@@ -1040,6 +1040,11 @@ mod tests {
     /// What the trickling client reads per tick: 10 KiB/s, far below `FAST_POLICY`'s 64 KiB/s.
     const TRICKLE_BYTES_PER_TICK: usize = 1024;
     const TRICKLE_TICK: Duration = Duration::from_millis(100);
+    /// The trickle tests' socket buffer sizes (the kernel doubles the value). Setting them turns
+    /// off Linux's buffer autotuning, which grows a loopback receive buffer up to `tcp_rmem`'s
+    /// maximum (200 MB on some distributions): the whole body then sat in kernel buffers, the
+    /// server never waited on the slow reader, and the cut depended on the machine and its load.
+    const TRICKLE_SOCKET_BUFFER_BYTES: u32 = 64 * 1024;
     /// Only the minimum response pace of `FAST_POLICY` can cut a client of `PATIENT_POLICY`.
     const TRICKLE_POLICY: ConnectionPolicy = ConnectionPolicy {
         response_pace: FAST_POLICY.response_pace,
@@ -1168,7 +1173,11 @@ mod tests {
     async fn trickled_http1_download(address: SocketAddr) -> usize {
         use tokio::io::AsyncWriteExt as _;
 
-        let mut tcp = TcpStream::connect(address).await.unwrap();
+        let socket = tokio::net::TcpSocket::new_v4().unwrap();
+        socket
+            .set_recv_buffer_size(TRICKLE_SOCKET_BUFFER_BYTES)
+            .unwrap();
+        let mut tcp = socket.connect(address).await.unwrap();
         tcp.write_all(b"GET /large-download HTTP/1.1\r\nHost: localhost\r\n\r\n")
             .await
             .unwrap();
@@ -1201,7 +1210,13 @@ mod tests {
     #[tokio::test(start_paused = true)]
     async fn a_download_read_slower_than_the_minimum_pace_is_cut_and_frees_its_permit() {
         for is_http2 in [false, true] {
-            let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+            // Accepted sockets inherit the listener's send buffer size.
+            let socket = tokio::net::TcpSocket::new_v4().unwrap();
+            socket
+                .set_send_buffer_size(TRICKLE_SOCKET_BUFFER_BYTES)
+                .unwrap();
+            socket.bind("127.0.0.1:0".parse().unwrap()).unwrap();
+            let listener = socket.listen(16).unwrap();
             let address = listener.local_addr().unwrap();
             let downloads = Arc::new(Semaphore::new(1));
             let server =
