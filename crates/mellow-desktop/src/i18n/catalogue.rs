@@ -15679,8 +15679,15 @@ impl DesktopStrings {
 
     pub fn you_tube_playing_in_player_window(self) -> &'static str {
         match self.language {
-            Language::English => "Playing in the player window",
+            Language::English => "Playing in the player",
             Language::French => "En lecture dans le lecteur",
+        }
+    }
+
+    pub fn you_tube_show_player(self, title: &str) -> String {
+        match self.language {
+            Language::English => format!("Show the Mellow player: {title}"),
+            Language::French => format!("Afficher le lecteur Mellow\u{a0}: {title}"),
         }
     }
 

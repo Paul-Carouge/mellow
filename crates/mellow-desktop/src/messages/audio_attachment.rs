@@ -1,16 +1,14 @@
-//! A sound attached to a message (`MessageAttachments.svelte`, `web-inline-media.md`): the file
-//! card it was, with a player under its name row. The web draws the browser's own controls; here
-//! they are Dusk's: play or pause, the time, a seek bar, mute and volume, all reachable with Tab
-//! and named for screen readers. Nothing is fetched before play, nothing plays by itself, and a
-//! file the app cannot decode becomes the card with the web's "download it" note and its download
-//! button. Videos reuse the name row and the controls (`video_attachment`).
+//! A sound attached to a message (`MessageAttachments.svelte`, DESIGN.md 5.4 "Sound player"): the
+//! file card holding Mellow's own player (`sound_player`). Nothing is fetched before play, nothing
+//! plays by itself, and a file the app cannot decode becomes the card with the web's "download
+//! it" note and its download button. Videos reuse this card's frame, name row and controls (play,
+//! the time, a seek bar, mute and volume: `video_attachment`).
 
 use std::time::Duration;
 
 use gpui::{
     AnyElement, App, Div, ElementId, InteractiveElement as _, IntoElement, ParentElement as _,
     RenderOnce, Role, SharedString, StatefulInteractiveElement as _, Styled as _, Window, div,
-    prelude::FluentBuilder as _,
 };
 use mellow_protocol::Attachment;
 
@@ -271,11 +269,13 @@ impl AudioAttachment {
 impl RenderOnce for AudioAttachment {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         keep_player_while_shown(&self.id, self.attachment.id, window, cx);
-        let messages = i18n::strings(cx).messages();
         let view = attachment_audio_view(self.attachment.id, cx);
-        let is_refused = view.playback == AudioPlayback::CannotPlay;
+        if view.playback != AudioPlayback::CannotPlay {
+            return super::sound_player::sound_player(&self.id, &self.attachment, view, window, cx);
+        }
+        // What the app cannot play becomes the download card, with the web's note.
+        let messages = i18n::strings(cx).messages();
         let (download, saved) = download_control(&self.id, &self.attachment, cx);
-        let player = (!is_refused).then(|| player_controls(&self.id, &self.attachment, view, cx));
         media_card(
             self.id.clone(),
             messages.audio_player(&self.attachment.file_name),
@@ -287,13 +287,7 @@ impl RenderOnce for AudioAttachment {
             vec![download.into_any_element()],
             cx,
         ))
-        .children(player)
-        .when(is_refused, |card| {
-            card.child(playback_note(messages.cannot_play(), cx))
-        })
-        .when(view.playback == AudioPlayback::NoOutput, |card| {
-            card.child(playback_note(messages.no_audio_output(), cx))
-        })
+        .child(playback_note(messages.cannot_play(), cx))
         .children(saved)
     }
 }

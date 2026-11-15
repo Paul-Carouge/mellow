@@ -2567,7 +2567,9 @@ export const en = {
     attachmentSaved: (fileName: string) => `${fileName} saved.`,
     attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
     /** The YouTube player window (ADR-0061): a card whose video plays there. */
-    youTubePlayingInPlayerWindow: "Playing in the player window",
+    youTubePlayingInPlayerWindow: "Playing in the player",
+    /** The card's key that brings the player window to the front (DESIGN.md 5.4, "Link cards"). */
+    youTubeShowPlayer: (title: string) => `Show the Mellow player: ${title}`,
     /** The player window could not start (no web view on this system): the browser plays it. */
     youTubePlayerUnavailable: "The player window couldn't open, so the video opened in your browser.",
     /** The enlarged video's way back to the conversation. */

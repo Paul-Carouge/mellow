@@ -620,8 +620,6 @@
   --mw-component-key-chip-text: #F8F4F8;
   --mw-component-link-preview-action-icon-size: 1rem;
   --mw-component-link-preview-background: #110B11;
-  --mw-component-link-preview-bar-fallback: #554C56;
-  --mw-component-link-preview-bar-width: 0.25rem;
   --mw-component-link-preview-border: #3C353E;
   --mw-component-link-preview-border-width: 0.0625rem;
   --mw-component-link-preview-brand-mark-color: #FFFFFF;
@@ -1997,7 +1995,6 @@
     --mw-component-key-chip-empty-text: #594E5B;
     --mw-component-key-chip-text: #221B23;
     --mw-component-link-preview-background: #F5F1F6;
-    --mw-component-link-preview-bar-fallback: #CBC5CC;
     --mw-component-link-preview-border: #E3DDE4;
     --mw-component-link-preview-card-background-hover: #ECE6ED;
     --mw-component-link-preview-close-player-icon: #594E5B;
@@ -2611,7 +2608,6 @@
   --mw-component-key-chip-empty-text: #594E5B;
   --mw-component-key-chip-text: #221B23;
   --mw-component-link-preview-background: #F5F1F6;
-  --mw-component-link-preview-bar-fallback: #CBC5CC;
   --mw-component-link-preview-border: #E3DDE4;
   --mw-component-link-preview-card-background-hover: #ECE6ED;
   --mw-component-link-preview-close-player-icon: #594E5B;
