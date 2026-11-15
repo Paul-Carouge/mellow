@@ -70,6 +70,7 @@
     | "paw-print"
     | "pencil-simple"
     | "phone-disconnect"
+    | "picture-in-picture"
     | "play"
     | "plus"
     | "plus-circle"

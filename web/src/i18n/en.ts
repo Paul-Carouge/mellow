@@ -1212,9 +1212,6 @@ export const en = {
   members: {
     members: "Members",
     profile: "Profile",
-    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
-    profileOf: (person: string) => `Profile of ${person}`,
-    backToMembers: "Back to members",
     sendMessage: "Send message",
     opening: "Opening…",
     openConversationFailed: "Couldn't open the conversation",
@@ -2567,12 +2564,16 @@ export const en = {
     attachmentSaving: (fileName: string) => `Saving ${fileName}…`,
     attachmentSaved: (fileName: string) => `${fileName} saved.`,
     attachmentSaveFailed: (fileName: string) => `Couldn't save ${fileName}. Try again, or choose another folder.`,
+    /** The media viewer's way to the file outside Mellow: fetched with the session, then handed to the system. */
+    openWithDefaultApp: "Open with the default app",
+    attachmentOpening: (fileName: string) => `Opening ${fileName}…`,
+    attachmentOpenFailed: (fileName: string) => `Couldn't open ${fileName}. Try again, or download it.`,
     /** The YouTube player window (ADR-0061): a card whose video plays there. */
-    youTubePlayingInPlayerWindow: "Playing in the player window",
+    youTubePlayingInPlayerWindow: "Playing in the player",
+    /** The card's key that brings the player window to the front (DESIGN.md 5.4, "Link cards"). */
+    youTubeShowPlayer: (title: string) => `Show the Mellow player: ${title}`,
     /** The player window could not start (no web view on this system): the browser plays it. */
     youTubePlayerUnavailable: "The player window couldn't open, so the video opened in your browser.",
-    /** The enlarged video's way back to the conversation. */
-    closeEnlargedVideo: "Close the video",
   },
 };
 

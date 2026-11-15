@@ -418,52 +418,6 @@ fn in_a_narrow_window_f6_opens_the_drawer_for_the_navigator_and_closes_it_after(
 }
 
 #[gpui::test]
-fn choosing_a_member_shows_their_profile_and_back_returns_to_the_list(cx: &mut TestAppContext) {
-    use crate::shell_fixtures::ANA;
-    use mellow_client_core::shared_logic::profiles::UserProfileLoad;
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    assert!(cx.debug_bounds("member-profile").is_none());
-    cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| {
-            shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        });
-    });
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("member-profile").is_some());
-    let is_back_focused = |cx: &mut VisualTestContext| {
-        cx.update(|window, cx| {
-            shell
-                .read(cx)
-                .member_profile
-                .back_focus()
-                .is_focused(window)
-        })
-    };
-    assert!(is_back_focused(cx), "focus lands on Back");
-    // Without an instance the details cannot be read: the card says so instead of waiting.
-    let load = shell.read_with(cx, |shell, _| shell.member_profile.load().clone());
-    assert_eq!(load, UserProfileLoad::Failed { user_id: ANA });
-
-    // Another server's sheet shows its own list, not this profile.
-    let shown_elsewhere = shell.read_with(cx, |shell, _| {
-        shell.member_profile.shown_user_id(GUILD_BOOKS)
-    });
-    assert_eq!(shown_elsewhere, None);
-
-    press(cx, "enter");
-    assert!(cx.debug_bounds("member-profile").is_none());
-    let focus_is_in_the_sheet = cx.update(|window, cx| {
-        shell
-            .read(cx)
-            .member_sheet_focus
-            .contains_focused(window, cx)
-    });
-    assert!(focus_is_in_the_sheet, "Back returns to the member's row");
-}
-
-#[gpui::test]
 fn the_custom_status_dialog_saves_only_a_changed_status_within_the_limit(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     cx.update(|window, cx| {
@@ -492,65 +446,6 @@ fn the_custom_status_dialog_saves_only_a_changed_status_within_the_limit(cx: &mu
     let is_status_button_focused =
         cx.update(|window, cx| shell.read(cx).status_button_focus.is_focused(window));
     assert!(is_status_button_focused, "focus goes back to the user card");
-}
-
-#[gpui::test]
-fn shift_f10_on_a_member_row_opens_their_menu_whose_profile_shows_in_the_sheet(
-    cx: &mut TestAppContext,
-) {
-    use crate::shell_fixtures::ANA;
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    // Back from Ana's profile leaves focus on her row.
-    cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| {
-            shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        });
-    });
-    cx.run_until_parked();
-    press(cx, "enter");
-    assert!(cx.debug_bounds("member-profile").is_none());
-
-    press(cx, "shift-f10");
-    let is_menu_open = |cx: &mut VisualTestContext| {
-        shell.read_with(cx, |shell, cx| shell.home().read(cx).is_menu_open())
-    };
-    assert!(is_menu_open(cx));
-    // From the keyboard the first item, Profile, has focus.
-    press(cx, "enter");
-    assert!(!is_menu_open(cx));
-    assert!(cx.debug_bounds("member-profile").is_some());
-}
-
-#[gpui::test]
-fn add_friend_from_a_profile_says_why_it_failed_and_can_be_tried_again(cx: &mut TestAppContext) {
-    use crate::shell_fixtures::{ANA, person};
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    shell.update_in(cx, |shell, window, cx| {
-        shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        let block_focus = cx.focus_handle();
-        // Signed out: the instance cannot be asked, as when it is unreachable.
-        shell.change_relationship_from_profile(
-            &person(ANA, "ana", "Ana"),
-            member_profile::RelationshipChange::AddFriend,
-            block_focus,
-            window,
-            cx,
-        );
-    });
-    cx.run_until_parked();
-    shell.read_with(cx, |shell, _| {
-        assert!(!shell.member_profile.is_changing_relationship());
-        assert!(
-            shell
-                .member_profile
-                .profile_action_error()
-                .is_some_and(|error| error.starts_with("Couldn't send the friend request"))
-        );
-    });
 }
 
 #[gpui::test]
@@ -626,4 +521,63 @@ fn messages_arriving_in_a_channel_left_for_friends_stay_unread(cx: &mut TestAppC
         Some(Snowflake::from_raw(10_001)),
         "Friends shows instead: the new message is not read"
     );
+}
+
+fn open_a_picture_viewer(cx: &mut VisualTestContext) {
+    let picture = mellow_protocol::Attachment {
+        id: Snowflake::from_raw(901),
+        file_name: "photo.png".to_owned(),
+        content_type: "image/png".to_owned(),
+        size_bytes: 10,
+        width: Some(10),
+        height: Some(10),
+    };
+    let set = crate::media_viewer::ViewerSet::of_message(&[picture], "Ana", 0);
+    cx.update(|window, cx| {
+        crate::media_viewer::open_media_viewer(
+            &set,
+            Snowflake::from_raw(901),
+            None,
+            false,
+            window,
+            cx,
+        );
+    });
+    cx.run_until_parked();
+}
+
+#[gpui::test]
+fn the_shell_s_shortcuts_wait_while_the_media_viewer_is_open(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    let channel = selected_channel(&shell, cx);
+    open_a_picture_viewer(cx);
+    press(cx, "alt-down");
+    assert_eq!(
+        selected_channel(&shell, cx),
+        channel,
+        "no channel change under the viewer"
+    );
+    press(cx, secondary("k"));
+    assert!(!shell.read_with(cx, |shell, _| shell.is_quick_switcher_open()));
+    press(cx, secondary(","));
+    assert!(!shell.read_with(cx, |shell, _| shell.is_settings_screen_open()));
+    press(cx, secondary("u"));
+    press(cx, secondary("f"));
+    let is_in_viewer = cx.update(|window, cx| {
+        crate::media_viewer::open_media_viewer_view(cx)
+            .is_some_and(|viewer| viewer.read(cx).has_focus_within(window, cx))
+    });
+    assert!(is_in_viewer, "focus stays in the viewer");
+}
+
+#[gpui::test]
+fn the_media_viewer_goes_with_its_window(cx: &mut TestAppContext) {
+    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
+    open_a_picture_viewer(cx);
+    assert!(cx.update(|_, cx| crate::media_viewer::open_media_viewer_view(cx).is_some()));
+    drop(shell);
+    cx.update(|window, _| window.remove_window());
+    cx.run_until_parked();
+    let app = &mut cx.cx;
+    assert!(app.update(|cx| crate::media_viewer::open_media_viewer_view(cx).is_none()));
 }

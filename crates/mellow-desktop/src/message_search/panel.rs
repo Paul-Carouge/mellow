@@ -1313,10 +1313,16 @@ impl MessageSearchView {
                     ))
                     // Playing or opening a file is not opening the result.
                     .on_click(|_, _, cx| cx.stop_propagation())
-                    .child(MessageAttachments::new(
-                        ElementId::Name(format!("search-files-{}", message.id.raw()).into()),
-                        message.attachments.clone(),
-                    ))
+                    .child(
+                        MessageAttachments::new(
+                            ElementId::Name(format!("search-files-{}", message.id.raw()).into()),
+                            message.attachments.clone(),
+                        )
+                        .sent_by(
+                            display_name(&message.author).to_owned(),
+                            message.id.unix_milliseconds(),
+                        ),
+                    )
                     .into_any_element(),
             );
         }

@@ -145,6 +145,7 @@ pub async fn open_encrypted_database(
     path: &Path,
     key: &DatabaseKey,
 ) -> Result<Database, StorageError> {
+    finish_sqlite_global_setup().await?;
     // sqlx applies the `key` pragma before any other statement, as SQLCipher requires.
     // Statement logging is off because the connect pragmas contain the raw key, which sqlx would
     // otherwise log at DEBUG, or at WARN when a statement is slow.
@@ -188,6 +189,27 @@ pub async fn open_encrypted_database(
         }
     };
     Ok(Database { writer, readers })
+}
+
+/// Opens one throwaway in-memory connection, once per process, before any database is keyed.
+///
+/// SQLite's first use in a process marks the library initialised, then runs SQLCipher's own set-up
+/// (`sqlcipher_extra_init`) outside its lock. A connection opened on another thread meanwhile sees
+/// SQLite initialised and its `PRAGMA key` fails with SQLCipher's "PRAGMA key requires a key of one
+/// or more characters" (`SQLITE_ERROR`), whatever the key. That set-up completes before the first
+/// open returns, so the other openers wait here for that first open.
+pub(crate) async fn finish_sqlite_global_setup() -> Result<(), StorageError> {
+    static SQLITE_GLOBAL_SETUP: tokio::sync::OnceCell<()> = tokio::sync::OnceCell::const_new();
+    SQLITE_GLOBAL_SETUP
+        .get_or_try_init(|| async {
+            let connection = SqliteConnectOptions::new()
+                .in_memory(true)
+                .connect()
+                .await?;
+            connection.close().await
+        })
+        .await?;
+    Ok(())
 }
 
 /// Runs the checks on one connection that is always closed before returning, so no connection is

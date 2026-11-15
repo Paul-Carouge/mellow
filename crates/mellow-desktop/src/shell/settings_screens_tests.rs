@@ -185,3 +185,32 @@ fn sign_out_closes_the_user_settings_first(cx: &mut TestAppContext) {
     press(cx, "enter");
     assert!(!is_open(&shell, cx));
 }
+
+#[gpui::test]
+fn edit_profile_in_a_narrow_window_lands_focus_on_the_profile_page(cx: &mut TestAppContext) {
+    use mellow_client_core::shared_logic::user_settings::UserSettingsSection;
+
+    let (shell, cx) = open_shell(
+        cx,
+        sample_state(),
+        crate::theme::tokens::BREAKPOINT_NAVIGATOR - 1.0,
+    );
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_user_settings_on(Some(UserSettingsSection::Profile), window, cx);
+        });
+    });
+    cx.run_until_parked();
+    assert!(is_open(&shell, cx));
+    // The narrow sheet shows the page, not the navigation: focus must not land on a hidden item.
+    let page_focus = shell.read_with(cx, |shell, cx| match shell.open_settings.as_ref() {
+        Some(OpenSettings {
+            screen: SettingsScreen::User(screen),
+            ..
+        }) => Some(screen.read(cx).page_focus_for_tests()),
+        _ => None,
+    });
+    let is_page_focused =
+        cx.update(|window, _| page_focus.is_some_and(|focus| focus.is_focused(window)));
+    assert!(is_page_focused, "focus is on the profile page");
+}

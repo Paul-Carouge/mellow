@@ -194,9 +194,18 @@ fn header_dimensions(
 
 /// The frames of an animation, each through `shrink` as soon as it is decoded, within the frame
 /// and total pixel limits.
+/// Which frames of an animation `decode_picture` decodes.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum FramesDecoded {
+    All,
+    /// The first alone, for a still made from an animation: the rest is never decompressed.
+    FirstOnly,
+}
+
 fn collect_frames(
     frames: image::Frames<'_>,
     (width, height): (u32, u32),
+    frames_decoded: FramesDecoded,
     shrink: impl Fn(RgbaImage) -> RgbaImage,
 ) -> Result<Vec<(RgbaImage, u32)>, ImageProcessingError> {
     check_dimensions(width, height)?;
@@ -220,6 +229,9 @@ fn collect_frames(
             delay => delay,
         };
         collected.push((shrink(frame.into_buffer()), delay));
+        if frames_decoded == FramesDecoded::FirstOnly {
+            break;
+        }
     }
     if collected.is_empty() {
         return Err(ImageProcessingError::Unsupported);
@@ -264,6 +276,7 @@ fn check_gif_frames(bytes: &[u8]) -> Result<(), ImageProcessingError> {
 /// decoded, so only small frames are kept. Animated PNG (APNG) is read as its first frame.
 fn decode_picture(
     bytes: &[u8],
+    frames_decoded: FramesDecoded,
     shrink: impl Fn(RgbaImage) -> RgbaImage,
 ) -> Result<DecodedPicture, ImageProcessingError> {
     let format = image::guess_format(bytes).map_err(|_| ImageProcessingError::Unsupported)?;
@@ -285,6 +298,7 @@ fn decode_picture(
             return Ok(animation(collect_frames(
                 decoder.into_frames(),
                 dimensions,
+                frames_decoded,
                 shrink,
             )?));
         }
@@ -299,6 +313,7 @@ fn decode_picture(
                 return Ok(animation(collect_frames(
                     decoder.into_frames(),
                     dimensions,
+                    frames_decoded,
                     shrink,
                 )?));
             }
@@ -435,7 +450,7 @@ pub(crate) fn process_profile_image(
     crop: Option<ProfileImageCrop>,
 ) -> Result<ProcessedProfileImage, ImageProcessingError> {
     let maximum_box = stored_box(kind);
-    encode_with_still(&decode_picture(bytes, |frame| {
+    encode_with_still(&decode_picture(bytes, FramesDecoded::All, |frame| {
         crop_shape_and_shrink(&frame, crop, maximum_box)
     })?)
 }
@@ -506,7 +521,9 @@ pub(crate) fn process_icon(
         IconKind::Role => ROLE_ICON_SIDE_PIXELS,
         IconKind::LinkIcon => LINK_ICON_SIDE_PIXELS,
     };
-    let mut picture = decode_picture(bytes, |frame| crop_square_and_shrink(&frame, crop, side))?;
+    let mut picture = decode_picture(bytes, FramesDecoded::All, |frame| {
+        crop_square_and_shrink(&frame, crop, side)
+    })?;
     if matches!(kind, IconKind::Channel | IconKind::LinkIcon) {
         // shortcut: every frame is decoded and shrunk before the first is kept; stop decoding
         // after it if long GIFs as channel icons hit the processing time budget.
@@ -563,7 +580,7 @@ pub(crate) fn optimize_attachment(
     if !OPTIMIZABLE_CONTENT_TYPES.contains(&content_type) || is_animated_png(bytes)? {
         return Ok(None);
     }
-    let picture = decode_picture(bytes, |frame| frame)?;
+    let picture = decode_picture(bytes, FramesDecoded::All, |frame| frame)?;
     let Some((first, _)) = picture.frames.first() else {
         return Err(ImageProcessingError::Unsupported);
     };
@@ -606,7 +623,7 @@ pub(crate) fn attachment_preview(
     if width <= PREVIEW_WIDTH_PIXELS && height <= PREVIEW_HEIGHT_PIXELS {
         return Ok(None);
     }
-    let picture = decode_picture(bytes, |frame| {
+    let picture = decode_picture(bytes, FramesDecoded::All, |frame| {
         fit_within(frame, PREVIEW_WIDTH_PIXELS, PREVIEW_HEIGHT_PIXELS)
     })?;
     let Some((first, _)) = picture.frames.first() else {
@@ -647,7 +664,7 @@ pub(crate) fn link_preview_picture(
     if u64::from(width) * u64::from(height) > MAXIMUM_LINK_PREVIEW_SOURCE_PIXELS {
         return Err(ImageProcessingError::TooLarge);
     }
-    let picture = decode_picture(bytes, |frame| {
+    let picture = decode_picture(bytes, FramesDecoded::FirstOnly, |frame| {
         fit_within(frame, PREVIEW_WIDTH_PIXELS, PREVIEW_HEIGHT_PIXELS)
     })?;
     let Some((first, _)) = picture.frames.first() else {
@@ -1429,7 +1446,9 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(as_webp.content_type, "image/webp");
         assert!(as_webp.is_animated);
-        let source = decode_picture(&gif, |frame| frame).unwrap().frames;
+        let source = decode_picture(&gif, FramesDecoded::All, |frame| frame)
+            .unwrap()
+            .frames;
         let decoder = WebPDecoder::new(Cursor::new(&as_webp.bytes)).unwrap();
         let stored: Vec<RgbaImage> = decoder
             .into_frames()
@@ -1713,6 +1732,17 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_still_from_an_animation_decodes_its_first_frame_only() {
+        let gif = animated_gif(120, 80, 4);
+        let first_only = decode_picture(&gif, FramesDecoded::FirstOnly, |frame| frame).unwrap();
+        let all = decode_picture(&gif, FramesDecoded::All, |frame| frame).unwrap();
+
+        assert_eq!(first_only.frames.len(), 1);
+        assert_eq!(all.frames.len(), 4);
+        assert_eq!(first_only.frames[0], all.frames[0]);
+    }
+
+    #[test]
     fn a_link_preview_picture_past_its_pixel_cap_is_refused_before_decoding() {
         // One pixel over the cap, as wide as allowed: only its header can be read.
         let over_the_cap = png(
@@ -1871,7 +1901,7 @@ pub(crate) mod tests {
             Some((12, 34))
         );
         let as_webp = encoding::lossless_webp(
-            &decode_picture(&animated_gif(12, 34, 2), |frame| frame)
+            &decode_picture(&animated_gif(12, 34, 2), FramesDecoded::All, |frame| frame)
                 .unwrap()
                 .frames,
         )
@@ -2083,7 +2113,7 @@ pub(crate) mod tests {
             let Some(output) = &output else {
                 continue;
             };
-            let picture = decode_picture(&bytes, |frame| frame).unwrap();
+            let picture = decode_picture(&bytes, FramesDecoded::All, |frame| frame).unwrap();
             if picture.frames.len() == 1 && matches!(picture.colour, ColourSpace::Srgb) {
                 let encoded =
                     avif::encode(&picture.frames[0].0, 80, avif::Primaries::Srgb).unwrap();

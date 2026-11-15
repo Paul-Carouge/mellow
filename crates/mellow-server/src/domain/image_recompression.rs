@@ -141,6 +141,8 @@ mod tests {
     #[tokio::test]
     async fn a_database_held_by_another_connection_postpones_a_picture() {
         use sqlx::{ConnectOptions as _, Connection as _};
+        // A plain SQLite open must not run SQLite's first-use set-up while another test keys a database.
+        crate::storage::finish_sqlite_global_setup().await.unwrap();
         let directory = tempfile::tempdir().unwrap();
         // No wait: the lock is reported at once.
         let options = sqlx::sqlite::SqliteConnectOptions::new()

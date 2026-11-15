@@ -3,8 +3,9 @@
 //! next to it, so neither is in the accessibility tree.
 
 use gpui::{
-    App, FontWeight, Hsla, ImageSource, IntoElement, ObjectFit, ParentElement as _, RenderOnce,
-    SharedString, Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
+    App, FontWeight, Hsla, ImageSource, InteractiveElement as _, IntoElement, ObjectFit,
+    ParentElement as _, RenderOnce, SharedString, Styled as _, StyledImage as _, Window, div, img,
+    prelude::FluentBuilder as _,
 };
 use mellow_client_core::shared_logic::format::{avatar_initial, avatar_tint_number};
 use mellow_protocol::PublicUser;
@@ -65,6 +66,7 @@ pub struct Avatar {
     person: AvatarPerson,
     size: f32,
     presence: Option<(ShownStatus, Hsla)>,
+    status_size: f32,
     is_dimmed: bool,
 }
 
@@ -76,6 +78,7 @@ impl Avatar {
             person,
             size,
             presence: None,
+            status_size: COMPONENT_STATUS_SIZE_SMALL,
             is_dimmed: false,
         }
     }
@@ -84,6 +87,13 @@ impl Avatar {
     #[must_use]
     pub fn presence(mut self, status: ShownStatus, ring: Hsla) -> Self {
         self.presence = Some((status, ring));
+        self
+    }
+
+    /// The status shape's size token, for avatars larger than a row's (the profile's).
+    #[must_use]
+    pub fn status_size(mut self, size: f32) -> Self {
+        self.status_size = size;
         self
     }
 
@@ -97,6 +107,7 @@ impl Avatar {
 
 fn initial_disc(person: &AvatarPerson, size: f32, tokens: &ThemeTokens) -> gpui::Div {
     div()
+        .debug_selector(|| "avatar-initial".to_owned())
         .size_full()
         .rounded_full()
         .flex()
@@ -109,19 +120,38 @@ fn initial_disc(person: &AvatarPerson, size: f32, tokens: &ThemeTokens) -> gpui:
         .child(person.initial.clone())
 }
 
+/// Whether `picture` has something to draw this frame. Asking a store-backed picture also starts
+/// its download and wakes this view once it lands, exactly as the `img` drawing it would.
+fn is_picture_ready(picture: &ImageSource, window: &mut Window, cx: &mut App) -> bool {
+    match picture {
+        ImageSource::Custom(load) => matches!(load(window, cx), Some(Ok(_))),
+        ImageSource::Render(_) => true,
+        // Not used for avatars: GPUI's own asset loaders, drawn over the initial as before.
+        ImageSource::Resource(_) | ImageSource::Image(_) => false,
+    }
+}
+
 impl RenderOnce for Avatar {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
+        let is_picture_shown = self
+            .person
+            .picture
+            .as_ref()
+            .is_some_and(|picture| is_picture_ready(picture, window, cx));
         let tokens = theme(cx);
-        let ring_box = COMPONENT_STATUS_SIZE_SMALL + 2.0 * COMPONENT_STATUS_RING_WIDTH;
+        let ring_box = self.status_size + 2.0 * COMPONENT_STATUS_RING_WIDTH;
         let face = div()
             .relative()
             .size_full()
             .when(self.is_dimmed, |face| {
                 face.opacity(COMPONENT_MEMBER_ROW_OFFLINE_AVATAR_OPACITY)
             })
-            .child(initial_disc(&self.person, self.size, tokens))
+            // As on the web, the initial goes once the picture is drawn: a transparent picture
+            // must not show it through.
+            .when(!is_picture_shown, |face| {
+                face.child(initial_disc(&self.person, self.size, tokens))
+            })
             .when_some(self.person.picture.clone(), |face, picture| {
-                // Over the initial, which stays visible while the picture loads or if it fails.
                 face.child(
                     img(picture)
                         .absolute()
@@ -149,7 +179,7 @@ impl RenderOnce for Avatar {
                         .items_center()
                         .justify_center()
                         .bg(ring)
-                        .child(StatusIndicator::new(status, COMPONENT_STATUS_SIZE_SMALL)),
+                        .child(StatusIndicator::new(status, self.status_size)),
                 )
             })
     }
@@ -221,8 +251,77 @@ debug_without_callbacks!(GroupAvatar, size);
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+
+    use gpui::{Context, ImageCacheError, Render, RenderImage, TestAppContext, WindowAppearance};
+
     use super::*;
+    use crate::theme::ActiveTheme;
     use crate::theme::tokens::DARK_THEME;
+
+    const AVATAR_SIZE: f32 = 40.0;
+
+    struct AvatarHarness {
+        picture: Option<ImageSource>,
+    }
+
+    impl Render for AvatarHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            div().size_full().child(Avatar::new(
+                AvatarPerson {
+                    initial: "D".into(),
+                    tint_number: 1,
+                    picture: self.picture.clone(),
+                },
+                AVATAR_SIZE,
+            ))
+        }
+    }
+
+    /// A fully transparent picture: anything drawn under it would show through.
+    fn transparent_picture() -> Arc<RenderImage> {
+        let pixels = image::RgbaImage::new(4, 4);
+        Arc::new(RenderImage::new(vec![image::Frame::new(pixels)]))
+    }
+
+    fn is_initial_drawn(picture: Option<ImageSource>, cx: &mut TestAppContext) -> bool {
+        cx.update(|cx| cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark)));
+        let (_, cx) = cx.add_window_view(|_, _| AvatarHarness { picture });
+        cx.run_until_parked();
+        cx.debug_bounds("avatar-initial").is_some()
+    }
+
+    #[gpui::test]
+    fn a_ready_picture_hides_the_initial_even_when_transparent(cx: &mut TestAppContext) {
+        let picture = ImageSource::Render(transparent_picture());
+        assert!(!is_initial_drawn(Some(picture), cx));
+    }
+
+    #[gpui::test]
+    fn a_ready_picture_from_the_store_hides_the_initial(cx: &mut TestAppContext) {
+        let ready = transparent_picture();
+        let picture = ImageSource::Custom(Arc::new(move |_, _| Some(Ok(Arc::clone(&ready)))));
+        assert!(!is_initial_drawn(Some(picture), cx));
+    }
+
+    #[gpui::test]
+    fn the_initial_shows_while_the_picture_loads(cx: &mut TestAppContext) {
+        let picture = ImageSource::Custom(Arc::new(|_, _| None));
+        assert!(is_initial_drawn(Some(picture), cx));
+    }
+
+    #[gpui::test]
+    fn the_initial_shows_when_the_picture_failed(cx: &mut TestAppContext) {
+        let picture = ImageSource::Custom(Arc::new(|_, _| {
+            Some(Err(ImageCacheError::Asset("picture unavailable".into())))
+        }));
+        assert!(is_initial_drawn(Some(picture), cx));
+    }
+
+    #[gpui::test]
+    fn the_initial_shows_without_a_picture(cx: &mut TestAppContext) {
+        assert!(is_initial_drawn(None, cx));
+    }
 
     #[test]
     fn every_tint_number_maps_to_its_own_token() {

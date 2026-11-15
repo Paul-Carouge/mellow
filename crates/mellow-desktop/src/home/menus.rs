@@ -44,8 +44,8 @@ pub struct PersonMenuRequest {
     pub opener: Option<FocusHandle>,
     /// A one-to-one conversation's row: Message is pointless there, its ID is copied and it mutes.
     pub conversation_id: Option<Snowflake>,
-    /// A member row of this server's side sheet, which shows profiles.
-    pub profile_guild_id: Option<Snowflake>,
+    /// The profile modal's More menu: no Profile, and nothing its buttons already do.
+    pub is_in_profile: bool,
     /// A Friends row, at this index: focus goes to the row now in its place when a change removes
     /// it (the web's `fallbackFocus`).
     pub friends_row_index: Option<usize>,
@@ -60,7 +60,7 @@ impl PersonMenuRequest {
             origin,
             opener: None,
             conversation_id: None,
-            profile_guild_id: None,
+            is_in_profile: false,
             friends_row_index: None,
         }
     }
@@ -263,7 +263,8 @@ impl Home {
             relationship: state
                 .relationship(user.id)
                 .map(|relationship| relationship.kind),
-            can_show_profile: request.profile_guild_id.is_some(),
+            can_show_profile: !request.is_in_profile,
+            is_in_profile: request.is_in_profile,
             can_open_conversation: request.conversation_id.is_none(),
             is_conversation_row: request.conversation_id.is_some(),
             is_conversation_muted: request.conversation_id.is_some_and(|conversation_id| {
@@ -298,12 +299,12 @@ impl Home {
         let row_index = request.friends_row_index;
         match action {
             Action::Profile => {
-                if let Some(guild_id) = request.profile_guild_id {
-                    cx.emit(HomeEvent::ShowMemberProfile {
-                        guild_id,
-                        user_id: user.id,
-                    });
-                }
+                crate::profile_surfaces::open_profile_modal(
+                    user.clone(),
+                    request.opener.clone(),
+                    window,
+                    cx,
+                );
             }
             Action::Message => {
                 window.dispatch_action(Box::new(OpenDirectConversation { user_id: user.id }), cx);

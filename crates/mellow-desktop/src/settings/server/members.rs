@@ -398,6 +398,7 @@ impl MembersPage {
                     .chain(roles.into_iter().map(|role| RoleChip::Role {
                         name: role.name.clone().into(),
                         colour: role.color,
+                        icon: None,
                     }))
                     .collect();
                 (member_actions(guild, &manager, member, me).has_any(), chips)

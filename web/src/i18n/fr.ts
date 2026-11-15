@@ -1175,9 +1175,6 @@ export const fr: Catalogue = {
   members: {
     members: "Membres",
     profile: "Profil",
-    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
-    profileOf: (person) => `Profil de ${person}`,
-    backToMembers: "Retour aux membres",
     sendMessage: "Envoyer un message",
     opening: "Ouverture…",
     openConversationFailed: "Impossible d’ouvrir la conversation",
@@ -2475,8 +2472,11 @@ export const fr: Catalogue = {
     attachmentSaving: (fileName) => `Enregistrement de ${fileName}…`,
     attachmentSaved: (fileName) => `${fileName} est enregistré.`,
     attachmentSaveFailed: (fileName) => `Impossible d’enregistrer ${fileName}. Réessaie, ou choisis un autre dossier.`,
+    openWithDefaultApp: "Ouvrir avec l’application par défaut",
+    attachmentOpening: (fileName) => `Ouverture de ${fileName}…`,
+    attachmentOpenFailed: (fileName) => `Impossible d’ouvrir ${fileName}. Réessaie, ou télécharge-le.`,
     youTubePlayingInPlayerWindow: "En lecture dans le lecteur",
+    youTubeShowPlayer: (title) => `Afficher le lecteur Mellow${NO_BREAK_SPACE}: ${title}`,
     youTubePlayerUnavailable: `La fenêtre du lecteur n’a pas pu s’ouvrir${NO_BREAK_SPACE}: la vidéo s’est ouverte dans ton navigateur.`,
-    closeEnlargedVideo: "Fermer la vidéo",
   },
 };

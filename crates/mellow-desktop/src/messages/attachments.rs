@@ -4,12 +4,13 @@
 //!
 //! A video plays in its own card (`video_attachment`); any other file has a download button.
 //!
-//! shortcut: no picture viewer yet; a picture is not enlarged or saved from the list.
+//! A plain click on a picture, or Enter or Space on it, opens the media viewer on it with the
+//! message's other pictures and videos (`media_viewer`); focus comes back to it when it closes.
 
 use gpui::{
     AnyElement, App, ElementId, InteractiveElement as _, IntoElement, ObjectFit,
     ParentElement as _, RenderOnce, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, StyledImage as _, Window, div, img,
+    Styled as _, StyledImage as _, Window, div, img, prelude::FluentBuilder as _,
 };
 use mellow_client_core::DownloadableFile;
 use mellow_client_core::shared_logic::format::{FileSize, FileSizeUnit, human_file_size};
@@ -22,9 +23,12 @@ use super::video_attachment::VideoAttachment;
 use super::{picture_animation, picture_for_box};
 use crate::attachment_audio::is_played_in_app;
 use crate::attachment_download::download_control;
-use crate::components::{Tooltip, child_id, icon, with_type};
+use crate::components::{
+    Tooltip, child_id, icon, inset_focus_ring, is_focus_visible, remembered_focus_handle, with_type,
+};
 use crate::i18n::catalogue::KbOrMbOrGb;
 use crate::i18n::{self, Strings};
+use crate::media_viewer::{ViewerSet, open_media_viewer};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_ATTACHMENT_FILE_BORDER_WIDTH, COMPONENT_ATTACHMENT_FILE_GAP,
@@ -37,7 +41,7 @@ use crate::theme::{color, length, theme};
 
 /// Shown inline: the instance serves only these as pictures (ADR-0020); it stores most
 /// compressed pictures as AVIF (ADR-0033).
-const PREVIEWABLE_PICTURE_TYPES: [&str; 5] = [
+pub(crate) const PREVIEWABLE_PICTURE_TYPES: [&str; 5] = [
     "image/png",
     "image/jpeg",
     "image/gif",
@@ -96,6 +100,8 @@ pub struct MessageAttachments {
     id: ElementId,
     attachments: Vec<Attachment>,
     is_pending: bool,
+    /// Who sent the message and when, for the viewer's caption; without it nothing opens it.
+    sender: Option<(SharedString, u64)>,
 }
 
 impl MessageAttachments {
@@ -105,7 +111,20 @@ impl MessageAttachments {
             id: id.into(),
             attachments,
             is_pending: false,
+            sender: None,
         }
+    }
+
+    /// The sender's shown name and when the message was sent: its pictures and videos then open
+    /// in the viewer, captioned "Ana · Today at 14:32 · 3.4 MB".
+    #[must_use]
+    pub fn sent_by(
+        mut self,
+        author_name: impl Into<SharedString>,
+        sent_at_unix_milliseconds: u64,
+    ) -> Self {
+        self.sender = Some((author_name.into(), sent_at_unix_milliseconds));
+        self
     }
 
     /// A message not sent yet: its files show as cards, since nothing can be fetched yet.
@@ -180,10 +199,14 @@ fn file_card(attachment: &Attachment, tokens: &ThemeTokens, strings: Strings) ->
 }
 
 impl RenderOnce for MessageAttachments {
+    #[allow(clippy::too_many_lines)] // Each kind of attachment, then the list.
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = theme(cx);
         let strings = i18n::strings(cx);
         let animation = picture_animation(cx);
+        let viewer_set = self.sender.clone().map(|(author_name, sent_at)| {
+            ViewerSet::of_message(&self.attachments, author_name, sent_at)
+        });
         let items: Vec<AnyElement> = self
             .attachments
             .iter()
@@ -199,7 +222,9 @@ impl RenderOnce for MessageAttachments {
                     return AudioAttachment::new(item_id, attachment.clone()).into_any_element();
                 }
                 if PLAYABLE_ATTACHMENT_VIDEO_TYPES.contains(&attachment.content_type.as_str()) {
-                    return VideoAttachment::new(item_id, attachment.clone()).into_any_element();
+                    return VideoAttachment::new(item_id, attachment.clone())
+                        .viewer(viewer_set.clone())
+                        .into_any_element();
                 }
                 if !PREVIEWABLE_PICTURE_TYPES.contains(&attachment.content_type.as_str()) {
                     return downloadable_file_card(item_id, attachment, cx);
@@ -214,13 +239,42 @@ impl RenderOnce for MessageAttachments {
                 );
                 let fallback = attachment.clone();
                 let name = SharedString::from(attachment.file_name.clone());
+                let opener = remembered_focus_handle(&item_id, window, cx);
+                let is_ring_shown = is_focus_visible(&opener, window);
+                let viewer_target = viewer_set
+                    .clone()
+                    .map(|set| (set, attachment.id, opener.clone()));
+                let raw_id = attachment.id.raw();
                 div()
-                    .id(ElementId::NamedChild(
-                        std::sync::Arc::new(self.id.clone()),
-                        attachment.id.to_string().into(),
-                    ))
-                    .role(Role::Image)
+                    .id(item_id)
+                    .debug_selector(move || format!("attachment-picture-{raw_id}"))
+                    .relative()
+                    // A button once it opens the viewer, an image otherwise.
+                    .role(if viewer_target.is_some() {
+                        Role::Button
+                    } else {
+                        Role::Image
+                    })
                     .aria_label(name.clone())
+                    .when_some(viewer_target, |picture, (set, attachment_id, opener)| {
+                        picture.track_focus(&opener).cursor_pointer().on_click(
+                            move |event, window, cx| {
+                                // A modified click is not a request to look closer.
+                                if event.modifiers().modified() {
+                                    return;
+                                }
+                                cx.stop_propagation();
+                                open_media_viewer(
+                                    &set,
+                                    attachment_id,
+                                    Some(opener.clone()),
+                                    false,
+                                    window,
+                                    cx,
+                                );
+                            },
+                        )
+                    })
                     .max_w_full()
                     .w(length(width))
                     // Scales down with a narrow column instead of cropping, as the web's `h-auto`.
@@ -234,11 +288,16 @@ impl RenderOnce for MessageAttachments {
                         img(source)
                             .size_full()
                             .object_fit(ObjectFit::Cover)
+                            .rounded(length(COMPONENT_ATTACHMENT_IMAGE_RADIUS))
                             // A picture the instance could not serve shows as its file card.
                             .with_fallback(move || {
                                 FallbackCard(fallback.clone()).into_any_element()
                             }),
                     )
+                    .when(is_ring_shown, |picture| {
+                        // Inside the edge: the box clips what passes it.
+                        picture.child(inset_focus_ring(COMPONENT_ATTACHMENT_IMAGE_RADIUS, cx))
+                    })
                     .into_any_element()
             })
             .collect();
@@ -276,6 +335,7 @@ impl std::fmt::Debug for MessageAttachments {
             .field("id", &self.id)
             .field("attachments", &self.attachments.len())
             .field("is_pending", &self.is_pending)
+            .field("has_sender", &self.sender.is_some())
             .finish()
     }
 }

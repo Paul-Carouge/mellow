@@ -12,6 +12,7 @@ use std::time::Duration;
 use crate::clip_decoder::{ClipDecoder, ClipError, open_clip};
 use crate::devices::{AudioDevices, PlaybackStream, has_failed};
 use crate::resampling::{Interpolation, StreamResampler};
+use crate::time_stretch::TimeStretcher;
 
 /// How often the thread feeds the open output: well under the queued time.
 const WORK_PERIOD: Duration = Duration::from_millis(5);
@@ -25,6 +26,9 @@ const IDLE_BEFORE_CLOSING: Duration = Duration::from_secs(2);
 /// Packets decoded without output (a seek skipping ahead) before the thread looks at its
 /// commands again: a long skip never holds up pause or stop for more than a moment.
 const MAXIMUM_SILENT_PACKETS_PER_FEED: u64 = 64;
+/// The speeds a player offers are 1 to 2; anything asked is kept in a range the stretcher handles.
+const MINIMUM_SPEED: f32 = 0.5;
+const MAXIMUM_SPEED: f32 = 4.0;
 
 /// Where the loaded sound is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,13 +68,26 @@ enum Command {
         clip: u64,
         bytes: Arc<[u8]>,
         content_type: String,
+        start: ClipStart,
     },
     Play,
     Pause,
     Seek(Duration),
+    /// A share of the sound's length, 0 to 1; nothing while its length is unknown.
+    SeekFraction(f32),
+    SetSpeed(f32),
     SetVolume(f32),
     SetOutputDevice(Option<String>),
     Stop,
+}
+
+/// Where a loaded sound starts.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ClipStart {
+    Beginning,
+    /// A share of its length, 0 to 1; the beginning when the file does not say its length.
+    Fraction(f32),
+    At(Duration),
 }
 
 /// Plays one attachment at a time on its own thread. Dropping it stops the thread.
@@ -103,10 +120,23 @@ impl ClipPlayer {
     /// Replaces the loaded sound with `bytes` (a whole file of `content_type`) and plays it from
     /// the start. The type and first bytes are checked before anything is decoded.
     pub fn load_and_play(&self, clip: u64, bytes: Arc<[u8]>, content_type: &str) {
+        self.load_and_play_from(clip, bytes, content_type, ClipStart::Beginning);
+    }
+
+    /// As [`Self::load_and_play`], from `start`: a press on a waveform before the sound was
+    /// loaded.
+    pub fn load_and_play_from(
+        &self,
+        clip: u64,
+        bytes: Arc<[u8]>,
+        content_type: &str,
+        start: ClipStart,
+    ) {
         self.send(Command::Load {
             clip,
             bytes,
             content_type: content_type.to_owned(),
+            start,
         });
         self.send(Command::Play);
     }
@@ -122,6 +152,17 @@ impl ClipPlayer {
 
     pub fn seek(&self, position: Duration) {
         self.send(Command::Seek(position));
+    }
+
+    /// Moves to `fraction` (0 to 1) of the loaded sound's length, once that length is known.
+    pub fn seek_to_fraction(&self, fraction: f32) {
+        self.send(Command::SeekFraction(fraction));
+    }
+
+    /// Plays the loaded sound `speed` times as fast at the same pitch (1 is the file as it is).
+    /// A new sound starts at 1.
+    pub fn set_speed(&self, speed: f32) {
+        self.send(Command::SetSpeed(speed));
     }
 
     /// 0 (silent) to 1 (the file as it is).
@@ -317,6 +358,9 @@ struct LoadedClip {
     base_frame: u64,
     /// Source frames handed to the output since that seek.
     fed_frames: u64,
+    /// Silence pushed after the last frame to flush the stretcher and resamplers: queued like
+    /// sound, but no part of it.
+    padding_frames: u64,
     has_decoded_everything: bool,
 }
 
@@ -334,6 +378,11 @@ struct PlayerState {
     output: Option<ClipOutput>,
     phase: ClipPhase,
     volume: f32,
+    /// 1, or the speed a stretcher plays the sound at.
+    speed: f32,
+    /// Present while `speed` is not 1; started afresh at each seek.
+    stretcher: Option<TimeStretcher>,
+    stretched: Vec<f32>,
     output_device_id: Option<String>,
     idle_since_paused: Duration,
     samples: Vec<f32>,
@@ -347,6 +396,9 @@ impl PlayerState {
             output: None,
             phase: ClipPhase::Paused,
             volume: 1.0,
+            speed: 1.0,
+            stretcher: None,
+            stretched: Vec::new(),
             output_device_id: None,
             idle_since_paused: Duration::ZERO,
             samples: Vec::new(),
@@ -386,31 +438,51 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<Command>, status: &Mutex<
     }
 }
 
+/// Replaces the loaded sound and moves to where it starts.
+fn load(
+    state: &mut PlayerState,
+    clip: u64,
+    bytes: Arc<[u8]>,
+    content_type: &str,
+    start: ClipStart,
+) {
+    state.output = None;
+    state.key = Some(clip);
+    state.speed = 1.0;
+    state.stretcher = None;
+    match without_panics(|| open_clip(bytes, content_type)) {
+        Ok(decoder) => {
+            state.loaded = Some(LoadedClip {
+                decoder,
+                base_frame: 0,
+                fed_frames: 0,
+                padding_frames: 0,
+                has_decoded_everything: false,
+            });
+            state.phase = ClipPhase::Paused;
+            match start {
+                ClipStart::Beginning => {}
+                ClipStart::Fraction(fraction) => {
+                    apply(state, Command::SeekFraction(fraction));
+                }
+                ClipStart::At(position) => apply(state, Command::Seek(position)),
+            }
+        }
+        Err(error) => {
+            state.loaded = None;
+            state.phase = ClipPhase::CannotPlay(error);
+        }
+    }
+}
+
 fn apply(state: &mut PlayerState, command: Command) {
     match command {
         Command::Load {
             clip,
             bytes,
             content_type,
-        } => {
-            state.output = None;
-            state.key = Some(clip);
-            match without_panics(|| open_clip(bytes, &content_type)) {
-                Ok(decoder) => {
-                    state.loaded = Some(LoadedClip {
-                        decoder,
-                        base_frame: 0,
-                        fed_frames: 0,
-                        has_decoded_everything: false,
-                    });
-                    state.phase = ClipPhase::Paused;
-                }
-                Err(error) => {
-                    state.loaded = None;
-                    state.phase = ClipPhase::CannotPlay(error);
-                }
-            }
-        }
+            start,
+        } => load(state, clip, bytes, &content_type, start),
         Command::Play => {
             if state.loaded.is_none() {
                 return;
@@ -443,6 +515,39 @@ fn apply(state: &mut PlayerState, command: Command) {
                 state.phase = ClipPhase::Paused;
             }
         }
+        Command::SeekFraction(fraction) => {
+            let Some(duration) = state
+                .loaded
+                .as_ref()
+                .and_then(|loaded| loaded.decoder.duration_frames())
+            else {
+                return;
+            };
+            #[allow(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                clippy::cast_precision_loss
+            )]
+            // A share of a frame count far below 2^52, clamped to 0 to 1.
+            let frame = (f64::from(fraction.clamp(0.0, 1.0)) * duration as f64) as u64;
+            seek_to(state, frame);
+            if state.phase == ClipPhase::Ended {
+                state.phase = ClipPhase::Paused;
+            }
+        }
+        Command::SetSpeed(speed) => {
+            state.speed = if speed.is_finite() {
+                speed.clamp(MINIMUM_SPEED, MAXIMUM_SPEED)
+            } else {
+                1.0
+            };
+            // A stretcher already playing keeps its input and its last window's end, so the change
+            // is heard without a click or a gap; it stays, at 1× too, until the next seek.
+            match state.stretcher.as_mut() {
+                Some(stretcher) => stretcher.set_speed(state.speed),
+                None => restart_stretcher(state),
+            }
+        }
         Command::SetVolume(volume) => state.volume = volume.clamp(0.0, 1.0),
         Command::SetOutputDevice(device_id) => {
             state.output_device_id = device_id;
@@ -469,6 +574,7 @@ fn seek_to(state: &mut PlayerState, frame: u64) {
     }
     loaded.base_frame = frame;
     loaded.fed_frames = 0;
+    loaded.padding_frames = 0;
     loaded.has_decoded_everything = false;
     let rate = loaded.decoder.sample_rate();
     if let Some(output) = state.output.as_mut()
@@ -476,6 +582,24 @@ fn seek_to(state: &mut PlayerState, frame: u64) {
     {
         state.output = None;
     }
+    restart_stretcher(state);
+}
+
+/// A stretcher for the loaded sound at the current speed; none at 1.
+fn restart_stretcher(state: &mut PlayerState) {
+    #[allow(clippy::float_cmp)] // 1 is set exactly, never computed.
+    let is_normal_speed = state.speed == 1.0;
+    state.stretcher = state
+        .loaded
+        .as_ref()
+        .filter(|_| !is_normal_speed)
+        .map(|loaded| {
+            TimeStretcher::new(
+                loaded.decoder.channels(),
+                loaded.decoder.sample_rate(),
+                state.speed,
+            )
+        });
 }
 
 /// Keeps the output fed while playing; notes the end and failures in the phase.
@@ -532,13 +656,25 @@ fn feed(state: &mut PlayerState, devices: &dyn AudioDevices) {
                 loaded.fed_frames += (state.samples.len() / channels) as u64;
                 if !has_more {
                     loaded.has_decoded_everything = true;
-                    // Silence pushes the resamplers' last partial chunk and delay out.
-                    state.samples.resize(
-                        state.samples.len() + 2 * RESAMPLER_CHUNK_FRAMES * channels,
-                        0.0,
-                    );
+                    // Silence pushes the stretcher's and the resamplers' last partial windows,
+                    // chunks and delay out (the stretcher shortens it by the speed).
+                    #[allow(clippy::cast_possible_truncation, clippy::cast_sign_loss)]
+                    let stretch = state.speed.ceil().max(1.0) as usize;
+                    let padding = 2 * RESAMPLER_CHUNK_FRAMES * (stretch + 1);
+                    loaded.padding_frames = padding as u64;
+                    state
+                        .samples
+                        .resize(state.samples.len() + padding * channels, 0.0);
                 }
-                if let Err(error) = output.feed(&state.samples) {
+                let fed = match state.stretcher.as_mut() {
+                    Some(stretcher) => {
+                        state.stretched.clear();
+                        stretcher.process(&state.samples, &mut state.stretched);
+                        &state.stretched
+                    }
+                    None => &state.samples,
+                };
+                if let Err(error) = output.feed(fed) {
                     tracing::warn!(%error, "an attachment could not be resampled");
                     state.output = None;
                     state.phase = ClipPhase::NoOutput;
@@ -574,10 +710,21 @@ fn publish(state: &PlayerState, status: &Mutex<ClipStatus>) {
                 duration_frames.unwrap_or(loaded.base_frame + loaded.fed_frames)
             } else {
                 let queued = state.output.as_ref().map_or(0, |output| {
-                    output.queued_device_frames() * u64::from(loaded.decoder.sample_rate())
+                    // Queued audio covers `speed` times as much of the sound.
+                    #[allow(
+                        clippy::cast_possible_truncation,
+                        clippy::cast_sign_loss,
+                        clippy::cast_precision_loss
+                    )]
+                    let covered =
+                        (output.queued_device_frames() as f64 * f64::from(state.speed)) as u64;
+                    covered * u64::from(loaded.decoder.sample_rate())
                         / u64::from(output.stream.format.sample_rate).max(1)
                 });
-                (loaded.base_frame + loaded.fed_frames).saturating_sub(queued)
+                let sound_end = loaded.base_frame + loaded.fed_frames;
+                (sound_end + loaded.padding_frames)
+                    .saturating_sub(queued)
+                    .min(sound_end)
             };
             let played = duration_frames.map_or(played, |duration| played.min(duration));
             (
@@ -621,6 +768,58 @@ mod tests {
             channels: 2,
         };
         SyntheticAudioDevices::new(SyntheticSound::Silence, format, format)
+    }
+
+    #[test]
+    fn a_sound_starts_where_its_waveform_was_pressed_and_plays_faster_to_its_end() {
+        let devices = devices();
+        let probe = devices.probe();
+        let player = ClipPlayer::new(Box::new(devices)).unwrap();
+        // Two seconds from three quarters in: the half second left plays twice as fast.
+        player.load_and_play_from(
+            8,
+            tone_wav(8_000, 1, 16_000).into(),
+            "audio/wav",
+            ClipStart::Fraction(0.75),
+        );
+        player.set_speed(2.0);
+        let playing = wait_for(&player, |status| status.phase == ClipPhase::Playing);
+        assert!(
+            playing.position >= Duration::from_millis(1_400),
+            "{playing:?}"
+        );
+        let ended = wait_for(&player, |status| status.phase == ClipPhase::Ended);
+        assert_eq!(ended.position, Duration::from_secs(2));
+        assert!(probe.audible_samples() > 0);
+
+        // Once ended, a press on the waveform moves there and waits.
+        player.seek_to_fraction(0.5);
+        let moved = wait_for(&player, |status| status.phase == ClipPhase::Paused);
+        assert!(moved.position <= Duration::from_secs(1), "{moved:?}");
+    }
+
+    #[test]
+    fn the_playhead_never_goes_back_while_the_end_plays_out() {
+        let player = ClipPlayer::new(Box::new(devices())).unwrap();
+        player.load_and_play(9, tone_wav(44_100, 2, 8_820).into(), "audio/wav");
+        let mut last = Duration::ZERO;
+        let deadline = Instant::now() + Duration::from_secs(10);
+        loop {
+            let status = player.status();
+            if status.clip == Some(9) {
+                assert!(
+                    status.position >= last,
+                    "{:?} after {last:?}",
+                    status.position
+                );
+                last = status.position;
+                if status.phase == ClipPhase::Ended {
+                    break;
+                }
+            }
+            assert!(Instant::now() < deadline, "{status:?}");
+            std::thread::sleep(Duration::from_millis(1));
+        }
     }
 
     #[test]
@@ -704,6 +903,7 @@ mod tests {
             decoder: Box::new(decoder),
             base_frame: 0,
             fed_frames: 0,
+            padding_frames: 0,
             has_decoded_everything: false,
         });
         state.phase = ClipPhase::Playing;

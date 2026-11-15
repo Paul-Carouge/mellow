@@ -35,8 +35,9 @@ use super::time::{
     full_timestamp_label, local_date_time, message_timestamp_label, time_of_day_label,
 };
 use crate::components::{
-    ActivationHandler, Avatar, AvatarPerson, Tooltip, child_id, colour_transition, focus_ring,
-    icon, is_focus_visible, remembered_focus_handle, remembered_hover, role_icon, with_type,
+    ActivationHandler, Avatar, AvatarPerson, Tooltip, bounds_recorder, child_id, colour_transition,
+    focus_ring, icon, is_focus_visible, remembered_bounds, remembered_focus_handle,
+    remembered_hover, role_icon, with_type,
 };
 use crate::i18n::{self, Strings};
 use crate::theme::icons::IconName;
@@ -142,6 +143,9 @@ pub struct MessageItem {
     on_retry: Option<ActivationHandler>,
     on_discard: Option<ActivationHandler>,
     on_open_author_menu: Option<AuthorMenuHandler>,
+    /// Gets focus back when the author's profile closes: the list holding the row, since the
+    /// name and avatar take no focus (DESIGN.md §5.7.1).
+    author_profile_opener: Option<gpui::FocusHandle>,
     card: Option<AnyElement>,
     /// The Klipy address the message is, shown as the GIF itself (ADR-0042).
     gif_url: Option<SharedString>,
@@ -167,6 +171,7 @@ impl MessageItem {
             on_retry: None,
             on_discard: None,
             on_open_author_menu: None,
+            author_profile_opener: None,
             card: None,
             gif_url: None,
             link_previews: None,
@@ -265,6 +270,14 @@ impl MessageItem {
         handler: impl Fn(Point<Pixels>, &mut Window, &mut App) + 'static,
     ) -> Self {
         self.on_open_author_menu = Some(Arc::new(handler));
+        self
+    }
+
+    /// The author's name and avatar open their profile on a click and their hover card on a rest
+    /// (DESIGN.md §5.7.3); `opener` gets focus back when the profile closes.
+    #[must_use]
+    pub fn author_profile_opener(mut self, opener: gpui::FocusHandle) -> Self {
+        self.author_profile_opener = Some(opener);
         self
     }
 
@@ -383,14 +396,62 @@ impl RenderOnce for MessageItem {
             cx,
         );
         let author_name = display_name(&content.author.user).to_owned();
-        // The author's menu instead of the message's, which the row opens.
-        let with_author_menu = |element: gpui::Div| match self.on_open_author_menu.clone() {
-            Some(open) => element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
-                cx.stop_propagation();
-                open(event.position, window, cx);
-            }),
-            None => element,
-        };
+        // The author's menu instead of the message's, which the row opens; their profile on a
+        // click and their hover card below the name (pointer only: the list keeps one Tab stop).
+        let author_profile_opener = self.author_profile_opener.clone();
+        let with_author_menu =
+            |element: gpui::Div, part: &'static str, window: &mut Window, cx: &mut App| {
+                let element = match self.on_open_author_menu.clone() {
+                    Some(open) => {
+                        element.on_mouse_down(MouseButton::Right, move |event, window, cx| {
+                            cx.stop_propagation();
+                            crate::profile_surfaces::close_profile_hover_card(cx);
+                            open(event.position, window, cx);
+                        })
+                    }
+                    None => element,
+                };
+                let part_id = child_id(&id, part);
+                let Some(opener) = author_profile_opener.clone() else {
+                    return element.id(part_id);
+                };
+                // The name and the avatar are one trigger: moving between them keeps the card,
+                // which sits under the name.
+                let anchor = remembered_bounds(&child_id(&id, "author"), window, cx);
+                let user = content.author.user.clone();
+                let clicked = user.clone();
+                let click_opener = opener.clone();
+                let trigger = crate::profile_surfaces::ProfileHoverTrigger {
+                    user,
+                    placement: crate::profile_surfaces::HoverCardPlacement::Below,
+                    anchor: anchor.downgrade(),
+                    column: None,
+                    opener: Some(opener),
+                };
+                element
+                    .id(part_id)
+                    .relative()
+                    .cursor_pointer()
+                    .when(part == "author-name", |name| {
+                        name.child(bounds_recorder(anchor.clone()))
+                    })
+                    .on_hover(move |is_hovered, _, cx| {
+                        if *is_hovered {
+                            crate::profile_surfaces::enter_profile_trigger(trigger.clone(), cx);
+                        } else {
+                            crate::profile_surfaces::leave_profile_trigger(&trigger, cx);
+                        }
+                    })
+                    .on_click(move |_, window, cx| {
+                        cx.stop_propagation();
+                        crate::profile_surfaces::open_profile_modal(
+                            clicked.clone(),
+                            Some(click_opener.clone()),
+                            window,
+                            cx,
+                        );
+                    })
+            };
         let sent = content.sent_at_unix_milliseconds.map(local_date_time);
         let now = local_date_time(content.now_unix_milliseconds);
 
@@ -416,14 +477,19 @@ impl RenderOnce for MessageItem {
                 .items_start()
                 .gap_x(length(SPACE_XS))
                 .child(
-                    with_author_menu(with_type(div(), TYPE_MESSAGE_AUTHOR))
-                        .text_color(
-                            content
-                                .author
-                                .colour
-                                .unwrap_or_else(|| color(tokens.component_message_author_text)),
-                        )
-                        .child(author_name.clone()),
+                    with_author_menu(
+                        with_type(div(), TYPE_MESSAGE_AUTHOR),
+                        "author-name",
+                        window,
+                        cx,
+                    )
+                    .text_color(
+                        content
+                            .author
+                            .colour
+                            .unwrap_or_else(|| color(tokens.component_message_author_text)),
+                    )
+                    .child(author_name.clone()),
                 )
                 // After the name, before the time, as on Discord; the role's name labels it.
                 .children(content.author.role_icon.as_ref().and_then(|shown| {
@@ -457,7 +523,7 @@ impl RenderOnce for MessageItem {
             COMPONENT_MESSAGE_PADDING_BLOCK + SPACE_3XS
         };
         let avatar = content.starts_author_group.then(|| {
-            with_author_menu(div())
+            with_author_menu(div(), "author-avatar", window, cx)
                 .absolute()
                 .left(length(COMPONENT_MESSAGE_AVATAR_INSET))
                 .top(length(avatar_top))
@@ -524,8 +590,13 @@ impl RenderOnce for MessageItem {
                 }
             });
         let attachments = (!content.attachments.is_empty()).then(|| {
-            MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
-                .pending(content.pending.is_some())
+            let attachments =
+                MessageAttachments::new(child_id(&id, "attachments"), content.attachments.clone())
+                    .pending(content.pending.is_some());
+            match content.sent_at_unix_milliseconds {
+                Some(sent_at) => attachments.sent_by(author_name.clone(), sent_at),
+                None => attachments,
+            }
         });
         let reactions = (!content.reactions.is_empty()).then(|| {
             let reactions = MessageReactions::new(child_id(&id, "reactions"), content.reactions)

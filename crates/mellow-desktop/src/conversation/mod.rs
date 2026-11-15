@@ -637,6 +637,7 @@ impl ConversationView {
             can_add_reactions: rights.can_add_reactions,
             can_remove_reactions: rights.can_remove_reactions,
             can_manage_pins: rights.can_manage_pins,
+            can_view_author_profile: true,
         }
     }
 
@@ -1331,6 +1332,14 @@ impl ConversationView {
                 };
                 let view = view.clone();
                 let (label, icon, tone) = message_menu_item_look(action, catalogue);
+                // Named after the author: "View Ana's profile".
+                let label = if action == MessageMenuAction::AuthorProfile {
+                    catalogue
+                        .profile_card()
+                        .view_profile_of(display_name(&message.author))
+                } else {
+                    label
+                };
                 MenuEntry::Item(
                     MenuItem::new(label, icon, move |window, cx| {
                         let _ = view.update(cx, |view, cx| {
@@ -1425,6 +1434,17 @@ impl ConversationView {
             MessageMenuAction::RemoveAllReactions => {
                 if let Some(message) = self.cached_message(message_id, cx) {
                     self.ask_to_confirm(Confirmation::RemoveAllReactions(message), window, cx);
+                }
+            }
+            MessageMenuAction::AuthorProfile => {
+                if let Some(message) = self.cached_message(message_id, cx) {
+                    // Focus comes back to the message list, which holds the row.
+                    crate::profile_surfaces::open_profile_modal(
+                        message.author,
+                        Some(self.list_focus.clone()),
+                        window,
+                        cx,
+                    );
                 }
             }
             MessageMenuAction::Delete => {
@@ -1865,6 +1885,11 @@ fn message_menu_item_look(
             catalogue.reactions().remove_all().to_owned(),
             IconName::XCircle,
             MenuItemTone::Danger,
+        ),
+        MessageMenuAction::AuthorProfile => (
+            catalogue.members().profile().to_owned(),
+            IconName::At,
+            MenuItemTone::Normal,
         ),
         MessageMenuAction::Delete => (
             catalogue.context_menu().delete_message().to_owned(),

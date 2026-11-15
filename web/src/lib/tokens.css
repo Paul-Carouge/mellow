@@ -620,8 +620,6 @@
   --mw-component-key-chip-text: #F8F4F8;
   --mw-component-link-preview-action-icon-size: 1rem;
   --mw-component-link-preview-background: #110B11;
-  --mw-component-link-preview-bar-fallback: #554C56;
-  --mw-component-link-preview-bar-width: 0.25rem;
   --mw-component-link-preview-border: #3C353E;
   --mw-component-link-preview-border-width: 0.0625rem;
   --mw-component-link-preview-brand-mark-color: #FFFFFF;
@@ -1444,6 +1442,21 @@
   --mw-component-user-panel-update-badge: #23A55A;
   --mw-component-user-panel-update-badge-ring-width: 0.1875rem;
   --mw-component-user-panel-update-badge-size: 0.625rem;
+  --mw-component-video-player-control-icon-size: 1.25rem;
+  --mw-component-video-player-control-icon-size-large: 1.5rem;
+  --mw-component-video-player-control-size: 2rem;
+  --mw-component-video-player-control-size-large: 2.75rem;
+  --mw-component-video-player-controls-fade-height: 2rem;
+  --mw-component-video-player-controls-gap: 0.5rem;
+  --mw-component-video-player-controls-hide-delay: 2500ms;
+  --mw-component-video-player-controls-padding: 0.5rem;
+  --mw-component-video-player-controls-scrim-end: #110B1100;
+  --mw-component-video-player-controls-scrim-start: #110B11B8;
+  --mw-component-video-player-play-icon-size: 2.5rem;
+  --mw-component-video-player-seek-jump: 10000ms;
+  --mw-component-video-player-seek-step: 5000ms;
+  --mw-component-video-player-time-text: #ECE6ED;
+  --mw-component-video-player-volume-width: 4.5rem;
   --mw-component-voice-enhancement-preset-background-checked: #362E37;
   --mw-component-voice-enhancement-preset-height: 2.75rem;
   --mw-component-voice-enhancement-preset-padding-inline: 0.75rem;
@@ -1546,6 +1559,7 @@
   --mw-motion-delay-loading-notice: 340ms;
   --mw-motion-delay-long-press: 500ms;
   --mw-motion-delay-pending-label: 2000ms;
+  --mw-motion-delay-player-controls: 2500ms;
   --mw-motion-delay-skeleton: 300ms;
   --mw-motion-delay-stream-ended: 3000ms;
   --mw-motion-delay-stream-slow: 10000ms;
@@ -1997,7 +2011,6 @@
     --mw-component-key-chip-empty-text: #594E5B;
     --mw-component-key-chip-text: #221B23;
     --mw-component-link-preview-background: #F5F1F6;
-    --mw-component-link-preview-bar-fallback: #CBC5CC;
     --mw-component-link-preview-border: #E3DDE4;
     --mw-component-link-preview-card-background-hover: #ECE6ED;
     --mw-component-link-preview-close-player-icon: #594E5B;
@@ -2611,7 +2624,6 @@
   --mw-component-key-chip-empty-text: #594E5B;
   --mw-component-key-chip-text: #221B23;
   --mw-component-link-preview-background: #F5F1F6;
-  --mw-component-link-preview-bar-fallback: #CBC5CC;
   --mw-component-link-preview-border: #E3DDE4;
   --mw-component-link-preview-card-background-hover: #ECE6ED;
   --mw-component-link-preview-close-player-icon: #594E5B;

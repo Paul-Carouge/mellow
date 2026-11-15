@@ -621,6 +621,112 @@ async fn youtube_links_get_their_embed_from_oembed_once_for_every_spelling() {
     );
 }
 
+/// The job budget bounds the fetches, not the making of a picture already fetched: a budget
+/// running out while YouTube's poster was being encoded (seconds in a debug build or on a busy
+/// machine) lost the whole card, and left the encode running on the one picture slot, so the
+/// link's next fetch recorded its card without a poster.
+#[tokio::test]
+async fn a_job_budget_running_out_while_its_picture_is_made_keeps_the_picture() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (site, _) = stand_in_youtube().await;
+    let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    send(
+        &state,
+        post_message(
+            &messages_path,
+            &owner,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ",
+        ),
+    )
+    .await;
+
+    // The budget runs out once the poster is being made, whatever the clock says.
+    let attachments = state.attachments.clone();
+    let results =
+        run_queued_link_preview_jobs(&state.messages, &state.attachments, &fetcher, async move {
+            while !attachments.is_link_preview_picture_being_made() {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    let after = history(&state, &messages_path, &owner).await;
+    let is_slot_still_taken = state.attachments.is_link_preview_picture_being_made();
+    database.close().await;
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+    let preview = after[0].link_previews.first().expect("the card is kept");
+    assert_eq!(preview.title.as_deref(), Some("Les Cités d'or"));
+    assert_eq!(
+        preview.image.map(|image| (image.width, image.height)),
+        Some((160, 90)),
+        "with its poster"
+    );
+    assert!(!is_slot_still_taken, "no encode left running");
+}
+
+/// A job whose budget ran out while a picture was made records that preview with its picture,
+/// then stops: the next link is never fetched.
+#[tokio::test]
+async fn a_job_out_of_time_after_a_picture_does_not_fetch_its_next_link() {
+    let (_directory, database) = migrated_database().await;
+    let state = test_state(database.clone(), RegistrationMode::Open);
+    let (owner, general) = owner_and_general_channel(&state).await;
+    let (site, oembed_answers) = stand_in_youtube().await;
+    let fetcher = LinkFetcher::stand_in_for_every_host_for_tests(&site);
+    state.messages.enable_link_previews();
+    let messages_path = format!("/api/v1/channels/{general}/messages");
+    send(
+        &state,
+        post_message(
+            &messages_path,
+            &owner,
+            "https://www.youtube.com/watch?v=dQw4w9WgXcQ and https://www.youtube.com/watch?v=lYBUbBu4W08",
+        ),
+    )
+    .await;
+
+    // The budget is spent once the first link's poster is stored, whatever the clock says.
+    let attachments = state.attachments.clone();
+    let results =
+        run_queued_link_preview_jobs(&state.messages, &state.attachments, &fetcher, async move {
+            while attachments.stored_link_preview_pictures() == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await;
+    let after = history(&state, &messages_path, &owner).await;
+    let recorded: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM link_previews")
+        .fetch_one(database.readers())
+        .await
+        .unwrap();
+    database.close().await;
+
+    assert_eq!(results.len(), 1);
+    assert!(results[0].is_ok());
+    assert_eq!(
+        oembed_answers.load(Ordering::SeqCst),
+        1,
+        "link 2 never fetched"
+    );
+    assert_eq!(recorded, 1);
+    let previews = &after[0].link_previews;
+    assert_eq!(previews.len(), 1);
+    assert_eq!(
+        previews[0].url,
+        "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    );
+    assert_eq!(
+        previews[0].image.map(|image| (image.width, image.height)),
+        Some((160, 90)),
+        "link 1 keeps its poster"
+    );
+}
+
 /// A stand-in for YouTube whose oEmbed endpoint answers `oembed_status` with no body, and whose
 /// watch page has an Open Graph title; it counts the page's fetches.
 async fn stand_in_youtube_without_oembed(oembed_status: StatusCode) -> (String, Arc<AtomicUsize>) {
