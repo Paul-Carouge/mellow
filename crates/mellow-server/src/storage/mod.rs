@@ -32,6 +32,8 @@ mod sqlite_integers;
 pub(crate) mod two_factor;
 pub(crate) mod user_profiles;
 
+#[cfg(test)]
+pub(crate) use database::finish_sqlite_global_setup;
 pub use database::{Database, DatabaseKey, StorageError, open_encrypted_database};
 pub use master_key::{MasterKey, MasterKeyError};
 pub use migrations::{
