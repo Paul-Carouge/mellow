@@ -1988,7 +1988,7 @@ export const fr: Catalogue = {
       subtitle:
         "Fais glisser l’image et zoome jusqu’à ce que le carré contienne ce que tu veux montrer. Le reste est coupé.",
       stage: "Image à recadrer",
-      stageHint: "Les flèches déplacent l’image, Maj la déplace plus loin, + et − zooment.",
+      stageHint: "Les flèches déplacent l’image, Maj la déplace plus loin, + et − zooment, Entrée enregistre.",
       zoom: "Zoom",
       centre: "Recentrer",
       samples: "À sa taille réelle",

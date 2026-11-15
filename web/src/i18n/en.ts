@@ -2031,7 +2031,7 @@ export const en = {
       title: "Choose the square",
       subtitle: "Drag the picture and zoom until the square holds what you want to show. The rest is cut away.",
       stage: "Picture to crop",
-      stageHint: "Arrow keys move the picture, Shift moves it further, + and − zoom.",
+      stageHint: "Arrow keys move the picture, Shift moves it further, + and − zoom, Enter saves.",
       zoom: "Zoom",
       centre: "Centre it",
       samples: "At its real size",

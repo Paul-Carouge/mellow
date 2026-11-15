@@ -26,9 +26,9 @@
   // it: a square for icons, a circle for avatars (they only ever show round), the profile card's
   // band for banners. It opens on the largest centred part, which is what the instance keeps when
   // nothing is moved; dragging, the wheel, a pinch, the arrow keys or the zoom slider choose
-  // another one. Under the stage, the result at its real size, where it will live: the server
-  // strip, a channel row, the profile and messages, or the profile card. The file is sent as it is
-  // (an animated GIF stays animated), with the crop.
+  // another one, and Enter on the stage saves. Under the stage, the result at its real size, where
+  // it will live: the server strip, a channel row, the profile and messages, or the profile card.
+  // The file is sent as it is (an animated GIF stays animated), with the crop.
   interface Props {
     file: File;
     kind: "server" | "channel" | "avatar" | "banner";
@@ -200,6 +200,10 @@
     } else if (event.key === "-" || event.key === "_") {
       event.preventDefault();
       crop = cropZoomedTo(crop, picture, aspect, zoom / KEYBOARD_ZOOM_FACTOR);
+    } else if (event.key === "Enter" && !isBusy) {
+      // The stage is not a form field: Enter saves here as the dialog's button does.
+      event.preventDefault();
+      onsave(cropToSend(crop, picture, aspect));
     }
   }
 </script>
