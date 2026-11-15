@@ -112,7 +112,7 @@ The domain calls concrete `storage` functions (no repository traits: there is on
 |---|---|
 | Async runtime | `tokio` |
 | HTTP + WebSocket | `axum` (with `tower` middleware) |
-| Database | `sqlx` with SQLite, compile-time checked queries, embedded migrations |
+| Database | `sqlx` with SQLite (SQLCipher), runtime queries with bound parameters checked by tests on a migrated database, embedded migrations |
 | TLS | `rustls` (no OpenSSL), automatic certificates via ACME (`rustls-acme` or `instant-acme`) |
 | Password hashing | `argon2` (Argon2id) |
 | Serialization | `serde`, `serde_json` |

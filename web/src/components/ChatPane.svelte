@@ -27,7 +27,6 @@
   import ConfirmMessageDialog from "./ConfirmMessageDialog.svelte";
   import { composerTextOf, withEmojiNamesAsMarkup } from "./custom-emoji";
   import DeleteMessageDialog from "./DeleteMessageDialog.svelte";
-  import EmojiPicker from "./EmojiPicker.svelte";
   import { displayName, typingSegments, unixMillisecondsOfSnowflake } from "./format";
   import { forwardOriginPlace } from "./forward-messages";
   import GroupAvatar from "./GroupAvatar.svelte";
@@ -46,8 +45,6 @@
   import type { ReactionAndPinActions } from "./message-actions";
   import { MessageEditor } from "./message-editor.svelte";
   import MessageList from "./MessageList.svelte";
-  import PinnedMessagesPanel from "./PinnedMessagesPanel.svelte";
-  import ReactionsDialog from "./ReactionsDialog.svelte";
   import { createPopoverToggle } from "./popover-toggle";
   import { noteEmojiUsed } from "./recent-emoji.svelte";
   import { rolesWriterMayMention, withRoleNamesAsMarkup } from "./role-mentions";
@@ -1037,13 +1034,12 @@
 {/snippet}
 
 {#if picker}
-  <EmojiPicker
-    anchor={picker.anchor}
-    isCompact={hasNavigationDrawer}
-    server={pickerServer}
-    onpick={pickEmoji}
-    onclose={closePicker}
-  />
+  {@const anchor = picker.anchor}
+  <LazyComponent load={() => import("./EmojiPicker.svelte")} onclose={() => closePicker(true)}>
+    {#snippet children({ default: EmojiPicker })}
+      <EmojiPicker {anchor} isCompact={hasNavigationDrawer} server={pickerServer} onpick={pickEmoji} onclose={closePicker} />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if gifPickerAnchor && client.gifSettings}
@@ -1074,21 +1070,27 @@
 {/if}
 
 {#if isPinsPanelOpen && channelId && pinsPanelAnchor}
-  <PinnedMessagesPanel
-    {client}
-    {channelId}
-    anchor={pinsPanelAnchor}
-    isCompact={hasNavigationDrawer}
-    canManagePins={reactionAndPinActions.canManagePins}
-    onjump={(messageId) => void messageList?.revealMessage(messageId)}
-    onunpin={(message) => (pinning = { message, isPinned: false })}
-    onclose={(shouldReturnFocus) => {
-      isPinsPanelOpen = false;
-      if (shouldReturnFocus) {
-        pinsPanelAnchor?.focus();
-      }
-    }}
-  />
+  {@const pinsChannelId = channelId}
+  {@const anchor = pinsPanelAnchor}
+  <LazyComponent load={() => import("./PinnedMessagesPanel.svelte")} onclose={() => (isPinsPanelOpen = false)}>
+    {#snippet children({ default: PinnedMessagesPanel })}
+      <PinnedMessagesPanel
+        {client}
+        channelId={pinsChannelId}
+        {anchor}
+        isCompact={hasNavigationDrawer}
+        canManagePins={reactionAndPinActions.canManagePins}
+        onjump={(messageId) => void messageList?.revealMessage(messageId)}
+        onunpin={(message) => (pinning = { message, isPinned: false })}
+        onclose={(shouldReturnFocus) => {
+          isPinsPanelOpen = false;
+          if (shouldReturnFocus) {
+            pinsPanelAnchor?.focus();
+          }
+        }}
+      />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if pinning}
@@ -1135,15 +1137,20 @@
 
 {#if reactionsBeingViewed}
   {@const message = reactionsBeingViewed.message}
-  <ReactionsDialog
-    reactions={reactionsBeingViewed.reactions}
-    customEmojis={client.knownCustomEmojis}
-    canRemoveOthers={reactionAndPinActions.canRemoveReactions}
-    loadUsers={(emoji) => client.listReactingUsers(message.channel_id, message.id, emoji)}
-    onremove={(emoji, userId) => client.removeUserReaction(message.channel_id, message.id, emoji, userId)}
-    onclose={() => (viewingReactionsOfId = null)}
-    fallbackFocus={focusComposer}
-  />
+  {@const reactions = reactionsBeingViewed.reactions}
+  <LazyComponent load={() => import("./ReactionsDialog.svelte")} onclose={() => (viewingReactionsOfId = null)}>
+    {#snippet children({ default: ReactionsDialog })}
+      <ReactionsDialog
+        {reactions}
+        customEmojis={client.knownCustomEmojis}
+        canRemoveOthers={reactionAndPinActions.canRemoveReactions}
+        loadUsers={(emoji) => client.listReactingUsers(message.channel_id, message.id, emoji)}
+        onremove={(emoji, userId) => client.removeUserReaction(message.channel_id, message.id, emoji, userId)}
+        onclose={() => (viewingReactionsOfId = null)}
+        fallbackFocus={focusComposer}
+      />
+    {/snippet}
+  </LazyComponent>
 {/if}
 
 {#if isCreatingPoll}
