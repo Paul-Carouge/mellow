@@ -13,7 +13,7 @@
 //! on YouTube. Only Linux plays them so far; elsewhere the card opens the link in the browser.
 
 use std::collections::{HashMap, VecDeque};
-use std::hash::{DefaultHasher, Hash as _, Hasher as _};
+use std::hash::{Hash as _, Hasher as _};
 use std::time::Duration;
 
 use gpui::{App, ElementId, Global};
@@ -71,7 +71,10 @@ impl Global for YouTubeVideos {}
 
 /// The id of the video a card shows: the same for the same card and link across frames.
 fn youtube_id(card_id: &ElementId, link: &str) -> Snowflake {
-    let mut hasher = DefaultHasher::new();
+    // A key drawn once per run: an instance cannot compute a card's id ahead to forge one.
+    static KEY: std::sync::OnceLock<std::collections::hash_map::RandomState> =
+        std::sync::OnceLock::new();
+    let mut hasher = std::hash::BuildHasher::build_hasher(KEY.get_or_init(Default::default));
     card_id.hash(&mut hasher);
     link.hash(&mut hasher);
     Snowflake::from_raw(hasher.finish() | YOUTUBE_ID_BIT)
@@ -264,15 +267,35 @@ mod extraction {
             .find(|candidate| candidate.is_file())
     }
 
+    /// `<user cache>/mellow[-profile]/youtube/bg_snapshot.bin`, its folder private to the user.
+    fn botguard_snapshot_file() -> Option<std::path::PathBuf> {
+        let directory = dirs::cache_dir()?
+            .join(&*crate::profile::with_profile_suffix(
+                crate::pictures::disk_cache::APPLICATION_DIRECTORY,
+            ))
+            .join("youtube");
+        std::fs::create_dir_all(&directory).ok()?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt as _;
+            std::fs::set_permissions(&directory, std::fs::Permissions::from_mode(0o700)).ok()?;
+        }
+        Some(directory.join("bg_snapshot.bin"))
+    }
+
     fn client() -> Option<&'static RustyPipe> {
         static CLIENT: OnceLock<Option<RustyPipe>> = OnceLock::new();
         CLIENT
             .get_or_init(|| {
                 // Nothing on disk (no cache, no failure reports), no account.
                 let builder = RustyPipe::builder().no_storage().no_reporter();
-                let builder = match on_path(BOTGUARD_EXECUTABLE) {
-                    Some(path) => builder.botguard_bin(path),
-                    None => builder.no_botguard(),
+                // `no_storage` leaves botguard's snapshot relative to the working directory,
+                // where a planted file would be loaded: keep it in Mellow's own cache folder.
+                let builder = match (on_path(BOTGUARD_EXECUTABLE), botguard_snapshot_file()) {
+                    (Some(path), Some(snapshot)) => {
+                        builder.botguard_bin(path).botguard_snapshot_file(snapshot)
+                    }
+                    _ => builder.no_botguard(),
                 };
                 builder
                     .build()

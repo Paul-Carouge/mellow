@@ -28,6 +28,9 @@ The player window of ADR-0061 asked for a separate window and, on some videos, s
 - One of five yt-dlp plays failed at its first range (403) during testing: the card then says it cannot play and offers YouTube.
 
 ## Consequences
+
+- rustypipe runs YouTube's player JavaScript inside Mellow's process in `rquickjs` (QuickJS, a C engine). Only youtube.com over verified TLS can supply it; the risk is accepted with the extractor. Botguard's snapshot, when botguard is installed, lives in `<user cache>/mellow[-profile]/youtube/` (mode 700), never in the working directory: the one file this path writes.
+
 - No window, no web engine: Linux no longer needs WebKitGTK or GStreamer, and the packages lose a binary.
 - YouTube sees the reader's address and Mellow's requests (no referrer, no cookie), never the instance.
 - Nothing is written to disk by the extractors or the player: no cache, no temporary file left (checked with `find -newer` on `~/.cache`, `/tmp` and the profile's folders). Memory: about 50 MB more while a 720p video plays; once the row is left, its threads end, but the process keeps about 40 to 60 MB more than before the first play (the allocator keeping freed memory, not confirmed).
