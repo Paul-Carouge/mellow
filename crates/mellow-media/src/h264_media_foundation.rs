@@ -51,6 +51,23 @@ impl PictureLayout {
         luma.checked_add(2 * (self.stride / 2) * self.rows.div_ceil(2))
     }
 
+    /// The I420 planes of `bytes` as the decoder wrote them: with the coded rows (whole
+    /// macroblocks) when the buffer holds them, else with the shown rows only, which the decoder
+    /// writes for a cropped picture (640 × 360, coded 368 rows high) when the buffer holds
+    /// exactly that.
+    fn written_view(self, bytes: &[u8]) -> Option<I420View<'_>> {
+        if bytes.len() >= self.buffer_length()? {
+            return self.view(bytes);
+        }
+        let shown = Self {
+            rows: usize::try_from(self.height).ok()?.next_multiple_of(2),
+            ..self
+        };
+        (bytes.len() >= shown.buffer_length()?)
+            .then(|| shown.view(bytes))
+            .flatten()
+    }
+
     /// The I420 planes of `bytes`, a whole buffer of this layout.
     fn view(self, bytes: &[u8]) -> Option<I420View<'_>> {
         let chroma_stride = self.stride / 2;
@@ -331,7 +348,7 @@ impl H264Decoder {
     fn view_of(&mut self, picture: &IMFSample) -> Result<Option<I420View<'_>>, H264Error> {
         // Within the maximum size: `choose_planar_output` refuses any other layout.
         let Some(layout) = self.layout else {
-            return Ok(None);
+            return Err(H264Error("a picture came before its size".into()));
         };
         // SAFETY: the buffer stays locked, and so its bytes valid, until the next `decode` or
         // the drop, both of which need `&mut self` and unlock it first.
@@ -346,10 +363,14 @@ impl H264Decoder {
                 .map_err(failed("read a picture"))?;
             self.locked = Some(buffer);
             if bytes.is_null() {
-                return Ok(None);
+                return Err(H264Error("a picture without bytes".into()));
             }
             let bytes = std::slice::from_raw_parts(bytes, length as usize);
-            Ok(layout.view(bytes))
+            layout.written_view(bytes).map(Some).ok_or_else(|| {
+                H264Error(format!(
+                    "a picture of {length} bytes does not fit its layout {layout:?}"
+                ))
+            })
         }
     }
 }
@@ -417,5 +438,33 @@ mod tests {
         assert_eq!((view.width(), view.height()), (4, 2));
         assert_eq!(&view.luma()[..4], &[0, 1, 2, 3]);
         assert!(layout.view(&bytes[..23]).is_none(), "a short buffer");
+    }
+
+    #[test]
+    fn a_cropped_picture_written_without_its_coded_rows_is_read_at_its_shown_rows() {
+        // 4 × 2 shown out of 4 × 4 coded, written as 4 × 2: luma 8, then two chroma planes of 2.
+        let layout = PictureLayout {
+            width: 4,
+            height: 2,
+            stride: 4,
+            rows: 4,
+        };
+        let mut bytes: Vec<u8> = (0..8).collect();
+        bytes.extend([100, 101, 200, 201]);
+        let view = layout.written_view(&bytes).unwrap();
+        assert_eq!(&view.luma()[..8], &[0, 1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(&view.blue_chroma()[..2], &[100, 101]);
+        assert_eq!(&view.red_chroma()[..2], &[200, 201]);
+        assert!(
+            layout.written_view(&bytes[..11]).is_none(),
+            "a short buffer"
+        );
+        let mut coded: Vec<u8> = (0..16).collect();
+        coded.extend([100, 101, 102, 103, 200, 201, 202, 203]);
+        assert_eq!(
+            &layout.written_view(&coded).unwrap().red_chroma()[..2],
+            &[200, 201],
+            "the coded rows when the buffer holds them"
+        );
     }
 }
