@@ -1,6 +1,7 @@
 # 0061. YouTube videos play in a Mellow player window on the desktop
 
-- Status: Accepted
+- Status: Superseded by ADR-0063 (YouTube plays natively in the message's card)
+- 2026-11-15: superseded. The owner wants the video to play in the message's card, not in a window of its own, and YouTube's embedded player in the window kept asking viewers to sign in to prove they were not a robot. The window, its binary and its packaging are removed; what follows records the former design.
 - Date: 2026-11-14
 - Builds on: [ADR-0041](0041-link-previews-fetched-by-the-server.md) (players in `youtube-nocookie.com/embed`), [ADR-0051](0051-gpui-desktop-client.md) (GPUI desktop client), [ADR-0055](0055-desktop-release-packages-and-macos-signing.md) and [ADR-0060](0060-windows-release-package.md) (the packages), [ADR-0057](0057-desktop-self-update.md) (self-update)
 

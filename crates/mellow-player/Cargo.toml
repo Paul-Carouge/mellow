@@ -1,6 +1,6 @@
 [package]
 name = "mellow-player"
-description = "The desktop app's YouTube player window, a process of its own (ADR-0061)."
+description = "What the desktop app asked its former YouTube player window (ADR-0061, superseded by ADR-0063)."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -8,59 +8,12 @@ license.workspace = true
 repository.workspace = true
 publish.workspace = true
 
-# The library is the pure part both processes share (what the app may ask, what the window may
-# load); the binary holds the window and the web view, behind the `window` feature. The app
-# depends on the library without it, so it neither builds nor links a web engine (ADR-0061):
-# `cargo build -p mellow-player --features window` builds the window.
-[lib]
-path = "src/lib.rs"
-
-[[bin]]
-name = "mellow-player"
-path = "src/main.rs"
-required-features = ["window"]
-
-[features]
-window = [
-    "dep:image",
-    "dep:libc",
-    "dep:tao",
-    "dep:webkit2gtk",
-    "dep:webview2-com",
-    "dep:windows",
-    "dep:wry",
-]
-
+# The pure part the desktop app shared with its former YouTube player window (ADR-0061, superseded
+# by ADR-0063): what the app may ask and what the window may load. The window itself is gone.
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
 url.workspace = true
-# The window's icon, decoded from the web app's PNG; already in the workspace.
-image = { workspace = true, optional = true }
-# The window and its event loop, without the D-Bus menu bar support (`dbus`) nor the X11-only
-# code paths: GTK draws the window on X11 and Wayland alike.
-tao = { version = "0.37.2", default-features = false, features = ["rwh_06"], optional = true }
-# The system web view: WebKitGTK on Linux, WebView2 on Windows, WKWebView on macOS; without the
-# X11 child window support (`x11`), which `build_gtk` does not need.
-wry = { version = "0.57.2", default-features = false, features = ["os-webview"], optional = true }
-
-# Gives the protocol a private copy of the standard output (`dup2`), which the web engine's
-# processes do not inherit; already in the workspace.
-[target.'cfg(unix)'.dependencies]
-libc = { workspace = true, optional = true }
-
-# The web view's content process ending (a crash, its sandbox refused, or GStreamer's audio and
-# video plugins missing): the window says so and the app falls back to the browser; and the
-# page's full screen, which Escape leaves. The version wry pins.
-[target.'cfg(target_os = "linux")'.dependencies]
-webkit2gtk = { version = "=2.0.2", optional = true }
-
-# Escape and the keep-on-top shortcut reach WebView2's own window, never tao's: its
-# `AcceleratorKeyPressed` event hands them over; its full screen is followed by the window. The
-# versions wry already builds.
-[target.'cfg(windows)'.dependencies]
-webview2-com = { version = "0.39", optional = true }
-windows = { version = "0.62.2", features = ["Win32_UI_Input_KeyboardAndMouse"], optional = true }
 
 [lints]
 workspace = true

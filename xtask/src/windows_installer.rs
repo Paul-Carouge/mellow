@@ -154,7 +154,6 @@ pub fn generated_definitions(tokens: &DesignTokens, version: &str) -> Result<Str
 pub fn build_windows_installer_folder(
     root: &Path,
     binary: &Path,
-    player: &Path,
     output_directory: &Path,
 ) -> Result<()> {
     if output_directory.exists() {
@@ -170,7 +169,6 @@ pub fn build_windows_installer_folder(
             .with_context(|| format!("cannot read {}", tokens_path.display()))?,
     )?;
     copy_file(binary, &output_directory.join("mellow.exe"))?;
-    copy_file(player, &output_directory.join("mellow-player.exe"))?;
     copy_file(&root.join("LICENSE"), &output_directory.join("LICENSE.txt"))?;
     copy_file(
         &packaging.join(ICON_FILE_NAME),
@@ -316,13 +314,10 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let binary = scratch.path().join("mellow.exe");
         std::fs::write(&binary, b"MZ").unwrap();
-        let player = scratch.path().join("mellow-player.exe");
-        std::fs::write(&player, b"MZ").unwrap();
         let folder = scratch.path().join("installer");
-        build_windows_installer_folder(&workspace_root(), &binary, &player, &folder).unwrap();
+        build_windows_installer_folder(&workspace_root(), &binary, &folder).unwrap();
         for relative in [
             "mellow.exe",
-            "mellow-player.exe",
             "LICENSE.txt",
             "mellow.ico",
             "mellow.iss",
@@ -337,8 +332,6 @@ mod tests {
         let small = Pixmap::decode_png(&std::fs::read(folder.join("images/small-97.png")).unwrap())
             .unwrap();
         assert_eq!(small.width(), 97);
-        assert!(
-            build_windows_installer_folder(&workspace_root(), &binary, &player, &folder).is_err()
-        );
+        assert!(build_windows_installer_folder(&workspace_root(), &binary, &folder).is_err());
     }
 }
