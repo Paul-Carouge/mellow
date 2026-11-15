@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 
 import { ApiError, type RestClient } from "./api";
 import { MellowClient } from "./client.svelte";
-import type { Call, DirectMessageChannel, Ready } from "./protocol";
+import { CALL_RING_TIMEOUT_MILLISECONDS, type Call, type DirectMessageChannel, type Ready } from "./protocol";
 
 // Private calls in the web client's state (ADR-0062), at parity with
 // `mellow_client_core::state::calls`.
@@ -172,9 +172,10 @@ describe("private calls in the client state", () => {
     warn.mockRestore();
   });
 
-  it("starts people the user blocked muted in a call, never in a voice channel, and lets a choice win", () => {
+  it("starts people the user blocked muted only while they are in the user's call, and never stores it", () => {
     const client = signedInClient({}, {
       relationships: [{ user: person(CLEO, "Cleo"), kind: "blocked", since_unix_milliseconds: 0 }],
+      calls: [call(GROUP, [], [ADA, CLEO, ME])],
     });
     expect(client.isMutedByDefaultInCalls(CLEO)).toBe(true);
     expect(client.voice.personSetting(CLEO).isLocallyMuted).toBe(false);
@@ -183,7 +184,75 @@ describe("private calls in the client state", () => {
     expect(client.voice.personSetting(CLEO).isLocallyMuted).toBe(true);
     expect(client.voice.personSetting(ADA).isLocallyMuted).toBe(false);
 
+    // Turned up for this connection only: nothing is stored.
     client.voice.togglePersonMuted(CLEO);
     expect(client.voice.personSetting(CLEO).isLocallyMuted).toBe(false);
+    expect(client.voice.personSettings.has(CLEO)).toBe(false);
+    client.voice.togglePersonMuted(CLEO);
+    client.voice.setPersonVolume(CLEO, 150);
+    expect(client.voice.personSettings.get(CLEO)?.isLocallyMuted).toBe(false);
+    expect(client.voice.personSetting(CLEO)).toEqual({ volumePercent: 150, isLocallyMuted: true });
+
+    // Out of the call, no default.
+    client.applyEvent({ t: "CALL_UPDATE", data: call(GROUP, [], [ADA, ME]) }, 0);
+    expect(client.voice.personSetting(CLEO).isLocallyMuted).toBe(false);
+  });
+
+  it("keeps a declined ringing silent even when a late update still lists the user", async () => {
+    const client = signedInClient({ declineCall: () => Promise.resolve() }, { calls: [call(WITH_ADA, [ME], [ADA])] });
+    await client.declineCall(WITH_ADA);
+    client.applyEvent({ t: "CALL_UPDATE", data: call(WITH_ADA, [ME], [ADA]) }, 0);
+    expect(client.incomingCalls).toEqual([]);
+    expect(client.callPhaseOf(WITH_ADA)).toBe("joinable");
+  });
+
+  it("stops ringing here after the timeout on this device's clock, even if the end event is lost", () => {
+    vi.useFakeTimers();
+    try {
+      // A server clock far ahead: its deadline looks past already, so the whole timeout counts.
+      vi.setSystemTime(10_000_000_000_000);
+      const client = signedInClient();
+      client.applyEvent({ t: "CALL_CREATE", data: call(WITH_ADA, [ME], [ADA]) }, 0);
+      expect(client.incomingCalls).toHaveLength(1);
+      vi.advanceTimersByTime(CALL_RING_TIMEOUT_MILLISECONDS - 1);
+      expect(client.incomingCalls).toHaveLength(1);
+      vi.advanceTimersByTime(1);
+      expect(client.incomingCalls).toEqual([]);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("does not bring back a call the gateway ended before the start's answer came", async () => {
+    let answer: (started: Call) => void = () => {};
+    const client = signedInClient({ startCall: () => new Promise<Call>((resolve) => (answer = resolve)) });
+    const join = vi.spyOn(client.voice, "join").mockResolvedValue();
+    const starting = client.startCall(WITH_ADA);
+    client.applyEvent({ t: "CALL_DELETE", data: { channel_id: WITH_ADA } }, 0);
+    answer(call(WITH_ADA, [ADA], [], ME));
+    await starting;
+    expect(client.callsByChannelId.has(WITH_ADA)).toBe(false);
+    expect(join).not.toHaveBeenCalled();
+  });
+
+  it("does not bring back a call whose end the gateway told while the answer was on its way", async () => {
+    const started = call(WITH_ADA, [ADA], [], ME);
+    let answer: (value: Call) => void = () => {};
+    const client = signedInClient({ startCall: () => new Promise<Call>((resolve) => (answer = resolve)) });
+    vi.spyOn(client.voice, "join").mockResolvedValue();
+    const starting = client.startCall(WITH_ADA);
+    client.applyEvent({ t: "CALL_CREATE", data: started }, 0);
+    client.applyEvent({ t: "CALL_DELETE", data: { channel_id: WITH_ADA } }, 0);
+    answer(started);
+    await starting;
+    expect(client.callsByChannelId.has(WITH_ADA)).toBe(false);
+  });
+
+  it("starts a conversation's call once however often the button is pressed", async () => {
+    const startCall = vi.fn(() => Promise.resolve(call(WITH_ADA, [ADA], [], ME)));
+    const client = signedInClient({ startCall });
+    vi.spyOn(client.voice, "join").mockResolvedValue();
+    await Promise.all([client.startCall(WITH_ADA), client.startCall(WITH_ADA)]);
+    expect(startCall).toHaveBeenCalledTimes(1);
   });
 });

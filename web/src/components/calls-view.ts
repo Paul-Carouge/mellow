@@ -1,22 +1,29 @@
-// What the call interface says (DESIGN.md §5.6.3, ADR-0062): how long a call rings, the words of
-// a call's message, and who is being rung. The rules themselves are in `lib/calls.ts`.
+// What the call interface says (DESIGN.md §5.6.3, ADR-0062): where the incoming card puts focus,
+// the words of a call's message and of a call's problems, and who is being rung. The rules
+// themselves are in `lib/calls.ts`.
 
 import { strings } from "../i18n";
-import { type CallMessageSummary, callDurationMinutes, ringingEndsAtUnixMilliseconds } from "../lib/calls";
+import { type CallMessageSummary, callDurationMinutes } from "../lib/calls";
 import type { Call, DirectMessageChannel, PublicUser, Snowflake } from "../lib/protocol";
-import { displayName, unixMillisecondsOfSnowflake } from "./format";
+import type { VoiceProblem } from "../lib/voice-session.svelte";
+import { displayName } from "./format";
 import { conversationDisplayName, isGroupConversation } from "./group-conversations";
 
 const MINUTES_PER_HOUR = 60;
 
-/** When the call stops ringing at the latest, from its message's time. */
-export function ringingEndsAt(call: Call): number {
-  return ringingEndsAtUnixMilliseconds(unixMillisecondsOfSnowflake(call.message_id));
-}
+/** Where focus goes when the incoming call card shows. */
+export type IncomingCardFocus = "answer" | "card" | "none";
 
-/** A call rings until it says otherwise or its 30 seconds are over, whichever comes first. */
-export function isStillRinging(call: Call, now: number): boolean {
-  return call.ringing_user_ids.length > 0 && now < ringingEndsAt(call);
+/**
+ * Answer, unless the reader is typing (Enter would answer by accident) or under Do not disturb.
+ * Then focus stays where it was; over a modal it cannot (the page under it is inert, and the
+ * browser would focus Decline), so it rests on the card itself, where Space and Enter press nothing.
+ */
+export function incomingCardFocus(facts: { isOverModal: boolean; isTyping: boolean; isQuiet: boolean }): IncomingCardFocus {
+  if (!facts.isTyping && !facts.isQuiet) {
+    return "answer";
+  }
+  return facts.isOverModal ? "card" : "none";
 }
 
 /** "moins d'une minute", "12 min", "1 h 05". */
@@ -62,4 +69,38 @@ export function incomingCallSentence(call: Call, conversation: DirectMessageChan
 /** The people being rung, named as a group's people are ("Ada, Bob et 2 autres"). */
 export function ringingNames(call: Call, conversation: DirectMessageChannel | null): string {
   return strings.groups.participantNames(call.ringing_user_ids.map((userId) => displayName(callPersonOf(conversation, userId))));
+}
+
+/** A voice problem's card, in a call's own words. */
+export interface CallProblemLook {
+  readonly title: string;
+  readonly sentence: string;
+  readonly tone: "error" | "notice";
+  /** "Rappeler": calling again may work. */
+  readonly canCallAgain: boolean;
+  readonly icon: "phone-x" | "warning-circle";
+}
+
+/**
+ * A voice problem in a call (`place` is the conversation's name), when a call says it otherwise
+ * than a voice channel: nobody answered, the instance stopped, the conversation no longer open to
+ * the reader. `null`: the voice channel's words fit.
+ */
+export function callProblemLook(problem: VoiceProblem, place: string): CallProblemLook | null {
+  if (problem.kind === "disconnected") {
+    switch (problem.reason) {
+      case "call_ended":
+        return { title: strings.calls.noAnswerTitle, sentence: strings.calls.noAnswer, tone: "notice", canCallAgain: true, icon: "phone-x" };
+      case "server_stopping":
+        return { title: strings.calls.interruptedTitle, sentence: strings.calls.interrupted, tone: "notice", canCallAgain: true, icon: "phone-x" };
+      case "permissions_changed":
+        return { title: strings.voice.disconnectedFrom(place), sentence: strings.calls.cannotJoin, tone: "error", canCallAgain: false, icon: "warning-circle" };
+      default:
+        return null;
+    }
+  }
+  if (problem.kind === "refused" && problem.reason === "missing_permissions") {
+    return { title: strings.voice.couldNotJoin(place), sentence: strings.calls.cannotJoin, tone: "error", canCallAgain: false, icon: "warning-circle" };
+  }
+  return null;
 }

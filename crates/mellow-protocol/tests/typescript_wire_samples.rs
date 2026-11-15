@@ -1418,7 +1418,7 @@ fn sampled_types() -> serde_json::Result<Vec<SampledType>> {
             StringUnion,
             &every_variant!(VoiceDisconnectReason:
                 MovedElsewhere, PermissionsChanged, ChannelDeleted, RemovedFromGuild, MediaTimeout,
-                CallEnded,
+                CallEnded, ServerStopping,
             ),
         )?,
         sampled(

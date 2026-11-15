@@ -379,6 +379,9 @@ pub enum VoiceDisconnectReason {
     /// The conversation's call ended while this session was in it: nobody answered (ADR-0062).
     /// Added after `v0.52.0`; only clients that know calls join one.
     CallEnded,
+    /// The instance is stopping and ended the calls going on (ADR-0062). Sent only to call
+    /// participants, so only clients that know calls receive it.
+    ServerStopping,
 }
 
 const fn may_create_guilds_on_older_servers() -> bool {

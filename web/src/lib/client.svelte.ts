@@ -17,7 +17,15 @@ import {
   type RoleChanges,
   generateMessageNonce,
 } from "./api";
-import { type CallPhase, type CallStartFailure, callPhase, callStartFailureOf, incomingCallsOf } from "./calls";
+import {
+  type CallPhase,
+  type CallStartFailure,
+  callPhase,
+  callStartFailureOf,
+  incomingCallsOf,
+  localRingMilliseconds,
+  ringKeyOf,
+} from "./calls";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
@@ -271,6 +279,20 @@ export class MellowClient {
   isCallsEnabled = $state(false);
   /** Why the last call could not start, shown in the voice panel's slot until dismissed. */
   callProblem = $state<{ channelId: Snowflake; failure: CallStartFailure } | null>(null);
+  /**
+   * Ringings (`ringKeyOf`) this device stopped by itself: declined here, or rung for the whole
+   * timeout on this device's clock. A late `CALL_UPDATE` that still lists the user, or a lost end
+   * event, never brings the card back.
+   */
+  private silencedRingKeys = new SvelteSet<string>();
+  /** One local timeout per ringing, so a card never outlives its 30 seconds. */
+  private ringTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  /** Calls (by message id) that ended this session: a late answer to `startCall` cannot revive one. */
+  private endedCallMessageIds = new Set<Snowflake>();
+  /** Conversations whose call is being started: a second click waits for the first. */
+  private callsBeingStarted = new Set<Snowflake>();
+  /** Conversations whose call ended while it was being started, before this session knew it. */
+  private callsEndedWhileStarting = new Set<Snowflake>();
   /** This tab's voice connection; it outlives navigation. */
   readonly voice: VoiceSession;
   /** Every custom emoji this user may load, and the servers' list edits (ADR-0028). */
@@ -286,7 +308,7 @@ export class MellowClient {
     // Only on an identified session: a frame before `ready` or `resumed` would be refused.
     const sendFrame = (frame: ClientFrame) => this.status === "connected" && (this.gateway?.send(frame) ?? false);
     this.voice = new VoiceSession({ ...voicePorts, sendFrame });
-    this.voice.isMutedByDefault = (userId) => this.callConversation !== null && this.isMutedByDefaultInCalls(userId);
+    this.voice.isMutedByDefault = (userId) => this.isMutedByDefaultInThisCall(userId);
     this.relationships = new Relationships(rest);
     const updateGuild = (guildId: Snowflake, change: (guild: Guild) => Guild) => this.updateGuild(guildId, change);
     this.customEmojis = new CustomEmojiLibrary({ rest, guilds: () => this.guilds, updateGuild });
@@ -485,6 +507,14 @@ export class MellowClient {
     this.callsByChannelId.clear();
     this.isCallsEnabled = false;
     this.callProblem = null;
+    this.silencedRingKeys.clear();
+    for (const timer of this.ringTimers.values()) {
+      clearTimeout(timer);
+    }
+    this.ringTimers.clear();
+    this.endedCallMessageIds.clear();
+    this.callsBeingStarted.clear();
+    this.callsEndedWhileStarting.clear();
     this.gateway?.close();
     this.gateway = null;
     this.isCheckingLink = false;
@@ -640,6 +670,7 @@ export class MellowClient {
     for (const call of ready.calls ?? []) {
       if (this.isConversation(call.channel_id)) {
         this.callsByChannelId.set(call.channel_id, call);
+        this.timeRinging(call);
       }
     }
     const guildId = this.guilds.some((guild) => guild.id === this.selectedGuildId)
@@ -883,9 +914,12 @@ export class MellowClient {
         return;
       case "RELATIONSHIP_ADD":
         this.relationships.apply(event.data);
+        // A block mutes them by default in a call (ADR-0062).
+        this.voice.applyGains();
         return;
       case "RELATIONSHIP_REMOVE":
         this.relationships.forget(event.data.user_id);
+        this.voice.applyGains();
         return;
       case "MESSAGE_CHECKLIST_UPDATE": {
         const { channel_id, message_id, checklist } = event.data;
@@ -2712,17 +2746,51 @@ export class MellowClient {
     return this.conversations.some((channel) => channel.id === channelId);
   }
 
-  /** What the call of `channelId` is for the signed-in user; `null` without a call there. */
+  /**
+   * What the call of `channelId` is for the signed-in user; `null` without a call there. A ringing
+   * this device silenced (declined, or rung out) reads as joinable.
+   */
   callPhaseOf(channelId: Snowflake): CallPhase | null {
     const call = this.callsByChannelId.get(channelId);
     const userId = this.user?.id;
-    return call && userId ? callPhase(call, userId) : null;
+    if (!call || !userId) {
+      return null;
+    }
+    const phase = callPhase(call, userId);
+    return phase === "incoming" && this.silencedRingKeys.has(ringKeyOf(call)) ? "joinable" : phase;
   }
 
   /** The calls ringing the signed-in user now, oldest first: the incoming call card shows the first. */
   get incomingCalls(): Call[] {
     const userId = this.user?.id;
-    return userId ? incomingCallsOf(this.callsByChannelId.values(), userId) : [];
+    return userId
+      ? incomingCallsOf(this.callsByChannelId.values(), userId).filter((call) => !this.silencedRingKeys.has(ringKeyOf(call)))
+      : [];
+  }
+
+  /** The first time a call rings the user here: it stops ringing on this device after its timeout. */
+  private timeRinging(call: Call): void {
+    const userId = this.user?.id;
+    const key = ringKeyOf(call);
+    if (!userId || !call.ringing_user_ids.includes(userId) || this.ringTimers.has(key) || this.silencedRingKeys.has(key)) {
+      return;
+    }
+    this.ringTimers.set(
+      key,
+      setTimeout(() => {
+        this.ringTimers.delete(key);
+        this.silencedRingKeys.add(key);
+      }, localRingMilliseconds(call, Date.now())),
+    );
+  }
+
+  private forgetRinging(key: string): void {
+    const timer = this.ringTimers.get(key);
+    if (timer !== undefined) {
+      clearTimeout(timer);
+      this.ringTimers.delete(key);
+    }
+    this.silencedRingKeys.delete(key);
   }
 
   /**
@@ -2746,6 +2814,17 @@ export class MellowClient {
     return this.isBlocked(userId);
   }
 
+  /** In the call this tab is in, someone the user blocked: off until turned up (never stored). */
+  private isMutedByDefaultInThisCall(userId: Snowflake): boolean {
+    const channelId = this.voice.channelId;
+    const call = channelId === null ? undefined : this.callsByChannelId.get(channelId);
+    return (
+      call !== undefined &&
+      call.participants.some((participant) => participant.user_id === userId) &&
+      this.isMutedByDefaultInCalls(userId)
+    );
+  }
+
   /** The conversation this tab's voice is in or joining, when it is a call. */
   get callConversation(): DirectMessageChannel | null {
     const channelId = this.voice.channelId;
@@ -2761,6 +2840,11 @@ export class MellowClient {
       this.voice.openCallView();
       return;
     }
+    if (this.callsBeingStarted.has(channelId)) {
+      return;
+    }
+    this.callsBeingStarted.add(channelId);
+    this.callsEndedWhileStarting.delete(channelId);
     this.callProblem = null;
     let call: Call;
     try {
@@ -2769,10 +2853,13 @@ export class MellowClient {
       console.warn("couldn't start a call", error);
       this.callProblem = { channelId, failure: callStartFailureOf(error) };
       return;
+    } finally {
+      this.callsBeingStarted.delete(channelId);
     }
-    // The answer may come after the gateway's event, or before it: the newest wins either way, as
-    // both carry the whole call.
-    if (!this.callsByChannelId.has(channelId)) {
+    // The answer may come after the gateway's events, or before them: the gateway's call wins, and
+    // a call they already ended stays ended.
+    const hasEnded = this.callsEndedWhileStarting.delete(channelId) || this.endedCallMessageIds.has(call.message_id);
+    if (!this.callsByChannelId.has(channelId) && !hasEnded) {
       this.applyCall(call);
     }
     await this.joinCall(channelId);
@@ -2796,6 +2883,10 @@ export class MellowClient {
 
   /** Answering is joining (ADR-0062): this device holds the connection, the others stop ringing. */
   async joinCall(channelId: Snowflake): Promise<void> {
+    // Ended meanwhile (nobody else was in it): there is nothing to join.
+    if (!this.callsByChannelId.has(channelId)) {
+      return;
+    }
     this.callProblem = null;
     const joining = this.voice.join(channelId);
     this.voice.openCallView();
@@ -2807,10 +2898,9 @@ export class MellowClient {
    * leaves the others to stop when ringing times out.
    */
   async declineCall(channelId: Snowflake): Promise<void> {
-    const userId = this.user?.id;
     const call = this.callsByChannelId.get(channelId);
-    if (userId && call?.ringing_user_ids.includes(userId)) {
-      this.callsByChannelId.set(channelId, { ...call, ringing_user_ids: call.ringing_user_ids.filter((id) => id !== userId) });
+    if (call) {
+      this.silencedRingKeys.add(ringKeyOf(call));
     }
     try {
       await this.rest.declineCall(channelId);
@@ -2836,16 +2926,25 @@ export class MellowClient {
       }
     }
     this.callsByChannelId.set(channelId, call);
+    this.timeRinging(call);
     this.noteCallPeerChanges(previous, call);
+    if (this.voice.channelId === channelId) {
+      this.voice.applyGains();
+    }
   }
 
   /** `CALL_DELETE`, or the conversation gone. */
   private dropCall(channelId: Snowflake): void {
+    if (this.callsBeingStarted.has(channelId)) {
+      this.callsEndedWhileStarting.add(channelId);
+    }
     const call = this.callsByChannelId.get(channelId);
     if (!call) {
       return;
     }
     this.callsByChannelId.delete(channelId);
+    this.endedCallMessageIds.add(call.message_id);
+    this.forgetRinging(ringKeyOf(call));
     for (const participant of call.participants) {
       this.speakingUserIds.delete(participant.user_id);
     }

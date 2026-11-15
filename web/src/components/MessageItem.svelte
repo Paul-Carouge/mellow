@@ -46,7 +46,6 @@
   import type { MessageListRow } from "./message-rows";
   import { isPollEnded } from "../lib/polls";
   import ChecklistCard from "./ChecklistCard.svelte";
-  import CallMessage from "./CallMessage.svelte";
   import PollCard from "./PollCard.svelte";
   import ProgressBarCard from "./ProgressBarCard.svelte";
   import { pendingChecklistPreview, pendingProgressBarPreview } from "./tracker-view";
@@ -197,6 +196,8 @@
   const isTracker = $derived(checklist !== null || progressBar !== null);
   // A call's trace (ADR-0062): never edited, forwarded or copied as text, as a poll.
   const callRecord = $derived(message?.call ?? null);
+  // Its own small chunk, fetched once with the first call message on screen.
+  const loadCallMessage = () => import("./CallMessage.svelte");
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
@@ -573,7 +574,14 @@
       {@render reactionsOf(message)}
     {/if}
   {:else if callRecord && message}
-    <CallMessage call={callRecord} messageId={message.id} readerId={currentUser.id} />
+    {#await loadCallMessage()}
+      <!-- The line's height while its chunk arrives, so the list does not move. -->
+      <div class="min-h-(--mw-component-call-message-disc-size)"></div>
+    {:then { default: CallMessage }}
+      <CallMessage call={callRecord} messageId={message.id} readerId={currentUser.id} />
+    {:catch}
+      <p class="type-message text-(--mw-component-call-message-text)">{strings.calls.callNoun}</p>
+    {/await}
     {@render reactionsOf(message)}
   {:else if poll}
     <PollCard

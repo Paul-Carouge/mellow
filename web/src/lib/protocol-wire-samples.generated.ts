@@ -1596,7 +1596,8 @@ export const voiceDisconnectReasonSamples = [
   "channel_deleted",
   "removed_from_guild",
   "media_timeout",
-  "call_ended"
+  "call_ended",
+  "server_stopping"
 ] satisfies VoiceDisconnectReason[];
 export const voiceDisconnectReasonSamplesHaveEveryMember: HasEveryMember<VoiceDisconnectReason, (typeof voiceDisconnectReasonSamples)[number]> = true;
 

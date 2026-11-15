@@ -155,7 +155,13 @@ impl VoiceService {
             let channel_ids: Vec<Snowflake> = shared.calls().keys().copied().collect();
             channel_ids
                 .into_iter()
-                .filter_map(|channel_id| shared.take_ended_call(&mut participants, channel_id))
+                .filter_map(|channel_id| {
+                    shared.take_ended_call(
+                        &mut participants,
+                        channel_id,
+                        VoiceDisconnectReason::ServerStopping,
+                    )
+                })
                 .collect()
         };
         for call in ended {
@@ -441,19 +447,23 @@ impl VoiceShared {
 
     /// Ends the call and writes its record in the background (`MESSAGE_UPDATE`).
     fn end_call(&self, participants: &mut HashMap<Snowflake, Participant>, channel_id: Snowflake) {
-        if let Some(ended) = self.take_ended_call(participants, channel_id) {
+        if let Some(ended) =
+            self.take_ended_call(participants, channel_id, VoiceDisconnectReason::CallEnded)
+        {
             let messages = self.messages.clone();
             // Detached: the voice lock must not wait on the writer.
             tokio::spawn(async move { record_end(&messages, ended).await });
         }
     }
 
-    /// Removes the call: its ring timer stops, whoever is still connected is disconnected
-    /// (`call_ended`) and the conversation gets `CALL_DELETE`. Its record is left to write.
+    /// Removes the call: its ring timer stops, whoever is still connected is disconnected for
+    /// `reason` (`call_ended`, or `server_stopping` on a stop) and the conversation gets
+    /// `CALL_DELETE`. Its record is left to write.
     fn take_ended_call(
         &self,
         participants: &mut HashMap<Snowflake, Participant>,
         channel_id: Snowflake,
+        reason: VoiceDisconnectReason,
     ) -> Option<EndedCall> {
         let call = self.calls().remove(&channel_id)?;
         if let Some(ring_timer) = &call.ring_timer {
@@ -469,10 +479,7 @@ impl VoiceShared {
                 self.send_media_command(MediaCommand::Leave { user_id });
                 self.events.publish_to_session(
                     participant.session,
-                    &GatewayEvent::VoiceDisconnected {
-                        channel_id,
-                        reason: VoiceDisconnectReason::CallEnded,
-                    },
+                    &GatewayEvent::VoiceDisconnected { channel_id, reason },
                 );
             }
         }

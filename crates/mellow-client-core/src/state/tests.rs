@@ -1012,3 +1012,24 @@ fn calls_follow_their_events_in_known_conversations_and_go_with_them() {
     assert!(!speaking_after_the_end);
     assert!(state.calls().is_empty(), "gone with its conversation");
 }
+
+#[test]
+fn incoming_calls_come_oldest_first_whatever_order_they_arrived_in() {
+    let ringing_me = |conversation_id: u64, message_id: u64| Call {
+        channel_id: Snowflake::from_raw(conversation_id),
+        message_id: Snowflake::from_raw(message_id),
+        caller_id: OTHER,
+        ringing_user_ids: vec![ME],
+        participants: Vec::new(),
+    };
+    let mut state = ready_state();
+    state.upsert_direct_message_channel(conversation(400, OTHER, None));
+    state.upsert_direct_message_channel(conversation(401, OTHER, None));
+    state.apply_event(GatewayEvent::CallCreate(ringing_me(400, 900)), NOW);
+    state.apply_event(GatewayEvent::CallCreate(ringing_me(401, 800)), NOW);
+    let incoming: Vec<Snowflake> = state.incoming_calls().map(|call| call.channel_id).collect();
+    assert_eq!(
+        incoming,
+        [Snowflake::from_raw(401), Snowflake::from_raw(400)]
+    );
+}

@@ -12,7 +12,7 @@
   } from "../lib/screen-share";
   import { screenSoundPlatform } from "../lib/voice-browser";
   import Button from "./Button.svelte";
-  import { ringingNames } from "./calls-view";
+  import { callProblemLook, ringingNames } from "./calls-view";
   import { conversationDisplayName } from "./group-conversations";
   import ContextMenu from "./ContextMenu.svelte";
   import Icon from "./Icon.svelte";
@@ -132,11 +132,11 @@
     const channel = client.guilds.flatMap((guild) => guild.channels).find((candidate) => candidate.id === problemChannelId);
     return channel?.name ?? strings.voice.voiceChannel;
   });
-  /** A call nobody answered is not an error: it says so, and offers to call again. */
-  const isUnansweredCall = $derived(problem?.kind === "disconnected" && problem.reason === "call_ended");
+  /** A call says some problems in its own words (nobody answered is not an error), and may offer to call again. */
+  const callLook = $derived(problem && problemConversation ? callProblemLook(problem, problemChannelName) : null);
   const look = $derived.by(() => {
-    if (problem && isUnansweredCall) {
-      return { title: strings.calls.noAnswerTitle, sentence: strings.calls.noAnswer, tone: "notice" as const, canRetry: false };
+    if (callLook) {
+      return { title: callLook.title, sentence: callLook.sentence, tone: callLook.tone, canRetry: false };
     }
     if (problem) {
       return problemLook(problem, problemChannelName);
@@ -151,7 +151,7 @@
   });
   /** "Rappeler": after nobody answered, or a call that may start on a second try. */
   const callAgainChannelId = $derived(
-    isUnansweredCall && problemConversation
+    callLook?.canCallAgain && problemConversation
       ? problemConversation.id
       : !problem && client.callProblem && (client.callProblem.failure === "other" || client.callProblem.failure === "rate-limited")
         ? client.callProblem.channelId
@@ -480,7 +480,7 @@
     <section aria-label={strings.voice.panel} class={cardClass}>
       <div role="alert" class="flex min-w-0 items-start gap-xs">
         <Icon
-          name={look.tone === "error" ? "warning-circle" : isUnansweredCall ? "phone-x" : "speaker-high"}
+          name={callLook ? callLook.icon : look.tone === "error" ? "warning-circle" : "speaker-high"}
           class="mt-3xs size-(--mw-component-voice-panel-signal-icon-size) shrink-0 {look.tone === 'error'
             ? 'text-(--mw-component-voice-panel-problem-icon)'
             : 'text-(--mw-component-voice-panel-notice-icon)'}"

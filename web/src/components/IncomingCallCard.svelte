@@ -6,7 +6,8 @@
   import type { Call, DirectMessageChannel, Snowflake } from "../lib/protocol";
   import Avatar from "./Avatar.svelte";
   import Button from "./Button.svelte";
-  import { callPersonOf, incomingCallSentence } from "./calls-view";
+  import { ringKeyOf } from "../lib/calls";
+  import { callPersonOf, incomingCallSentence, incomingCardFocus } from "./calls-view";
   import { displayName } from "./format";
   import GroupAvatar from "./GroupAvatar.svelte";
   import { conversationDisplayName, isGroupConversation, otherParticipants } from "./group-conversations";
@@ -52,14 +53,11 @@
 
   /**
    * Shows the card for one ringing call: over an open dialog or drawer as a stacked modal (anything
-   * else under a modal is inert), otherwise in place without taking the page. Focus comes back
-   * where it was when the card goes.
+   * else under a modal is inert), otherwise in place without taking the page. Focus goes to Answer,
+   * stays where it was while the reader types or under Do not disturb, or, over a modal (which
+   * would otherwise focus Decline), rests on the card itself so Space and Enter press nothing. It
+   * comes back where it was when the card goes.
    */
-  function presentCard(ringing: Call, isQuiet: boolean) {
-    // Once per ringing call: its other changes leave the card, its focus and its words be.
-    return (dialog: HTMLDialogElement) => untrack(() => openCard(dialog, ringing, isQuiet));
-  }
-
   function openCard(dialog: HTMLDialogElement, ringing: Call, isQuiet: boolean): () => void {
     const opener = document.activeElement instanceof HTMLElement ? document.activeElement : null;
     const isOverModal = document.querySelector("dialog:modal") !== null;
@@ -68,8 +66,11 @@
     } else {
       dialog.setAttribute("open", "");
     }
-    if (!isQuiet && (isOverModal || !isTyping(opener))) {
+    const focus = incomingCardFocus({ isOverModal, isTyping: isTyping(opener), isQuiet });
+    if (focus === "answer") {
       dialog.querySelector<HTMLButtonElement>("[data-answer]")?.focus();
+    } else if (focus === "card") {
+      dialog.focus();
     }
     return () => {
       // The card may already be out of the page, which drops its focus to the body.
@@ -97,12 +98,14 @@
     void client.declineCall(channelId);
   }
 
-  function declineOnEscape(event: KeyboardEvent, channelId: Snowflake) {
-    if (event.key === "Escape") {
+  /** Esc declines only from inside the card: elsewhere it keeps closing what it closes. */
+  function declineOnEscape(event: KeyboardEvent & { currentTarget: HTMLDialogElement }, channelId: Snowflake) {
+    if (event.key === "Escape" && event.currentTarget.contains(document.activeElement)) {
       event.preventDefault();
       decline(channelId);
     }
   }
+
 </script>
 
 {#if call && conversation}
@@ -112,9 +115,11 @@
 {#snippet card(ringing: Call, place: DirectMessageChannel)}
   {@const isGroup = isGroupConversation(place)}
   {@const caller = callPersonOf(place, ringing.caller_id)}
-  {#key `${ringing.channel_id}:${ringing.message_id}`}
+  <!-- One card per ringing call and quiet state: a CALL_UPDATE (someone else answering) leaves it be. -->
+  {#key `${ringKeyOf(ringing)}:${isDoNotDisturb}`}
     <dialog
-      {@attach presentCard(ringing, isDoNotDisturb)}
+      tabindex="-1"
+      {@attach (dialog) => untrack(() => openCard(dialog, ringing, isDoNotDisturb))}
       aria-label={strings.calls.incoming}
       aria-describedby="incoming-call-sentence"
       class="incoming-call fixed inset-x-0 bottom-auto top-[calc(env(safe-area-inset-top)+var(--mw-component-incoming-call-margin))] z-50 mx-auto w-[min(var(--mw-component-incoming-call-width),calc(100%-2*var(--mw-component-incoming-call-margin)))] flex-col gap-(--mw-component-incoming-call-gap) rounded-(--mw-component-incoming-call-radius) border-(length:--mw-component-incoming-call-border-width) border-(--mw-component-incoming-call-border) bg-(--mw-component-incoming-call-background) p-(--mw-component-incoming-call-padding) text-text-normal shadow-(--mw-component-incoming-call-shadow) open:flex"

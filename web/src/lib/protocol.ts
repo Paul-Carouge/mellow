@@ -1012,7 +1012,9 @@ export type VoiceDisconnectReason =
   | "removed_from_guild"
   | "media_timeout"
   /** The conversation's call ended while this session was in it (ADR-0062). */
-  | "call_ended";
+  | "call_ended"
+  /** The instance is stopping and ended the calls going on (ADR-0062). */
+  | "server_stopping";
 
 /** `incoming_request`: they asked; `outgoing_request`: you asked; `blocked`: never shown to them. */
 export type RelationshipKind = "friend" | "incoming_request" | "outgoing_request" | "blocked";

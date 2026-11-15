@@ -725,6 +725,7 @@ async fn who_joined_is_recorded_at_once_and_a_stop_ends_the_calls_going_on() {
         while_going_on = record().await;
     }
     fixture.state.voice.end_all_calls().await;
+    let cut_off_by_the_stop = wait_for_disconnection(&mut owner, conversation).await;
     let after_stop = record().await;
     let (_, ready) = identified(fixture.address, fixture.token("member")).await;
     fixture.close().await;
@@ -737,6 +738,11 @@ async fn who_joined_is_recorded_at_once_and_a_stop_ends_the_calls_going_on() {
     assert!(
         after_stop.ended_at_unix_milliseconds.is_some(),
         "ended before the database closes"
+    );
+    assert_eq!(
+        cut_off_by_the_stop,
+        VoiceDisconnectReason::ServerStopping,
+        "a stop is not \"nobody answered\""
     );
     assert_eq!(ready.calls, []);
 }

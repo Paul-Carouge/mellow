@@ -142,9 +142,16 @@ impl ClientState {
     /// the first, and plays `call_sound` for it.
     pub fn incoming_calls(&self) -> impl Iterator<Item = &Call> {
         let user_id = self.current_user_id();
-        self.calls.iter().filter(move |call| {
-            user_id.is_some_and(|user_id| call_phase(call, user_id) == CallPhase::Incoming)
-        })
+        let mut incoming: Vec<&Call> = self
+            .calls
+            .iter()
+            .filter(|call| {
+                user_id.is_some_and(|user_id| call_phase(call, user_id) == CallPhase::Incoming)
+            })
+            .collect();
+        // Ids grow with time: the call's message id says which started first.
+        incoming.sort_unstable_by_key(|call| call.message_id.raw());
+        incoming.into_iter()
     }
 
     /// Whether the signed-in user is connected to a call or a voice channel, from any device:

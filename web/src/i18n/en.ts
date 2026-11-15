@@ -358,6 +358,7 @@ export const en = {
       removed_from_guild: "You're no longer a member of this server.",
       media_timeout: "Your sound stopped reaching the instance.",
       call_ended: "The call ended: nobody answered.",
+      server_stopping: "The instance is restarting.",
     },
     /** A reason a newer instance sends that this client does not know. */
     unknownReason: "The instance ended the connection.",
@@ -532,6 +533,10 @@ export const en = {
       "voice-unavailable": "Voice is off on this instance. Its administrator can turn it on.",
       other: "The instance couldn't start the call. Check your connection, then try again.",
     },
+    interruptedTitle: "Call interrupted",
+    interrupted: "The instance is restarting and ended the call. Call again in a moment.",
+    /** Refused, or cut off, because the conversation is no longer theirs to call in. */
+    cannotJoin: "You can no longer take part in this call.",
     noAnswerTitle: "Nobody answered",
     noAnswer: "The call ended unanswered: declined, or 30 seconds of ringing without an answer.",
     callAgain: "Call again",

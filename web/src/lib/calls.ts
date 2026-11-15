@@ -4,6 +4,7 @@
 
 import { ApiError } from "./api";
 import { CALL_RING_TIMEOUT_MILLISECONDS, type Call, type MessageCall, type Snowflake } from "./protocol";
+import { unixMillisecondsOfSnowflake } from "./snowflake-time";
 
 /**
  * What a call is for the signed-in user. `incoming`: it rings them (answer or decline).
@@ -87,6 +88,21 @@ export function callMessageSummary(
     return { kind: "unanswered" };
   }
   return { kind: "ended", durationMilliseconds: Math.max(0, endedAt - callStartedAtUnixMilliseconds) };
+}
+
+/**
+ * How much longer a call may ring here, on this device's clock: the time left before the server's
+ * deadline, never more than the whole timeout (a clock running behind), and the whole timeout when
+ * that deadline already looks past although the server says it rings (a clock running ahead).
+ */
+export function localRingMilliseconds(call: Pick<Call, "message_id">, now: number): number {
+  const remaining = ringingEndsAtUnixMilliseconds(unixMillisecondsOfSnowflake(call.message_id)) - now;
+  return remaining > 0 ? Math.min(remaining, CALL_RING_TIMEOUT_MILLISECONDS) : CALL_RING_TIMEOUT_MILLISECONDS;
+}
+
+/** One ringing of one call, as a key: the conversation and the call's message. */
+export function ringKeyOf(call: Pick<Call, "channel_id" | "message_id">): string {
+  return `${call.channel_id}:${call.message_id}`;
 }
 
 /** The calls ringing `userId`, oldest first: the incoming call card shows the first. */

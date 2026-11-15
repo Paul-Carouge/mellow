@@ -112,6 +112,10 @@ mod tests {
             serde_json::to_value(crate::VoiceDisconnectReason::CallEnded).unwrap(),
             "call_ended"
         );
+        assert_eq!(
+            serde_json::to_value(crate::VoiceDisconnectReason::ServerStopping).unwrap(),
+            "server_stopping"
+        );
     }
 
     #[test]

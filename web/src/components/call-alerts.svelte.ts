@@ -7,49 +7,40 @@
 import { onMount, untrack } from "svelte";
 
 import { strings } from "../i18n";
-import { callSound } from "../lib/calls";
 import type { MellowClient } from "../lib/client.svelte";
 import type { Call } from "../lib/protocol";
 import { ringtoneFor, ringtoneUrl } from "../lib/ringtones";
-import type { StopSound } from "./call-audio";
-import { incomingCallSentence, ringingEndsAt } from "./calls-view";
+import { type StopSound, playCallWaitingCue, startRingback, startRingtone } from "./call-audio";
+import { type PlannedCallSound, plannedIncomingSound, plannedRingback } from "./call-alert-plan";
+import { announceIncomingCall } from "./call-announcement.svelte";
+import { incomingCallSentence } from "./calls-view";
 import { prepareChimeSound, runningAudioContext } from "./chime-sound";
 import { notificationSettings } from "./notification-preferences.svelte";
 import { notificationSupport } from "./notifier.svelte";
 
 const NOTIFICATION_ICON_URL = "/icons/mellow-192.png";
-/** Events that count as a gesture for audio, listened to in the capture phase (as the notifier does). */
+/** Events after which audio may have been allowed: the shell prepares it on the same gestures. */
 const AUDIO_UNLOCKING_GESTURES = ["pointerup", "keydown"] as const;
 
-/** The sound wanted now, keyed so a call's other changes do not restart it. */
-interface WantedSound {
-  readonly key: string;
-  readonly endsAt: number;
-  readonly start: (audio: CallAudio) => StopSound | null;
-}
-
-type CallAudio = typeof import("./call-audio");
-/** The players load with the first call that sounds, not with the app. */
-const loadCallAudio = (): Promise<CallAudio> => import("./call-audio");
-
 /**
- * Plays and shows call alerts while the calling component is mounted; call it during its
- * initialisation. `currentClient` is read each time, as a component prop would be.
+ * Plays and shows call alerts while the calling component is mounted (`CallAlerts.svelte`, loaded
+ * only while a call rings the reader or holds them); call it during its initialisation.
+ * `currentClient` is read each time, as a component prop would be.
  */
 export function alertCallsWhileMounted(currentClient: () => MellowClient): void {
-  // Audio may start only after a gesture: the effects below run again once it may.
+  // Audio may start only after a gesture (the shell prepares the context on each one): the sounds
+  // below start once it runs.
   let isAudioAllowed = $state(runningAudioContext() !== null);
   onMount(() => {
-    const allowAudio = () => {
-      void prepareChimeSound().then(() => (isAudioAllowed = runningAudioContext() !== null));
-    };
+    const noteGesture = () => void prepareChimeSound().then(() => (isAudioAllowed = runningAudioContext() !== null));
     for (const gesture of AUDIO_UNLOCKING_GESTURES) {
-      window.addEventListener(gesture, allowAudio, { capture: true });
+      window.addEventListener(gesture, noteGesture);
     }
     return () => {
       for (const gesture of AUDIO_UNLOCKING_GESTURES) {
-        window.removeEventListener(gesture, allowAudio, { capture: true });
+        window.removeEventListener(gesture, noteGesture);
       }
+      announceIncomingCall("");
     };
   });
 
@@ -57,50 +48,44 @@ export function alertCallsWhileMounted(currentClient: () => MellowClient): void 
   const isDoNotDisturb = $derived(currentClient().user?.status === "do_not_disturb");
   const outputVolume = $derived(currentClient().voice.settings.outputVolumePercent / 100);
 
-  const incomingSound = $derived.by((): WantedSound | null => {
-    if (ringingCall === null) {
-      return null;
-    }
+  // Read out once per ringing call, in the shell's region.
+  const ringingSentence = $derived.by(() => {
     const client = currentClient();
-    const sound = callSound("incoming", client.isInACallOrVoiceChannel, isDoNotDisturb);
-    const endsAt = ringingEndsAt(ringingCall);
-    // One sound per ringing call, chosen when it starts ringing: answering puts the reader in a
-    // call a moment before the call stops ringing them, which must not play the call-waiting cue.
-    // Do not disturb turned on while it rings silences it.
-    const callKey = `${ringingCall.channel_id}:${ringingCall.message_id}:${isDoNotDisturb}`;
-    if (sound === "ringtone") {
-      const url = ringtoneUrl(ringtoneFor(new Date()));
-      return { key: callKey, endsAt, start: (audio) => audio.startRingtone(url, outputVolume) };
-    }
-    if (sound === "call-waiting") {
-      // Once per call: it is a cue, not a ring.
-      return {
-        key: callKey,
-        endsAt,
-        start: (audio) => {
-          audio.playCallWaitingCue();
-          return () => {};
-        },
-      };
-    }
-    return null;
+    const conversation = ringingCall ? client.conversations.find((candidate) => candidate.id === ringingCall.channel_id) : undefined;
+    return ringingCall && conversation ? strings.calls.announcement(incomingCallSentence(ringingCall, conversation, client.user?.id ?? null)) : "";
   });
+  $effect(() => announceIncomingCall(ringingSentence));
 
-  const ownCall = $derived.by((): Call | null => {
+  const incomingPlan = $derived(
+    plannedIncomingSound(ringingCall, {
+      isInAnotherCallOrVoiceChannel: currentClient().isInACallOrVoiceChannel,
+      isDoNotDisturb,
+      now: Date.now(),
+    }),
+  );
+  const ownRingingCall = $derived.by((): Call | null => {
     const client = currentClient();
     const channelId = client.voice.channelId;
     return channelId !== null && client.voice.phase !== "idle" && client.callPhaseOf(channelId) === "outgoing"
       ? (client.callsByChannelId.get(channelId) ?? null)
       : null;
   });
-  const ringbackSound = $derived.by((): WantedSound | null =>
-    ownCall === null
-      ? null
-      : { key: `ringback:${ownCall.channel_id}:${ownCall.message_id}`, endsAt: ringingEndsAt(ownCall), start: (audio) => audio.startRingback(outputVolume) },
-  );
+  const ringbackPlan = $derived(plannedRingback(ownRingingCall, Date.now()));
 
-  playWhileWanted(() => incomingSound, () => isAudioAllowed);
-  playWhileWanted(() => ringbackSound, () => isAudioAllowed);
+  function start(plan: PlannedCallSound): StopSound | null {
+    switch (plan.kind) {
+      case "ringtone":
+        return startRingtone(ringtoneUrl(ringtoneFor(new Date(Date.now()))), outputVolume);
+      case "call-waiting":
+        // Once per call: a cue, not a ring.
+        playCallWaitingCue();
+        return () => {};
+      case "ringback":
+        return startRingback(outputVolume);
+    }
+  }
+  playWhilePlanned(() => incomingPlan, () => isAudioAllowed, start);
+  playWhilePlanned(() => ringbackPlan, () => isAudioAllowed, start);
 
   // The browser notification, while the window is in the background (docs/design/web-notifications.md).
   const notifiedKey = $derived(ringingCall ? `${ringingCall.channel_id}:${ringingCall.message_id}` : null);
@@ -140,37 +125,26 @@ export function alertCallsWhileMounted(currentClient: () => MellowClient): void 
   });
 }
 
-/** Starts the wanted sound, stops it when it changes, ends, or the component goes. */
-function playWhileWanted(wanted: () => WantedSound | null, isAudioAllowed: () => boolean): void {
-  const key = $derived(wanted()?.key ?? null);
+/** Starts the planned sound, stops it when its key changes, its time is up, or the component goes. */
+function playWhilePlanned(
+  planned: () => PlannedCallSound | null,
+  isAudioAllowed: () => boolean,
+  start: (plan: PlannedCallSound) => StopSound | null,
+): void {
+  const key = $derived(planned()?.key ?? null);
   $effect(() => {
     if (key === null || !isAudioAllowed()) {
       return;
     }
-    // Only a new key restarts it: a call's other changes (someone else answering) or a volume
-    // change leave the ring as it is.
-    const sound = untrack(wanted);
-    const remaining = sound ? sound.endsAt - Date.now() : 0;
-    if (!sound || remaining <= 0) {
+    const plan = untrack(planned);
+    const stop = plan ? untrack(() => start(plan)) : null;
+    if (!plan || stop === null) {
       return;
     }
-    let stop: StopSound | null = null;
-    let isOver = false;
-    const end = () => {
-      isOver = true;
-      stop?.();
-    };
-    loadCallAudio()
-      .then((audio) => {
-        if (!isOver) {
-          stop = sound.start(audio);
-        }
-      })
-      .catch((error: unknown) => console.warn("couldn't load the call sounds", error));
-    const timer = setTimeout(end, remaining);
+    const timer = setTimeout(stop, plan.durationMilliseconds);
     return () => {
       clearTimeout(timer);
-      end();
+      stop();
     };
   });
 }
