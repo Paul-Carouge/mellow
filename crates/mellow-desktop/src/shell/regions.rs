@@ -332,7 +332,7 @@ impl DuskShell {
         if self.quick_switcher.is_some()
             || self.status_menu.is_some()
             || self.screen_share.is_open()
-            || self.is_settings_screen_open()
+            || self.is_shell_covered(cx)
         {
             return;
         }

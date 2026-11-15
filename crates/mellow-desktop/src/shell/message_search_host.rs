@@ -87,10 +87,7 @@ impl DuskShell {
 
     /// Ctrl+F (Cmd+F), as on Discord: the header's field, or the results with their own field.
     pub(super) fn focus_message_search(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.quick_switcher.is_some()
-            || self.is_member_overlay_open
-            || self.is_settings_screen_open()
-            || crate::media_viewer::is_modal_layer_open(cx)
+        if self.quick_switcher.is_some() || self.is_member_overlay_open || self.is_shell_covered(cx)
         {
             return;
         }

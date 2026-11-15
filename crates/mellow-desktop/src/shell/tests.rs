@@ -418,52 +418,6 @@ fn in_a_narrow_window_f6_opens_the_drawer_for_the_navigator_and_closes_it_after(
 }
 
 #[gpui::test]
-fn choosing_a_member_shows_their_profile_and_back_returns_to_the_list(cx: &mut TestAppContext) {
-    use crate::shell_fixtures::ANA;
-    use mellow_client_core::shared_logic::profiles::UserProfileLoad;
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    assert!(cx.debug_bounds("member-profile").is_none());
-    cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| {
-            shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        });
-    });
-    cx.run_until_parked();
-    assert!(cx.debug_bounds("member-profile").is_some());
-    let is_back_focused = |cx: &mut VisualTestContext| {
-        cx.update(|window, cx| {
-            shell
-                .read(cx)
-                .member_profile
-                .back_focus()
-                .is_focused(window)
-        })
-    };
-    assert!(is_back_focused(cx), "focus lands on Back");
-    // Without an instance the details cannot be read: the card says so instead of waiting.
-    let load = shell.read_with(cx, |shell, _| shell.member_profile.load().clone());
-    assert_eq!(load, UserProfileLoad::Failed { user_id: ANA });
-
-    // Another server's sheet shows its own list, not this profile.
-    let shown_elsewhere = shell.read_with(cx, |shell, _| {
-        shell.member_profile.shown_user_id(GUILD_BOOKS)
-    });
-    assert_eq!(shown_elsewhere, None);
-
-    press(cx, "enter");
-    assert!(cx.debug_bounds("member-profile").is_none());
-    let focus_is_in_the_sheet = cx.update(|window, cx| {
-        shell
-            .read(cx)
-            .member_sheet_focus
-            .contains_focused(window, cx)
-    });
-    assert!(focus_is_in_the_sheet, "Back returns to the member's row");
-}
-
-#[gpui::test]
 fn the_custom_status_dialog_saves_only_a_changed_status_within_the_limit(cx: &mut TestAppContext) {
     let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
     cx.update(|window, cx| {
@@ -492,65 +446,6 @@ fn the_custom_status_dialog_saves_only_a_changed_status_within_the_limit(cx: &mu
     let is_status_button_focused =
         cx.update(|window, cx| shell.read(cx).status_button_focus.is_focused(window));
     assert!(is_status_button_focused, "focus goes back to the user card");
-}
-
-#[gpui::test]
-fn shift_f10_on_a_member_row_opens_their_menu_whose_profile_shows_in_the_sheet(
-    cx: &mut TestAppContext,
-) {
-    use crate::shell_fixtures::ANA;
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    // Back from Ana's profile leaves focus on her row.
-    cx.update(|window, cx| {
-        shell.update(cx, |shell, cx| {
-            shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        });
-    });
-    cx.run_until_parked();
-    press(cx, "enter");
-    assert!(cx.debug_bounds("member-profile").is_none());
-
-    press(cx, "shift-f10");
-    let is_menu_open = |cx: &mut VisualTestContext| {
-        shell.read_with(cx, |shell, cx| shell.home().read(cx).is_menu_open())
-    };
-    assert!(is_menu_open(cx));
-    // From the keyboard the first item, Profile, has focus.
-    press(cx, "enter");
-    assert!(!is_menu_open(cx));
-    assert!(cx.debug_bounds("member-profile").is_some());
-}
-
-#[gpui::test]
-fn add_friend_from_a_profile_says_why_it_failed_and_can_be_tried_again(cx: &mut TestAppContext) {
-    use crate::shell_fixtures::{ANA, person};
-
-    let (shell, cx) = open_shell(cx, sample_state(), 1280.0);
-    press(cx, secondary("u"));
-    shell.update_in(cx, |shell, window, cx| {
-        shell.show_member_profile(GUILD_RUST, ANA, window, cx);
-        let block_focus = cx.focus_handle();
-        // Signed out: the instance cannot be asked, as when it is unreachable.
-        shell.change_relationship_from_profile(
-            &person(ANA, "ana", "Ana"),
-            member_profile::RelationshipChange::AddFriend,
-            block_focus,
-            window,
-            cx,
-        );
-    });
-    cx.run_until_parked();
-    shell.read_with(cx, |shell, _| {
-        assert!(!shell.member_profile.is_changing_relationship());
-        assert!(
-            shell
-                .member_profile
-                .profile_action_error()
-                .is_some_and(|error| error.starts_with("Couldn't send the friend request"))
-        );
-    });
 }
 
 #[gpui::test]

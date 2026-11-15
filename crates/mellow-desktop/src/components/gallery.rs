@@ -581,14 +581,17 @@ impl Render for ComponentGallery {
                             RoleChip::Role {
                                 name: "Moderators".into(),
                                 colour: 0x003B_A55C,
+                                icon: None,
                             },
                             RoleChip::Role {
                                 name: "Artists".into(),
                                 colour: 0x00E9_1E63,
+                                icon: None,
                             },
                             RoleChip::Role {
                                 name: "Members".into(),
                                 colour: 0,
+                                icon: None,
                             },
                         ],
                     )),

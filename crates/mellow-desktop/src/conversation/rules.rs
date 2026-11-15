@@ -270,6 +270,7 @@ mod tests {
         can_add_reactions: true,
         can_remove_reactions: false,
         can_manage_pins: false,
+        can_view_author_profile: true,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
         is_own: true,

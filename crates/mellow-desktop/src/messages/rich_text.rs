@@ -59,6 +59,9 @@ pub(crate) enum InlineAction {
     /// Only http and https addresses, checked again on click (`safe_http_url`).
     OpenLink(String),
     RevealSpoiler(u32),
+    /// A mention chip: the person's profile modal on a click, their hover card on a rest
+    /// (DESIGN.md §5.7.3).
+    OpenProfile(Box<mellow_protocol::PublicUser>),
 }
 
 /// A server emoji's picture over its room in the text.
@@ -364,13 +367,27 @@ impl RichText {
                     };
                     self.push_body_text(text, matched, context);
                 }
-                InlineNode::Mention { text, .. } | InlineNode::EveryoneMention(text) => self
-                    .push_chip(
+                InlineNode::Mention { text, user } => {
+                    let start = self.text.len();
+                    self.push_chip(
                         text,
                         color(tokens.component_mention_chip_background),
                         color(tokens.component_mention_chip_text),
                         style,
-                    ),
+                    );
+                    if !style.is_hidden {
+                        self.actions.push((
+                            start..self.text.len(),
+                            InlineAction::OpenProfile(Box::new(user.clone())),
+                        ));
+                    }
+                }
+                InlineNode::EveryoneMention(text) => self.push_chip(
+                    text,
+                    color(tokens.component_mention_chip_background),
+                    color(tokens.component_mention_chip_text),
+                    style,
+                ),
                 InlineNode::RoleMention(role) => {
                     let label = role_mention_label(
                         role.as_ref(),
@@ -554,6 +571,21 @@ pub(crate) struct RichTextElement {
     covered_emoji: Vec<(Range<usize>, Hsla)>,
     picture_side: f32,
     missing_border: Hsla,
+    /// The mention chips' ranges and people, for their hover cards.
+    mentions: Rc<[(Range<usize>, mellow_protocol::PublicUser)]>,
+    mention_hover: Option<MentionHover>,
+}
+
+/// Which mention chip of a text the pointer rests on, and where it is drawn: kept with the
+/// message's body while it is drawn, so a hover card waiting for a mention gone with its message
+/// never opens (`profile_surfaces`).
+#[derive(Clone)]
+pub(crate) struct MentionHover {
+    pub anchor: Entity<Option<Bounds<Pixels>>>,
+    /// The text of the body (its number) and the chip in it under the pointer.
+    pub hovered: Entity<Option<(usize, usize)>>,
+    /// This text's number in its body.
+    pub text_index: usize,
 }
 
 impl RichTextElement {
@@ -584,6 +616,13 @@ impl RichTextElement {
                     .map(|range| (range, SharedString::new_static(MONOSPACE_FONT_FAMILY))),
             );
         let layout = styled.layout().clone();
+        let mentions: Rc<[(Range<usize>, mellow_protocol::PublicUser)]> = actions
+            .iter()
+            .filter_map(|(range, action)| match action {
+                InlineAction::OpenProfile(user) => Some((range.clone(), (**user).clone())),
+                _ => None,
+            })
+            .collect();
         let (ranges, actions): (Vec<_>, Vec<_>) = actions.into_iter().unzip();
         let tooltips: Rc<[(Range<usize>, SharedString)]> = tooltips.into();
         let mut interactive = InteractiveText::new(id, styled);
@@ -595,12 +634,21 @@ impl RichTextElement {
         if !ranges.is_empty() {
             let actions: Arc<[InlineAction]> = actions.into();
             interactive =
-                interactive.on_click(ranges, move |index, _, cx| match actions.get(index) {
+                interactive.on_click(ranges, move |index, window, cx| match actions.get(index) {
                     // A link or a spoiler takes the click: a clickable ancestor (a search
                     // result) must not act on it too.
                     Some(InlineAction::OpenLink(url)) => {
                         cx.stop_propagation();
                         open_message_link(url, cx);
+                    }
+                    Some(InlineAction::OpenProfile(user)) => {
+                        cx.stop_propagation();
+                        crate::profile_surfaces::open_profile_modal(
+                            (**user).clone(),
+                            None,
+                            window,
+                            cx,
+                        );
                     }
                     Some(InlineAction::RevealSpoiler(id)) => {
                         cx.stop_propagation();
@@ -637,7 +685,120 @@ impl RichTextElement {
             covered_emoji,
             picture_side,
             missing_border: color(tokens.component_custom_emoji_missing_border),
+            mentions,
+            mention_hover: None,
         }
+    }
+
+    /// Where its mention chips keep their hover state (the body's, `MessageMarkdown`).
+    #[must_use]
+    pub fn mention_hover(mut self, mention_hover: Option<MentionHover>) -> Self {
+        self.mention_hover = mention_hover;
+        self
+    }
+
+    /// The pointer moved: entering a mention chip asks for its hover card, leaving it (or the
+    /// window) lets it go. GPUI's `InteractiveText` says nothing when the pointer leaves the text,
+    /// so this listens to the window's moves itself. The hovered chip's place follows each frame.
+    fn follow_mention_hover(&self, hitbox: &Hitbox, window: &mut Window, cx: &mut App) {
+        let Some(hover) = self.mention_hover.clone() else {
+            return;
+        };
+        if self.mentions.is_empty() {
+            return;
+        }
+        let mentions = Rc::clone(&self.mentions);
+        let layout = self.layout.clone();
+        let chip_bounds = move |range: &Range<usize>| {
+            let start = layout.position_for_index(range.start)?;
+            let line_height = layout.line_height();
+            let end_x = layout
+                .position_for_index(range.end)
+                .filter(|end| end.y == start.y)
+                .map_or(start.x + line_height, |end| end.x);
+            Some(Bounds::new(start, size(end_x - start.x, line_height)))
+        };
+        let trigger_for = {
+            let mentions = Rc::clone(&mentions);
+            let anchor = hover.anchor.downgrade();
+            move |mention: usize| {
+                mentions.get(mention).map(|(_, user)| {
+                    crate::profile_surfaces::ProfileHoverTrigger {
+                        user: user.clone(),
+                        placement: crate::profile_surfaces::HoverCardPlacement::Below,
+                        anchor: anchor.clone(),
+                        column: None,
+                        opener: None,
+                    }
+                })
+            }
+        };
+        // The text may have moved under a still pointer (a scroll, new messages).
+        if let Some((text_index, mention)) = *hover.hovered.read(cx)
+            && text_index == hover.text_index
+            && let Some(bounds) = mentions
+                .get(mention)
+                .and_then(|(range, _)| chip_bounds(range))
+        {
+            hover.anchor.update(cx, |anchor, _| *anchor = Some(bounds));
+        }
+        // Moves to `here` (`None`: off this text's chips).
+        let follow = Rc::new({
+            let hover = hover.clone();
+            move |here: Option<usize>, cx: &mut App| {
+                let shown = *hover.hovered.read(cx);
+                let mine = shown
+                    .filter(|(text_index, _)| *text_index == hover.text_index)
+                    .map(|(_, mention)| mention);
+                // Another text of the body owns the pointer: only the text it left lets go.
+                if here == mine || (here.is_none() && mine.is_none()) {
+                    return;
+                }
+                hover.hovered.update(cx, |hovered, _| {
+                    *hovered = here.map(|here| (hover.text_index, here));
+                });
+                if let Some(left) = mine.and_then(&trigger_for) {
+                    crate::profile_surfaces::leave_profile_trigger(&left, cx);
+                }
+                let Some(mention) = here else {
+                    return;
+                };
+                if let Some(bounds) = mentions
+                    .get(mention)
+                    .and_then(|(range, _)| chip_bounds(range))
+                {
+                    hover.anchor.update(cx, |anchor, _| *anchor = Some(bounds));
+                }
+                if let Some(entered) = trigger_for(mention) {
+                    crate::profile_surfaces::enter_profile_trigger(entered, cx);
+                }
+            }
+        });
+        let ranges: Rc<[Range<usize>]> = self
+            .mentions
+            .iter()
+            .map(|(range, _)| range.clone())
+            .collect();
+        let text_layout = self.layout.clone();
+        let hitbox = hitbox.clone();
+        let on_move = Rc::clone(&follow);
+        window.on_mouse_event(move |event: &gpui::MouseMoveEvent, phase, window, cx| {
+            if phase != gpui::DispatchPhase::Bubble {
+                return;
+            }
+            let index = hitbox
+                .is_hovered(window)
+                .then(|| text_layout.index_for_position(event.position).ok())
+                .flatten();
+            let here =
+                index.and_then(|index| ranges.iter().position(|range| range.contains(&index)));
+            on_move(here, cx);
+        });
+        window.on_mouse_event(move |_: &gpui::MouseExitEvent, phase, _, cx| {
+            if phase == gpui::DispatchPhase::Bubble {
+                follow(None, cx);
+            }
+        });
     }
 
     /// Places this text in reading order among the window's selectable texts, so a selection
@@ -877,6 +1038,7 @@ impl gpui::Element for RichTextElement {
         self.paint_selection(handle, bounds, window, cx);
         self.text
             .paint(id, inspector_id, bounds, &mut (), hitbox, window, cx);
+        self.follow_mention_hover(hitbox, window, cx);
         self.paint_spoiler_covers(window);
         self.paint_pictures(window, cx);
     }

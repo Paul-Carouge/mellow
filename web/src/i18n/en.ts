@@ -1186,9 +1186,6 @@ export const en = {
   members: {
     members: "Members",
     profile: "Profile",
-    // Still read by the desktop member sheet until it gets the profile modal (DESIGN.md 5.7).
-    profileOf: (person: string) => `Profile of ${person}`,
-    backToMembers: "Back to members",
     sendMessage: "Send message",
     opening: "Opening…",
     openConversationFailed: "Couldn't open the conversation",

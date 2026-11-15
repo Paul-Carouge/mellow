@@ -11,7 +11,6 @@ mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;
 mod custom_status_dialog;
-mod member_profile;
 mod member_sheet;
 mod message_search_host;
 mod overlays;
@@ -59,6 +58,7 @@ use crate::pictures::{
     Animation, DisplaySize, PictureRequest, chosen_profile_image_animation, picture_source,
 };
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
+use crate::profile_surfaces::{ProfileSurfaces, ProfileSurfacesEvent};
 use crate::session::{Session, StateChanged};
 use crate::theme::tokens::{
     BREAKPOINT_NAVIGATOR, BREAKPOINT_SIDE_SHEET, COMPONENT_NOTICE_BAR_ICON_SIZE,
@@ -101,6 +101,14 @@ actions!(
         ToggleDeafened
     ]
 );
+
+/// Whether a layer covers the whole shell: the profile modal or the media viewer. Profiles and
+/// hover cards wait under either, as the shell's shortcuts do (`DuskShell::is_shell_covered`).
+#[must_use]
+pub(crate) fn is_modal_layer_open(cx: &App) -> bool {
+    crate::profile_surfaces::is_profile_modal_open(cx)
+        || crate::media_viewer::is_media_viewer_open(cx)
+}
 
 /// Opens (creating it if needed) the one-to-one conversation with someone and shows it, the
 /// composer focused: what a person's "Message" does anywhere in the shell (context menus, profile
@@ -250,8 +258,8 @@ pub struct DuskShell {
     server_dialogs: server_dialogs::ServerDialogs,
     /// The server or channel settings over the shell.
     open_settings: Option<settings_screens::OpenSettings>,
-    /// The profile a member row opened in the side sheet.
-    member_profile: member_profile::MemberProfileState,
+    /// The profile modal and the hover card, over the whole shell (DESIGN.md §5.7.1, §5.7.2).
+    profile_surfaces: Entity<ProfileSurfaces>,
     /// Role colours made readable in the member sheet, by role colour and background: a theme
     /// switch or a new colour is a new key, so nothing goes stale. Bounded by the role colours
     /// seen times the themes.
@@ -305,8 +313,10 @@ impl DuskShell {
             cx.new(|_| conversation_sheet::FilledSlot::new(friends_pane))
         };
         let message_search = cx.new(|cx| MessageSearchView::new(session.clone(), window, cx));
+        let profile_surfaces = cx.new(|cx| ProfileSurfaces::new(session.clone(), window, cx));
         let voice = crate::voice::voice(cx);
         let mut subscriptions = vec![
+            cx.subscribe_in(&profile_surfaces, window, Self::follow_profile_surfaces),
             cx.subscribe_in(&home, window, Self::follow_home),
             cx.subscribe_in(&message_search, window, Self::follow_message_search),
             cx.observe(&message_search, |_, _, cx| cx.notify()),
@@ -358,7 +368,7 @@ impl DuskShell {
             place_menus: place_menus::PlaceMenus::default(),
             server_dialogs: server_dialogs::ServerDialogs::default(),
             open_settings: None,
-            member_profile: member_profile::MemberProfileState::new(cx),
+            profile_surfaces,
             readable_role_colours: HashMap::new(),
             user_card_bounds: Rc::new(Cell::new(None)),
             is_user_id_copied: false,
@@ -384,6 +394,10 @@ impl DuskShell {
             crate::media_viewer::follow_window_fullscreen(window, cx);
         })
         .detach();
+        let guild_id = shell.navigation.selected_guild_id();
+        shell
+            .profile_surfaces
+            .update(cx, |surfaces, cx| surfaces.set_guild(guild_id, cx));
         shell
     }
 
@@ -450,6 +464,12 @@ impl DuskShell {
     /// The place changed: remembered for the next launch, and the members asked for.
     fn after_navigation(&mut self, cx: &mut Context<Self>) {
         self.conversation_error = None;
+        let guild_id = self.navigation.selected_guild_id();
+        self.profile_surfaces.update(cx, |surfaces, cx| {
+            surfaces.set_guild(guild_id, cx);
+            // Its name is gone with the place.
+            surfaces.close_hover_card(cx);
+        });
         if let Some(place) = self.navigation.place() {
             change_preferences(cx, move |preferences| {
                 preferences.last_place = Some(place.remembered());
@@ -522,8 +542,9 @@ impl DuskShell {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        // The settings sheet and the media viewer cover the shell: its shortcuts wait.
-        if self.is_settings_screen_open() || crate::media_viewer::is_modal_layer_open(cx) {
+        // The settings sheet, the profile modal and the media viewer cover the shell: its
+        // shortcuts wait until they close.
+        if self.is_shell_covered(cx) {
             return;
         }
         let state = self.state(cx);
@@ -536,7 +557,7 @@ impl DuskShell {
     }
 
     fn step_server(&mut self, direction: Direction, window: &mut Window, cx: &mut Context<Self>) {
-        if self.is_settings_screen_open() || crate::media_viewer::is_modal_layer_open(cx) {
+        if self.is_shell_covered(cx) {
             return;
         }
         let state = self.state(cx);
@@ -597,10 +618,7 @@ impl DuskShell {
         let Some(place_id) = self.member_sheet_place_id(cx) else {
             return;
         };
-        if self.quick_switcher.is_some()
-            || self.is_settings_screen_open()
-            || crate::media_viewer::is_modal_layer_open(cx)
-        {
+        if self.quick_switcher.is_some() || self.is_shell_covered(cx) {
             return;
         }
         if self.message_search.read(cx).is_panel_open() {
@@ -709,10 +727,7 @@ impl DuskShell {
             cx.notify();
             return;
         }
-        if self.is_member_overlay_open
-            || self.is_settings_screen_open()
-            || crate::media_viewer::is_modal_layer_open(cx)
-        {
+        if self.is_member_overlay_open || self.is_shell_covered(cx) {
             return;
         }
         // Closed first, so the switcher records the drawer's opener, not the drawer.
@@ -796,14 +811,37 @@ impl DuskShell {
                 let pane = self.home.read(cx).friends_pane().clone();
                 pane.update(cx, |pane, cx| pane.focus_start(window, cx));
             }
-            HomeEvent::ShowMemberProfile { guild_id, user_id } => {
-                self.show_member_profile(*guild_id, *user_id, window, cx);
-            }
             HomeEvent::MenuActionFailed(reason) => {
                 self.conversation_error = Some(reason.clone());
                 cx.notify();
             }
             HomeEvent::AddServer => self.open_add_server(false, window, cx),
+        }
+    }
+
+    fn follow_profile_surfaces(
+        &mut self,
+        _: &Entity<ProfileSurfaces>,
+        event: &ProfileSurfacesEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        match event {
+            ProfileSurfacesEvent::OpenedConversation(conversation_id) => {
+                // In the overlay layouts the drawers close too.
+                self.close_search_overlay(window, cx);
+                self.show_conversation(*conversation_id, window, cx);
+            }
+            ProfileSurfacesEvent::EditProfile => self.open_user_settings_on(
+                Some(mellow_client_core::shared_logic::user_settings::UserSettingsSection::Profile),
+                window,
+                cx,
+            ),
+            ProfileSurfacesEvent::OpenPersonMenu(request) => {
+                let request = request.clone();
+                self.home
+                    .update(cx, |home, cx| home.open_person_menu(request, window, cx));
+            }
         }
     }
 
@@ -1268,6 +1306,8 @@ impl Render for DuskShell {
                     voice.update(cx, crate::voice::Voice::toggle_deafened);
                 }
             }))
+            // Any scroll moves the names under a hover card: it closes.
+            .on_scroll(|_, _, cx| crate::profile_surfaces::close_profile_hover_card(cx))
             // Push-to-talk from anywhere in the window, the composer included, as on the web.
             .capture_key_down(cx.listener(|shell, event: &KeyDownEvent, _, cx| {
                 if let Some(voice) = shell.voice.clone() {
@@ -1349,6 +1389,8 @@ impl Render for DuskShell {
             .when_some(self.status_menu.as_ref(), |root, (menu, _)| {
                 root.child(menu.clone())
             })
+            // Before Home, whose menus and dialogs open over the modal.
+            .child(self.profile_surfaces.clone())
             .child(self.home.clone())
             .when_some(self.custom_status_dialog.as_ref(), |root, (dialog, _)| {
                 root.child(dialog.clone())
@@ -1372,3 +1414,14 @@ impl Render for DuskShell {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+impl DuskShell {
+    pub(crate) fn profile_surfaces(&self) -> &Entity<ProfileSurfaces> {
+        &self.profile_surfaces
+    }
+
+    pub(crate) fn member_sheet_focus_for_tests(&self) -> &FocusHandle {
+        &self.member_sheet_focus
+    }
+}

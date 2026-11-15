@@ -586,6 +586,13 @@ impl Composer {
         cx.notify();
     }
 
+    /// The message being edited in the field.
+    #[cfg(test)]
+    #[must_use]
+    pub fn editing_message_id(&self) -> Option<Snowflake> {
+        self.editor.message_id()
+    }
+
     /// Edits `message_id` in the field: the draft waits aside and comes back when the edit ends.
     pub fn start_editing(
         &mut self,

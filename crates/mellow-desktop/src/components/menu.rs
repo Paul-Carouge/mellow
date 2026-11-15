@@ -539,6 +539,8 @@ impl ContextMenu {
             0.0,
             in_window(COMPONENT_CONTEXT_MENU_VIEWPORT_MARGIN),
         );
+        // A menu (right-click, Shift+F10) takes a profile hover card's place at once.
+        crate::profile_surfaces::close_profile_hover_card(cx);
         let focus_handle = cx.focus_handle();
         window.focus(&focus_handle, cx);
         let highlighted_index = match origin {
