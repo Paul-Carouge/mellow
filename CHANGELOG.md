@@ -4,7 +4,9 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
-## [0.53.0] - 2026-11-15
+## [0.53.1] - 2026-11-15
+The tag `v0.53.0` points at a commit that still said 0.52.0 and was never released; 0.53.1 is that release.
+
 Private calls with Mellow's own ringtones, profiles as a modal and a hover card, real link cards and a sound player, a media viewer on the desktop, role colours and icons, and sharper screen shares. Migration 0044 (call messages); the protocol only grows.
 
 ### Added
