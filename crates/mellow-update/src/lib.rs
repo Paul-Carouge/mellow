@@ -4,6 +4,7 @@
 
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use minisign_verify::{PublicKey, Signature};
@@ -13,6 +14,8 @@ use serde::Deserialize;
 const LATEST_RELEASE_URL: &str = "https://api.github.com/repos/Paul-Carouge/mellow/releases/latest";
 /// Assets are fetched from here, never from a URL the release API hands out.
 const RELEASE_DOWNLOAD_BASE_URL: &str = "https://github.com/Paul-Carouge/mellow/releases/download";
+/// The newest release's page, where a copy that cannot update itself sends people (ADR-0064).
+pub const LATEST_RELEASE_PAGE_URL: &str = "https://github.com/Paul-Carouge/mellow/releases/latest";
 /// The key every release is signed with (ADR-0016); rotated only by a release signed with it.
 const RELEASE_PUBLIC_KEY: &str = include_str!("../../../release/minisign.pub");
 /// The target triple this binary was built for, which names its release asset.
@@ -78,6 +81,28 @@ pub enum UpdateError {
     },
     #[error("there is no previous executable to roll back to")]
     NoPreviousExecutable,
+}
+
+/// How far a download has come, written by the download and read by another thread (the
+/// desktop's progress bar). Relaxed atomics: each count is read on its own, never as a pair.
+#[derive(Debug, Default)]
+pub struct DownloadProgress {
+    received_bytes: AtomicU64,
+    /// 0 until the host announces the size, and when it never does.
+    total_bytes: AtomicU64,
+}
+
+impl DownloadProgress {
+    #[must_use]
+    pub fn received_bytes(&self) -> u64 {
+        self.received_bytes.load(Ordering::Relaxed)
+    }
+
+    /// The size the host announced, if it did.
+    #[must_use]
+    pub fn total_bytes(&self) -> Option<u64> {
+        Some(self.total_bytes.load(Ordering::Relaxed)).filter(|&total| total > 0)
+    }
 }
 
 /// The newest published release.
@@ -208,16 +233,17 @@ impl UpdateClient {
             .http
             .get(&self.latest_release_url)
             .header(reqwest::header::ACCEPT, "application/vnd.github+json");
-        let body = download_body_with_size_limit(request, METADATA_TIMEOUT, MAXIMUM_METADATA_BYTES)
-            .await
-            .map_err(|error| match error {
-                UpdateError::Network(error)
-                    if error.status() == Some(reqwest::StatusCode::NOT_FOUND) =>
-                {
-                    UpdateError::NoReleasePublished
-                }
-                other => other,
-            })?;
+        let body =
+            download_body_with_size_limit(request, METADATA_TIMEOUT, MAXIMUM_METADATA_BYTES, None)
+                .await
+                .map_err(|error| match error {
+                    UpdateError::Network(error)
+                        if error.status() == Some(reqwest::StatusCode::NOT_FOUND) =>
+                    {
+                        UpdateError::NoReleasePublished
+                    }
+                    other => other,
+                })?;
         parse_release(&body)
     }
 
@@ -248,6 +274,22 @@ impl UpdateClient {
         name: &str,
         maximum_bytes: usize,
     ) -> Result<Vec<u8>, UpdateError> {
+        self.download_verified_asset_with_progress(release, name, maximum_bytes, None)
+            .await
+    }
+
+    /// [`download_verified_asset`](Self::download_verified_asset), counting the asset's bytes
+    /// into `progress` as they arrive (the signature, a few hundred bytes, is not counted).
+    ///
+    /// # Errors
+    /// Network errors, a missing or too large asset, or a signature that does not verify.
+    pub async fn download_verified_asset_with_progress(
+        &self,
+        release: &Release,
+        name: &str,
+        maximum_bytes: usize,
+        progress: Option<&DownloadProgress>,
+    ) -> Result<Vec<u8>, UpdateError> {
         let signature_name = format!("{name}.minisig");
         for wanted in [name, signature_name.as_str()] {
             if !release.asset_names.iter().any(|asset| asset == wanted) {
@@ -257,13 +299,18 @@ impl UpdateClient {
                 });
             }
         }
-        let download = |asset: &str, timeout, maximum_bytes| {
+        let download = |asset: &str, timeout, maximum_bytes, progress| {
             let url = format!("{}/v{}/{asset}", self.download_base_url, release.version);
-            download_body_with_size_limit(self.http.get(url), timeout, maximum_bytes)
+            download_body_with_size_limit(self.http.get(url), timeout, maximum_bytes, progress)
         };
-        let signature =
-            download(&signature_name, METADATA_TIMEOUT, MAXIMUM_SIGNATURE_BYTES).await?;
-        let asset = download(name, DOWNLOAD_TIMEOUT, maximum_bytes).await?;
+        let signature = download(
+            &signature_name,
+            METADATA_TIMEOUT,
+            MAXIMUM_SIGNATURE_BYTES,
+            None,
+        )
+        .await?;
+        let asset = download(name, DOWNLOAD_TIMEOUT, maximum_bytes, progress).await?;
         let signature = String::from_utf8(signature)
             .map_err(|_| UpdateError::UnexpectedResponse("signature is not text".into()))?;
         verify_signed_file(&asset, &signature, name, &self.public_key)?;
@@ -275,6 +322,7 @@ async fn download_body_with_size_limit(
     request: reqwest::RequestBuilder,
     timeout: Duration,
     maximum_bytes: usize,
+    progress: Option<&DownloadProgress>,
 ) -> Result<Vec<u8>, UpdateError> {
     let mut response = request.timeout(timeout).send().await?.error_for_status()?;
     let too_large = || UpdateError::UnexpectedResponse("answer too large".into());
@@ -284,12 +332,23 @@ async fn download_body_with_size_limit(
     {
         return Err(too_large());
     }
+    if let Some(progress) = progress {
+        progress.received_bytes.store(0, Ordering::Relaxed);
+        progress
+            .total_bytes
+            .store(response.content_length().unwrap_or(0), Ordering::Relaxed);
+    }
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await? {
         if body.len() + chunk.len() > maximum_bytes {
             return Err(too_large());
         }
         body.extend_from_slice(&chunk);
+        if let Some(progress) = progress {
+            progress
+                .received_bytes
+                .fetch_add(chunk.len() as u64, Ordering::Relaxed);
+        }
     }
     Ok(body)
 }
