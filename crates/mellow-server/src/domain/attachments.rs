@@ -343,6 +343,9 @@ pub(crate) struct Attachments {
     uploading_users: Arc<std::sync::Mutex<HashSet<Snowflake>>>,
     image_processing: Arc<Semaphore>,
     link_preview_pictures: Arc<Semaphore>,
+    /// Link preview pictures written to the file store, which a test waits for.
+    #[cfg(test)]
+    link_preview_pictures_stored: std::sync::atomic::AtomicUsize,
     maximum_stored_bytes_per_user: u64,
     optimization_sender: mpsc::Sender<Snowflake>,
     /// Taken once by `optimize_attachments_in_background`.
@@ -370,6 +373,8 @@ impl Attachments {
             uploading_users: Arc::default(),
             image_processing: Arc::new(Semaphore::new(CONCURRENT_IMAGE_PROCESSING)),
             link_preview_pictures: Arc::new(Semaphore::new(CONCURRENT_LINK_PREVIEW_PICTURES)),
+            #[cfg(test)]
+            link_preview_pictures_stored: std::sync::atomic::AtomicUsize::new(0),
             maximum_stored_bytes_per_user,
             optimization_sender,
             optimization_receiver: std::sync::Mutex::new(Some(optimization_receiver)),
@@ -383,6 +388,19 @@ impl Attachments {
             .clone()
             .try_acquire_owned()
             .unwrap()
+    }
+
+    /// Whether a link preview's picture is being made now.
+    #[cfg(test)]
+    pub(crate) fn is_link_preview_picture_being_made(&self) -> bool {
+        self.link_preview_pictures.available_permits() == 0
+    }
+
+    /// How many link preview pictures were written to the file store.
+    #[cfg(test)]
+    pub(crate) fn stored_link_preview_pictures(&self) -> usize {
+        self.link_preview_pictures_stored
+            .load(std::sync::atomic::Ordering::SeqCst)
     }
 
     #[cfg(test)]
@@ -886,6 +904,9 @@ impl Attachments {
             .next_id(crate::domain::clock::now_unix_milliseconds())?;
         let size_bytes = u64::try_from(picture.bytes.len()).unwrap_or(u64::MAX);
         self.files.write(file_id, picture.bytes).await?;
+        #[cfg(test)]
+        self.link_preview_pictures_stored
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Ok(LinkPreviewPicture::Stored(StoredPreviewImage {
             file_id,
             content_type: picture.content_type.to_owned(),

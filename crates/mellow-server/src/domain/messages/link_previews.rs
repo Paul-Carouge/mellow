@@ -8,7 +8,7 @@ use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
-use mellow_protocol::{GatewayEvent, LinkPreview, LinkPreviewImage, Snowflake};
+use mellow_protocol::{GatewayEvent, LinkEmbed, LinkPreview, LinkPreviewImage, Snowflake};
 use sha2::{Digest as _, Sha256};
 use tokio::sync::{Semaphore, mpsc};
 use url::Url;
@@ -28,9 +28,12 @@ use crate::storage::link_previews::{self as storage, NewLinkPreview, StoredLinkP
 const LINK_PREVIEW_QUEUE_CAPACITY: usize = 256;
 /// Links fetched at once for the whole instance.
 const CONCURRENT_LINK_PREVIEW_JOBS: usize = 2;
-/// The most one message's previews may take, its three links and their pictures together: one
-/// slow page (8 s per fetch) and a picture, so a member pasting slow links holds a slot for this
-/// at most. The previews found before it runs out are kept.
+/// The time one message's fetches may start in, counted on the clock from the job's start, the
+/// pictures of its earlier links included: one slow page (8 s per fetch) and a picture. The
+/// budget bounds the fetches; a picture already fetched when it runs out is still made and its
+/// preview recorded, then the job stops before the next link. A member pasting slow links
+/// therefore holds a slot for at most this budget plus the time to make one picture
+/// (`Attachments::store_link_preview_picture`). The previews found before it runs out are kept.
 const LINK_PREVIEW_JOB_BUDGET: std::time::Duration = std::time::Duration::from_secs(12);
 /// Jobs one author may have queued or running at once: past it their new messages get no
 /// preview, so one member pasting slow links cannot fill the queue in front of everyone else.
@@ -303,7 +306,8 @@ pub(crate) async fn fetch_link_previews_in_background(
         };
         jobs.spawn(async move {
             let _slot = slot;
-            // One job's links cannot keep a slot longer than this, whatever the sites do.
+            // Bounds the job's fetches, whatever the sites do: the slot stays taken at most this
+            // long plus the time to make one picture already fetched.
             let deadline = std::pin::pin!(tokio::time::sleep(LINK_PREVIEW_JOB_BUDGET));
             if let Err(error) = worker.run(job, deadline).await {
                 tracing::warn!(%error, "cannot record link previews");
@@ -389,6 +393,16 @@ async fn audience_now(
     }
 }
 
+/// A preview's fetched parts, before its picture is made and it is recorded.
+struct FetchedPreview {
+    details: PageDetails,
+    embed: Option<LinkEmbed>,
+    /// The picture's bytes as fetched, not yet checked as a picture.
+    picture: Option<Vec<u8>>,
+    /// The page's card because the link's provider failed: kept an hour only.
+    is_provider_fallback: bool,
+}
+
 struct PreviewWorker {
     messages: Arc<Messages>,
     attachments: Arc<Attachments>,
@@ -406,17 +420,14 @@ impl PreviewWorker {
         let mut found = Vec::with_capacity(job.links.len());
         let mut link_error = None;
         for link in &job.links {
-            tokio::select! {
-                biased;
-                preview = self.preview_of(link) => match preview {
-                    Ok(preview) => found.push(preview),
-                    Err(error) => {
-                        link_error = Some(error);
-                        break;
-                    }
-                },
-                () = deadline.as_mut() => {
+            match self.preview_of(link, deadline.as_mut()).await {
+                Ok(Some(preview)) => found.push(preview),
+                Ok(None) => {
                     tracing::debug!("link preview job out of time: what it found is kept");
+                    break;
+                }
+                Err(error) => {
+                    link_error = Some(error);
                     break;
                 }
             }
@@ -461,49 +472,32 @@ impl PreviewWorker {
     }
 
     /// The link's fresh preview, fetched and recorded when there is none; `link` is already in
-    /// its canonical form (ADR-0044).
-    async fn preview_of(&self, link: &Url) -> Result<StoredLinkPreview, MessageError> {
+    /// its canonical form (ADR-0044). `None` when `deadline` comes before the fetches end; once
+    /// they have, the picture is made and the preview recorded whatever the deadline.
+    async fn preview_of<D: Future<Output = ()>>(
+        &self,
+        link: &Url,
+        deadline: Pin<&mut D>,
+    ) -> Result<Option<StoredLinkPreview>, MessageError> {
         let url_sha256: [u8; 32] = Sha256::digest(link.as_str().as_bytes()).into();
         let now = crate::domain::clock::now_unix_milliseconds();
         if let Some(preview) =
             storage::find_fresh_preview(&self.messages.database, &url_sha256, now).await?
         {
-            return Ok(preview);
+            return Ok(Some(preview));
         }
-        let provided = self
-            .fetcher
-            .providers()
-            .preview_of(&self.fetcher, link)
-            .await;
-        // The page's card when its provider failed is kept only an hour, so the provider's card
-        // comes once it answers again (GitHub's budget resets every hour).
-        let is_provider_fallback = provided == ProviderOutcome::Failed;
-        let (details, embed, picture) = match provided {
-            ProviderOutcome::Found(found) => {
-                let ProviderPreview {
-                    details,
-                    picture,
-                    embed,
-                } = *found;
-                let picture = match picture {
-                    Some(bytes) => Some(bytes),
-                    None => self.picture_of(&details).await,
-                };
-                (details, Some(embed), picture)
-            }
-            ProviderOutcome::NotProvided | ProviderOutcome::Failed => {
-                match self.fetcher.fetch_page_or_picture(link.clone()).await {
-                    Ok(Fetched::Page(details)) => {
-                        let picture = self.picture_of(&details).await;
-                        (*details, None, picture)
-                    }
-                    Ok(Fetched::Picture(bytes)) => (PageDetails::default(), None, Some(bytes)),
-                    Err(_) => (PageDetails::default(), None, None),
-                }
-            }
-            // Recorded empty, so asked again within the hour like a page that did not answer.
-            ProviderOutcome::Unavailable => (PageDetails::default(), None, None),
+        // The deadline first: once the budget is spent, no fetch starts.
+        let fetched = tokio::select! {
+            biased;
+            () = deadline => return Ok(None),
+            fetched = self.fetched_preview(link) => fetched,
         };
+        let FetchedPreview {
+            details,
+            embed,
+            picture,
+            is_provider_fallback,
+        } = fetched;
         let picture = match picture {
             Some(bytes) => self.attachments.store_link_preview_picture(bytes).await?,
             None => LinkPreviewPicture::NotShown,
@@ -543,7 +537,52 @@ impl PreviewWorker {
             },
         )
         .await?;
-        Ok(preview)
+        Ok(Some(preview))
+    }
+
+    /// What the link's provider or page says, and its picture's bytes: the network part of a
+    /// preview, which the job budget may cut.
+    async fn fetched_preview(&self, link: &Url) -> FetchedPreview {
+        let provided = self
+            .fetcher
+            .providers()
+            .preview_of(&self.fetcher, link)
+            .await;
+        // The page's card when its provider failed is kept only an hour, so the provider's card
+        // comes once it answers again (GitHub's budget resets every hour).
+        let is_provider_fallback = provided == ProviderOutcome::Failed;
+        let (details, embed, picture) = match provided {
+            ProviderOutcome::Found(found) => {
+                let ProviderPreview {
+                    details,
+                    picture,
+                    embed,
+                } = *found;
+                let picture = match picture {
+                    Some(bytes) => Some(bytes),
+                    None => self.picture_of(&details).await,
+                };
+                (details, Some(embed), picture)
+            }
+            ProviderOutcome::NotProvided | ProviderOutcome::Failed => {
+                match self.fetcher.fetch_page_or_picture(link.clone()).await {
+                    Ok(Fetched::Page(details)) => {
+                        let picture = self.picture_of(&details).await;
+                        (*details, None, picture)
+                    }
+                    Ok(Fetched::Picture(bytes)) => (PageDetails::default(), None, Some(bytes)),
+                    Err(_) => (PageDetails::default(), None, None),
+                }
+            }
+            // Recorded empty, so asked again within the hour like a page that did not answer.
+            ProviderOutcome::Unavailable => (PageDetails::default(), None, None),
+        };
+        FetchedPreview {
+            details,
+            embed,
+            picture,
+            is_provider_fallback,
+        }
     }
 
     /// The bytes of the picture the page or provider names, if it gives them.
