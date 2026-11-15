@@ -30,7 +30,7 @@ use mellow_client_core::{DownloadableFile, KlipyClient, RestClient};
 use mellow_protocol::ProfileImage;
 use tokio::sync::oneshot;
 
-pub(crate) use self::decode::decode_frames;
+pub(crate) use self::decode::{decode_frames, has_bounded_metadata};
 use self::disk_cache::{DISK_CACHE_CAPACITY_BYTES, DiskCache, instance_directory_name};
 use self::loader::PictureLoader;
 use self::lru::ByteBoundedLru;

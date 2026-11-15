@@ -12434,8 +12434,8 @@ impl IconEditorCropStrings {
 
     pub fn stage_hint(self) -> &'static str {
         match self.language {
-            Language::English => "Arrow keys move the picture, Shift moves it further, + and − zoom.",
-            Language::French => "Les flèches déplacent l’image, Maj la déplace plus loin, + et − zooment.",
+            Language::English => "Arrow keys move the picture, Shift moves it further, + and − zoom, Enter saves.",
+            Language::French => "Les flèches déplacent l’image, Maj la déplace plus loin, + et − zooment, Entrée enregistre.",
         }
     }
 
