@@ -46,6 +46,7 @@
   import type { MessageListRow } from "./message-rows";
   import { isPollEnded } from "../lib/polls";
   import ChecklistCard from "./ChecklistCard.svelte";
+  import CallMessage from "./CallMessage.svelte";
   import PollCard from "./PollCard.svelte";
   import ProgressBarCard from "./ProgressBarCard.svelte";
   import { pendingChecklistPreview, pendingProgressBarPreview } from "./tracker-view";
@@ -194,6 +195,8 @@
         : null,
   );
   const isTracker = $derived(checklist !== null || progressBar !== null);
+  // A call's trace (ADR-0062): never edited, forwarded or copied as text, as a poll.
+  const callRecord = $derived(message?.call ?? null);
   // Only a forward's place is looked up, among the channels the reader knows.
   const forwardOriginPlace = $derived(forwardedFrom ? forwardOriginPlaceOf(forwardedFrom.channel_id) : null);
   const forwardOriginSentAt = $derived(forwardedFrom ? unixMillisecondsOfSnowflake(forwardedFrom.message_id) : null);
@@ -256,7 +259,7 @@
       ? messageMenuActions({
           isOwn,
           isForward: forwardedFrom !== null,
-          isPoll: poll !== null,
+          isPoll: poll !== null || callRecord !== null,
           isTracker,
           isPollOpen: poll !== null && !isPollEnded(poll, pollClockNow()),
           hasText: message.content.trim() !== "",
@@ -300,7 +303,7 @@
           isOwn,
           isForward: forwardedFrom !== null,
           // Checklists and progress bars follow polls here (ADR-0047).
-          isPoll: poll !== null || isTracker,
+          isPoll: poll !== null || isTracker || callRecord !== null,
           hasText: message.content.trim() !== "",
           canSendMessages,
           canManageMessages,
@@ -569,6 +572,9 @@
     {#if message}
       {@render reactionsOf(message)}
     {/if}
+  {:else if callRecord && message}
+    <CallMessage call={callRecord} messageId={message.id} readerId={currentUser.id} />
+    {@render reactionsOf(message)}
   {:else if poll}
     <PollCard
       {poll}

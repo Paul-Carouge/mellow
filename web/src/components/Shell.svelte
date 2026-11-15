@@ -54,6 +54,8 @@
   import { prepareChimeSound } from "./chime-sound";
   import { listenForPushToTalk } from "./push-to-talk-keys";
   import { playVoiceSoundsWhileMounted } from "./voice-sound-playback.svelte";
+  import { alertCallsWhileMounted } from "./call-alerts.svelte";
+  import { incomingCallSentence } from "./calls-view";
 
   // The signed-in shell (ADR-0022 §1): cards on the dusk ground. The navigator card and the
   // conversation sheet sit side by side inside the inset; the members side sheet opens on demand,
@@ -122,6 +124,27 @@
   // Voice (docs/design/web-voice-channels.md): its sounds and the soundboard's, push-to-talk, and a
   // fresh offer when the network returns.
   playVoiceSoundsWhileMounted(() => client);
+  // Private calls (ADR-0062): the ringtone, the waiting tone and the background notification.
+  alertCallsWhileMounted(() => client);
+  const ringingCall = $derived(client.incomingCalls[0] ?? null);
+  /** Read out once per ringing call, from a region that is always there; the card itself loads then. */
+  const incomingCallAnnouncement = $derived.by(() => {
+    const conversation = ringingCall ? client.conversations.find((candidate) => candidate.id === ringingCall.channel_id) : undefined;
+    return ringingCall && conversation
+      ? strings.calls.announcement(incomingCallSentence(ringingCall, conversation, client.user?.id ?? null))
+      : "";
+  });
+  /** The card's chunk is gone (a tab opened before an update) and the reader declined to reload:
+   * the call still rings, is read out and answers with Ctrl+Enter, until the next reload. */
+  let isIncomingCallCardUnavailable = $state(false);
+  /** Ctrl+Enter (Cmd+Enter) answers the ringing call from anywhere, as on Discord, before the composer sees it. */
+  function answerCallWithShortcut(event: KeyboardEvent) {
+    if (ringingCall && event.key === "Enter" && (event.ctrlKey || event.metaKey) && !event.shiftKey && !event.altKey) {
+      event.preventDefault();
+      event.stopPropagation();
+      void client.answerCall(ringingCall.channel_id);
+    }
+  }
   onMount(() => {
     const noteBackOnline = () => client.voice.noteBackOnline();
     window.addEventListener("online", noteBackOnline);
@@ -584,6 +607,7 @@
 </script>
 
 <svelte:window
+  onkeydowncapture={answerCallWithShortcut}
   onkeydown={(event) => {
     toggleMemberSheetWithShortcut(event);
     toggleQuickSwitcherWithShortcut(event);
@@ -1004,4 +1028,14 @@
 
 {#if isQuickSwitcherOpen}
   <QuickSwitcher {client} onclose={() => (isQuickSwitcherOpen = false)} onnavigated={focusComposer} />
+{/if}
+
+<!-- Last, so it floats over whatever is open: a call reaches the reader anywhere in the app. -->
+<p class="sr-only" aria-live="assertive">{incomingCallAnnouncement}</p>
+{#if ringingCall && !isIncomingCallCardUnavailable}
+  <LazyComponent load={() => import("./IncomingCallCard.svelte")} onclose={() => (isIncomingCallCardUnavailable = true)}>
+    {#snippet children({ default: IncomingCallCard })}
+      <IncomingCallCard {client} />
+    {/snippet}
+  </LazyComponent>
 {/if}

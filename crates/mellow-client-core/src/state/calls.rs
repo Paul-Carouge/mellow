@@ -26,9 +26,11 @@ pub enum CallPhase {
 pub enum CallMessageSummary {
     /// The call goes on.
     Ongoing,
-    /// It ended without the reader ever joining: "Missed call" (the caller's own unanswered call
-    /// reads "Call · 0 min" instead, as they took part).
+    /// It ended without the reader ever joining: "Missed call".
     Missed,
+    /// It ended with the reader as its only participant: their own call nobody answered
+    /// ("Unanswered call"), for the caller who rang alone.
+    Unanswered,
     /// It ended; the reader took part. Its length, from the start to the end.
     Ended { duration_milliseconds: u64 },
 }
@@ -104,6 +106,7 @@ pub fn call_message_summary(
     match call.ended_at_unix_milliseconds {
         None => CallMessageSummary::Ongoing,
         Some(_) if !call.participant_ids.contains(&reader_id) => CallMessageSummary::Missed,
+        Some(_) if call.participant_ids.len() == 1 => CallMessageSummary::Unanswered,
         Some(ended_at) => CallMessageSummary::Ended {
             duration_milliseconds: ended_at.saturating_sub(message_id.unix_milliseconds()),
         },
@@ -338,6 +341,23 @@ mod tests {
         );
         assert_eq!(
             call_message_summary(&ended, message_id, CLEO),
+            CallMessageSummary::Missed
+        );
+    }
+
+    #[test]
+    fn the_caller_reads_their_unanswered_call_as_unanswered_and_the_callee_as_missed() {
+        let message_id = Snowflake::from_parts(60_000, 0).unwrap();
+        let unanswered = MessageCall {
+            participant_ids: vec![ANA],
+            ended_at_unix_milliseconds: Some(MELLOW_EPOCH_UNIX_MILLISECONDS + 60_000 + 30_000),
+        };
+        assert_eq!(
+            call_message_summary(&unanswered, message_id, ANA),
+            CallMessageSummary::Unanswered
+        );
+        assert_eq!(
+            call_message_summary(&unanswered, message_id, BOB),
             CallMessageSummary::Missed
         );
     }

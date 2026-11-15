@@ -7,6 +7,7 @@ import {
   type Attachment,
   type AuditLogEntry,
   type Ban,
+  type Call,
   type Channel,
   type ChannelKind,
   type ChannelPlacement,
@@ -718,6 +719,19 @@ export class RestClient {
   /** Removes a friend, refuses or cancels a request, or unblocks. */
   removeRelationship(userId: Snowflake): Promise<void> {
     return this.request("DELETE", `users/@me/relationships/${userId}`);
+  }
+
+  /**
+   * Starts the conversation's call, or answers the one going on (ADR-0062); the caller then joins
+   * it with `voice_join` on the conversation's id. `CONFLICT`: an unanswered call of theirs rings.
+   */
+  startCall(channelId: Snowflake): Promise<Call> {
+    return this.request("POST", `channels/${channelId}/call`);
+  }
+
+  /** Stops the call ringing on all the user's devices; they may still join it later. */
+  declineCall(channelId: Snowflake): Promise<void> {
+    return this.request("POST", `channels/${channelId}/call/decline`);
   }
 
   openDirectMessage(recipientId: Snowflake): Promise<DirectMessageChannel> {

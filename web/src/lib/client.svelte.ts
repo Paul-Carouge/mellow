@@ -1,6 +1,7 @@
 // What the web client knows and does: the same model as `mellow-client-core` (state reducer,
 // outbox, history pages), kept in Svelte runes so components re-render from it.
 
+import { tick } from "svelte";
 import { SvelteMap, SvelteSet } from "svelte/reactivity";
 
 import { strings } from "../i18n";
@@ -16,6 +17,7 @@ import {
   type RoleChanges,
   generateMessageNonce,
 } from "./api";
+import { type CallPhase, type CallStartFailure, callPhase, callStartFailureOf, incomingCallsOf } from "./calls";
 import { GatewayConnection, type GatewayUpdate } from "./gateway";
 import { channelSections } from "./channels";
 import { CustomEmojiLibrary } from "./custom-emoji-library.svelte";
@@ -27,6 +29,7 @@ import { Relationships } from "./relationships.svelte";
 import type { TwoFactorChallenge } from "./protocol";
 import {
   type Attachment,
+  type Call,
   type Channel,
   type ChannelKind,
   type ChannelPlacement,
@@ -262,6 +265,12 @@ export class MellowClient {
   speakingUserIds = new SvelteSet<Snowflake>();
   /** "Ana joined #general.": read out while you are in that channel. */
   voiceAnnouncement = $state("");
+  /** The calls going on in the user's conversations, by conversation (ADR-0062). */
+  callsByChannelId = new SvelteMap<Snowflake, Call>();
+  /** `Ready.calls_enabled`: the instance knows calls and voice works; the call buttons hide otherwise. */
+  isCallsEnabled = $state(false);
+  /** Why the last call could not start, shown in the voice panel's slot until dismissed. */
+  callProblem = $state<{ channelId: Snowflake; failure: CallStartFailure } | null>(null);
   /** This tab's voice connection; it outlives navigation. */
   readonly voice: VoiceSession;
   /** Every custom emoji this user may load, and the servers' list edits (ADR-0028). */
@@ -277,6 +286,7 @@ export class MellowClient {
     // Only on an identified session: a frame before `ready` or `resumed` would be refused.
     const sendFrame = (frame: ClientFrame) => this.status === "connected" && (this.gateway?.send(frame) ?? false);
     this.voice = new VoiceSession({ ...voicePorts, sendFrame });
+    this.voice.isMutedByDefault = (userId) => this.callConversation !== null && this.isMutedByDefaultInCalls(userId);
     this.relationships = new Relationships(rest);
     const updateGuild = (guildId: Snowflake, change: (guild: Guild) => Guild) => this.updateGuild(guildId, change);
     this.customEmojis = new CustomEmojiLibrary({ rest, guilds: () => this.guilds, updateGuild });
@@ -472,6 +482,9 @@ export class MellowClient {
     this.speakingUserIds.clear();
     this.soundboard.clearIndicators();
     this.voiceAnnouncement = "";
+    this.callsByChannelId.clear();
+    this.isCallsEnabled = false;
+    this.callProblem = null;
     this.gateway?.close();
     this.gateway = null;
     this.isCheckingLink = false;
@@ -620,6 +633,13 @@ export class MellowClient {
     for (const state of ready.voice_states ?? []) {
       if (this.isKnownChannel(state.channel_id)) {
         this.voiceStatesByUserId.set(state.user_id, state);
+      }
+    }
+    this.callsByChannelId.clear();
+    this.isCallsEnabled = ready.calls_enabled ?? false;
+    for (const call of ready.calls ?? []) {
+      if (this.isConversation(call.channel_id)) {
+        this.callsByChannelId.set(call.channel_id, call);
       }
     }
     const guildId = this.guilds.some((guild) => guild.id === this.selectedGuildId)
@@ -951,12 +971,22 @@ export class MellowClient {
       case "VOICE_VIDEO_PAUSED":
         this.voice.noteVideoPaused(event.data.channel_id, event.data.user_id, event.data.is_paused);
         return;
-      // Private calls (ADR-0062): known on the wire, shown once the call interface lands.
       case "CALL_CREATE":
       case "CALL_UPDATE":
-      case "CALL_DELETE":
-      case "CALL_SPEAKING":
+        this.applyCall(event.data);
         return;
+      case "CALL_DELETE":
+        this.dropCall(event.data.channel_id);
+        return;
+      case "CALL_SPEAKING": {
+        const { channel_id, user_id, speaking } = event.data;
+        if (!speaking) {
+          this.speakingUserIds.delete(user_id);
+        } else if (this.callsByChannelId.get(channel_id)?.participants.some((participant) => participant.user_id === user_id)) {
+          this.speakingUserIds.add(user_id);
+        }
+        return;
+      }
       default: {
         // An event this client does not know yet: skipped, as the native clients do.
         const unknown: never = event;
@@ -2581,6 +2611,7 @@ export class MellowClient {
     const conversation = this.conversations.find((channel) => channel.id === channelId);
     this.conversations = this.conversations.filter((channel) => channel.id !== channelId);
     this.forgetChannel(channelId);
+    this.dropCall(channelId);
     if (this.selectedChannelId === channelId && this.selectedGuildId === null) {
       this.selectGuild(null, null);
       if (conversation) {
@@ -2672,6 +2703,186 @@ export class MellowClient {
     }
     if (!this.soundboard.playPeerJoinSound(place.guild, userId, joinSoundId)) {
       this.voice.onCue?.("peer-join");
+    }
+  }
+
+  // --- Private calls (ADR-0062, mirrors `mellow_client_core::state::calls`) -------------------
+
+  private isConversation(channelId: Snowflake): boolean {
+    return this.conversations.some((channel) => channel.id === channelId);
+  }
+
+  /** What the call of `channelId` is for the signed-in user; `null` without a call there. */
+  callPhaseOf(channelId: Snowflake): CallPhase | null {
+    const call = this.callsByChannelId.get(channelId);
+    const userId = this.user?.id;
+    return call && userId ? callPhase(call, userId) : null;
+  }
+
+  /** The calls ringing the signed-in user now, oldest first: the incoming call card shows the first. */
+  get incomingCalls(): Call[] {
+    const userId = this.user?.id;
+    return userId ? incomingCallsOf(this.callsByChannelId.values(), userId) : [];
+  }
+
+  /**
+   * Connected to a call or a voice channel, from this tab or another device: a new call then plays
+   * the short call-waiting cue instead of the ringtone.
+   */
+  get isInACallOrVoiceChannel(): boolean {
+    const userId = this.user?.id;
+    if (!userId) {
+      return false;
+    }
+    return (
+      this.voice.phase !== "idle" ||
+      this.voiceStatesByUserId.has(userId) ||
+      [...this.callsByChannelId.values()].some((call) => call.participants.some((participant) => participant.user_id === userId))
+    );
+  }
+
+  /** Someone the user blocked may still be in a group's call: they start with their sound off there. */
+  isMutedByDefaultInCalls(userId: Snowflake): boolean {
+    return this.isBlocked(userId);
+  }
+
+  /** The conversation this tab's voice is in or joining, when it is a call. */
+  get callConversation(): DirectMessageChannel | null {
+    const channelId = this.voice.channelId;
+    return channelId === null ? null : (this.conversations.find((channel) => channel.id === channelId) ?? null);
+  }
+
+  /**
+   * Starts the conversation's call (or answers the one going on), then joins it and shows it. A
+   * refusal goes to `callProblem`, which the voice panel's slot shows.
+   */
+  async startCall(channelId: Snowflake): Promise<void> {
+    if (this.voice.channelId === channelId && this.voice.phase !== "idle") {
+      this.voice.openCallView();
+      return;
+    }
+    this.callProblem = null;
+    let call: Call;
+    try {
+      call = await this.rest.startCall(channelId);
+    } catch (error) {
+      console.warn("couldn't start a call", error);
+      this.callProblem = { channelId, failure: callStartFailureOf(error) };
+      return;
+    }
+    // The answer may come after the gateway's event, or before it: the newest wins either way, as
+    // both carry the whole call.
+    if (!this.callsByChannelId.has(channelId)) {
+      this.applyCall(call);
+    }
+    await this.joinCall(channelId);
+  }
+
+  /** The profile's "Call": opens the one-to-one conversation, then calls in it. */
+  async callUser(userId: Snowflake): Promise<void> {
+    const conversation = await this.rest.openDirectMessage(userId);
+    this.upsertConversation(conversation);
+    this.selectGuild(null, conversation.id);
+    await this.startCall(conversation.id);
+  }
+
+  /** The incoming call card's Décrocher and Ctrl+Entrée: the conversation opens, then the call joins. */
+  async answerCall(channelId: Snowflake): Promise<void> {
+    this.selectGuild(null, channelId);
+    // The shell closes the call view when the selection changes: open it after that.
+    await tick();
+    await this.joinCall(channelId);
+  }
+
+  /** Answering is joining (ADR-0062): this device holds the connection, the others stop ringing. */
+  async joinCall(channelId: Snowflake): Promise<void> {
+    this.callProblem = null;
+    const joining = this.voice.join(channelId);
+    this.voice.openCallView();
+    await joining;
+  }
+
+  /**
+   * Stops the ringing on all the user's devices. Silent at once here; a failed request (offline)
+   * leaves the others to stop when ringing times out.
+   */
+  async declineCall(channelId: Snowflake): Promise<void> {
+    const userId = this.user?.id;
+    const call = this.callsByChannelId.get(channelId);
+    if (userId && call?.ringing_user_ids.includes(userId)) {
+      this.callsByChannelId.set(channelId, { ...call, ringing_user_ids: call.ringing_user_ids.filter((id) => id !== userId) });
+    }
+    try {
+      await this.rest.declineCall(channelId);
+    } catch (error) {
+      console.warn("couldn't decline the call on the other devices", error);
+    }
+  }
+
+  dismissCallProblem(): void {
+    this.callProblem = null;
+  }
+
+  /** `CALL_CREATE` and `CALL_UPDATE`: the whole call as it is now, in a known conversation. */
+  private applyCall(call: Call): void {
+    const channelId = call.channel_id;
+    if (!this.isConversation(channelId)) {
+      return;
+    }
+    const previous = this.callsByChannelId.get(channelId);
+    for (const left of previous?.participants ?? []) {
+      if (!call.participants.some((participant) => participant.user_id === left.user_id)) {
+        this.speakingUserIds.delete(left.user_id);
+      }
+    }
+    this.callsByChannelId.set(channelId, call);
+    this.noteCallPeerChanges(previous, call);
+  }
+
+  /** `CALL_DELETE`, or the conversation gone. */
+  private dropCall(channelId: Snowflake): void {
+    const call = this.callsByChannelId.get(channelId);
+    if (!call) {
+      return;
+    }
+    this.callsByChannelId.delete(channelId);
+    for (const participant of call.participants) {
+      this.speakingUserIds.delete(participant.user_id);
+    }
+  }
+
+  /**
+   * In the call this tab is connected to: others joining or leaving are announced, with the soft
+   * cues of voice channels; the user's own entry gone while connected means the instance dropped
+   * them, and the session offers again after a grace (as with a voice state).
+   */
+  private noteCallPeerChanges(previous: Call | undefined, call: Call): void {
+    const userId = this.user?.id;
+    if (!userId || this.voice.channelId !== call.channel_id || this.voice.phase === "idle") {
+      return;
+    }
+    const wasIn = (id: Snowflake) => previous?.participants.some((participant) => participant.user_id === id) ?? false;
+    const isIn = (id: Snowflake) => call.participants.some((participant) => participant.user_id === id);
+    if (wasIn(userId) && !isIn(userId)) {
+      this.voice.noteOwnStateDropped(call.channel_id);
+    }
+    if (this.voice.phase !== "connected") {
+      return;
+    }
+    const joined = call.participants.map((participant) => participant.user_id).filter((id) => id !== userId && !wasIn(id));
+    const left = (previous?.participants ?? []).map((participant) => participant.user_id).filter((id) => id !== userId && !isIn(id));
+    const conversation = this.conversations.find((channel) => channel.id === call.channel_id);
+    const nameOf = (id: Snowflake) => {
+      const person = conversation?.recipients.find((recipient) => recipient.id === id);
+      return person ? person.display_name.trim() || person.username : strings.voice.someone;
+    };
+    for (const id of joined) {
+      this.voiceAnnouncement = strings.calls.peerJoined(nameOf(id));
+      this.voice.onCue?.("peer-join");
+    }
+    for (const id of left) {
+      this.voiceAnnouncement = strings.calls.peerLeft(nameOf(id));
+      this.voice.onCue?.("peer-leave");
     }
   }
 

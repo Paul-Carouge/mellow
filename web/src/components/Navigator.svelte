@@ -63,7 +63,7 @@
   <ChannelSidebar {client} {collapsedCategoryIds} {onnewmessage} {onopendialog} {oncreatechannelin} {oneditchannel} {onnavigate} />
   <!-- Voice stays connected wherever the reader goes: its panel lives here, above the user card. -->
   <div class="col-span-full min-w-0">
-    {#if (client.voice.phase !== "idle" || client.voice.problem) && !isVoicePanelUnavailable}
+    {#if (client.voice.phase !== "idle" || client.voice.problem || client.callProblem) && !isVoicePanelUnavailable}
       <LazyComponent load={() => import("./VoicePanel.svelte")} onclose={() => (isVoicePanelUnavailable = true)}>
         {#snippet children({ default: VoicePanel })}
           <VoicePanel {client} {onnavigate} onaddsounds={(guildId) => onopendialog("server-soundboard", guildId)} />

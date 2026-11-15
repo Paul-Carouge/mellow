@@ -76,6 +76,8 @@ import {
 } from "./voice-settings";
 import { type VoiceToggles, readVoiceToggles, toggleDeafened, toggleMicrophone, writeVoiceToggles } from "./voice-toggles";
 
+/** Someone heard at the usual volume, but off until the user turns them up. */
+const MUTED_BY_DEFAULT_PERSON_VOICE_SETTING: PersonVoiceSetting = { ...DEFAULT_PERSON_VOICE_SETTING, isLocallyMuted: true };
 /** ICE gathering usually completes in a few milliseconds against an ICE-lite server with no STUN. */
 const ICE_GATHERING_TIMEOUT_MILLISECONDS = 1_000;
 /** From the offer sent to audio flowing: past it, the instance did not answer or its UDP port is unreachable. */
@@ -539,8 +541,18 @@ export class VoiceSession {
     this.refreshMonitor();
   }
 
+  /**
+   * Someone this session starts with their sound off until the user turns it up: in a call, the
+   * people the user blocked (ADR-0062). Set by the client; a stored choice always wins.
+   */
+  isMutedByDefault: ((userId: Snowflake) => boolean) | null = null;
+
   personSetting(userId: Snowflake): PersonVoiceSetting {
-    return this.personSettings.get(userId) ?? DEFAULT_PERSON_VOICE_SETTING;
+    const stored = this.personSettings.get(userId);
+    if (stored !== undefined) {
+      return stored;
+    }
+    return this.isMutedByDefault?.(userId) === true ? MUTED_BY_DEFAULT_PERSON_VOICE_SETTING : DEFAULT_PERSON_VOICE_SETTING;
   }
 
   setPersonVolume(userId: Snowflake, volumePercent: number): void {

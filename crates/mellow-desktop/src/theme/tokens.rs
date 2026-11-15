@@ -178,6 +178,17 @@ pub struct ThemeTokens {
     pub component_button_secondary_background: u32,
     pub component_button_secondary_background_hover: u32,
     pub component_button_secondary_text: u32,
+    pub component_call_banner_background: u32,
+    pub component_call_banner_icon: u32,
+    pub component_call_banner_secondary_text: u32,
+    pub component_call_banner_text: u32,
+    pub component_call_message_ended_disc: u32,
+    pub component_call_message_ended_icon: u32,
+    pub component_call_message_missed_disc: u32,
+    pub component_call_message_missed_icon: u32,
+    pub component_call_message_ongoing_disc: u32,
+    pub component_call_message_ongoing_icon: u32,
+    pub component_call_message_text: u32,
     pub component_call_view_background: u32,
     pub component_call_view_control_background: u32,
     pub component_call_view_control_background_active: u32,
@@ -348,6 +359,15 @@ pub struct ThemeTokens {
     pub component_icon_picker_preview_text: u32,
     pub component_icon_picker_sample_label_text: u32,
     pub component_icon_picker_stage_background: u32,
+    pub component_incoming_call_background: u32,
+    pub component_incoming_call_border: u32,
+    pub component_incoming_call_decline_background: u32,
+    pub component_incoming_call_decline_background_hover: u32,
+    pub component_incoming_call_decline_text: u32,
+    pub component_incoming_call_decline_text_hover: u32,
+    pub component_incoming_call_name_text: u32,
+    pub component_incoming_call_sentence_text: u32,
+    pub component_incoming_call_shadow: &'static [ShadowLayer],
     pub component_invite_code_background: u32,
     pub component_invite_code_border: u32,
     pub component_invite_code_dash_text: u32,
@@ -927,6 +947,17 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_button_secondary_background: 0x554C_56FF,
     component_button_secondary_background_hover: 0x635A_64FF,
     component_button_secondary_text: 0xFFFF_FFFF,
+    component_call_banner_background: 0x3729_2AFF,
+    component_call_banner_icon: 0xF2A4_6EFF,
+    component_call_banner_secondary_text: 0xD6D0_D7FF,
+    component_call_banner_text: 0xF8F4_F8FF,
+    component_call_message_ended_disc: 0x312A_32FF,
+    component_call_message_ended_icon: 0xC5BE_C6FF,
+    component_call_message_missed_disc: 0x4425_2CFF,
+    component_call_message_missed_icon: 0xFA77_7CFF,
+    component_call_message_ongoing_disc: 0x3729_2AFF,
+    component_call_message_ongoing_icon: 0xF2A4_6EFF,
+    component_call_message_text: 0xD6D0_D7FF,
     component_call_view_background: 0x221B_23FF,
     component_call_view_control_background: 0x362E_37FF,
     component_call_view_control_background_active: 0x6044_3AFF,
@@ -1097,6 +1128,15 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_icon_picker_preview_text: 0xC5BE_C6FF,
     component_icon_picker_sample_label_text: 0xA99F_AAFF,
     component_icon_picker_stage_background: 0x1A14_1AFF,
+    component_incoming_call_background: 0x2B24_2CFF,
+    component_incoming_call_border: 0x3C35_3EFF,
+    component_incoming_call_decline_background: 0x554C_56FF,
+    component_incoming_call_decline_background_hover: 0xDA37_3CFF,
+    component_incoming_call_decline_text: 0xFFFF_FFFF,
+    component_incoming_call_decline_text_hover: 0xFFFF_FFFF,
+    component_incoming_call_name_text: 0xF8F4_F8FF,
+    component_incoming_call_sentence_text: 0xA99F_AAFF,
+    component_incoming_call_shadow: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     component_invite_code_background: 0x1A14_1AFF,
     component_invite_code_border: 0x3C35_3EFF,
     component_invite_code_dash_text: 0xA99F_AAFF,
@@ -1676,6 +1716,17 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_button_secondary_background: 0x695F_6BFF,
     component_button_secondary_background_hover: 0x594E_5BFF,
     component_button_secondary_text: 0xFFFF_FFFF,
+    component_call_banner_background: 0xFDF4_EFFF,
+    component_call_banner_icon: 0xA84F_1AFF,
+    component_call_banner_secondary_text: 0x392F_3AFF,
+    component_call_banner_text: 0x221B_23FF,
+    component_call_message_ended_disc: 0xF5F1_F6FF,
+    component_call_message_ended_icon: 0x594E_5BFF,
+    component_call_message_missed_disc: 0xFBEB_ECFF,
+    component_call_message_missed_icon: 0xC426_2BFF,
+    component_call_message_ongoing_disc: 0xFDF4_EFFF,
+    component_call_message_ongoing_icon: 0xA84F_1AFF,
+    component_call_message_text: 0x392F_3AFF,
     component_call_view_background: 0xFFFF_FFFF,
     component_call_view_control_background: 0xDFD8_DFFF,
     component_call_view_control_background_active: 0xFAE7_DBFF,
@@ -1846,6 +1897,15 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_icon_picker_preview_text: 0x594E_5BFF,
     component_icon_picker_sample_label_text: 0x695F_6BFF,
     component_icon_picker_stage_background: 0xF8F4_F8FF,
+    component_incoming_call_background: 0xFFFF_FFFF,
+    component_incoming_call_border: 0xE3DD_E4FF,
+    component_incoming_call_decline_background: 0x695F_6BFF,
+    component_incoming_call_decline_background_hover: 0xDA37_3CFF,
+    component_incoming_call_decline_text: 0xFFFF_FFFF,
+    component_incoming_call_decline_text_hover: 0xFFFF_FFFF,
+    component_incoming_call_name_text: 0x221B_23FF,
+    component_incoming_call_sentence_text: 0x695F_6BFF,
+    component_incoming_call_shadow: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     component_invite_code_background: 0xF8F4_F8FF,
     component_invite_code_border: 0xE3DD_E4FF,
     component_invite_code_dash_text: 0x695F_6BFF,
@@ -2336,6 +2396,14 @@ pub const COMPONENT_BUTTON_HEIGHT_LARGE: f32 = 44.0;
 pub const COMPONENT_BUTTON_HEIGHT_SMALL: f32 = 32.0;
 pub const COMPONENT_BUTTON_PADDING_INLINE: f32 = 16.0;
 pub const COMPONENT_BUTTON_RADIUS: f32 = 8.0;
+pub const COMPONENT_CALL_BANNER_HEIGHT: f32 = 44.0;
+pub const COMPONENT_CALL_BANNER_ICON_SIZE: f32 = 20.0;
+pub const COMPONENT_CALL_BANNER_MARGIN: f32 = 8.0;
+pub const COMPONENT_CALL_BANNER_PADDING_INLINE: f32 = 12.0;
+pub const COMPONENT_CALL_BANNER_RADIUS: f32 = 12.0;
+pub const COMPONENT_CALL_MESSAGE_DISC_SIZE: f32 = 32.0;
+pub const COMPONENT_CALL_MESSAGE_GAP: f32 = 8.0;
+pub const COMPONENT_CALL_MESSAGE_ICON_SIZE: f32 = 16.0;
 pub const COMPONENT_CALL_VIEW_AVATAR_SIZE_LARGE: f32 = 80.0;
 pub const COMPONENT_CALL_VIEW_AVATAR_SIZE_SMALL: f32 = 40.0;
 pub const COMPONENT_CALL_VIEW_CONTROL_BAR_HEIGHT: f32 = 48.0;
@@ -2558,6 +2626,18 @@ pub const COMPONENT_ICON_PICKER_PREVIEW_RADIUS_CHANNEL: f32 = 16.0;
 pub const COMPONENT_ICON_PICKER_PREVIEW_SIZE: f32 = 80.0;
 pub const COMPONENT_ICON_PICKER_SAMPLE_GAP: f32 = 16.0;
 pub const COMPONENT_ICON_PICKER_STAGE_RADIUS: f32 = 12.0;
+pub const COMPONENT_INCOMING_CALL_ACTION_GAP: f32 = 8.0;
+pub const COMPONENT_INCOMING_CALL_AVATAR_SIZE: f32 = 56.0;
+pub const COMPONENT_INCOMING_CALL_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_INCOMING_CALL_ENTER_DURATION: AnimationDuration = AnimationDuration(340);
+pub const COMPONENT_INCOMING_CALL_ENTER_OFFSET: f32 = -8.0;
+pub const COMPONENT_INCOMING_CALL_GAP: f32 = 16.0;
+pub const COMPONENT_INCOMING_CALL_HINT_ICON_SIZE: f32 = 16.0;
+pub const COMPONENT_INCOMING_CALL_MARGIN: f32 = 8.0;
+pub const COMPONENT_INCOMING_CALL_MELLI_SIZE: f32 = 48.0;
+pub const COMPONENT_INCOMING_CALL_PADDING: f32 = 16.0;
+pub const COMPONENT_INCOMING_CALL_RADIUS: f32 = 16.0;
+pub const COMPONENT_INCOMING_CALL_WIDTH: f32 = 360.0;
 pub const COMPONENT_INVITE_CODE_BORDER_WIDTH: f32 = 1.0;
 pub const COMPONENT_INVITE_CODE_PADDING_BLOCK: f32 = 16.0;
 pub const COMPONENT_INVITE_CODE_PADDING_INLINE: f32 = 12.0;

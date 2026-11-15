@@ -107,7 +107,7 @@ export function isPlaceMuted(settings: NotificationSettings, place: Notification
 }
 
 export interface IncomingMessageFacts {
-  readonly message: Pick<Message, "author" | "mention_ids" | "mention_role_ids">;
+  readonly message: Pick<Message, "author" | "mention_ids" | "mention_role_ids" | "call">;
   readonly currentUserId: Snowflake | null;
   /** The reader's roles in the place's server: a role or `@everyone` mention counts (ADR-0040). */
   readonly readerRoleIds: readonly Snowflake[];
@@ -125,6 +125,10 @@ export interface IncomingMessageFacts {
 export function shouldAlertAbout(facts: IncomingMessageFacts): boolean {
   const { message, currentUserId, place, settings } = facts;
   if (currentUserId === null || message.author.id === currentUserId || facts.isAuthorBlocked) {
+    return false;
+  }
+  // A call's message rings by itself, with the call (ADR-0062): no chime over the ringtone.
+  if (message.call !== undefined) {
     return false;
   }
   if (facts.chosenStatus === "do_not_disturb") {
@@ -180,10 +184,13 @@ const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" });
  * roles as `@Name` among `roles` (`MellowClient.knownRoles`).
  */
 export function messagePreviewText(
-  message: Pick<Message, "content" | "attachments" | "poll" | "checklist" | "progress_bar">,
+  message: Pick<Message, "content" | "attachments" | "poll" | "checklist" | "progress_bar" | "call">,
   roles: ReadonlyMap<Snowflake, Role>,
 ): string {
   const roleMentions = { roles, isEveryoneMentioned: false };
+  if (message.call) {
+    return strings.calls.callNoun;
+  }
   const text = (
     message.poll
       ? pollSummary(message.poll)

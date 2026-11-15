@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 
+import { strings } from "../i18n";
 import { DEFAULT_NOTIFICATION_SETTINGS, type NotificationSettings } from "../lib/notification-settings";
 import type { Role } from "../lib/protocol";
 import {
@@ -58,6 +59,9 @@ describe("who is told", () => {
     expect(shouldAlertAbout({ ...own, message: { ...own.message, author: { id: ME, username: "me", display_name: "Me" } } })).toBe(false);
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, isAuthorBlocked: true }))).toBe(false);
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, chosenStatus: "do_not_disturb", mentionsMe: true }))).toBe(false);
+    // A call's message rings with its call (ADR-0062).
+    const callMessage = facts({ place: IN_CONVERSATION });
+    expect(shouldAlertAbout({ ...callMessage, message: { ...callMessage.message, call: { participant_ids: [] } } })).toBe(false);
     expect(shouldAlertAbout(facts({ place: IN_CONVERSATION, currentUserId: null }))).toBe(false);
   });
 
@@ -115,6 +119,7 @@ describe("words", () => {
       "see you at spoiler at 7",
     );
     expect(messagePreviewText({ content: "look <:party:123> > here" }, NO_ROLES)).toBe("look :party: > here");
+    expect(messagePreviewText({ content: "", call: { participant_ids: [] } }, NO_ROLES)).toBe(strings.calls.callNoun);
     expect(messagePreviewText({ content: "3. pain\n  - complet\n4. lait\n-# merci" }, NO_ROLES)).toBe("pain complet lait merci");
   });
 

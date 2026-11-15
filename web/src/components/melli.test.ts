@@ -17,6 +17,12 @@ describe("homeMelliState", () => {
     expect(homeMelliState("connected", true, false)).toBe("notification");
   });
 
+  it("rings with a call ringing the reader, before unread messages, never in Do not disturb", () => {
+    expect(homeMelliState("connected", true, false, true)).toBe("incoming-call");
+    expect(homeMelliState("connected", false, true, true)).toBe("do-not-disturb");
+    expect(homeMelliState("reconnecting", false, false, true)).toBe("connection-lost");
+  });
+
   it("idles otherwise", () => {
     expect(homeMelliState("connected", false, false)).toBe("idle");
   });

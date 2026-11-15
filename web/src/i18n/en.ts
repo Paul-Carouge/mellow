@@ -483,6 +483,62 @@ export const en = {
     },
   },
 
+  /** Private calls in conversations (ADR-0062, DESIGN.md §5.6.3). */
+  calls: {
+    /** The header's and the profile's key; its name says whom. */
+    call: "Call",
+    /** A call's message where one line stands for it: a reply's quote, a notification. */
+    callNoun: "Call",
+    callPerson: (person: string) => `Call ${person}`,
+    callGroup: (group: string) => `Call ${group}`,
+    join: "Join",
+    joinCall: "Join the call",
+    showCall: "Show the call",
+    /** The incoming call card, a landmark of its own. */
+    incoming: "Incoming call",
+    callsYou: (person: string) => `${person} is calling you`,
+    callsYouIn: (person: string, group: string) => `${person} is calling you in ${group}`,
+    isCallingYou: "is calling you",
+    inGroup: (group: string) => `in ${group}`,
+    answer: "Answer",
+    decline: "Decline",
+    /** Answering moves the user's voice: said before they press it. */
+    answerLeaves: (place: string) => `Answering leaves ${place}.`,
+    silentForDoNotDisturb: "Do not disturb: no ringtone",
+    /** Read out when the card appears; the shortcut works wherever focus is. */
+    announcement: (sentence: string) => `${sentence}. Ctrl+Enter to answer.`,
+    /** The caller's view while others are rung. */
+    ringing: (people: string) => `Ringing ${people}…`,
+    hangUp: "Hang up",
+    callWith: (place: string) => `Call with ${place}`,
+    openConversation: (place: string) => `Call with ${place}. Open the conversation`,
+    ongoing: "Ongoing call",
+    peopleInCall: (people: number) => `${count(people)} ${plural(people, { one: "person", other: "people" })} in it`,
+    missed: "Missed call",
+    /** The caller's own call that nobody answered. */
+    unanswered: "Unanswered call",
+    ended: (duration: string) => `Call · ${duration}`,
+    underAMinute: "under a minute",
+    minutes: (minutes: number) => `${count(minutes)} min`,
+    /** `minutes` comes with its two digits ("05"). */
+    hoursAndMinutes: (hours: number, minutes: string) => `${count(hours)} h ${minutes}`,
+    peerJoined: (person: string) => `${person} joined the call.`,
+    peerLeft: (person: string) => `${person} left the call.`,
+    couldNotCall: (place: string) => `Couldn't call ${place}`,
+    failures: {
+      "already-calling": "One of your calls is still ringing. Hang it up, or wait for an answer.",
+      "rate-limited": "Too many calls at once. Wait a minute, then try again.",
+      unreachable: "You can no longer call this conversation.",
+      "voice-unavailable": "Voice is off on this instance. Its administrator can turn it on.",
+      other: "The instance couldn't start the call. Check your connection, then try again.",
+    },
+    noAnswerTitle: "Nobody answered",
+    noAnswer: "The call ended unanswered: declined, or 30 seconds of ringing without an answer.",
+    callAgain: "Call again",
+    /** The browser notification while the window is in the background. */
+    notificationBody: "Incoming call on Mellow",
+  },
+
   call: {
     viewOf: (channel: string) => `Call in ${channel}`,
     close: "Back to the chat",
