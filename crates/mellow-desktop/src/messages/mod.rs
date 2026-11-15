@@ -47,7 +47,6 @@ pub use reactions::{
     AddReactionButton, MessageReactions, ReactionPill, ReactionTooltipBuilder, reaction_pills,
 };
 pub use reply::{ReplyLine, ReplyReference, reply_reference};
-pub(crate) use rich_text::open_message_link;
 pub(crate) use time::locale;
 pub use time::{
     day_divider_label, full_timestamp_label, local_date_time, local_day_of,

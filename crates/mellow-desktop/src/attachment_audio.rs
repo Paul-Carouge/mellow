@@ -26,6 +26,10 @@ use crate::components::child_id;
 use crate::preferences::{change_preferences, preferences};
 use crate::tokio_bridge::spawn_on_network_runtime;
 use crate::voice::video_view::VideoPicture;
+use crate::youtube_video::{
+    is_youtube_attachment, plays_youtube_here, set_youtube_failure, start_of as start_of_youtube,
+    youtube_tracks, youtube_video_of,
+};
 
 /// Larger sounds and videos are offered as downloads: the whole file is held in memory while it
 /// plays. The instance's default limit is 25 MB.
@@ -185,6 +189,13 @@ impl AttachmentAudio {
     fn stop(&mut self) -> Option<VideoPicture> {
         self.fetching = None;
         if let Some(player) = self.player.as_ref() {
+            // What the player refused (or what broke part way: a streamed track can) stays
+            // refused once stopped, so its card says so rather than offering play again.
+            let status = player.status();
+            if let (Some(clip), ClipPhase::CannotPlay(error)) = (status.clip, status.phase) {
+                tracing::info!(%error, "cannot play a sound or video here");
+                self.unplayable.insert(Snowflake::from_raw(clip));
+            }
             player.stop();
         }
         self.video.take().and_then(|video| video.picture)
@@ -468,6 +479,7 @@ pub fn is_played_in_app(attachment: &Attachment) -> bool {
 #[must_use]
 pub fn is_video_played_in_app(attachment: &Attachment) -> bool {
     plays_video_type(&attachment.content_type)
+        || (is_youtube_attachment(attachment) && plays_youtube_here())
 }
 
 /// Play or pause: the first play fetches the file, stopping whichever sound played before.
@@ -486,7 +498,14 @@ pub fn toggle_attachment_audio(attachment: &Attachment, cx: &mut App) {
         AudioPlayback::Idle | AudioPlayback::Stopped => fetch_and_play(attachment, cx),
         // Pause while it loads: the download is dropped and the card is back to play, as the
         // web's pause before the sound could start.
-        AudioPlayback::Loading => cx.global_mut::<AttachmentAudio>().fetching = None,
+        AudioPlayback::Loading => {
+            let store = cx.global_mut::<AttachmentAudio>();
+            store.fetching = None;
+            // A streamed video may already be opening in the player.
+            if let Some(player) = store.player.as_ref() {
+                player.stop();
+            }
+        }
         AudioPlayback::CannotPlay => return,
     }
     keep_redrawing(cx);
@@ -541,6 +560,10 @@ fn apply_volume(volume: AttachmentVolume, cx: &App) {
 }
 
 fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
+    if is_youtube_attachment(attachment) {
+        stream_youtube_video(attachment.id, cx);
+        return;
+    }
     let attachment_id = attachment.id;
     let is_video = is_video_played_in_app(attachment);
     // Checked before anything is fetched or decoded: the players check the bytes again.
@@ -567,20 +590,10 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
         store.unplayable.insert(Snowflake::from_raw(refused));
     }
     stop_playback(cx);
-    let store = cx.global_mut::<AttachmentAudio>();
-    if store.player.is_none() {
-        match ClipPlayer::new(Box::new(SystemAudioDevices)) {
-            Ok(player) => {
-                // Attachments play where voices do (the web's `setSinkId` on its elements).
-                player.set_output_device(output_device_id);
-                store.player = Some(player);
-            }
-            Err(error) => {
-                tracing::warn!(error = %error.kind(), "cannot start the attachment player");
-                return;
-            }
-        }
+    if !ensure_player(output_device_id, cx) {
+        return;
     }
+    let store = cx.global_mut::<AttachmentAudio>();
     let session = store.session;
     let fetched = Fetched {
         attachment_id,
@@ -637,6 +650,91 @@ fn fetch_and_play(attachment: &Attachment, cx: &mut App) {
     cx.global_mut::<AttachmentAudio>().fetching = Some((attachment_id, task, Instant::now()));
 }
 
+/// Starts the player at the first play; false when it cannot start.
+fn ensure_player(output_device_id: Option<String>, cx: &mut App) -> bool {
+    let store = cx.global_mut::<AttachmentAudio>();
+    if store.player.is_some() {
+        return true;
+    }
+    match ClipPlayer::new(Box::new(SystemAudioDevices)) {
+        Ok(player) => {
+            // Attachments play where voices do (the web's `setSinkId` on its elements).
+            player.set_output_device(output_device_id);
+            store.player = Some(player);
+            true
+        }
+        Err(error) => {
+            tracing::warn!(error = %error.kind(), "cannot start the attachment player");
+            false
+        }
+    }
+}
+
+/// Plays a card's YouTube video (ADR-0063): its tracks are asked of YouTube on the network
+/// runtime, then streamed, the sound by the player and the pictures following it. It shows as
+/// loading until the player has opened its sound.
+fn stream_youtube_video(attachment_id: Snowflake, cx: &mut App) {
+    let Some(video) = youtube_video_of(attachment_id, cx) else {
+        cx.default_global::<AttachmentAudio>()
+            .unplayable
+            .insert(attachment_id);
+        return;
+    };
+    let output_device_id = crate::preferences::preferences(cx)
+        .and_then(|preferences| preferences.voice_settings.output_device_id.clone());
+    stop_playback(cx);
+    set_youtube_failure(attachment_id, None, cx);
+    if !ensure_player(output_device_id, cx) {
+        return;
+    }
+    let session = cx.global::<AttachmentAudio>().session;
+    let asking = spawn_on_network_runtime(cx, youtube_tracks(video.video_id.clone()));
+    let task = cx.spawn(async move |cx| {
+        let answer = asking.await;
+        cx.update(|cx| {
+            let store = cx.global_mut::<AttachmentAudio>();
+            let is_still_wanted = store.session == session
+                && store
+                    .fetching
+                    .as_ref()
+                    .is_some_and(|(id, _, _)| *id == attachment_id);
+            if !is_still_wanted {
+                return;
+            }
+            match answer {
+                Ok(Ok(tracks)) => {
+                    apply_volume(attachment_volume(cx), cx);
+                    let start =
+                        start_of_youtube(&video).map_or(ClipStart::Beginning, ClipStart::At);
+                    start_video(
+                        attachment_id,
+                        |timing| VideoStream::start_remote(tracks.pictures, timing),
+                        cx,
+                    );
+                    if let Some(player) = cx.global::<AttachmentAudio>().player.as_ref() {
+                        player.load_remote_and_play_from(attachment_id.raw(), tracks.sound, start);
+                    }
+                    // Still loading: the redraw loop ends it once the player holds the sound.
+                }
+                Ok(Err(failure)) => {
+                    set_youtube_failure(attachment_id, Some(failure), cx);
+                    let store = cx.global_mut::<AttachmentAudio>();
+                    store.fetching = None;
+                    store.unplayable.insert(attachment_id);
+                }
+                Err(_) => {
+                    let store = cx.global_mut::<AttachmentAudio>();
+                    store.fetching = None;
+                    store.stopped.insert(attachment_id);
+                }
+            }
+            keep_redrawing(cx);
+            cx.refresh_windows();
+        });
+    });
+    cx.global_mut::<AttachmentAudio>().fetching = Some((attachment_id, task, Instant::now()));
+}
+
 /// Where a sound starts for a press at `fraction` of it: a time when its length is known here
 /// (some files do not tell the decoder theirs), else the share of the length the file says.
 fn start_of(fraction: Option<f32>, known_duration: Option<Duration>) -> ClipStart {
@@ -682,7 +780,12 @@ fn play_fetched(fetched: &Fetched, bytes: Arc<[u8]>, cx: &mut App) {
     // The volume as it is now (it may have moved during the download), set before it starts.
     apply_volume(attachment_volume(cx), cx);
     if fetched.is_video {
-        start_video(attachment_id, Arc::clone(&bytes), &fetched.content_type, cx);
+        let (bytes, content_type) = (Arc::clone(&bytes), fetched.content_type.clone());
+        start_video(
+            attachment_id,
+            move |timing| VideoStream::start(bytes, &content_type, timing),
+            cx,
+        );
     }
     if fetched.reads_shape {
         read_sound_shape(attachment_id, Arc::clone(&bytes), &fetched.content_type, cx);
@@ -743,8 +846,12 @@ fn read_sound_shape(attachment_id: Snowflake, bytes: Arc<[u8]>, content_type: &s
     .detach();
 }
 
-/// Starts decoding a fetched video's pictures, timed by the player's position of its sound.
-fn start_video(attachment_id: Snowflake, bytes: Arc<[u8]>, content_type: &str, cx: &mut App) {
+/// Starts decoding a video's pictures with `start`, timed by the player's position of its sound.
+fn start_video(
+    attachment_id: Snowflake,
+    start: impl FnOnce(VideoTiming) -> std::io::Result<VideoStream>,
+    cx: &mut App,
+) {
     let Some(clock) = cx
         .global::<AttachmentAudio>()
         .player
@@ -753,8 +860,7 @@ fn start_video(attachment_id: Snowflake, bytes: Arc<[u8]>, content_type: &str, c
     else {
         return;
     };
-    let stream = match VideoStream::start(bytes, content_type, VideoTiming::Follow(Box::new(clock)))
-    {
+    let stream = match start(VideoTiming::Follow(Box::new(clock))) {
         Ok(stream) => stream,
         Err(error) => {
             tracing::warn!(error = %error.kind(), "cannot start a video's decoder");
@@ -831,6 +937,13 @@ fn keep_redrawing(cx: &mut App) {
             let is_active = cx.update(|cx| {
                 cx.refresh_windows();
                 let store = cx.global_mut::<AttachmentAudio>();
+                // A streamed video loads until the player has opened its sound.
+                if let Some(status) = store.player.as_ref().map(ClipPlayer::status)
+                    && let Some((id, _, _)) = store.fetching.as_ref()
+                    && status.clip == Some(id.raw())
+                {
+                    store.fetching = None;
+                }
                 // The length stays known for the card once another sound plays.
                 if let Some(status) = store.player.as_ref().map(ClipPlayer::status)
                     && let (Some(clip), Some(duration)) = (status.clip, status.duration)

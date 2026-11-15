@@ -1,0 +1,40 @@
+# 0063. YouTube videos play in their card, in Mellow's own player, on the desktop
+
+- Status: Accepted (Linux plays through yt-dlp when installed, rustypipe otherwise; macOS and Windows open the browser)
+- Date: 2026-11-15
+- Supersedes: the player window of [ADR-0061](0061-youtube-player-window-on-the-desktop.md)
+- Builds on: [ADR-0038](0038-play-audio-and-video-attachments-inline.md) (videos played in the list, one player at a time), [ADR-0041](0041-link-previews-fetched-by-the-server.md) and [ADR-0044](0044-provider-embeds.md) (link cards), [ADR-0051](0051-gpui-desktop-client.md) (the system FFmpeg on Linux)
+
+## Context
+The player window of ADR-0061 asked for a separate window and, on some videos, showed YouTube's "Sign in to confirm you're not a bot". The owner wants no window and no popup: the video plays **in the message's card**. GPUI draws no web content and a web view cannot be embedded in GPUI's window on Wayland, so YouTube's own player cannot be shown there. Knowing the risks, the owner chose a **native Mellow player**: Mellow fetches the video's streams itself and plays them with its own decoder.
+
+**This departs from YouTube's terms of service** (they forbid playing YouTube content outside YouTube's player and fetching its streams directly). The owner accepted that, along with the other risks: playback breaks whenever YouTube changes its API or its stream protection, until the extractor follows; YouTube may ask to "confirm you're not a bot" or block an address that streams too much.
+
+## Decision
+- **Extractors: yt-dlp first when it is installed, `rustypipe` otherwise** (owner's decision, 2026-11-15).
+  - **yt-dlp** (the most up to date; it needs Python and, for YouTube's challenges, a JavaScript runtime such as Deno) runs as a process of its own: `yt-dlp --ignore-config --no-cookies --no-cookies-from-browser --no-cache-dir --no-playlist --no-warnings -J -- https://www.youtube.com/watch?v=<id>`, the address rebuilt from the checked id. It is looked for only in `/usr/bin`, `/usr/local/bin` and `~/.local/bin`, never in the working directory. 45 s at most, 16 MiB of answer and 64 KiB of errors read at most, killed when dropped. `XDG_CACHE_HOME` and `DENO_DIR` point to a temporary folder removed right after, so its JavaScript runtime leaves no cache behind. Its error text names the failure (bot check, private, age, live, unavailable). YouTube refuses a fresh stream address for its first seconds, and keeps refusing one asked too early: Mellow waits 6 s after yt-dlp answers before the first range (yt-dlp's own `playback_wait`). Of the headers yt-dlp names for a track, only `User-Agent` is sent: never a cookie, and not its `Accept` (a browser page's, which googlevideo refused in testing).
+  - **`rustypipe` 0.11.4**, built in, when yt-dlp is missing or fails: a pure-Rust InnerTube client (GPL-3.0, compatible with Mellow's AGPL-3.0; `rquickjs` for YouTube's signature functions; `reqwest` 0.12 with rustls and Mozilla's roots). No storage (no cache, no failure report on disk), no account, no cookie. `rustypipe-botguard`, which answers YouTube's bot checks (PO tokens), is used when it is installed on `PATH` (never looked up in the working directory, as rustypipe does by default). When both fail, yt-dlp's reason wins when it names one.
+- **Tracks**: the picture track with the most lines up to **720** (the most a picture is shown at, `MAXIMUM_SHOWN_VIDEO_SIZE`; a Short counts its short side), VP9 before H.264 before AV1 (the cheapest to decode in software first), never HDR or DRM; when every track is taller, the smallest. The sound track: the video's own language before a dubbed one (yt-dlp's `language_preference`, rustypipe's default track), a plain copy before a range-compressed (DRC) one, then Opus before AAC, the richest. The same track serves the card and the enlarged viewer.
+- **Streaming** (`mellow-media::remote_file`, Linux): each track is read in HTTP byte ranges (8 MiB, halved down to 128 KiB while YouTube refuses a range) by a thread of its own that keeps up to 16 MiB ahead of the reader and 2 MiB behind; a seek outside starts a new range. libavformat reads it through the custom I/O the attachments use (`MediaInput`). The sound plays through the clip player (`ClipPlayer::load_remote_and_play_from`), the pictures follow its clock (`VideoStream::start_remote`): seek, pause, volume, speed keys and output device work as for a video attachment.
+- **Security**: a stream address comes from a third party. It is requested, and a redirect followed, only when it is `https`, on a `*.googlevideo.com` host, with no credentials and no port of its own (`is_allowed_stream_url`, checked when the tracks are chosen and at each redirect, five redirects at most). Requests carry no cookie, no referrer and nothing of the Mellow session; connect timeout 10 s, 20 s per read, a track above 8 GiB refused. Decoding keeps the attachments' limits (allowed decoders only, pixel limit, panic guard).
+- **In the card**: the poster is the play key. Once pressed, the video's own screen takes the poster's place with the attachment controls over it; the band gains "Enlarge" (and F), which opens the media viewer on the video, playing on. It starts at the link's `t=`. A card's video is an `Attachment` of its own kind (`video/x-mellow-youtube`, an id with the top bit set, which no instance gives), so the attachment player's rules hold unchanged: one sound or video at a time, stopped when its row leaves the list, when another channel opens or at sign-out.
+- **When it cannot play**, the card says why and offers "Open on YouTube" (the browser): a bot check or a refused address, a private, age-restricted or live video, an unavailable one, or a track that cannot be read (the network, or a change on YouTube's side).
+- **macOS and Windows** keep opening the link in the browser for now: Windows decodes no video yet, and AVAssetReader reads no custom byte stream (a remote reader for AVFoundation is a follow-up).
+- **The player window is removed**: `crates/mellow-player`, `youtube_player.rs`, WebKitGTK, wry and tao, their packaging and CI, the "Playing in the player" state, its preferences and strings.
+
+## Known limits (found while verifying, 2026-11-15)
+- **rustypipe alone plays few videos**: without a PO token, YouTube serves its only working client (iOS) about the first megabyte of most tracks, then answers 403; rustypipe 0.11.4 (April 2025) cannot use its other clients any more ("could not get deobf data"). Without yt-dlp, a recent video stops after a few seconds and the card offers YouTube.
+- **Starting takes about 8 to 10 s** with yt-dlp: 2 to 3 s for yt-dlp, then the 6 s wait.
+- One of five yt-dlp plays failed at its first range (403) during testing: the card then says it cannot play and offers YouTube.
+
+## Consequences
+- No window, no web engine: Linux no longer needs WebKitGTK or GStreamer, and the packages lose a binary.
+- YouTube sees the reader's address and Mellow's requests (no referrer, no cookie), never the instance.
+- Nothing is written to disk by the extractors or the player: no cache, no temporary file left (checked with `find -newer` on `~/.cache`, `/tmp` and the profile's folders). Memory: about 50 MB more while a 720p video plays; once the row is left, its threads end, but the process keeps about 40 to 60 MB more than before the first play (the allocator keeping freed memory, not confirmed).
+- New crates on Linux: `rustypipe` and what it brings (`rquickjs`, which builds QuickJS's C, `reqwest` 0.12 beside the workspace's 0.13, `fancy-regex`, `phf`, `quick-xml`…); `mellow-media` gains `reqwest`'s `blocking` feature and `url`.
+- The extractor must follow YouTube: without a maintained one, more and more videos fall back to "Open on YouTube".
+
+## Alternatives
+- **Keep the player window (ADR-0061)**: what the owner no longer wants.
+- **Extraction written in Mellow**: the signature and PO token work of a whole project, against a moving target.
+- **yt-dlp only**: needs Python and a JavaScript runtime on every reader's system; rustypipe keeps a built-in path (limited, see above) when they are missing.
