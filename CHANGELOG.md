@@ -4,6 +4,25 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.53.0] - 2026-11-15
+Private calls with Mellow's own ringtones, profiles as a modal and a hover card, real link cards and a sound player, a media viewer on the desktop, role colours and icons, and sharper screen shares. Migration 0044 (call messages); the protocol only grows.
+
+### Added
+- Private calls in conversations and groups, on the web and the desktop (ADR-0062): a Call button in the header and the profile, an incoming call card everywhere with a ringtone (a Christmas version in December), Answer or Decline (Ctrl+Enter answers), a ringback tone, the call view and voice panel, a join banner and call messages ("Missed call", "Unanswered call", "Call · 12 min"). Blocks never ring nor show; ringing is rate limited per caller, conversation and callee; blocked people are muted by default in a call.
+- Profiles open in a centred modal (banner, about, links, roles, member since) and preview in a card when a name is pointed at or focused, on the web and the desktop; "View profile of X" in a message's menu.
+- Link cards: pages under a seal with the site's colour, YouTube as a media card (poster, title, channel, Shorts upright, start time); a sound player whose waveform is the seek bar, with speeds that keep the pitch on the desktop.
+- Desktop: YouTube plays in a Mellow player window (ADR-0061; WebKitGTK with GStreamer and bubblewrap on Linux, WebView2 on Windows), a media viewer for pictures and videos (actual size, zoom, previous and next, open with the default app), video controls over the picture with keyboard shortcuts.
+- Member names take their role's colour, readable on both themes; role icons before group headings, after names and after message authors.
+
+### Changed
+- Screen shares refine a still screen for a second after each change: text over a still page goes from about 50 to 62 dB at 1440p30 for 8 % more network rate (ADR-0058 amended).
+- The web client loads rarely opened panels with their first use: the main chunk goes from 508 kB to 476 kB.
+
+### Fixed
+- YouTube cards had no poster when encoding outran the link preview budget: the budget now bounds the fetches only (ADR-0041 amended).
+- Desktop: an avatar's initial showed through transparent pictures.
+- Server tests could fail when several encrypted databases opened at once (SQLCipher's first-use setup now finishes first).
+
 ## [0.52.0] - 2026-11-14
 The first Windows release of the desktop app: a one-screen installer for the current user, no administrator rights, and the same signed self-update as macOS and Linux (ADR-0060). Windows' SmartScreen asks once, the first time: "More info", then "Run anyway". No database migration and no protocol change; the server only changes its version.
 
