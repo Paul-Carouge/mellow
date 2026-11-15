@@ -103,6 +103,31 @@ impl Producer {
         unsafe { self.draw(id, t, 0, pts, true) }
     }
 
+    /// The BGRX colours [`Producer::quadrants`] draws, before any turn: red,
+    /// green, blue, white.
+    #[allow(dead_code, reason = "encode.rs uses it, busy_gpu.rs does not")]
+    pub const QUADRANT_COLOURS: [[u8; 4]; 4] = [
+        [0, 0, 255, 0],
+        [0, 255, 0, 0],
+        [255, 0, 0, 0],
+        [255, 255, 255, 0],
+    ];
+
+    /// Four quadrants (top left, top right, bottom left, bottom right) in
+    /// [`Producer::QUADRANT_COLOURS`] turned by `turn` places, so each
+    /// picture differs from the last and a misplaced chroma plane or a stale
+    /// picture shows.
+    #[allow(dead_code, reason = "encode.rs uses it, busy_gpu.rs does not")]
+    pub unsafe fn quadrants(&self, id: usize, turn: usize, pts: Duration) -> VideoFrame {
+        let (w, h) = (self.w, self.h);
+        unsafe {
+            self.draw_with(id, 0, pts, |x, y| {
+                let quadrant = usize::from(x >= w / 2) + 2 * usize::from(y >= h / 2);
+                Self::QUADRANT_COLOURS[(quadrant + turn) % 4]
+            })
+        }
+    }
+
     unsafe fn draw(
         &self,
         id: usize,
@@ -112,34 +137,46 @@ impl Producer {
         noise: bool,
     ) -> VideoFrame {
         let (w, h) = (self.w, self.h);
+        let (bx, by) = ((t * 9) % (w - 256), (t * 5) % (h - 256));
+        unsafe {
+            self.draw_with(id, generation, pts, |x, y| {
+                let in_box = (bx..bx + 256).contains(&x) && (by..by + 256).contains(&y);
+                if noise {
+                    [self::noise(x, y); 4]
+                } else if in_box {
+                    [255, 255, 255, 0]
+                } else {
+                    [
+                        (x + t * 4) as u8,
+                        (y + t * 2) as u8,
+                        ((x ^ y) >> 3) as u8,
+                        0,
+                    ]
+                }
+            })
+        }
+    }
+
+    unsafe fn draw_with(
+        &self,
+        id: usize,
+        generation: u32,
+        pts: Duration,
+        pixel: impl Fn(u32, u32) -> [u8; 4],
+    ) -> VideoFrame {
+        let (w, h) = (self.w, self.h);
         unsafe {
             let up = &*self.upload;
             let stride = up.linesize[0] as usize;
             let pixels = std::slice::from_raw_parts_mut(up.data[0], stride * h as usize);
-            let (bx, by) = ((t * 9) % (w - 256), (t * 5) % (h - 256));
             for (y, row) in pixels.chunks_exact_mut(stride).enumerate() {
-                let y = y as u32;
                 for (x, px) in row[..w as usize * 4]
                     .as_chunks_mut::<4>()
                     .0
                     .iter_mut()
                     .enumerate()
                 {
-                    let x = x as u32;
-                    let in_box = (bx..bx + 256).contains(&x) && (by..by + 256).contains(&y);
-                    let v = if noise {
-                        [self::noise(x, y); 4]
-                    } else if in_box {
-                        [255, 255, 255, 0]
-                    } else {
-                        [
-                            (x + t * 4) as u8,
-                            (y + t * 2) as u8,
-                            ((x ^ y) >> 3) as u8,
-                            0,
-                        ]
-                    };
-                    *px = v;
+                    *px = pixel(x as u32, y as u32);
                 }
             }
             ok(

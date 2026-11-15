@@ -515,3 +515,116 @@ fn quality_rate_control_trades_size_for_quality() {
         assert!(small < big, "{codec:?}: {small} >= {big} bytes");
     }
 }
+
+/// The chroma of a decoded H.264 picture at the centre of each quadrant of
+/// [`Producer::quadrants`], as (Cb, Cr), and its size.
+struct QuadrantChroma {
+    size: (usize, usize),
+    /// Top left, top right, bottom left, bottom right.
+    chroma: [(u8, u8); 4],
+}
+
+/// BT.709 limited-range chroma (Cb, Cr) of [`Producer::QUADRANT_COLOURS`].
+const QUADRANT_CHROMA: [(u8, u8); 4] = [(102, 240), (42, 26), (240, 118), (128, 128)];
+
+/// Decodes a real-time H.264 stream (parameter sets in band) in software.
+unsafe fn decode_h264_quadrants(packets: &[vesper_core::EncodedPacket]) -> Vec<QuadrantChroma> {
+    use vesper_encode::ffmpeg as ff;
+    unsafe {
+        let codec = ff::avcodec_find_decoder(ff::AV_CODEC_ID_H264);
+        let mut ctx = ff::avcodec_alloc_context3(codec);
+        common::ok(
+            ff::avcodec_open2(ctx, codec, std::ptr::null_mut()),
+            "open decoder",
+        );
+        let mut pkt = ff::av_packet_alloc();
+        let mut frame = ff::av_frame_alloc();
+        let mut out = Vec::new();
+        let receive = |out: &mut Vec<QuadrantChroma>| {
+            while ff::avcodec_receive_frame(ctx, frame) >= 0 {
+                let f = &*frame;
+                assert_eq!(f.format, ff::AV_PIX_FMT_YUV420P);
+                let (w, h) = (f.width as usize, f.height as usize);
+                let at = |x: usize, y: usize| {
+                    let (cx, cy) = (x / 2, y / 2);
+                    (
+                        *f.data[1].add(cy * f.linesize[1] as usize + cx),
+                        *f.data[2].add(cy * f.linesize[2] as usize + cx),
+                    )
+                };
+                let (left, right, top, bottom) = (w / 4, 3 * w / 4, h / 4, 3 * h / 4);
+                out.push(QuadrantChroma {
+                    size: (w, h),
+                    chroma: [
+                        at(left, top),
+                        at(right, top),
+                        at(left, bottom),
+                        at(right, bottom),
+                    ],
+                });
+                ff::av_frame_unref(frame);
+            }
+        };
+        for p in packets {
+            common::ok(ff::av_new_packet(pkt, p.data.len() as i32), "packet");
+            std::ptr::copy_nonoverlapping(p.data.as_ptr(), (*pkt).data, p.data.len());
+            common::ok(ff::avcodec_send_packet(ctx, pkt), "decode");
+            ff::av_packet_unref(pkt);
+            receive(&mut out);
+        }
+        ff::avcodec_send_packet(ctx, std::ptr::null());
+        receive(&mut out);
+        ff::av_frame_free(&raw mut frame);
+        ff::av_packet_free(&raw mut pkt);
+        ff::avcodec_free_context(&raw mut ctx);
+        out
+    }
+}
+
+/// A 4K screen shared at the 1440p quality (Mellow's ADR-0054 layers, 60
+/// frames a second): every picture of every layer keeps the source's
+/// colours, so a receiver showing a green or frozen picture was not sent one.
+/// (Its streams are `mellow-media`'s `vaapi-real-time-quadrants-*` fixtures.)
+#[test]
+fn real_time_h264_layers_of_a_4k_source_keep_its_colours() {
+    if !vesper_core::test_gpu() {
+        return;
+    }
+    let producer = unsafe { Producer::new(3_840, 2_160) };
+    let mut top = Encoder::new_real_time_h264(2_560, 1_440, 60, 12_000_000).unwrap();
+    let mut lower: Vec<Encoder> = [(1_280, 720), (640, 360)]
+        .into_iter()
+        .map(|(w, h)| top.new_scaled_real_time_h264(w, h, 30, 1_500_000).unwrap())
+        .collect();
+    let ms = |t: u64| Duration::from_millis(1_000 + t * 16);
+    let mut packets: Vec<Vec<vesper_core::EncodedPacket>> = vec![Vec::new(); 3];
+    for t in 0..6 {
+        let frame = unsafe { producer.quadrants(t as usize % POOL, t as usize, ms(t)) };
+        packets[0].extend(top.encode(frame).unwrap());
+        for (layer, encoder) in lower.iter_mut().enumerate() {
+            packets[layer + 1].extend(encoder.encode_scaled(&top, ms(t)).unwrap());
+        }
+    }
+    packets[0].extend(top.flush().unwrap());
+    for (layer, encoder) in lower.iter_mut().enumerate() {
+        packets[layer + 1].extend(encoder.flush().unwrap());
+    }
+    for (packets, size) in packets
+        .iter()
+        .zip([(2_560, 1_440), (1_280, 720), (640, 360)])
+    {
+        let pictures = unsafe { decode_h264_quadrants(packets) };
+        assert_eq!(pictures.len(), 6, "{size:?}: one picture per frame");
+        for (turn, picture) in pictures.iter().enumerate() {
+            assert_eq!(picture.size, size);
+            for (quadrant, (blue, red)) in picture.chroma.into_iter().enumerate() {
+                let (expected_blue, expected_red) = QUADRANT_CHROMA[(quadrant + turn) % 4];
+                assert!(
+                    blue.abs_diff(expected_blue) <= 8 && red.abs_diff(expected_red) <= 8,
+                    "{size:?} picture {turn} quadrant {quadrant}: {:?}",
+                    picture.chroma
+                );
+            }
+        }
+    }
+}

@@ -189,4 +189,88 @@ pub(crate) mod tests {
             "one picture per access unit, none held back"
         );
     }
+
+    /// Six pictures of a 3840 × 2160 source of four coloured quadrants (red, green, blue, white,
+    /// turned one place at each picture, so a stale picture shows) as the Linux share sends them at the 1440p quality and 60 frames per second: `vesper-encode`'s
+    /// real-time H.264 on AMD's VA-API (level 5.1, buffering-period and picture-timing SEI), each
+    /// layer scaled on the GPU, filler data removed as `str0m` does. The 640 × 360 layer is coded
+    /// 368 rows high and cropped.
+    pub(crate) const LINUX_SHARE_LAYERS: [(&[u8], (u32, u32)); 3] = [
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-2560x1440.h264"),
+            (2_560, 1_440),
+        ),
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-1280x720.h264"),
+            (1_280, 720),
+        ),
+        (
+            include_bytes!("../tests/fixtures/vaapi-real-time-quadrants-640x360.h264"),
+            (640, 360),
+        ),
+    ];
+
+    /// Decodes every access unit of `stream`, one of [`LINUX_SHARE_LAYERS`], with `decoder` and
+    /// checks each picture: its own, at its size, in its colours.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    fn assert_every_picture_shows(decoder: &mut H264Decoder, stream: &[u8], size: (u32, u32)) {
+        // BGRA of the quadrants before any turn: red, green, blue, white.
+        const COLOURS: [[u8; 3]; 4] = [[0, 0, 255], [0, 255, 0], [255, 0, 0], [255, 255, 255]];
+        const TOLERANCE: u8 = 24;
+        let access_units = crate::h264_stream::tests::access_units(stream);
+        assert_eq!(access_units.len(), 6, "{size:?}");
+        for (index, access_unit) in access_units.iter().enumerate() {
+            let picture = decoder
+                .decode(access_unit)
+                .unwrap_or_else(|error| panic!("{size:?} picture {index}: {error}"))
+                .unwrap_or_else(|| panic!("{size:?} picture {index}: none"));
+            assert_eq!((picture.width(), picture.height()), size);
+            let (width, height) = (size.0 as usize, size.1 as usize);
+            let bgra = picture.to_bgra().unwrap();
+            let centres = [
+                (width / 4, height / 4),
+                (3 * width / 4, height / 4),
+                (width / 4, 3 * height / 4),
+                (3 * width / 4, 3 * height / 4),
+            ];
+            for (quadrant, (x, y)) in centres.into_iter().enumerate() {
+                let expected = COLOURS[(quadrant + index) % 4];
+                let offset = (y * width + x) * 4;
+                let pixel = &bgra[offset..offset + 3];
+                assert!(
+                    pixel
+                        .iter()
+                        .zip(expected)
+                        .all(|(got, want)| got.abs_diff(want) <= TOLERANCE),
+                    "{size:?} picture {index} at ({x}, {y}): {pixel:?}, not {expected:?}"
+                );
+            }
+        }
+    }
+
+    /// What a Windows watcher of a Linux share saw (a frozen, green, striped picture): every
+    /// access unit of the Linux sender's layers gives its own picture at its size, in its colours
+    /// (`vesper-encode`'s `real_time_h264_layers_of_a_4k_source_keep_its_colours` made them).
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn every_picture_of_a_linux_share_decodes_in_its_colours() {
+        for (stream, size) in LINUX_SHARE_LAYERS {
+            assert_every_picture_shows(&mut H264Decoder::new().unwrap(), stream, size);
+        }
+    }
+
+    /// The server switches a watcher's slot between layers at their keyframes (a tile growing
+    /// into the stream view): one decoder meets a new size at each IDR and keeps showing them.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn one_decoder_follows_the_server_s_layer_switches() {
+        let mut decoder = H264Decoder::new().unwrap();
+        for (stream, size) in LINUX_SHARE_LAYERS
+            .into_iter()
+            .rev()
+            .chain(LINUX_SHARE_LAYERS)
+        {
+            assert_every_picture_shows(&mut decoder, stream, size);
+        }
+    }
 }
