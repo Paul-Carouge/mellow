@@ -142,6 +142,21 @@ pub struct ThemeTokens {
     pub component_attachment_video_focus_ring: u32,
     pub component_attachment_video_name_text: u32,
     pub component_attachment_video_size_text: u32,
+    pub component_audio_player_control_background_hover: u32,
+    pub component_audio_player_control_text: u32,
+    pub component_audio_player_control_text_hover: u32,
+    pub component_audio_player_error_text: u32,
+    pub component_audio_player_play_button_background: u32,
+    pub component_audio_player_play_button_background_hover: u32,
+    pub component_audio_player_play_button_background_playing: u32,
+    pub component_audio_player_play_button_background_playing_hover: u32,
+    pub component_audio_player_play_button_icon: u32,
+    pub component_audio_player_play_button_icon_playing: u32,
+    pub component_audio_player_time_text: u32,
+    pub component_audio_player_volume_accent: u32,
+    pub component_audio_player_wave_played: u32,
+    pub component_audio_player_wave_played_paused: u32,
+    pub component_audio_player_wave_unplayed: u32,
     pub component_auth_card_backdrop: u32,
     pub component_auth_card_background: u32,
     pub component_auth_card_error_text: u32,
@@ -350,19 +365,43 @@ pub struct ThemeTokens {
     pub component_link_preview_background: u32,
     pub component_link_preview_bar_fallback: u32,
     pub component_link_preview_border: u32,
+    pub component_link_preview_brand_mark_color: u32,
+    pub component_link_preview_card_background_hover: u32,
     pub component_link_preview_close_player_icon: u32,
     pub component_link_preview_cover_placeholder: u32,
     pub component_link_preview_cover_placeholder_icon: u32,
     pub component_link_preview_description_text: u32,
+    pub component_link_preview_external_icon: u32,
     pub component_link_preview_language_dot_fallback: u32,
     pub component_link_preview_language_dot_ring: u32,
+    pub component_link_preview_now_playing_background: u32,
+    pub component_link_preview_now_playing_background_hover: u32,
+    pub component_link_preview_now_playing_scrim: u32,
+    pub component_link_preview_now_playing_text: u32,
+    pub component_link_preview_page_title_text: u32,
     pub component_link_preview_picture_placeholder: u32,
     pub component_link_preview_play_button_background: u32,
     pub component_link_preview_play_button_background_hover: u32,
+    pub component_link_preview_play_button_background_lit: u32,
+    pub component_link_preview_play_button_background_pressed: u32,
     pub component_link_preview_play_button_focus_ring: u32,
     pub component_link_preview_play_button_icon: u32,
+    pub component_link_preview_play_button_icon_lit: u32,
     pub component_link_preview_player_background: u32,
     pub component_link_preview_player_error_text: u32,
+    pub component_link_preview_screen_background: u32,
+    pub component_link_preview_screen_control_background_hover: u32,
+    pub component_link_preview_screen_control_icon: u32,
+    pub component_link_preview_screen_control_icon_hover: u32,
+    pub component_link_preview_screen_error_text: u32,
+    pub component_link_preview_screen_fade: u32,
+    pub component_link_preview_screen_focus_ring: u32,
+    pub component_link_preview_screen_meta_text: u32,
+    pub component_link_preview_screen_title_text: u32,
+    pub component_link_preview_seal_fallback: u32,
+    pub component_link_preview_seal_fallback_text: u32,
+    pub component_link_preview_seal_ink_dark: u32,
+    pub component_link_preview_seal_ink_light: u32,
     pub component_link_preview_site_text: u32,
     pub component_link_preview_start_chip_background: u32,
     pub component_link_preview_start_chip_text: u32,
@@ -850,6 +889,21 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_attachment_video_focus_ring: 0x33B8_FFFF,
     component_attachment_video_name_text: 0xECE6_EDFF,
     component_attachment_video_size_text: 0xA99F_AAFF,
+    component_audio_player_control_background_hover: 0x221B_23FF,
+    component_audio_player_control_text: 0xC5BE_C6FF,
+    component_audio_player_control_text_hover: 0xD6D0_D7FF,
+    component_audio_player_error_text: 0xFA77_7CFF,
+    component_audio_player_play_button_background: 0x554C_56FF,
+    component_audio_player_play_button_background_hover: 0x635A_64FF,
+    component_audio_player_play_button_background_playing: 0xF2A4_6EFF,
+    component_audio_player_play_button_background_playing_hover: 0xE892_5AFF,
+    component_audio_player_play_button_icon: 0xFFFF_FFFF,
+    component_audio_player_play_button_icon_playing: 0x2B16_08FF,
+    component_audio_player_time_text: 0xA99F_AAFF,
+    component_audio_player_volume_accent: 0xC5BE_C6FF,
+    component_audio_player_wave_played: 0xF2A4_6EFF,
+    component_audio_player_wave_played_paused: 0xF8F4_F8FF,
+    component_audio_player_wave_unplayed: 0x8C82_8DFF,
     component_auth_card_backdrop: 0x110B_11FF,
     component_auth_card_background: 0x1B15_1CFF,
     component_auth_card_error_text: 0xFA77_7CFF,
@@ -1058,19 +1112,43 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_link_preview_background: 0x110B_11FF,
     component_link_preview_bar_fallback: 0x554C_56FF,
     component_link_preview_border: 0x3C35_3EFF,
+    component_link_preview_brand_mark_color: 0xFFFF_FFFF,
+    component_link_preview_card_background_hover: 0x221B_23FF,
     component_link_preview_close_player_icon: 0xC5BE_C6FF,
     component_link_preview_cover_placeholder: 0x221B_23FF,
     component_link_preview_cover_placeholder_icon: 0xA99F_AAFF,
     component_link_preview_description_text: 0xD6D0_D7FF,
+    component_link_preview_external_icon: 0xA99F_AAFF,
     component_link_preview_language_dot_fallback: 0x554C_56FF,
     component_link_preview_language_dot_ring: 0x3C35_3EFF,
+    component_link_preview_now_playing_background: 0xF2A4_6EFF,
+    component_link_preview_now_playing_background_hover: 0xE892_5AFF,
+    component_link_preview_now_playing_scrim: 0x110B_11B8,
+    component_link_preview_now_playing_text: 0x2B16_08FF,
+    component_link_preview_page_title_text: 0xF8F4_F8FF,
     component_link_preview_picture_placeholder: 0x221B_23FF,
     component_link_preview_play_button_background: 0x110B_11FF,
     component_link_preview_play_button_background_hover: 0x362E_37FF,
+    component_link_preview_play_button_background_lit: 0xF2A4_6EFF,
+    component_link_preview_play_button_background_pressed: 0xD47F_47FF,
     component_link_preview_play_button_focus_ring: 0x33B8_FFFF,
     component_link_preview_play_button_icon: 0xECE6_EDFF,
+    component_link_preview_play_button_icon_lit: 0x2B16_08FF,
     component_link_preview_player_background: 0x110B_11FF,
     component_link_preview_player_error_text: 0xFA77_7CFF,
+    component_link_preview_screen_background: 0x110B_11FF,
+    component_link_preview_screen_control_background_hover: 0x362E_37FF,
+    component_link_preview_screen_control_icon: 0xA99F_AAFF,
+    component_link_preview_screen_control_icon_hover: 0xECE6_EDFF,
+    component_link_preview_screen_error_text: 0xFA77_7CFF,
+    component_link_preview_screen_fade: 0x110B_11FF,
+    component_link_preview_screen_focus_ring: 0x33B8_FFFF,
+    component_link_preview_screen_meta_text: 0xA99F_AAFF,
+    component_link_preview_screen_title_text: 0xECE6_EDFF,
+    component_link_preview_seal_fallback: 0x362E_37FF,
+    component_link_preview_seal_fallback_text: 0xF8F4_F8FF,
+    component_link_preview_seal_ink_dark: 0x110B_11FF,
+    component_link_preview_seal_ink_light: 0xFFFF_FFFF,
     component_link_preview_site_text: 0xA99F_AAFF,
     component_link_preview_start_chip_background: 0x110B_11FF,
     component_link_preview_start_chip_text: 0xECE6_EDFF,
@@ -1558,6 +1636,21 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_attachment_video_focus_ring: 0x33B8_FFFF,
     component_attachment_video_name_text: 0xECE6_EDFF,
     component_attachment_video_size_text: 0xA99F_AAFF,
+    component_audio_player_control_background_hover: 0xECE6_EDFF,
+    component_audio_player_control_text: 0x594E_5BFF,
+    component_audio_player_control_text_hover: 0x392F_3AFF,
+    component_audio_player_error_text: 0xC426_2BFF,
+    component_audio_player_play_button_background: 0x695F_6BFF,
+    component_audio_player_play_button_background_hover: 0x594E_5BFF,
+    component_audio_player_play_button_background_playing: 0xE889_4BFF,
+    component_audio_player_play_button_background_playing_hover: 0xE07B_39FF,
+    component_audio_player_play_button_icon: 0xFFFF_FFFF,
+    component_audio_player_play_button_icon_playing: 0x2B16_08FF,
+    component_audio_player_time_text: 0x695F_6BFF,
+    component_audio_player_volume_accent: 0x594E_5BFF,
+    component_audio_player_wave_played: 0xA84F_1AFF,
+    component_audio_player_wave_played_paused: 0x221B_23FF,
+    component_audio_player_wave_unplayed: 0x8C82_8DFF,
     component_auth_card_backdrop: 0xF5F1_F6FF,
     component_auth_card_background: 0xFFFF_FFFF,
     component_auth_card_error_text: 0xC426_2BFF,
@@ -1766,19 +1859,43 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_link_preview_background: 0xF5F1_F6FF,
     component_link_preview_bar_fallback: 0xCBC5_CCFF,
     component_link_preview_border: 0xE3DD_E4FF,
+    component_link_preview_brand_mark_color: 0xFFFF_FFFF,
+    component_link_preview_card_background_hover: 0xECE6_EDFF,
     component_link_preview_close_player_icon: 0x594E_5BFF,
     component_link_preview_cover_placeholder: 0xECE6_EDFF,
     component_link_preview_cover_placeholder_icon: 0x695F_6BFF,
     component_link_preview_description_text: 0x392F_3AFF,
+    component_link_preview_external_icon: 0x695F_6BFF,
     component_link_preview_language_dot_fallback: 0xCBC5_CCFF,
     component_link_preview_language_dot_ring: 0xE3DD_E4FF,
+    component_link_preview_now_playing_background: 0xE889_4BFF,
+    component_link_preview_now_playing_background_hover: 0xE07B_39FF,
+    component_link_preview_now_playing_scrim: 0x110B_11B8,
+    component_link_preview_now_playing_text: 0x2B16_08FF,
+    component_link_preview_page_title_text: 0x221B_23FF,
     component_link_preview_picture_placeholder: 0xECE6_EDFF,
     component_link_preview_play_button_background: 0x110B_11FF,
     component_link_preview_play_button_background_hover: 0x362E_37FF,
+    component_link_preview_play_button_background_lit: 0xE889_4BFF,
+    component_link_preview_play_button_background_pressed: 0xCC6A_2CFF,
     component_link_preview_play_button_focus_ring: 0x33B8_FFFF,
     component_link_preview_play_button_icon: 0xECE6_EDFF,
+    component_link_preview_play_button_icon_lit: 0x2B16_08FF,
     component_link_preview_player_background: 0x110B_11FF,
     component_link_preview_player_error_text: 0xC426_2BFF,
+    component_link_preview_screen_background: 0x110B_11FF,
+    component_link_preview_screen_control_background_hover: 0x362E_37FF,
+    component_link_preview_screen_control_icon: 0xA99F_AAFF,
+    component_link_preview_screen_control_icon_hover: 0xECE6_EDFF,
+    component_link_preview_screen_error_text: 0xFA77_7CFF,
+    component_link_preview_screen_fade: 0x110B_11FF,
+    component_link_preview_screen_focus_ring: 0x33B8_FFFF,
+    component_link_preview_screen_meta_text: 0xA99F_AAFF,
+    component_link_preview_screen_title_text: 0xECE6_EDFF,
+    component_link_preview_seal_fallback: 0xDFD8_DFFF,
+    component_link_preview_seal_fallback_text: 0x221B_23FF,
+    component_link_preview_seal_ink_dark: 0x110B_11FF,
+    component_link_preview_seal_ink_light: 0xFFFF_FFFF,
     component_link_preview_site_text: 0x695F_6BFF,
     component_link_preview_start_chip_background: 0x110B_11FF,
     component_link_preview_start_chip_text: 0xECE6_EDFF,
@@ -2183,6 +2300,15 @@ pub const COMPONENT_ATTACHMENT_ROW_ICON_SIZE: f32 = 16.0;
 pub const COMPONENT_ATTACHMENT_VIDEO_BAND_COMPACT_WIDTH: f32 = 280.0;
 pub const COMPONENT_ATTACHMENT_VIDEO_BAND_PADDING_BLOCK: f32 = 4.0;
 pub const COMPONENT_ATTACHMENT_VIDEO_BAND_PADDING_INLINE: f32 = 12.0;
+pub const COMPONENT_AUDIO_PLAYER_CONTROL_SIZE: f32 = 32.0;
+pub const COMPONENT_AUDIO_PLAYER_PLAY_BUTTON_ICON_SIZE: f32 = 20.0;
+pub const COMPONENT_AUDIO_PLAYER_PLAY_BUTTON_SIZE: f32 = 44.0;
+pub const COMPONENT_AUDIO_PLAYER_VOLUME_WIDTH: f32 = 72.0;
+pub const COMPONENT_AUDIO_PLAYER_WAVE_BAR_COUNT: f32 = 48.0;
+pub const COMPONENT_AUDIO_PLAYER_WAVE_BAR_GAP: f32 = 2.0;
+pub const COMPONENT_AUDIO_PLAYER_WAVE_BAR_MIN_HEIGHT: f32 = 3.0;
+pub const COMPONENT_AUDIO_PLAYER_WAVE_HEIGHT: f32 = 32.0;
+pub const COMPONENT_AUDIO_PLAYER_WAVE_PLACEHOLDER_LEVEL: f32 = 0.16;
 pub const COMPONENT_AUTH_CARD_ERROR_ICON_SIZE: f32 = 20.0;
 pub const COMPONENT_AUTH_CARD_LINK_UNDERLINE_WIDTH: f32 = 1.0;
 pub const COMPONENT_AUTH_CARD_MARGIN: f32 = 16.0;
@@ -2443,6 +2569,7 @@ pub const COMPONENT_KEY_CHIP_RADIUS: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_ACTION_ICON_SIZE: f32 = 16.0;
 pub const COMPONENT_LINK_PREVIEW_BAR_WIDTH: f32 = 4.0;
 pub const COMPONENT_LINK_PREVIEW_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_LINK_PREVIEW_BRAND_MARK_HEIGHT: f32 = 20.0;
 pub const COMPONENT_LINK_PREVIEW_COVER_RADIUS: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_COVER_SIZE: f32 = 96.0;
 pub const COMPONENT_LINK_PREVIEW_COVER_SIZE_MIN: f32 = 64.0;
@@ -2450,12 +2577,21 @@ pub const COMPONENT_LINK_PREVIEW_DESCRIPTION_LINES: f32 = 3.0;
 pub const COMPONENT_LINK_PREVIEW_GAP: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_LANGUAGE_DOT_SIZE: f32 = 10.0;
 pub const COMPONENT_LINK_PREVIEW_MAX_WIDTH: f32 = 432.0;
+pub const COMPONENT_LINK_PREVIEW_NOW_PLAYING_HEIGHT: f32 = 32.0;
 pub const COMPONENT_LINK_PREVIEW_OWNER_AVATAR_SIZE: f32 = 40.0;
 pub const COMPONENT_LINK_PREVIEW_PADDING: f32 = 12.0;
 pub const COMPONENT_LINK_PREVIEW_PICTURE_RADIUS: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_PLAY_BUTTON_ICON_SIZE: f32 = 24.0;
+pub const COMPONENT_LINK_PREVIEW_PLAY_BUTTON_PRESSED_SCALE: f32 = 0.94;
+pub const COMPONENT_LINK_PREVIEW_PLAY_BUTTON_RADIUS_LIT: f32 = 16.0;
 pub const COMPONENT_LINK_PREVIEW_PLAY_BUTTON_SIZE: f32 = 56.0;
+pub const COMPONENT_LINK_PREVIEW_POSTER_HOVER_SCALE: f32 = 1.03;
 pub const COMPONENT_LINK_PREVIEW_RADIUS: f32 = 12.0;
+pub const COMPONENT_LINK_PREVIEW_SCREEN_AVATAR_SIZE: f32 = 24.0;
+pub const COMPONENT_LINK_PREVIEW_SCREEN_FADE_RATIO: f32 = 0.4;
+pub const COMPONENT_LINK_PREVIEW_SCREEN_PADDING: f32 = 12.0;
+pub const COMPONENT_LINK_PREVIEW_SEAL_RADIUS: f32 = 4.0;
+pub const COMPONENT_LINK_PREVIEW_SEAL_SIZE: f32 = 20.0;
 pub const COMPONENT_LINK_PREVIEW_SHORT_PLAYER_MAX_HEIGHT: f32 = 480.0;
 pub const COMPONENT_LINK_PREVIEW_START_CHIP_INSET: f32 = 8.0;
 pub const COMPONENT_LINK_PREVIEW_START_CHIP_RADIUS: f32 = 4.0;

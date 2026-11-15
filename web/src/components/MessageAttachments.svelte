@@ -12,6 +12,7 @@
     pauseOtherMediaWhenOneStarts,
     videoBoxSize,
   } from "./attachment-preview";
+  import AudioPlayer from "./AudioPlayer.svelte";
   import { attachmentCountLabel, fileNameStartAndEnd, humanFileSize } from "./format";
   import Icon from "./Icon.svelte";
   import { retryImageOnceThenMarkFailed } from "./image-retry";
@@ -20,7 +21,7 @@
   import { lengthTokenInPixels } from "./tokens";
 
   // Attachments under a message body (DESIGN.md §5.4 "Attachments"): previewable images inline,
-  // videos and sounds as players (ADR-0038), anything else as a download card. A message still in the outbox is not readable by others
+  // videos and sounds as players (ADR-0038, sounds in Mellow's own player), anything else as a download card. A message still in the outbox is not readable by others
   // yet, so its files show as cards without links.
   interface Props {
     attachments: readonly Attachment[];
@@ -78,7 +79,10 @@
     if (player instanceof HTMLMediaElement && player.error?.code === MediaError.MEDIA_ERR_NETWORK) {
       return;
     }
-    const hadFocus = event.currentTarget === document.activeElement;
+    showDownloadCardInstead(attachment, event.currentTarget === document.activeElement);
+  }
+
+  function showDownloadCardInstead(attachment: Attachment, hadFocus: boolean) {
     failedMediaIds.add(attachment.id);
     // The player that held the focus is gone: hand it to the card's download link.
     if (hadFocus) {
@@ -215,6 +219,38 @@
           </figcaption>
         </figure>
       </li>
+    {:else if display === "audio"}
+      <!-- The file card holding a Mellow player (DESIGN.md 5.4, "Sound player"). -->
+      <li
+        class="w-full max-w-(--mw-component-attachment-file-max-width) rounded-(--mw-component-attachment-file-radius) border-(length:--mw-component-attachment-file-border-width) border-(--mw-component-attachment-file-border) bg-(--mw-component-attachment-file-background) p-(--mw-component-attachment-file-padding)"
+      >
+        <AudioPlayer {attachment} sizeLabel={size} onUnplayable={(hadFocus) => showDownloadCardInstead(attachment, hadFocus)}>
+          {#snippet nameRow()}
+            <div class="flex min-w-0 items-center gap-xs">
+              <a
+                href={attachmentUrl(attachment)}
+                download={attachment.file_name}
+                title={attachment.file_name}
+                class="flex min-h-(--mw-size-hit-desktop-min) min-w-0 flex-1 items-center type-body-lg text-(--mw-component-attachment-file-name-text) hover:underline focus-visible:focus-ring pointer-coarse:min-h-(--mw-size-hit-web-min)"
+              >
+                {@render fileName(attachment.file_name)}
+                <span class="sr-only">{strings.messages.download(attachment.file_name)}</span>
+              </a>
+              <!-- The same download as the name, as a larger pointer target. -->
+              <a
+                href={attachmentUrl(attachment)}
+                download={attachment.file_name}
+                tabindex="-1"
+                aria-hidden="true"
+                title={strings.messages.download(attachment.file_name)}
+                class="-me-2xs grid size-(--mw-component-attachment-download-button-size) shrink-0 place-items-center rounded-sm text-(--mw-component-attachment-download-icon) transition-colors duration-(--mw-motion-duration-fast) hover:bg-(--mw-component-audio-player-control-background-hover) hover:text-(--mw-component-attachment-download-icon-hover) pointer-coarse:size-(--mw-size-hit-web-min)"
+              >
+                <Icon name="download-simple" class="size-(--mw-component-attachment-download-icon-size)" />
+              </a>
+            </div>
+          {/snippet}
+        </AudioPlayer>
+      </li>
     {:else}
       {@const hasPlaybackFailed = failedMediaIds.has(attachment.id)}
       <li
@@ -266,19 +302,6 @@
             </a>
           {/if}
         </div>
-        {#if display === "audio"}
-          <audio
-            src={attachmentUrl(attachment)}
-            controls
-            preload="none"
-            aria-label={strings.messages.audioPlayer(attachment.file_name)}
-            class="mt-(--mw-component-attachment-file-gap) block w-full focus-visible:focus-ring"
-            onplay={(event) => pauseOtherMediaWhenOneStarts(event.currentTarget)}
-            onpause={(event) => forgetMediaWhenItStops(event.currentTarget)}
-            onerror={(event) => showDownloadCardAfterPlaybackFailed(event, attachment)}
-            {@attach playAtRememberedVolume}
-          ></audio>
-        {/if}
       </li>
     {/if}
   {/each}

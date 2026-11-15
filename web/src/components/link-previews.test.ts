@@ -3,13 +3,20 @@ import { describe, expect, it } from "vitest";
 import type { LinkPreview } from "../lib/protocol";
 import {
   clockDurationLabel,
+  colorNumberOf,
+  contrastRatio,
   durationParts,
   knownLinkEmbedOf,
   linkHostName,
   linkPreviewBarColor,
   linkPreviewImageUrl,
   linkPreviewLayout,
+  siteInitialOf,
+  siteLabelOf,
+  siteSealInkOn,
   thumbnailWidth,
+  youTubeChannelNameOf,
+  youTubeDurationSecondsOf,
   youTubeEmbedUrl,
   youTubeEmbedOf,
 } from "./link-previews";
@@ -262,5 +269,76 @@ describe("thumbnailWidth", () => {
     expect(thumbnailWidth({ width: 64, height: 32 })).toBe(
       "min(var(--mw-component-link-preview-thumbnail-size), calc(var(--mw-component-link-preview-thumbnail-size) * 64 / 32), 64px)",
     );
+  });
+});
+
+describe("siteLabelOf and siteInitialOf (the page card's first line)", () => {
+  it("names the site, else the host without www", () => {
+    expect(siteLabelOf({ url: "https://www.rust-lang.org/", site_name: "Rust" })).toBe("Rust");
+    expect(siteLabelOf({ url: "https://www.rust-lang.org/" })).toBe("rust-lang.org");
+    expect(siteLabelOf({ url: "https://blog.rust-lang.org/2024/", site_name: "  " })).toBe("blog.rust-lang.org");
+  });
+
+  it("takes the first character, upper-cased, whole even beyond the basic plane", () => {
+    expect(siteInitialOf("rust-lang.org")).toBe("R");
+    expect(siteInitialOf("Écran")).toBe("É");
+    expect(siteInitialOf("𝒳 site")).toBe("𝒳");
+    expect(siteInitialOf("")).toBe("");
+  });
+});
+
+describe("siteSealInkOn (the seal's initial reaches 4.5:1)", () => {
+  const INKS = { dark: 0x110b11, light: 0xffffff };
+
+  it("writes dark on light colours and light on dark ones", () => {
+    expect(siteSealInkOn(0xf2a46e, INKS)).toBe("dark");
+    expect(siteSealInkOn(0x1e2327, INKS)).toBe("light");
+    expect(siteSealInkOn(0xd3382c, INKS)).toBe("light");
+  });
+
+  it("gives up on mid greys where neither ink reaches 4.5:1", () => {
+    expect(siteSealInkOn(0x777777, INKS)).toBeNull();
+  });
+
+  it("measures contrast as WCAG does", () => {
+    expect(contrastRatio(0x000000, 0xffffff)).toBeCloseTo(21);
+    expect(contrastRatio(0xffffff, 0xffffff)).toBeCloseTo(1);
+  });
+
+  it("reads token and page colours, with or without alpha", () => {
+    expect(colorNumberOf("#110B11")).toBe(0x110b11);
+    expect(colorNumberOf(" #110b11b8 ")).toBe(0x110b11);
+    expect(colorNumberOf("rgb(1, 2, 3)")).toBeNull();
+  });
+});
+
+describe("youTubeDurationSecondsOf (the poster's length badge)", () => {
+  it("is the instance's length for this video only", () => {
+    const embed = { kind: "youtube_video", video_id: VIDEO.videoId, is_short: false, duration_seconds: 888 } as const;
+    expect(youTubeDurationSecondsOf(embed, VIDEO)).toBe(888);
+    expect(youTubeDurationSecondsOf({ ...embed, video_id: SHORT.videoId }, VIDEO)).toBeNull();
+  });
+
+  it("shows no badge rather than a guess", () => {
+    const embed = { kind: "youtube_video", video_id: VIDEO.videoId, is_short: false } as const;
+    expect(youTubeDurationSecondsOf(embed, VIDEO)).toBeNull();
+    expect(youTubeDurationSecondsOf({ ...embed, duration_seconds: 0 }, VIDEO)).toBeNull();
+    expect(youTubeDurationSecondsOf(null, VIDEO)).toBeNull();
+  });
+});
+
+describe("youTubeChannelNameOf (the band's second line)", () => {
+  const POSTER: LinkPreview = { id: "910", url: "https://www.youtube.com/watch?v=dQw4w9WgXcQ", title: "A video", description: " Blender " };
+
+  it("is oEmbed's author, which the instance puts in the description of a YouTube embed", () => {
+    const video = { kind: "youtube_video", video_id: VIDEO.videoId, is_short: false } as const;
+    const track = { kind: "youtube_music_track", video_id: VIDEO.videoId, artist: "Noëlle" } as const;
+    expect(youTubeChannelNameOf(POSTER, video)).toBe("Blender");
+    expect(youTubeChannelNameOf(POSTER, track)).toBe("Blender");
+  });
+
+  it("is nothing when the description is the page's own text (older previews, oEmbed refused)", () => {
+    expect(youTubeChannelNameOf(POSTER, null)).toBeNull();
+    expect(youTubeChannelNameOf({ ...POSTER, description: "   " }, { kind: "youtube_video", video_id: VIDEO.videoId, is_short: false })).toBeNull();
   });
 });

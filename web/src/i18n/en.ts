@@ -683,6 +683,21 @@ export const en = {
     enlargeVideo: (fileName: string) => `Enlarge video ${fileName}`,
     enlargeVideoTooltip: "Enlarge",
     audioPlayer: (fileName: string) => `Audio ${fileName}`,
+    /** The sound player's key (DESIGN.md 5.4, "Sound player"). */
+    playSound: (fileName: string) => `Play ${fileName}`,
+    pauseSound: (fileName: string) => `Pause ${fileName}`,
+    /** The waveform, a slider: its name, then where the sound is ("42 seconds of 3 minutes 15 seconds"). */
+    soundPosition: (fileName: string) => `Position in ${fileName}`,
+    soundPositionValue: (elapsed: string, total: string) => `${elapsed} of ${total}`,
+    zeroSeconds: "0 seconds",
+    /** The speed key: "1.5×" on it, "Playback speed: 1.5 times" in its name. */
+    playbackSpeed: (speed: string) => `Playback speed: ${speed} times`,
+    muteSound: "Mute",
+    unmuteSound: "Unmute",
+    soundVolume: "Volume",
+    soundLoading: "Loading…",
+    soundOffline: "You're offline, so this sound can't load.",
+    soundStopped: "The sound stopped loading. Press play to try again.",
     /** Under a video or sound this browser could not play: its codec, or the instance did not serve it. */
     cannotPlay: "Couldn't play this file here. Download it to open it in another app.",
     /** The desktop app's own sound player (the browser draws its own controls). */
@@ -987,6 +1002,16 @@ export const en = {
         .filter(Boolean)
         .join(" "),
     startsAt: (time: string) => `Starts at ${time}`,
+    /** Added to the play key's name: ", by Blender". */
+    byChannel: (channel: string) => `, by ${channel}`,
+    /** Added to the play key's name when the instance knows the length: ", 14 minutes 48 seconds long". */
+    lasting: (spokenDuration: string) => `, ${spokenDuration} long`,
+    /** Added to the play key's name when the link plays the video in a playlist. */
+    inPlaylist: ", in a playlist",
+    /** The chip on a poster whose link plays in a playlist. */
+    playlist: "Playlist",
+    /** The tooltip of YouTube's mark on a video card. */
+    openOnYouTube: (title: string) => `Open on YouTube: ${title}`,
     youTubePlayer: (title: string) => `YouTube video: ${title}`,
     closePlayer: "Close player",
     offlinePlayer: "You're offline, so the player can't load.",

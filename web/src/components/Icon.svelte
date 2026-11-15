@@ -66,6 +66,7 @@
     | "monitor-arrow-up"
     | "music-notes"
     | "paper-plane-right"
+    | "pause"
     | "paw-print"
     | "pencil-simple"
     | "phone-disconnect"
