@@ -318,6 +318,103 @@ fn relative_luminance(colour: u32) -> f64 {
     0.2126 * linear(16) + 0.7152 * linear(8) + 0.0722 * linear(0)
 }
 
+/// WCAG 2.2's text minimum: the seal's initial is text.
+const MINIMUM_TEXT_CONTRAST: f64 = 4.5;
+
+/// WCAG 2.2's contrast ratio between two `0xRRGGBB` colours, 1 to 21.
+#[must_use]
+pub fn contrast_ratio(first: u32, second: u32) -> f64 {
+    let (first, second) = (relative_luminance(first), relative_luminance(second));
+    (first.max(second) + 0.05) / (first.min(second) + 0.05)
+}
+
+/// The ink of a page card's seal (DESIGN.md 5.4, "Link cards").
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SiteSealInk {
+    Dark,
+    Light,
+}
+
+/// The ink for the seal's initial on the page's colour: whichever of the two seal inks contrasts
+/// more, or `None` when neither reaches 4.5:1 (a mid grey) and the card takes the fallback seal
+/// (`siteSealInkOn`).
+#[must_use]
+pub fn site_seal_ink_on(page_colour: u32, dark_ink: u32, light_ink: u32) -> Option<SiteSealInk> {
+    let dark = contrast_ratio(page_colour, dark_ink);
+    let light = contrast_ratio(page_colour, light_ink);
+    if dark.max(light) < MINIMUM_TEXT_CONTRAST {
+        return None;
+    }
+    Some(if dark >= light {
+        SiteSealInk::Dark
+    } else {
+        SiteSealInk::Light
+    })
+}
+
+/// What a page card names its site with: the page's site name, else its host without `www.`
+/// ("rust-lang.org"), so every card says where the link goes (`siteLabelOf`).
+#[must_use]
+pub fn site_label_of(preview: &LinkPreview) -> String {
+    if let Some(site_name) = preview
+        .site_name
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+    {
+        return site_name.to_owned();
+    }
+    let host = link_host_name(&preview.url);
+    match host.get(..4) {
+        Some(prefix) if prefix.eq_ignore_ascii_case("www.") => host[4..].to_owned(),
+        _ => host,
+    }
+}
+
+/// The seal's letter: the label's first character, upper-cased ("R" for rust-lang.org).
+#[must_use]
+pub fn site_initial_of(label: &str) -> String {
+    label
+        .trim()
+        .chars()
+        .next()
+        .map(|first| first.to_uppercase().collect())
+        .unwrap_or_default()
+}
+
+/// The channel's name for a video's band: oEmbed's author, which the instance stores as the
+/// description of a YouTube embed (ADR-0044). `None` without such an embed, where the
+/// description is the page's own text, not a channel (`youTubeChannelNameOf`).
+#[must_use]
+pub fn youtube_channel_name_of<'a>(
+    preview: &'a LinkPreview,
+    embed: Option<&LinkEmbed>,
+) -> Option<&'a str> {
+    if !matches!(
+        embed,
+        Some(LinkEmbed::YouTubeVideo(_) | LinkEmbed::YouTubeMusicTrack(_))
+    ) {
+        return None;
+    }
+    preview
+        .description
+        .as_deref()
+        .map(str::trim)
+        .filter(|name| !name.is_empty())
+}
+
+/// The video's length when the instance knows it, else `None`: no chip rather than a guess
+/// (`youTubeDurationSecondsOf`).
+#[must_use]
+pub fn youtube_duration_seconds_of(embed: Option<&LinkEmbed>, video: &YouTubeEmbed) -> Option<u32> {
+    match embed {
+        Some(LinkEmbed::YouTubeVideo(known)) if known.video_id == video.video_id => {
+            known.duration_seconds.filter(|seconds| *seconds > 0)
+        }
+        _ => None,
+    }
+}
+
 // ---- Provider cards ----
 
 /// A repository card shows the first five topics; the page has them all.
@@ -510,6 +607,92 @@ mod tests {
             is_short: true,
             ..video()
         }
+    }
+
+    fn youtube_video_embed(video_id: &str, duration_seconds: Option<u32>) -> LinkEmbed {
+        LinkEmbed::YouTubeVideo(mellow_protocol::YouTubeVideoEmbed {
+            video_id: video_id.to_owned(),
+            is_short: false,
+            start_seconds: None,
+            playlist_id: None,
+            duration_seconds,
+        })
+    }
+
+    #[test]
+    fn the_seal_takes_the_ink_that_contrasts_more_or_none_on_a_mid_grey() {
+        const DARK_INK: u32 = 0x0011_0B11;
+        const WHITE: u32 = 0x00FF_FFFF;
+        assert_eq!(
+            site_seal_ink_on(0x00DE_A584, DARK_INK, WHITE),
+            Some(SiteSealInk::Dark)
+        );
+        assert_eq!(
+            site_seal_ink_on(0x0024_292E, DARK_INK, WHITE),
+            Some(SiteSealInk::Light)
+        );
+        assert_eq!(site_seal_ink_on(0x0077_7777, DARK_INK, WHITE), None);
+        assert!((contrast_ratio(0, WHITE) - 21.0).abs() < 1e-9);
+        assert!((contrast_ratio(WHITE, WHITE) - 1.0).abs() < 1e-9);
+    }
+
+    #[test]
+    fn the_site_label_is_the_site_name_else_the_host_without_www() {
+        assert_eq!(site_label_of(&article()), "example.org");
+        let rust = LinkPreview {
+            url: "https://WWW.rust-lang.org/learn".to_owned(),
+            ..article()
+        };
+        assert_eq!(site_label_of(&rust), "rust-lang.org");
+        let named = LinkPreview {
+            site_name: Some("  Smashing Magazine ".to_owned()),
+            ..article()
+        };
+        assert_eq!(site_label_of(&named), "Smashing Magazine");
+        assert_eq!(site_initial_of(" élan"), "É");
+        assert_eq!(site_initial_of(""), "");
+    }
+
+    #[test]
+    fn the_channel_comes_from_a_youtube_embed_only() {
+        let poster = LinkPreview {
+            description: Some("Blender".to_owned()),
+            ..article()
+        };
+        let embed = youtube_video_embed("dQw4w9WgXcQ", None);
+        assert_eq!(
+            youtube_channel_name_of(&poster, Some(&embed)),
+            Some("Blender")
+        );
+        let track = LinkEmbed::YouTubeMusicTrack(mellow_protocol::YouTubeMusicTrackEmbed {
+            video_id: "dQw4w9WgXcQ".to_owned(),
+            artist: "Blender".to_owned(),
+            album: None,
+            duration_seconds: None,
+        });
+        assert_eq!(
+            youtube_channel_name_of(&poster, Some(&track)),
+            Some("Blender")
+        );
+        assert_eq!(youtube_channel_name_of(&poster, None), None);
+        let blank = LinkPreview {
+            description: Some("   ".to_owned()),
+            ..article()
+        };
+        assert_eq!(youtube_channel_name_of(&blank, Some(&embed)), None);
+    }
+
+    #[test]
+    fn the_length_chip_needs_the_same_video_and_a_length() {
+        let known = youtube_video_embed("dQw4w9WgXcQ", Some(888));
+        assert_eq!(
+            youtube_duration_seconds_of(Some(&known), &video()),
+            Some(888)
+        );
+        assert_eq!(youtube_duration_seconds_of(Some(&known), &short()), None);
+        let zero = youtube_video_embed("dQw4w9WgXcQ", Some(0));
+        assert_eq!(youtube_duration_seconds_of(Some(&zero), &video()), None);
+        assert_eq!(youtube_duration_seconds_of(None, &video()), None);
     }
 
     #[test]

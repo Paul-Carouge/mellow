@@ -1,5 +1,7 @@
 # Link previews and the YouTube player on the web (ROADMAP item 18)
 
+Look superseded on 2026-11-14 by DESIGN.md 5.4 "Link cards" (the pill gives way to the site's seal, videos become screens on the media stage, YouTube's mark on their band); flows, data, players and accessibility below still hold.
+
 Status: designed and built on `feat/web-link-previews`, on top of `feat/link-previews-server` (ADR-0041: the server fetches, stores and announces previews), DESIGN.md v0.49. `MessageLinkPreviews.svelte` (rendered by `MessageItem.svelte` under the files), the rules in `link-previews.ts` (layout, YouTube id, picture address, the page's colour), tokens `component.link-preview.*` in `design/tokens.json`, the Phosphor `play` icon, and one line of the server's Content-Security-Policy (`frame-src https://www.youtube-nocookie.com`).
 
 ## Brief

@@ -15,7 +15,7 @@ use std::time::Duration;
 use gpui::{App, Global, Hsla, Pixels, Rems, Window, WindowAppearance, rems, rgba};
 
 use crate::preferences::{ThemeChoice, preferences};
-pub use assets::EmbeddedAssets;
+pub use assets::{EmbeddedAssets, YOUTUBE_MARK_ASPECT_RATIO, YOUTUBE_MARK_PATH};
 #[cfg(target_os = "linux")]
 pub use fonts::redraw_with_system_fonts_once_read;
 pub use fonts::{MONOSPACE_FONT_FAMILY, SANS_FONT_FAMILY, interface_font, register_embedded_fonts};

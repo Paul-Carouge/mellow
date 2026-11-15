@@ -90,8 +90,10 @@ mod session;
 mod simulcast;
 mod sound_player;
 mod sound_source;
+mod sound_waveform;
 mod soundboard;
 mod sounds;
+mod time_stretch;
 mod transport;
 mod uplink;
 mod video_compression;
@@ -127,7 +129,7 @@ pub use camera::{
     SystemCameras,
 };
 pub use clip_decoder::{ClipError, PLAYABLE_ATTACHMENT_AUDIO_TYPES};
-pub use clip_player::{ClipClock, ClipPhase, ClipPlayer, ClipStatus};
+pub use clip_player::{ClipClock, ClipPhase, ClipPlayer, ClipStart, ClipStatus};
 pub use codec::CodecError;
 pub use connection::{ConnectionProblem, VoicePhase};
 pub use devices::{
@@ -167,6 +169,10 @@ pub use session::{
 pub use simulcast::{ScreenShareQuality, VideoSourceKind};
 pub use sound_player::SoundPlayer;
 pub use sound_source::{MAXIMUM_SOUND_SOURCE_SECONDS, SoundSourceError, decode_sound_source};
+pub use sound_waveform::{
+    MAXIMUM_WAVEFORM_SOURCE_BYTES, MAXIMUM_WAVEFORM_SOURCE_SECONDS, SoundWaveform, WaveformError,
+    sound_waveform,
+};
 pub use soundboard::{
     DEFAULT_SOUNDBOARD_VOLUME, MAXIMUM_SOUND_FILE_BYTES, MAXIMUM_SOUNDBOARD_VOLUME, SoundCache,
     SoundboardError, decode_canonical_wav, download_sound, soundboard_gain,

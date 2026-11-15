@@ -22,11 +22,11 @@
     service: string;
     messageId: Snowflake;
     title: string;
-    barColor: string | null;
+    pageColor: string | null;
     imageUrl: string | null;
   }
 
-  let { preview, track, artist, service, messageId, title, barColor, imageUrl }: Props = $props();
+  let { preview, track, artist, service, messageId, title, pageColor, imageUrl }: Props = $props();
 
   const id = $props.id();
   const playerId = `${id}-player`;
@@ -54,7 +54,7 @@
   }
 </script>
 
-<EmbedCard {barColor} siteName={service} label={`${title}, ${artist}, ${service}`} hasVideoPlayer>
+<EmbedCard {pageColor} siteName={service} label={`${title}, ${artist}, ${service}`} hasVideoPlayer>
   <!-- The text column keeps text-min-width beside the cover, else wraps under it. -->
   <div class="flex flex-wrap items-start gap-(--mw-component-link-preview-gap)">
     <div
