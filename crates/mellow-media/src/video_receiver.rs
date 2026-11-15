@@ -8,6 +8,7 @@ use std::collections::HashMap;
 use std::sync::mpsc::{Receiver, Sender, SyncSender, TrySendError};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::thread::JoinHandle;
+use std::time::{Duration, Instant};
 
 use mellow_protocol::Snowflake;
 use str0m::media::Mid;
@@ -27,6 +28,14 @@ pub(crate) enum ReceivedCodec {
 const DECODE_QUEUE_FRAMES: usize = 8;
 /// libvpx splits a large picture's decoding over this many threads.
 const DECODER_THREADS: u32 = 2;
+/// Frames of one slot without a picture before its first warning (a few seconds of video); the
+/// next ones wait twice as long each.
+const FRAMES_WITHOUT_PICTURE_BEFORE_A_WARNING: u32 = 150;
+/// Frames in a row that did not decode before a slot asks for keyframes less often: a sender
+/// whose keyframes this decoder refuses would otherwise get one asked of it every second.
+const DECODE_FAILURES_BEFORE_BACKOFF: u32 = 3;
+const FIRST_KEYFRAME_BACKOFF: Duration = Duration::from_secs(2);
+const LONGEST_KEYFRAME_BACKOFF: Duration = Duration::from_secs(30);
 /// A VP8 keyframe's start code, after its 3-byte frame tag (RFC 6386 §9.1).
 const VP8_START_CODE: [u8; 3] = [0x9d, 0x01, 0x2a];
 
@@ -319,26 +328,19 @@ impl SlotDecoder {
         Self::Failed(ReceivedCodec::H264)
     }
 
-    /// Decodes `frame` and hands its picture, if any, to `publish`. `false` when it did not
+    /// Decodes `frame` and hands its picture, if any, to `publish`. `Err` when it did not
     /// decode (a keyframe is needed).
-    fn decode(&mut self, frame: &[u8], publish: impl FnOnce(I420View<'_>)) -> bool {
+    fn decode(&mut self, frame: &[u8], publish: impl FnOnce(I420View<'_>)) -> Result<(), String> {
         let picture = match self {
-            Self::None | Self::Failed(_) => return true,
+            Self::None | Self::Failed(_) => return Ok(()),
             Self::Vp8(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
             #[cfg(any(target_os = "linux", target_os = "macos", windows))]
             Self::H264(decoder) => decoder.decode(frame).map_err(|error| error.to_string()),
         };
-        match picture {
-            Ok(Some(picture)) => {
-                publish(picture);
-                true
-            }
-            Ok(None) => true,
-            Err(error) => {
-                tracing::debug!(%error, "a received video frame did not decode");
-                false
-            }
+        if let Some(picture) = picture? {
+            publish(picture);
         }
+        Ok(())
     }
 }
 
@@ -359,9 +361,13 @@ fn decode_until_closed(
     let mut decoder = SlotDecoder::None;
     let mut is_waiting_for_keyframe = true;
     let mut current_codec = None;
-    let request_keyframe = || {
-        // The network thread gone means the session is ending.
-        let _ = keyframe_requests.send(mid);
+    let mut stall = Stall::default();
+    let mut backoff = KeyframeBackoff::default();
+    let request_keyframe = |backoff: &KeyframeBackoff| {
+        if backoff.may_request(Instant::now()) {
+            // The network thread gone means the session is ending.
+            let _ = keyframe_requests.send(mid);
+        }
     };
     let mut batch: Vec<IncomingVideoFrame> = Vec::with_capacity(DECODE_QUEUE_FRAMES);
     while let Ok(first) = incoming.recv() {
@@ -371,36 +377,124 @@ fn decode_until_closed(
         batch.extend(incoming.try_iter());
         let last_index = batch.len() - 1;
         for (index, frame) in batch.drain(..).enumerate() {
+            let mut has_picture = false;
             if !frame.is_contiguous || current_codec != Some(frame.codec) {
                 is_waiting_for_keyframe = true;
                 current_codec = Some(frame.codec);
                 if !frame.is_contiguous {
-                    request_keyframe();
+                    stall.gaps += 1;
+                    request_keyframe(&backoff);
                 }
             }
-            if is_waiting_for_keyframe {
-                if !is_keyframe(&frame.bytes, frame.codec) {
-                    // Asked again while waiting (the network thread allows one a second): an
-                    // earlier request may have been lost or made before the connection.
-                    request_keyframe();
-                    continue;
+            if is_waiting_for_keyframe && !is_keyframe(&frame.bytes, frame.codec) {
+                // Asked again while waiting (the network thread allows one a second): an
+                // earlier request may have been lost or made before the connection.
+                stall.skipped_before_keyframe += 1;
+                request_keyframe(&backoff);
+            } else if decoder.prepare(frame.codec) {
+                is_waiting_for_keyframe = false;
+                let should_publish = index == last_index;
+                let outcome = decoder.decode(&frame.bytes, |picture| {
+                    has_picture = true;
+                    if should_publish {
+                        frames.publish(mid, picture);
+                    }
+                });
+                if let Err(error) = outcome {
+                    if stall.decode_failures == 0 {
+                        tracing::warn!(%error, codec = ?frame.codec, "a received video frame did not decode");
+                    }
+                    stall.decode_failures += 1;
+                    backoff.decode_failed(Instant::now());
+                    // A fresh decoder at the next keyframe: one left in an error state would
+                    // refuse every later frame too.
+                    decoder = SlotDecoder::None;
+                    is_waiting_for_keyframe = true;
+                    request_keyframe(&backoff);
                 }
+            } else {
                 is_waiting_for_keyframe = false;
             }
-            if !decoder.prepare(frame.codec) {
-                continue;
+            if has_picture {
+                backoff = KeyframeBackoff::default();
             }
-            let should_publish = index == last_index;
-            let is_decoded = decoder.decode(&frame.bytes, |picture| {
-                if should_publish {
-                    frames.publish(mid, picture);
-                }
-            });
-            if !is_decoded {
-                is_waiting_for_keyframe = true;
-                request_keyframe();
+            // A codec this system cannot decode is said by the interface, not a stall.
+            if !matches!(decoder, SlotDecoder::Failed(_)) {
+                let _ = stall.follow(has_picture, frame.codec);
             }
         }
+    }
+}
+
+/// When a slot whose frames keep failing to decode may ask for a keyframe again: after
+/// [`DECODE_FAILURES_BEFORE_BACKOFF`] failures in a row, 2, 4, 8 … seconds later, at most
+/// [`LONGEST_KEYFRAME_BACKOFF`]; anew once a picture comes.
+#[derive(Debug, Default)]
+struct KeyframeBackoff {
+    failures: u32,
+    wait: Duration,
+    next_request_at: Option<Instant>,
+}
+
+impl KeyframeBackoff {
+    fn may_request(&self, now: Instant) -> bool {
+        self.next_request_at.is_none_or(|at| now >= at)
+    }
+
+    fn decode_failed(&mut self, now: Instant) {
+        self.failures += 1;
+        if self.failures < DECODE_FAILURES_BEFORE_BACKOFF {
+            return;
+        }
+        self.wait = if self.wait.is_zero() {
+            FIRST_KEYFRAME_BACKOFF
+        } else {
+            (self.wait * 2).min(LONGEST_KEYFRAME_BACKOFF)
+        };
+        self.next_request_at = Some(now + self.wait);
+    }
+}
+
+/// Frames a slot received since its last picture, by what became of them: a frozen picture is
+/// otherwise undiagnosable from a release build, whose log keeps warnings only.
+#[derive(Debug, Default)]
+struct Stall {
+    frames: u32,
+    /// Frames after a gap in the packets (lost and not retransmitted).
+    gaps: u32,
+    /// Frames dropped while waiting for a keyframe.
+    skipped_before_keyframe: u32,
+    decode_failures: u32,
+    /// The frame count of the next warning (0: the first one's).
+    next_warning_at: u32,
+}
+
+impl Stall {
+    /// Counts a frame; `true` when it warned.
+    fn follow(&mut self, has_picture: bool, codec: ReceivedCodec) -> bool {
+        if has_picture {
+            *self = Self::default();
+            return false;
+        }
+        self.frames += 1;
+        let warning_at = if self.next_warning_at == 0 {
+            FRAMES_WITHOUT_PICTURE_BEFORE_A_WARNING
+        } else {
+            self.next_warning_at
+        };
+        if self.frames < warning_at {
+            return false;
+        }
+        self.next_warning_at = warning_at.saturating_mul(2);
+        tracing::warn!(
+            ?codec,
+            frames = self.frames,
+            gaps = self.gaps,
+            skipped_before_keyframe = self.skipped_before_keyframe,
+            decode_failures = self.decode_failures,
+            "a watched video gives no picture"
+        );
+        true
     }
 }
 
@@ -446,7 +540,11 @@ mod tests {
         let mut decoder = SlotDecoder::Failed(ReceivedCodec::H264);
         assert!(!decoder.prepare(ReceivedCodec::H264));
         assert!(matches!(decoder, SlotDecoder::Failed(ReceivedCodec::H264)));
-        assert!(decoder.decode(&[0, 0, 1, 0x65], |_| panic!("no picture")));
+        assert!(
+            decoder
+                .decode(&[0, 0, 1, 0x65], |_| panic!("no picture"))
+                .is_ok()
+        );
         assert!(
             decoder.prepare(ReceivedCodec::Vp8),
             "another codec starts its own"
@@ -525,6 +623,81 @@ mod tests {
         assert_eq!(picture.pixels.len(), 320 * 180 * 4);
     }
 
+    /// A Linux share watched on the desktop (H.264 from VA-API, its quadrants turned at each
+    /// picture), frames delivered one by one as the network brings them: the pictures shown are
+    /// later and later frames, never the same again (a Windows watcher saw the first picture
+    /// frozen), at most `pictures_late` behind (one with Media Foundation's decoder, none
+    /// elsewhere), up to the last one.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    #[test]
+    fn each_frame_of_a_linux_share_shows_its_own_picture_as_it_arrives() {
+        let frames = VideoFrames::new(DecodedPixelFormat::Bgra);
+        let user_id = Snowflake::from_raw(10);
+        let mid = Mid::from("24");
+        frames.assign_slot(mid, user_id);
+        frames.set_display_sizes(HashMap::from([(user_id, (640, 360))]));
+        let (woken, was_woken) = mpsc::channel();
+        frames.set_waker(move || {
+            let _ = woken.send(());
+        });
+        let (keyframe_requests, _requested) = mpsc::channel();
+        let mut receivers = VideoReceivers::new(frames.clone(), keyframe_requests);
+        let (stream, size) = crate::h264::tests::LINUX_SHARE_LAYERS[2];
+        assert_eq!(size, (640, 360));
+        let access_units = crate::h264_stream::tests::access_units(stream);
+        let mut order = crate::h264::tests::PictureOrder::new(access_units.len());
+        // The first IDR again at the end pushes out a picture the decoder held back.
+        for (index, frame) in access_units.iter().chain(&access_units[..1]).enumerate() {
+            receivers.deliver(mid, frame.clone().into(), ReceivedCodec::H264, true);
+            while !order.keeps_up_with(index + 1) {
+                let context = format!("after frame {index}, last picture {:?}", order.last_shown);
+                was_woken
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap_or_else(|_| panic!("{context}: no new picture"));
+                for (_, picture) in frames.take_new_frames() {
+                    let turn = crate::h264::tests::quadrant_turn(&picture.pixels, 640, 360)
+                        .unwrap_or_else(|| panic!("{context}: not the quadrants"));
+                    order.shown(turn, &context);
+                }
+            }
+        }
+        receivers.shut_down();
+        assert!(
+            order.last_shown >= Some(access_units.len() - 1),
+            "every picture, last {:?}",
+            order.last_shown
+        );
+    }
+
+    #[test]
+    fn keyframes_are_asked_less_often_while_frames_keep_failing() {
+        let start = Instant::now();
+        let at = |seconds: u64| start + Duration::from_secs(seconds);
+        let mut backoff = KeyframeBackoff::default();
+        backoff.decode_failed(at(0));
+        backoff.decode_failed(at(0));
+        assert!(backoff.may_request(at(0)), "a few failures ask at once");
+        let mut waits = Vec::new();
+        for _ in 0..6 {
+            backoff.decode_failed(at(100));
+            assert!(!backoff.may_request(at(100)));
+            waits.push(backoff.wait.as_secs());
+        }
+        assert_eq!(waits, [2, 4, 8, 16, 30, 30]);
+        assert!(backoff.may_request(at(130)));
+    }
+
+    #[test]
+    fn a_stall_warns_after_twice_as_many_frames_each_time() {
+        let mut stall = Stall::default();
+        let warned_at: Vec<u32> = (1..=1_200)
+            .filter(|_| stall.follow(false, ReceivedCodec::H264))
+            .collect();
+        assert_eq!(warned_at, [150, 300, 600, 1_200]);
+        assert!(!stall.follow(true, ReceivedCodec::H264));
+        assert_eq!(stall.frames, 0, "a picture starts over");
+    }
+
     #[test]
     fn a_gap_waits_for_a_keyframe_and_asks_for_one() {
         let frames = VideoFrames::new(DecodedPixelFormat::Nv12);
@@ -539,6 +712,37 @@ mod tests {
             mid
         );
         receivers.shut_down();
+    }
+
+    /// A frame the decoder refused (a corrupt or truncated keyframe) asks for a keyframe and the
+    /// next keyframe shows, instead of the picture staying frozen. (libvpx recovers by itself;
+    /// the fresh decoder this starts matters for Media Foundation's, which no Linux test runs.)
+    #[test]
+    fn a_frame_that_does_not_decode_is_followed_by_the_next_keyframe_s_pictures() {
+        let frames = VideoFrames::new(DecodedPixelFormat::Bgra);
+        let user_id = Snowflake::from_raw(9);
+        let mid = Mid::from("23");
+        frames.assign_slot(mid, user_id);
+        frames.set_display_sizes(HashMap::from([(user_id, (320, 180))]));
+        let (woken, was_woken) = mpsc::channel();
+        frames.set_waker(move || {
+            let _ = woken.send(());
+        });
+        let (keyframe_requests, requested) = mpsc::channel();
+        let mut receivers = VideoReceivers::new(frames.clone(), keyframe_requests);
+        let encoded = camera_frames(2);
+        // A keyframe cut short: its header says keyframe, its body is missing.
+        let truncated = encoded[0][..12].to_vec();
+        assert!(is_vp8_keyframe(&truncated));
+        receivers.deliver(mid, truncated.into(), ReceivedCodec::Vp8, true);
+        assert_eq!(
+            requested.recv_timeout(Duration::from_secs(10)).unwrap(),
+            mid
+        );
+        receivers.deliver(mid, encoded[0].clone().into(), ReceivedCodec::Vp8, true);
+        was_woken.recv_timeout(Duration::from_secs(10)).unwrap();
+        receivers.shut_down();
+        assert_eq!(frames.take_new_frames()[0].0, user_id);
     }
 
     #[test]

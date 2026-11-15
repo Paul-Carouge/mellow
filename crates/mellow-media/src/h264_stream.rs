@@ -63,7 +63,7 @@ impl ParameterSets {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
 
     /// libx264, Constrained Baseline, 320 × 180, six pictures, an IDR every three with its
@@ -118,7 +118,7 @@ mod tests {
 
     /// The access units of a stream: each begins at its parameter sets or at a slice whose
     /// `first_mb_in_slice` is 0 (one slice per picture here).
-    fn access_units(stream: &[u8]) -> Vec<Vec<u8>> {
+    pub(crate) fn access_units(stream: &[u8]) -> Vec<Vec<u8>> {
         let mut units: Vec<Vec<u8>> = Vec::new();
         let mut is_picture_started = false;
         for unit in nal_units(stream) {

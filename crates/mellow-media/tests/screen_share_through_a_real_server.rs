@@ -142,9 +142,21 @@ async fn a_shared_screen_and_its_sound_reach_a_watcher() {
     instance.stop().await;
 }
 
-/// A screen whose layers are already encoded in H.264: the recorded stream's pictures, sent on
-/// every layer at 30 frames per second, as a GPU encoder would.
-struct RecordedH264Screen;
+/// A screen whose layers are already encoded in H.264: recorded access units for the `q`, `l`
+/// and `h` layers, looped at 30 frames per second, as a GPU encoder would send them.
+struct RecordedH264Screen {
+    layers: Arc<[Vec<Vec<u8>>; 3]>,
+}
+
+impl RecordedH264Screen {
+    /// The recorded libx264 stream on every layer.
+    fn same_on_every_layer() -> Self {
+        let units = access_units_of(RECORDED_H264);
+        Self {
+            layers: Arc::new([units.clone(), units.clone(), units]),
+        }
+    }
+}
 
 struct RecordedH264Capture {
     should_stop: Arc<AtomicBool>,
@@ -164,25 +176,34 @@ impl Drop for RecordedH264Capture {
     }
 }
 
-/// The recorded stream cut into access units at each slice (one slice per picture), the
-/// parameter sets kept with the IDR after them.
-fn recorded_access_units() -> Vec<Vec<u8>> {
+/// A recorded stream cut into access units at each slice (one slice per picture), the
+/// parameter sets and SEI kept with the slice after them.
+fn access_units_of(stream: &[u8]) -> Vec<Vec<u8>> {
+    // NAL units after three- or four-byte start codes; zero bytes before a start code belong to
+    // it, never to the unit before.
+    let starts: Vec<usize> = stream
+        .windows(3)
+        .enumerate()
+        .filter(|(_, window)| *window == [0, 0, 1])
+        .map(|(index, _)| index + 3)
+        .collect();
     let mut units: Vec<Vec<u8>> = vec![Vec::new()];
-    let mut rest = RECORDED_H264;
-    while let Some(start) = rest.windows(4).position(|window| window == [0, 0, 0, 1]) {
-        let after = &rest[start + 4..];
-        let end = after
-            .windows(4)
-            .position(|window| window == [0, 0, 0, 1])
-            .unwrap_or(after.len());
-        let unit = &after[..end];
+    for (index, &start) in starts.iter().enumerate() {
+        let end = starts.get(index + 1).map_or(stream.len(), |next| next - 3);
+        let unit = &stream[start..end];
+        let unit = &unit[..unit
+            .iter()
+            .rposition(|byte| *byte != 0)
+            .map_or(0, |last| last + 1)];
+        if unit.is_empty() {
+            continue;
+        }
         units.last_mut().unwrap().extend_from_slice(&[0, 0, 0, 1]);
         units.last_mut().unwrap().extend_from_slice(unit);
         // A slice (1) or an IDR slice (5) ends the access unit.
         if matches!(unit[0] & 0x1f, 1 | 5) {
             units.push(Vec::new());
         }
-        rest = &after[end..];
     }
     units.retain(|unit| !unit.is_empty());
     units
@@ -204,8 +225,11 @@ impl ScreenSources for RecordedH264Screen {
         share: ScreenShareContext,
     ) -> Result<Box<dyn RunningScreenCapture>, ScreenCaptureError> {
         let mut input = share.start_encoded(VideoCodec::H264);
-        let units = recorded_access_units();
-        assert!(units.len() >= 2, "{} access units", units.len());
+        let layers = Arc::clone(&self.layers);
+        assert!(
+            layers.iter().all(|units| units.len() >= 2),
+            "too few access units"
+        );
         let should_stop = Arc::new(AtomicBool::new(false));
         let thread = {
             let should_stop = Arc::clone(&should_stop);
@@ -218,11 +242,14 @@ impl ScreenSources for RecordedH264Screen {
                         index = 0;
                     }
                     let rtp_timestamp = input.rtp_time_of(Instant::now());
-                    for layer in [
+                    for (layer, units) in [
                         SimulcastLayer::Quarter,
                         SimulcastLayer::Low,
                         SimulcastLayer::High,
-                    ] {
+                    ]
+                    .into_iter()
+                    .zip(layers.iter())
+                    {
                         input.push(layer, rtp_timestamp, units[index % units.len()].clone());
                     }
                     index += 1;
@@ -379,7 +406,7 @@ async fn an_h264_share_offers_again_and_its_frames_reach_an_h264_watcher() {
                         sharer
                             .session
                             .start_screen_share(
-                                &RecordedH264Screen,
+                                &RecordedH264Screen::same_on_every_layer(),
                                 &ScreenChoice::SystemPicker,
                                 ScreenShareQuality::High,
                                 &ShareSound::Off,
@@ -422,5 +449,112 @@ async fn an_h264_share_offers_again_and_its_frames_reach_an_h264_watcher() {
 
     drop(share);
     sharer.session.leave();
+    instance.stop().await;
+}
+
+/// The Linux sender's real-time H.264 layers (`vesper-encode` on VA-API, four coloured quadrants
+/// turned one place each picture), as `q`, `l` and `h`.
+fn linux_share_layers() -> RecordedH264Screen {
+    let layer = |stream: &[u8]| access_units_of(stream);
+    RecordedH264Screen {
+        layers: Arc::new([
+            layer(include_bytes!(
+                "fixtures/vaapi-real-time-quadrants-640x360.h264"
+            )),
+            layer(include_bytes!(
+                "fixtures/vaapi-real-time-quadrants-1280x720.h264"
+            )),
+            layer(include_bytes!(
+                "fixtures/vaapi-real-time-quadrants-2560x1440.h264"
+            )),
+        ]),
+    }
+}
+
+/// What a desktop watcher of a Linux share saw: the first picture, then nothing. A desktop
+/// engine watching another's H.264 share through the server must keep getting new pictures, each
+/// a later one of the stream (its quadrants turned), not the first again.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_desktop_watcher_keeps_receiving_new_pictures_of_an_h264_share() {
+    // Where the top left quadrant of a 640 × 360 picture lies, in BGRA.
+    const PROBE_OFFSET: usize = (90 * 640 + 160) * 4;
+    let instance = RunningInstance::start().await;
+    let (owner, sharer_id) = instance.registered("sharer").await;
+    let (watcher_client, watcher_id) = instance.registered("watcher").await;
+    let channel_id = shared_voice_channel(&owner, &watcher_client).await;
+    let sharer_gateway = identified_gateway(instance.listen_address, owner.token().unwrap()).await;
+    let watcher_gateway =
+        identified_gateway(instance.listen_address, watcher_client.token().unwrap()).await;
+    let mut sharer = Participant::join(
+        sharer_gateway,
+        channel_id,
+        sharer_id,
+        SyntheticSound::Silence,
+    );
+    let mut watcher = Participant::join(
+        watcher_gateway,
+        channel_id,
+        watcher_id,
+        SyntheticSound::Silence,
+    );
+    sharer.wait_until_connected().await;
+    watcher.wait_until_connected().await;
+
+    let share = sharer
+        .session
+        .start_screen_share(
+            &linux_share_layers(),
+            &ScreenChoice::SystemPicker,
+            ScreenShareQuality::High,
+            &ShareSound::Off,
+        )
+        .unwrap();
+    assert_eq!(share.codec(), VideoCodec::H264);
+    watcher
+        .wait_for_event(|event| {
+            matches!(
+                event,
+                GatewayEvent::VoiceStateUpdate { voice_state }
+                    if voice_state.user_id == sharer_id
+                        && voice_state.self_stream
+                        && voice_state.video_codec == Some(VideoCodec::H264)
+            )
+        })
+        .await;
+    let deadline = Instant::now() + HEARING_TIMEOUT;
+    let frames = watcher.session.video_frames();
+    // A small tile: the server sends the 640 × 360 layer, which reaches it unscaled.
+    watcher.session.watch_videos(&[WatchedVideo {
+        user_id: sharer_id,
+        tile_size: VideoTileSize::Small,
+        display_width: 640,
+        display_height: 360,
+    }]);
+
+    let mut colours = std::collections::HashSet::new();
+    let mut pictures = 0;
+    while pictures < PICTURES_EXPECTED || colours.len() < 4 {
+        assert!(
+            Instant::now() < deadline,
+            "pictures: {pictures}, top left colours seen: {colours:?}, sharer events: {:?}, \
+             watcher events: {:?}",
+            sharer.seen_session_events,
+            watcher.seen_session_events,
+        );
+        sharer.pump();
+        watcher.pump();
+        for (_, picture) in frames.take_new_frames() {
+            assert_eq!((picture.width, picture.height), (640, 360));
+            let pixel = &picture.pixels[PROBE_OFFSET..PROBE_OFFSET + 3];
+            // Each channel is near 0 or 255 in the four colours: rounded to which.
+            colours.insert(pixel.iter().map(|value| *value > 128).collect::<Vec<_>>());
+            pictures += 1;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    drop(share);
+    sharer.session.leave();
+    watcher.session.leave();
     instance.stop().await;
 }
