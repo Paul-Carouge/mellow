@@ -238,6 +238,21 @@ pub struct ThemeTokens {
     pub component_chat_header_name_text: u32,
     pub component_chat_header_shadow: &'static [ShadowLayer],
     pub component_chat_header_topic_text: u32,
+    pub component_checklist_done_text: u32,
+    pub component_checklist_figure_text: u32,
+    pub component_checklist_footer_text: u32,
+    pub component_checklist_item_text: u32,
+    pub component_checklist_item_text_done: u32,
+    pub component_checklist_mark_border: u32,
+    pub component_checklist_mark_border_hover: u32,
+    pub component_checklist_mark_border_inert: u32,
+    pub component_checklist_mark_checked: u32,
+    pub component_checklist_mark_glyph: u32,
+    pub component_checklist_meta_name_text: u32,
+    pub component_checklist_meta_text: u32,
+    pub component_checklist_meter_fill: u32,
+    pub component_checklist_meter_track: u32,
+    pub component_checklist_row_background_hover: u32,
     pub component_choice_background_checked: u32,
     pub component_choice_background_hover: u32,
     pub component_choice_border: u32,
@@ -1007,6 +1022,21 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_chat_header_name_text: 0xF8F4_F8FF,
     component_chat_header_shadow: &[ShadowLayer { color: 0x0202_0233, offset_x: 0.0, offset_y: 1.0, blur: 0.0, spread: 0.0 }],
     component_chat_header_topic_text: 0xA99F_AAFF,
+    component_checklist_done_text: 0x2DC7_70FF,
+    component_checklist_figure_text: 0xF8F4_F8FF,
+    component_checklist_footer_text: 0xA99F_AAFF,
+    component_checklist_item_text: 0xD6D0_D7FF,
+    component_checklist_item_text_done: 0xA99F_AAFF,
+    component_checklist_mark_border: 0xA99F_AAFF,
+    component_checklist_mark_border_hover: 0xF8F4_F8FF,
+    component_checklist_mark_border_inert: 0x8C82_8DFF,
+    component_checklist_mark_checked: 0xF2A4_6EFF,
+    component_checklist_mark_glyph: 0x221B_23FF,
+    component_checklist_meta_name_text: 0xC5BE_C6FF,
+    component_checklist_meta_text: 0xA99F_AAFF,
+    component_checklist_meter_fill: 0xF2A4_6EFF,
+    component_checklist_meter_track: 0x3C35_3EFF,
+    component_checklist_row_background_hover: 0x221B_23FF,
     component_choice_background_checked: 0x362E_37FF,
     component_choice_background_hover: 0x221B_23FF,
     component_choice_border: 0x3C35_3EFF,
@@ -1776,6 +1806,21 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_chat_header_name_text: 0x221B_23FF,
     component_chat_header_shadow: &[ShadowLayer { color: 0x0606_0714, offset_x: 0.0, offset_y: 1.0, blur: 0.0, spread: 0.0 }],
     component_chat_header_topic_text: 0x695F_6BFF,
+    component_checklist_done_text: 0x1A7F_45FF,
+    component_checklist_figure_text: 0x221B_23FF,
+    component_checklist_footer_text: 0x695F_6BFF,
+    component_checklist_item_text: 0x392F_3AFF,
+    component_checklist_item_text_done: 0x695F_6BFF,
+    component_checklist_mark_border: 0x695F_6BFF,
+    component_checklist_mark_border_hover: 0x221B_23FF,
+    component_checklist_mark_border_inert: 0x8C82_8DFF,
+    component_checklist_mark_checked: 0xA84F_1AFF,
+    component_checklist_mark_glyph: 0xFFFF_FFFF,
+    component_checklist_meta_name_text: 0x594E_5BFF,
+    component_checklist_meta_text: 0x695F_6BFF,
+    component_checklist_meter_fill: 0xA84F_1AFF,
+    component_checklist_meter_track: 0xDFD8_DFFF,
+    component_checklist_row_background_hover: 0xECE6_EDFF,
     component_choice_background_checked: 0xDFD8_DFFF,
     component_choice_background_hover: 0xECE6_EDFF,
     component_choice_border: 0xE3DD_E4FF,
@@ -2464,6 +2509,25 @@ pub const COMPONENT_CHAT_HEADER_DIVIDER_HEIGHT: f32 = 24.0;
 pub const COMPONENT_CHAT_HEADER_HEIGHT: f32 = 48.0;
 pub const COMPONENT_CHAT_HEADER_ICON_SIZE: f32 = 24.0;
 pub const COMPONENT_CHAT_HEADER_PADDING_INLINE: f32 = 16.0;
+pub const COMPONENT_CHECKLIST_COMPACT_WIDTH: f32 = 360.0;
+pub const COMPONENT_CHECKLIST_GAP: f32 = 12.0;
+pub const COMPONENT_CHECKLIST_HEADER_GAP: f32 = 12.0;
+pub const COMPONENT_CHECKLIST_MARK_BORDER_WIDTH: f32 = 2.0;
+pub const COMPONENT_CHECKLIST_MARK_GLYPH_SIZE: f32 = 14.0;
+pub const COMPONENT_CHECKLIST_MARK_RADIUS: f32 = 6.0;
+pub const COMPONENT_CHECKLIST_MARK_SIZE: f32 = 22.0;
+pub const COMPONENT_CHECKLIST_MAX_WIDTH: f32 = 600.0;
+pub const COMPONENT_CHECKLIST_METER_HEIGHT: f32 = 6.0;
+pub const COMPONENT_CHECKLIST_METER_SEGMENT_GAP: f32 = 2.0;
+pub const COMPONENT_CHECKLIST_PADDING: f32 = 12.0;
+pub const COMPONENT_CHECKLIST_PADDING_COMPACT: f32 = 4.0;
+pub const COMPONENT_CHECKLIST_ROW_GAP: f32 = 2.0;
+pub const COMPONENT_CHECKLIST_ROW_INNER_GAP: f32 = 12.0;
+pub const COMPONENT_CHECKLIST_ROW_MIN_HEIGHT: f32 = 44.0;
+pub const COMPONENT_CHECKLIST_ROW_PADDING_BLOCK: f32 = 10.0;
+pub const COMPONENT_CHECKLIST_ROW_PADDING_INLINE: f32 = 12.0;
+pub const COMPONENT_CHECKLIST_ROW_PADDING_INLINE_COMPACT: f32 = 8.0;
+pub const COMPONENT_CHECKLIST_ROW_RADIUS: f32 = 8.0;
 pub const COMPONENT_CHOICE_BORDER_WIDTH: f32 = 1.0;
 pub const COMPONENT_CHOICE_GAP: f32 = 12.0;
 pub const COMPONENT_CHOICE_ICON_SIZE: f32 = 20.0;

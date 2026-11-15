@@ -48,8 +48,12 @@ and checklists were missing in client-core).
   `motion.duration.slow`; at once under reduced motion (the duration token is 0).
 - One poll clock per conversation view ticks once a minute while an open poll is drawn, and
   stops at the next tick once none is (a test drives it on the executor's clock).
-- Checklists: rows are checkboxes 44 px tall with "Ticked by Ada, …" under a ticked item; "Edit
-  list" turns the rows into fields with Remove and a new-item field (one checklist at a time).
+- Checklists (redesigned 2026-11-15 with the web, see
+  [web-checklists-and-progress.md](web-checklists-and-progress.md#redesign-2026-11-15)): 600 px
+  cards, a segmented level, borderless 44 px rows with a 22 px box whose check grows in, "Ada ·
+  Today at 14:32" under a ticked item (the full sentence is its accessible description), the
+  read-only line, and "Edit list" as a quiet button that turns the rows into fields with Remove and
+  a new-item field (one checklist at a time). The 360 px compact insets are web only.
   Progress bars: the level and "Update", which opens the dialog filled in.
 - A level says its new value through a polite live region once it changes, never the first one.
 
