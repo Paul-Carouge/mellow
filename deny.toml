@@ -63,7 +63,7 @@ exceptions = [
     # The desktop's YouTube extractor (ADR-0063), Linux only. GPL-3.0 code may be combined with
     # Mellow's AGPL-3.0 (GPLv3 section 13); the crate states the deprecated `GPL-3.0` id, which
     # cargo-deny reads as GPL-3.0-only.
-    { crate = "rustypipe", allow = ["GPL-3.0-only", "GPL-3.0-or-later"] },
+    { crate = "rustypipe", allow = ["GPL-3.0", "GPL-3.0-only", "GPL-3.0-or-later"] },
 ]
 
 [licenses.private]

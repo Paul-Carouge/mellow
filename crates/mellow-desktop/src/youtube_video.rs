@@ -12,6 +12,9 @@
 //! restricted or live video) or the tracks cannot be read, the card says why and offers the video
 //! on YouTube. Only Linux plays them so far; elsewhere the card opens the link in the browser.
 
+// Streams resolve and play on Linux only so far (ADR-0063); elsewhere the card opens the browser
+// and the stream choice and failure types stay unused.
+#![cfg_attr(not(target_os = "linux"), allow(dead_code))]
 use std::collections::{HashMap, VecDeque};
 use std::hash::{Hash as _, Hasher as _};
 use std::time::Duration;

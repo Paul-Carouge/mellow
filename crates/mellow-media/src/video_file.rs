@@ -354,6 +354,8 @@ impl VideoStream {
     ///
     /// # Errors
     /// The thread could not be started.
+    // Only Linux consumes the track; elsewhere it is dropped unread.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::needless_pass_by_value))]
     pub fn start_remote(track: RemoteTrack, timing: VideoTiming) -> std::io::Result<Self> {
         Self::start_with(
             move || {
