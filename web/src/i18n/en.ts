@@ -2531,6 +2531,24 @@ export const en = {
     updateBadPackage: "The downloaded update isn't laid out as expected, so it was thrown away.",
     updateWrongCertificate: "The downloaded app isn't signed with the same certificate as this one, so it was thrown away.",
     updateInstallFailed: "The update couldn't be installed. This version stays in place.",
+    /** The update toast at the window's bottom corner (DESIGN.md §6.36, ADR-0064). */
+    updateToastTitle: (version: string) => `Mellow ${version} is available`,
+    updateToastBody: "Mellow restarts once the update is installed.",
+    updateAndRestart: "Update and restart",
+    /** The toast's close button: it comes back for a newer version or at the next launch. */
+    updateToastDismiss: "Hide the update notice",
+    /** The download's progress, beside its bar, and read out. */
+    updateToastProgress: (percent: number) => `${count(percent)}%`,
+    updateToastVerifying: "Checking the signature and unpacking…",
+    updateToastRestarting: "Mellow restarts in a moment.",
+    updateToastFailedTitle: "The update didn't finish",
+    /** A copy that cannot replace itself: the new version is on the releases page. */
+    openDownloadPage: "Open the download page",
+    checkAgain: "Check again",
+    /** The launch screen while the session and the connection get ready (DESIGN.md §5.0). */
+    splashLabel: "Mellow is starting",
+    splashOpeningSession: "Opening your session…",
+    splashConnecting: (instance: string) => `Connecting to ${instance}…`,
     /** Security: the recovery codes file was saved where the person chose. */
     codesSaved: "Recovery codes saved.",
     codesSaveFailed: "Couldn't save the file. Copy the codes instead.",

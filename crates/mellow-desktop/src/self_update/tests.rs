@@ -136,9 +136,17 @@ async fn a_signed_linux_package_is_found_verified_staged_and_installed() {
     assert_eq!(release.version, Version::new(9, 0, 0));
     let asset_name = package::asset_name_for(&installation, &release).unwrap();
     assert_eq!(asset_name, LINUX_PACKAGE_NAME);
-    let downloaded = package::download_verified_package(&client, &release, &asset_name)
-        .await
-        .unwrap();
+    let progress = mellow_update::DownloadProgress::default();
+    let downloaded =
+        package::download_verified_package(&client, &release, &asset_name, Some(&progress))
+            .await
+            .unwrap();
+    let package_bytes = u64::try_from(LINUX_PACKAGE.len()).unwrap();
+    assert_eq!(
+        (progress.received_bytes(), progress.total_bytes()),
+        (package_bytes, Some(package_bytes)),
+        "the package's bytes are counted for the toast's progress bar, the signature's are not"
+    );
     let mut staged = package::stage_package(
         &installation,
         release.version.clone(),
@@ -272,7 +280,7 @@ async fn a_tampered_package_or_signature_is_refused_before_anything_is_unpacked(
         let base_url = serve_release_host(routes_with(package, signature)).await;
         let client = UpdateClient::with_test_release_host(&base_url, TEST_PUBLIC_KEY).unwrap();
         assert_eq!(
-            package::download_verified_package(&client, &release, LINUX_PACKAGE_NAME)
+            package::download_verified_package(&client, &release, LINUX_PACKAGE_NAME, None)
                 .await
                 .err(),
             Some(UpdateProblem::BadSignature)

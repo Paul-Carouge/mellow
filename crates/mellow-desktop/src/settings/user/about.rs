@@ -12,8 +12,9 @@ use super::parts::{body_text, error_line, section_label};
 use crate::components::{Button, ButtonVariant, Switch, polite_live_region, with_type};
 use crate::i18n::{Strings, strings};
 use crate::preferences::{PreferencesStore, change_preferences, preferences};
+use crate::self_update::toast::problem_sentence;
 use crate::self_update::{
-    SelfUpdate, UpdateProblem, UpdateStatus, can_restart_to_update, is_in_call, self_update,
+    SelfUpdate, UpdateStatus, can_restart_to_update, is_in_call, self_update,
 };
 use crate::settings::{SettingsPage, SettingsPageEvent};
 use crate::theme::tokens::{
@@ -69,26 +70,6 @@ fn status_sentence(status: &UpdateStatus, catalogue: Strings) -> Option<String> 
         UpdateStatus::Installing(version) => words.update_installing(&version.to_string()),
         UpdateStatus::Failed(problem) => problem_sentence(*problem, catalogue).to_owned(),
     })
-}
-
-fn problem_sentence(problem: UpdateProblem, catalogue: Strings) -> &'static str {
-    let words = catalogue.desktop();
-    match problem {
-        UpdateProblem::NotPackaged => words.update_not_packaged(),
-        UpdateProblem::PackageManager => words.update_package_manager(),
-        UpdateProblem::InstalledElsewhere => words.update_installed_elsewhere(),
-        UpdateProblem::NotWritable => words.update_not_writable(),
-        UpdateProblem::Translocated => words.update_translocated(),
-        UpdateProblem::UnsupportedSystem => words.update_unsupported_system(),
-        UpdateProblem::Elevated => words.update_elevated(),
-        UpdateProblem::NoFfmpeg => words.update_no_ffmpeg(),
-        UpdateProblem::Network => words.update_network(),
-        UpdateProblem::NoPackage => words.update_no_package(),
-        UpdateProblem::BadSignature => words.update_bad_signature(),
-        UpdateProblem::BadPackage => words.update_bad_package(),
-        UpdateProblem::WrongCertificate => words.update_wrong_certificate(),
-        UpdateProblem::InstallFailed => words.update_install_failed(),
-    }
 }
 
 /// The version, where the update stands, its button and the automatic updates switch.

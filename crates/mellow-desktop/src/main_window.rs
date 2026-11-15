@@ -1,5 +1,6 @@
-//! The main window's root: nothing while the stored session is read, the sign-in card when signed
-//! out, the Dusk shell when signed in (a new one per session, so nothing of the last one stays).
+//! The main window's root: the launch screen while the stored session is read and the first
+//! connection gets ready, the sign-in card when signed out, the Dusk shell when signed in (a new
+//! one per session, so nothing of the last one stays), and the update toast above them.
 
 use gpui::{
     AnyElement, AppContext as _, Context, Entity, IntoElement, ParentElement as _, Render,
@@ -8,9 +9,11 @@ use gpui::{
 
 use crate::components::Tooltip;
 use crate::notifier::{end_notifications, notifier_of_session};
+use crate::self_update::toast::UpdateToast;
 use crate::session::{Session, SessionPhase};
 use crate::shell::DuskShell;
 use crate::sign_in_screen::SignInScreen;
+use crate::splash::{Splash, SplashLeft, launch_stage};
 use crate::theme::{color, interface_font, length, theme};
 use crate::window_chrome::{self, WINDOW_TITLE};
 
@@ -19,6 +22,9 @@ pub struct MainWindow {
     /// Built when the session ends and dropped once signed in, so no typed password outlives it.
     sign_in_screen: Option<Entity<SignInScreen>>,
     shell: Option<Entity<DuskShell>>,
+    /// Shown once per launch, until the screen underneath is ready.
+    splash: Option<(Entity<Splash>, Subscription)>,
+    update_toast: Entity<UpdateToast>,
     _session_subscription: Subscription,
 }
 
@@ -35,16 +41,46 @@ impl MainWindow {
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let subscription = cx.observe_in(&session, window, |main_window, session, window, cx| {
             main_window.follow_session_phase(session.read(cx).phase(), window, cx);
+            main_window.follow_launch(cx);
         });
         let phase = session.read(cx).phase();
+        // Only a launch reads the stored session: a later sign-in goes straight to the shell.
+        let splash = (phase == SessionPhase::RestoringStoredSession).then(|| {
+            let stage = launch_stage(phase, session.read(cx).status(), None)
+                .unwrap_or(crate::splash::LaunchStage::OpeningSession);
+            let splash = cx.new(|cx| Splash::new(stage, cx));
+            let left = cx.subscribe(&splash, |main_window, _, _: &SplashLeft, cx| {
+                main_window.splash = None;
+                cx.notify();
+            });
+            (splash, left)
+        });
         let mut main_window = Self {
             session,
             sign_in_screen: None,
             shell: None,
+            splash,
+            update_toast: cx.new(UpdateToast::new),
             _session_subscription: subscription,
         };
         main_window.follow_session_phase(phase, window, cx);
         main_window
+    }
+
+    /// Fades the launch screen out once the screen underneath is ready.
+    fn follow_launch(&mut self, cx: &mut Context<Self>) {
+        let Some((splash, _)) = &self.splash else {
+            return;
+        };
+        let session = self.session.read(cx);
+        let stage = launch_stage(
+            session.phase(),
+            session.status(),
+            session
+                .last_instance()
+                .map(mellow_client_core::InstanceAddress::host),
+        );
+        splash.update(cx, |splash, cx| splash.follow(stage, cx));
     }
 
     fn follow_session_phase(
@@ -133,8 +169,17 @@ impl Render for MainWindow {
             })
             // The screen's layers laid out in it (sheets, the settings sheet) stay below the title
             // band; deferred layers (dialogs, scrims, menus) place themselves there with
-            // `window_chrome::client_content_bounds`.
-            .child(div().relative().flex_1().min_h_0().flex().children(screen))
+            // `window_chrome::client_content_bounds`, above the toast and the launch screen.
+            .child(
+                div()
+                    .relative()
+                    .flex_1()
+                    .min_h_0()
+                    .flex()
+                    .children(screen)
+                    .child(self.update_toast.clone())
+                    .children(self.splash.as_ref().map(|(splash, _)| splash.clone())),
+            )
             // Drawn last: above the screen, and after it in the Tab order.
             .when(chrome.is_title_band_drawn, |content| {
                 content.child(window_chrome::title_band(window, cx))
