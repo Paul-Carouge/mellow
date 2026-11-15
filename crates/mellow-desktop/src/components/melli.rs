@@ -11,8 +11,9 @@
 //! Melli frame to cost only the Melli puts its own heavy panes in cached views.
 //!
 //! The states are the ones a desktop host can show today: the Home button's rule (`idle`,
-//! `connecting`, `connection-lost`, `notification`, `do-not-disturb`). The web's call, update and
-//! sleeping states and the chime are not wired on either client's desktop yet (§2.10).
+//! `connecting`, `connection-lost`, `notification`, `do-not-disturb`) and `incoming-call` (the
+//! incoming call card and Home while a call rings). The web's in-call, update and sleeping states
+//! and the chime are not wired on the desktop yet (§2.10).
 
 use std::time::{Duration, Instant};
 
@@ -28,8 +29,9 @@ use crate::session::ConnectionStatus;
 use crate::theme::tokens::{
     COMPONENT_MELLI_BLINK_DURATION, COMPONENT_MELLI_FLOAT_DURATION, COMPONENT_MELLI_HOP_DURATION,
     COMPONENT_MELLI_PUFF_SPIN_DURATION, COMPONENT_MELLI_RAIN_DURATION,
-    COMPONENT_MELLI_SLEEP_DURATION, COMPONENT_MELLI_STATE_CHANGE_DURATION,
-    COMPONENT_MELLI_STATE_CHANGE_EASING, COMPONENT_MELLI_WAIT_DURATION, Delay,
+    COMPONENT_MELLI_RING_DURATION, COMPONENT_MELLI_SLEEP_DURATION,
+    COMPONENT_MELLI_STATE_CHANGE_DURATION, COMPONENT_MELLI_STATE_CHANGE_EASING,
+    COMPONENT_MELLI_WAIT_DURATION, Delay,
 };
 use crate::theme::{length, theme};
 
@@ -47,16 +49,19 @@ pub enum MelliState {
     Notification,
     /// Do not disturb: eyes closed under a crossed-out bell, a slow breath.
     DoNotDisturb,
+    /// A call rings the reader (ADR-0062): wide eyes, rocking like a ringing phone.
+    IncomingCall,
 }
 
 impl MelliState {
     /// Every state, in the gallery's order.
-    pub const ALL: [Self; 5] = [
+    pub const ALL: [Self; 6] = [
         Self::Idle,
         Self::Connecting,
         Self::ConnectionLost,
         Self::Notification,
         Self::DoNotDisturb,
+        Self::IncomingCall,
     ];
 
     /// The web's name, for the gallery and logs.
@@ -68,15 +73,18 @@ impl MelliState {
             Self::ConnectionLost => "connection-lost",
             Self::Notification => "notification",
             Self::DoNotDisturb => "do-not-disturb",
+            Self::IncomingCall => "incoming-call",
         }
     }
 
     /// The Home button's Melli (`homeMelliState`): connection trouble first, then Do not disturb
-    /// (quiet even with unread messages), then something for the reader.
+    /// (quiet even with unread messages or a call ringing), then a call ringing the reader, then
+    /// something for the reader.
     #[must_use]
     pub fn for_home(
         status: ConnectionStatus,
         is_do_not_disturb: bool,
+        is_call_ringing: bool,
         has_something_for_the_reader: bool,
     ) -> Self {
         match status {
@@ -85,6 +93,8 @@ impl MelliState {
             ConnectionStatus::Connected | ConnectionStatus::SignedOut => {
                 if is_do_not_disturb {
                     Self::DoNotDisturb
+                } else if is_call_ringing {
+                    Self::IncomingCall
                 } else if has_something_for_the_reader {
                     Self::Notification
                 } else {
@@ -114,6 +124,7 @@ impl MelliState {
             drops_opacity: 0.0,
             sparkle_opacity: 0.0,
             bell_opacity: 0.0,
+            rings_opacity: 0.0,
         };
         match self {
             Self::Idle => rest,
@@ -141,6 +152,11 @@ impl MelliState {
                 bell_opacity: 1.0,
                 ..rest
             },
+            Self::IncomingCall => Pose {
+                eyes_scale_y: 1.15,
+                rings_opacity: 1.0,
+                ..rest
+            },
         }
     }
 }
@@ -160,6 +176,8 @@ struct Pose {
     drops_opacity: f32,
     sparkle_opacity: f32,
     bell_opacity: f32,
+    /// The phone's rings on both sides (incoming call).
+    rings_opacity: f32,
 }
 
 fn mix(from: f32, to: f32, progress: f32) -> f32 {
@@ -184,6 +202,7 @@ impl Pose {
             drops_opacity: at(self.drops_opacity, to.drops_opacity),
             sparkle_opacity: at(self.sparkle_opacity, to.sparkle_opacity),
             bell_opacity: at(self.bell_opacity, to.bell_opacity),
+            rings_opacity: at(self.rings_opacity, to.rings_opacity),
         }
     }
 }
@@ -249,6 +268,9 @@ struct Loops {
     /// The cloud and face: translation then squash, pivoting on the cloud's base (128, 200).
     motion_offset_y: f32,
     motion_scale: (f32, f32),
+    /// The ringing phone's rock, in degrees, pivoting on the cloud's base too.
+    motion_degrees: f32,
+    rings_opacity: f32,
     shadow_scale_x: f32,
     shadow_opacity: f32,
     blink_scale_y: f32,
@@ -262,6 +284,8 @@ impl Loops {
     const REST: Self = Self {
         motion_offset_y: 0.0,
         motion_scale: (1.0, 1.0),
+        motion_degrees: 0.0,
+        rings_opacity: 1.0,
         shadow_scale_x: 1.0,
         shadow_opacity: 1.0,
         blink_scale_y: 1.0,
@@ -305,6 +329,29 @@ impl Loops {
                 loops.motion_scale = (mix(1.0, 1.04, breath), mix(1.0, 0.96, breath));
                 loops.shadow_scale_x = mix(1.0, 1.06, breath);
             }
+            MelliState::IncomingCall => {
+                let ring = cycle(elapsed, COMPONENT_MELLI_RING_DURATION);
+                loops.motion_degrees = keyframes(
+                    ring,
+                    &[
+                        (0.0, 0.0),
+                        (0.04, -9.0),
+                        (0.09, 9.0),
+                        (0.14, -9.0),
+                        (0.19, 9.0),
+                        (0.24, -5.0),
+                        (0.29, 3.0),
+                        (0.34, 0.0),
+                        (1.0, 0.0),
+                    ],
+                    &ease_in_out,
+                );
+                loops.rings_opacity = keyframes(
+                    ring,
+                    &[(0.0, 1.0), (0.34, 1.0), (0.45, 0.3), (1.0, 0.3)],
+                    &Easing::Linear,
+                );
+            }
         }
         match state {
             MelliState::Connecting => {
@@ -344,9 +391,22 @@ impl Loops {
                     *star = (mix(0.8, 1.2, twinkle), mix(0.0, 20.0, twinkle));
                 }
             }
-            MelliState::Idle | MelliState::DoNotDisturb => {}
+            MelliState::Idle | MelliState::DoNotDisturb | MelliState::IncomingCall => {}
         }
         loops
+    }
+
+    /// The still pose's loops: at rest, but a ringing phone stays tilted, as the web's
+    /// `.is-still[data-state="incoming-call"]`.
+    fn still(state: MelliState) -> Self {
+        if state == MelliState::IncomingCall {
+            Self {
+                motion_degrees: -10.0,
+                ..Self::REST
+            }
+        } else {
+            Self::REST
+        }
     }
 }
 
@@ -418,7 +478,7 @@ impl MelliClock {
         if is_still {
             return MelliFrame {
                 pose: state.pose(),
-                loops: Loops::REST,
+                loops: Loops::still(state),
                 puff_degrees: 0.0,
             };
         }
@@ -858,6 +918,7 @@ fn paint_melli(
     }
 
     let motion = Affine::scale_about(loops.motion_scale.0, loops.motion_scale.1, 128.0, 200.0)
+        .then(Affine::rotation_about(loops.motion_degrees, 128.0, 200.0))
         .then(Affine::translation(0.0, loops.motion_offset_y))
         .then(view);
     let puff = Affine::rotation_about(frame.puff_degrees, 128.0, 124.0).then(motion);
@@ -952,6 +1013,22 @@ fn paint_marks(
             shape,
             with_opacity(colours.mark, pose.sparkle_opacity),
         );
+    }
+    let rings = with_opacity(colours.mark, pose.rings_opacity * loops.rings_opacity);
+    if rings.a > 0.0 {
+        // `M46 100Q34 124 46 148`, `M30 88Q14 124 30 160` and their mirrors. Without round caps:
+        // the discs would overlap a translucent stroke and show darker ends.
+        for (from, control, to) in [
+            ((46.0, 100.0), (34.0, 124.0), (46.0, 148.0)),
+            ((30.0, 88.0), (14.0, 124.0), (30.0, 160.0)),
+            ((210.0, 100.0), (222.0, 124.0), (210.0, 148.0)),
+            ((226.0, 88.0), (242.0, 124.0), (226.0, 160.0)),
+        ] {
+            let mut builder = PathBuilder::stroke(px(STROKE_WIDTH * view.length_scale()));
+            builder.move_to(view.apply(from.0, from.1));
+            builder.curve_to(view.apply(to.0, to.1), view.apply(control.0, control.1));
+            painter.fill(builder, rings);
+        }
     }
     let bell = with_opacity(colours.mark, pose.bell_opacity);
     painter.bell(view, bell);
@@ -1290,25 +1367,35 @@ mod tests {
     fn the_home_button_shows_connection_trouble_first() {
         use ConnectionStatus::{Connected, Connecting, Reconnecting};
         assert_eq!(
-            MelliState::for_home(Reconnecting, true, true),
+            MelliState::for_home(Reconnecting, true, false, true),
             MelliState::ConnectionLost
         );
         assert_eq!(
-            MelliState::for_home(Connecting, false, true),
+            MelliState::for_home(Connecting, false, false, true),
             MelliState::Connecting
         );
         assert_eq!(
-            MelliState::for_home(Connected, true, true),
+            MelliState::for_home(Connected, true, false, true),
             MelliState::DoNotDisturb,
             "quiet even with unread messages"
         );
         assert_eq!(
-            MelliState::for_home(Connected, false, true),
+            MelliState::for_home(Connected, false, false, true),
             MelliState::Notification
         );
         assert_eq!(
-            MelliState::for_home(Connected, false, false),
+            MelliState::for_home(Connected, false, false, false),
             MelliState::Idle
+        );
+        assert_eq!(
+            MelliState::for_home(Connected, false, true, true),
+            MelliState::IncomingCall,
+            "a call rings before unread messages"
+        );
+        assert_eq!(
+            MelliState::for_home(Connected, true, true, true),
+            MelliState::DoNotDisturb,
+            "quiet even while a call rings"
         );
     }
 

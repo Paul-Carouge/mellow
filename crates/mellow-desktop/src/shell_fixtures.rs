@@ -139,6 +139,15 @@ fn conversation(id: Snowflake, with: PublicUser, last_message: u64) -> DirectMes
 
 /// `unreads`: channels with messages past the reader's position, and how many mention them.
 pub fn sample_state_with_unreads(unreads: &[(Snowflake, u32)]) -> ClientState {
+    sample_state_on_instance(unreads, false)
+}
+
+/// The sample world on an instance with private calls (`Ready.calls_enabled`, ADR-0062).
+pub fn sample_state_with_calls() -> ClientState {
+    sample_state_on_instance(&[], true)
+}
+
+fn sample_state_on_instance(unreads: &[(Snowflake, u32)], calls_enabled: bool) -> ClientState {
     use ChannelKind::{Category, Text, Voice};
     let rust = guild(
         GUILD_RUST,
@@ -227,7 +236,7 @@ pub fn sample_state_with_unreads(unreads: &[(Snowflake, u32)]) -> ClientState {
         voice_enabled: false,
         maximum_attachment_bytes: None,
         calls: Vec::new(),
-        calls_enabled: false,
+        calls_enabled,
     });
     state.set_members(
         GUILD_RUST,
@@ -306,7 +315,7 @@ pub fn open_shell(
 }
 
 /// The app's globals and keys, and a session holding `state`.
-fn session_for_shell(
+pub(crate) fn session_for_shell(
     cx: &mut TestAppContext,
     state: ClientState,
 ) -> Entity<crate::session::Session> {

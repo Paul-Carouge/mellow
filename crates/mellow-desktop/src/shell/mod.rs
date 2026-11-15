@@ -11,6 +11,7 @@ mod channel_sidebar;
 mod conversation_menus;
 mod conversation_sheet;
 mod custom_status_dialog;
+mod incoming_call;
 mod member_sheet;
 mod message_search_host;
 mod overlays;
@@ -285,6 +286,9 @@ pub struct DuskShell {
     screen_share: screen_share_host::ScreenShareHost,
     /// The call view or the watched screen in the sheet's place, and what had focus before.
     call_view: Option<(Entity<call_view::CallView>, Option<FocusHandle>)>,
+    /// The call ringing the reader, shown as the incoming call card (ADR-0062).
+    incoming_call: Option<incoming_call::ShownIncomingCall>,
+    incoming_call_focus: incoming_call::IncomingCallFocus,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -300,6 +304,7 @@ impl std::fmt::Debug for DuskShell {
 }
 
 impl DuskShell {
+    #[allow(clippy::too_many_lines)] // Every subscription and field of the shell, in one place.
     pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let banner = cx.new(|cx| ConnectionBanner::new(session.clone(), cx));
         let conversation = cx.new(|cx| ConversationView::new(session.clone(), window, cx));
@@ -342,6 +347,22 @@ impl DuskShell {
                 }
             }));
         }
+        if let Some(calls) = crate::calls::calls(cx) {
+            subscriptions.push(cx.observe_in(&calls, window, |shell, _, window, cx| {
+                shell.follow_incoming_call(window, cx);
+                cx.notify();
+            }));
+        }
+        // Ctrl+Enter answers the ringing call from anywhere, Esc in the card declines it: before
+        // key bindings, so the composer's own Ctrl+Enter and Esc never see them.
+        let shell_for_keys = cx.entity().downgrade();
+        subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
+            let _ = shell_for_keys.update(cx, |shell, cx| {
+                if shell.answer_or_decline_with_key(&event.keystroke, window, cx) {
+                    cx.stop_propagation();
+                }
+            });
+        }));
         // The user card's "Restart to update" button (ADR-0057).
         if let Some(self_update) = crate::self_update::self_update(cx) {
             subscriptions.push(cx.observe(&self_update, |_, _, cx| cx.notify()));
@@ -384,9 +405,12 @@ impl DuskShell {
             soundboard: soundboard_host::SoundboardHost::new(cx),
             screen_share: screen_share_host::ScreenShareHost::new(cx),
             call_view: None,
+            incoming_call: None,
+            incoming_call_focus: incoming_call::IncomingCallFocus::new(cx),
             _subscriptions: subscriptions,
         };
         shell.follow_state(&[], cx);
+        shell.follow_incoming_call(window, cx);
         // The viewer is drawn by this shell: it goes with its window and its session.
         cx.on_release(|_, cx| crate::media_viewer::forget_media_viewer(cx))
             .detach();
@@ -896,6 +920,34 @@ impl DuskShell {
         });
     }
 
+    /// Answers the call of `conversation_id` (the card's Décrocher, Ctrl+Enter, the
+    /// notification): the conversation opens, then the call joins and its view shows over it.
+    pub fn answer_call(
+        &mut self,
+        conversation_id: Snowflake,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        // Opening a place closes the call view: the call's view opens after it.
+        self.open_channel(conversation_id, window, cx);
+        if let Some(calls) = crate::calls::calls(cx) {
+            calls.update(cx, |calls, cx| calls.join_call(conversation_id, cx));
+        }
+    }
+
+    /// The header's or the profile's call: the conversation's call starts, or the one going on
+    /// is joined, or shown when the reader is in it.
+    pub(crate) fn call_conversation(&mut self, conversation_id: Snowflake, cx: &mut Context<Self>) {
+        let Some(calls) = crate::calls::calls(cx) else {
+            return;
+        };
+        let phase = self.state(cx).call_phase(conversation_id);
+        calls.update(cx, |calls, cx| match phase {
+            Some(_) => calls.join_call(conversation_id, cx),
+            None => calls.start_call(conversation_id, cx, |_, _| {}),
+        });
+    }
+
     /// The Home list's "+" and its empty state's "New message": the people picker.
     pub(crate) fn open_new_message(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.home
@@ -1402,7 +1454,16 @@ impl Render for DuskShell {
             .children(self.render_screen_share_overlays(window, cx))
             .children(self.render_fullscreen_call_view(cx))
             // Above everything: a message's pictures and videos, large (`media_viewer`).
-            .children(crate::media_viewer::open_media_viewer_view(cx));
+            .children(crate::media_viewer::open_media_viewer_view(cx))
+            // Over that too: a call reaches the reader anywhere in the app.
+            .child(crate::components::assertive_live_region(
+                "incoming-call-announcement",
+                self.incoming_call
+                    .as_ref()
+                    .map(|shown| shown.announcement.clone())
+                    .unwrap_or_default(),
+            ))
+            .children(self.render_incoming_call(window, cx));
         if self.regions.is_focus_pending() && self.is_navigation_drawer_open {
             cx.defer_in(window, |shell, window, cx| {
                 shell.focus_pending_region(window, cx);

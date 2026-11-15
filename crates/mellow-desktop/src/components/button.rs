@@ -16,7 +16,7 @@ use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_BUTTON_HEIGHT, COMPONENT_BUTTON_HEIGHT_LARGE,
     COMPONENT_BUTTON_HEIGHT_SMALL, COMPONENT_BUTTON_PADDING_INLINE, COMPONENT_BUTTON_RADIUS,
-    DARK_THEME, RADIUS_SM, TYPE_BUTTON, ThemeTokens,
+    DARK_THEME, RADIUS_SM, SPACE_2XS, TYPE_BUTTON, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
 
@@ -128,6 +128,8 @@ pub struct Button {
     is_full_width: bool,
     /// Shown instead of the label, which then names it (a square button, as the profile's More).
     icon: Option<(IconName, f32)>,
+    /// Shown before the label (Answer's phone).
+    leading_icon: Option<(IconName, f32)>,
     focus_handle: Option<FocusHandle>,
     on_click: Option<ActivationHandler>,
 }
@@ -144,9 +146,17 @@ impl Button {
             is_disabled: false,
             is_full_width: false,
             icon: None,
+            leading_icon: None,
             focus_handle: None,
             on_click: None,
         }
+    }
+
+    /// `icon` at `icon_size` before the label.
+    #[must_use]
+    pub fn leading_icon(mut self, icon: IconName, icon_size: f32) -> Self {
+        self.leading_icon = Some((icon, icon_size));
+        self
     }
 
     /// A square button showing `icon` at `icon_size`: the label becomes its accessible name and
@@ -274,7 +284,13 @@ impl RenderOnce for Button {
                     .tooltip(move |_, cx| Tooltip::view(label.clone(), cx))
                     .tooltip_show_delay(Tooltip::show_delay())
                     .child(icon(glyph, icon_size, colours.label)),
-                None => button.child(self.label),
+                None => button
+                    .when_some(self.leading_icon, |button, (glyph, icon_size)| {
+                        button
+                            .gap(length(SPACE_2XS))
+                            .child(icon(glyph, icon_size, colours.label))
+                    })
+                    .child(self.label),
             })
             .when(is_ring_shown, |button| {
                 button.child(focus_ring(COMPONENT_BUTTON_RADIUS, cx))
@@ -308,6 +324,9 @@ pub struct IconButton {
     is_on_media_stage: bool,
     /// The host's handle, to move focus here; otherwise one kept while it is drawn.
     focus_handle: Option<FocusHandle>,
+    /// The icon's colour at rest and under the pointer, for a key that says a state by its ink
+    /// (a call going on, in `call-banner.icon`).
+    icon_tint: Option<Hsla>,
     on_click: Option<ActivationHandler>,
 }
 
@@ -331,8 +350,16 @@ impl IconButton {
             is_disabled: false,
             is_on_media_stage: false,
             focus_handle: None,
+            icon_tint: None,
             on_click: None,
         }
+    }
+
+    /// The icon in `tint` instead of the text colours.
+    #[must_use]
+    pub fn icon_tint(mut self, tint: Hsla) -> Self {
+        self.icon_tint = Some(tint);
+        self
     }
 
     /// On the media stage (a video, the picture viewer): the dark theme's colours in both
@@ -422,11 +449,13 @@ impl RenderOnce for IconButton {
                 ..hover_fill
             }
         };
-        let target_icon = match (self.tone, is_hovered || is_on) {
-            (IconButtonTone::Danger, true) => color(tokens.color_text_danger),
-            (IconButtonTone::Standard, true) => color(tokens.color_text_normal),
-            (_, false) => color(tokens.color_text_secondary),
-        };
+        let target_icon =
+            self.icon_tint
+                .unwrap_or_else(|| match (self.tone, is_hovered || is_on) {
+                    (IconButtonTone::Danger, true) => color(tokens.color_text_danger),
+                    (IconButtonTone::Standard, true) => color(tokens.color_text_normal),
+                    (_, false) => color(tokens.color_text_secondary),
+                });
         let fill = colour_transition(child_id(&self.id, "background"), target_fill, window, cx);
         let icon_tint = colour_transition(child_id(&self.id, "icon"), target_icon, window, cx);
         let is_ring_shown = is_focus_visible(&focus_handle, window);

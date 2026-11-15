@@ -2031,6 +2031,13 @@ impl VoiceDisconnectionsStrings {
             Language::French => "L’appel est terminé : personne n’a répondu.",
         }
     }
+
+    pub fn server_stopping(self) -> &'static str {
+        match self.language {
+            Language::English => "The instance is restarting.",
+            Language::French => "L’instance redémarre.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -2983,6 +2990,27 @@ impl CallsStrings {
 
     pub fn failures(self) -> CallsFailuresStrings {
         CallsFailuresStrings { language: self.language }
+    }
+
+    pub fn interrupted_title(self) -> &'static str {
+        match self.language {
+            Language::English => "Call interrupted",
+            Language::French => "Appel interrompu",
+        }
+    }
+
+    pub fn interrupted(self) -> &'static str {
+        match self.language {
+            Language::English => "The instance is restarting and ended the call. Call again in a moment.",
+            Language::French => "L’instance redémarre et a coupé l’appel. Rappelle dans un instant.",
+        }
+    }
+
+    pub fn cannot_join(self) -> &'static str {
+        match self.language {
+            Language::English => "You can no longer take part in this call.",
+            Language::French => "Tu ne peux plus participer à cet appel.",
+        }
     }
 
     pub fn no_answer_title(self) -> &'static str {

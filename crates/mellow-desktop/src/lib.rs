@@ -10,6 +10,7 @@
 pub mod attachment_audio;
 mod attachment_download;
 pub mod background;
+pub mod calls;
 pub mod column_widths;
 pub mod components;
 pub mod composer;
@@ -107,6 +108,7 @@ pub fn start(
     notifier::follow_session_for_notifications(&session, cx);
     let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
     voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
+    calls::install_calls(&session, cx);
     self_update::install_self_update(cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());

@@ -34,9 +34,9 @@ use mellow_protocol::{PublicUser, Snowflake, VideoTileSize, VoiceState};
 
 use super::profile_picture;
 use crate::components::{
-    Avatar, AvatarPerson, IconButton, RangeBounds, RangeField, focus_ring, icon, inset_focus_ring,
-    is_focus_visible, is_picture_row_pointed_at, polite_live_region, remembered_focus_handle,
-    track_picture_row_pointer, with_type,
+    Avatar, AvatarPerson, GroupAvatar, IconButton, LiveRegion as _, RangeBounds, RangeField,
+    focus_ring, icon, inset_focus_ring, is_focus_visible, is_picture_row_pointed_at,
+    polite_live_region, remembered_focus_handle, track_picture_row_pointer, with_type,
 };
 use crate::i18n::strings;
 use crate::session::Session;
@@ -58,8 +58,8 @@ use crate::theme::tokens::{
     COMPONENT_STREAM_VIEW_ENDED_CLOSE_DELAY, COMPONENT_STREAM_VIEW_SLOW_CONNECT_DELAY,
     COMPONENT_STREAM_VIEW_SOUND_BAR_GAP, COMPONENT_STREAM_VIEW_SOUND_BAR_HEIGHT,
     COMPONENT_STREAM_VIEW_STAGE_INSET, COMPONENT_STREAM_VIEW_STAGE_RADIUS,
-    COMPONENT_STREAM_VIEW_VOLUME_WIDTH, SPACE_2XS, SPACE_SM, SPACE_XS, TYPE_BADGE, TYPE_BODY,
-    TYPE_BODY_SM, TYPE_HEADING_MD,
+    COMPONENT_STREAM_VIEW_VOLUME_WIDTH, SPACE_2XS, SPACE_MD, SPACE_SM, SPACE_XS, TYPE_BADGE,
+    TYPE_BODY, TYPE_BODY_SM, TYPE_HEADING_MD,
 };
 use crate::theme::{color, length, theme};
 use crate::voice::video_view::{VideoFit, VideoPictures, video_view};
@@ -261,6 +261,18 @@ impl CallView {
 
     fn person_of(&self, user_id: Snowflake, guild_id: Option<Snowflake>, cx: &App) -> PublicUser {
         let state = self.session.read(cx).state();
+        if let Some(conversation_id) = self.voice.read(cx).call_conversation_id() {
+            return state
+                .current_user_as_public_user()
+                .filter(|user| user.id == user_id)
+                .unwrap_or_else(|| {
+                    crate::calls::words::call_person_of(
+                        state.direct_message_channel(conversation_id),
+                        user_id,
+                        strings(cx),
+                    )
+                });
+        }
         guild_id
             .and_then(|guild_id| {
                 state
@@ -330,6 +342,41 @@ fn shown_picture(user_id: Snowflake, size: VideoTileSize, width: f32, scale: f32
         display_width: to_pixels(width),
         display_height: to_pixels(width / TILE_ASPECT_RATIO),
     }
+}
+
+/// What tiles need of a voice state, from a voice channel or from a conversation's call (ADR-0062):
+/// a call has no voice states, so its participants stand in, with the conversation as their place
+/// (never sent anywhere).
+pub(crate) fn place_voice_states(
+    state: &mellow_client_core::state::ClientState,
+    voice: &Voice,
+) -> Vec<VoiceState> {
+    let Some(channel_id) = voice.channel_id() else {
+        return Vec::new();
+    };
+    if voice.call_conversation_id().is_none() {
+        return state.voice_participants(channel_id).cloned().collect();
+    }
+    state
+        .call(channel_id)
+        .map(|call| {
+            call.participants
+                .iter()
+                .map(|participant| VoiceState {
+                    user_id: participant.user_id,
+                    guild_id: channel_id,
+                    channel_id,
+                    self_mute: participant.self_mute,
+                    self_deaf: participant.self_deaf,
+                    suppressed: false,
+                    join_sound_id: None,
+                    self_video: participant.self_video,
+                    self_stream: participant.self_stream,
+                    video_codec: participant.video_codec,
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// The people of the call, in join order, you included even before your state comes back.
@@ -417,13 +464,35 @@ impl CallView {
         let is_sharing_screen = voice.is_sharing_screen();
         let state = self.session.read(cx).state();
         let own_user_id = state.current_user().map(|user| user.id);
-        let channel_name = place
-            .and_then(|(_, channel_id)| state.guild_channel(channel_id))
-            .map(|channel| channel.name.clone())
-            .unwrap_or_default();
-        let states: Vec<VoiceState> = place
-            .map(|(_, channel_id)| state.voice_participants(channel_id).cloned().collect())
-            .unwrap_or_default();
+        let conversation_id = voice.call_conversation_id();
+        let conversation = conversation_id.and_then(|id| state.direct_message_channel(id));
+        let channel_name = match conversation {
+            Some(conversation) => {
+                crate::home::conversation_display_name(conversation, own_user_id, strings)
+            }
+            None => place
+                .and_then(|(_, channel_id)| state.guild_channel(channel_id))
+                .map(|channel| channel.name.clone())
+                .unwrap_or_default(),
+        };
+        // The others are rung: their faces and "Ça sonne chez Ada…" instead of your lone tile.
+        let ringing = conversation_id
+            .filter(|id| {
+                state.call_phase(*id) == Some(mellow_client_core::state::CallPhase::Outgoing)
+            })
+            .and_then(|id| state.call(id))
+            .zip(conversation)
+            .map(|(call, conversation)| {
+                (
+                    strings.calls().ringing(&crate::calls::words::ringing_names(
+                        call,
+                        Some(conversation),
+                        strings,
+                    )),
+                    crate::calls::words::other_people(conversation, own_user_id),
+                )
+            });
+        let states: Vec<VoiceState> = place_voice_states(state, voice);
         let speaking: HashSet<Snowflake> = states
             .iter()
             .map(|voice_state| voice_state.user_id)
@@ -545,7 +614,9 @@ impl CallView {
                 }
             };
 
-        let tiles_area: AnyElement = if is_speaker {
+        let tiles_area: AnyElement = if let Some((sentence, faces)) = ringing.clone() {
+            Self::render_ringing_stage(sentence, &faces, window, cx)
+        } else if is_speaker {
             let featured_tile = tiles.first().map(|person| {
                 let look = look_of(self, person, false, false, cx);
                 div()
@@ -668,16 +739,26 @@ impl CallView {
             .collect();
         let overflow_count = i64::try_from(overflow.len()).unwrap_or(i64::MAX);
 
+        let is_call = conversation_id.is_some();
         let header = self.render_header(
             icon(
-                IconName::SpeakerHigh,
+                if is_call {
+                    IconName::PhoneCall
+                } else {
+                    IconName::SpeakerHigh
+                },
                 COMPONENT_CHAT_HEADER_ICON_SIZE,
                 color(tokens.component_chat_header_icon),
             )
             .into_any_element(),
-            channel_name.clone().into(),
+            if is_call {
+                strings.calls().call_with(&channel_name).into()
+            } else {
+                channel_name.clone().into()
+            },
             None,
-            true,
+            // Nothing to lay out while the others are rung.
+            ringing.is_none(),
             cx,
         );
         let stage_box = div()
@@ -713,11 +794,15 @@ impl CallView {
         div()
             .id("call-view-content")
             .role(Role::Region)
-            .aria_label(strings.call().view_of(if channel_name.is_empty() {
-                strings.voice().voice_channel()
+            .aria_label(if is_call {
+                strings.calls().call_with(&channel_name)
             } else {
-                &channel_name
-            }))
+                strings.call().view_of(if channel_name.is_empty() {
+                    strings.voice().voice_channel()
+                } else {
+                    &channel_name
+                })
+            })
             .size_full()
             .flex()
             .flex_col()
@@ -726,6 +811,65 @@ impl CallView {
             .when(!is_fullscreen, |view| {
                 view.child(self.render_controls(toggles.is_muted(), window, cx))
             })
+            .into_any_element()
+    }
+
+    /// While the reader's call rings the others: their faces, still (only Melli loops), and the
+    /// words, read out.
+    fn render_ringing_stage(
+        sentence: String,
+        faces: &[PublicUser],
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> AnyElement {
+        let tokens = theme(cx);
+        let people: Vec<AvatarPerson> = faces
+            .iter()
+            .map(|person| {
+                let picture = person.avatar.map(|image| {
+                    profile_picture(
+                        image,
+                        COMPONENT_CALL_VIEW_AVATAR_SIZE_LARGE,
+                        true,
+                        window,
+                        cx,
+                    )
+                });
+                AvatarPerson::from_user(person, picture)
+            })
+            .collect();
+        let face = if people.len() == 1 {
+            people.into_iter().next().map(|person| {
+                Avatar::new(person, COMPONENT_CALL_VIEW_AVATAR_SIZE_LARGE).into_any_element()
+            })
+        } else {
+            Some(
+                GroupAvatar::new(
+                    people,
+                    COMPONENT_CALL_VIEW_AVATAR_SIZE_LARGE,
+                    color(tokens.component_call_view_stage),
+                )
+                .into_any_element(),
+            )
+        };
+        div()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap(length(SPACE_MD))
+            .text_color(color(tokens.component_call_view_tile_text))
+            .children(face)
+            .child(
+                with_type(div(), TYPE_HEADING_MD)
+                    .id("call-view-ringing")
+                    .live_polite(SharedString::from(sentence.clone()))
+                    .max_w_full()
+                    .px(length(SPACE_MD))
+                    .child(sentence),
+            )
             .into_any_element()
     }
 
@@ -841,6 +985,7 @@ impl CallView {
     }
 
     /// The call's own controls: the microphone and hanging up.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render_controls(
         &self,
         is_muted: bool,
@@ -937,7 +1082,11 @@ impl CallView {
             .child(call_control(
                 "call-control-leave",
                 IconName::PhoneDisconnect,
-                strings.voice().disconnect(),
+                if self.voice.read(cx).call_conversation_id().is_some() {
+                    strings.calls().hang_up()
+                } else {
+                    strings.voice().disconnect()
+                },
                 None,
                 true,
                 move |_, cx| {
@@ -1190,12 +1339,14 @@ impl CallView {
             self.timed_stream_user_id = Some(user_id);
         }
         let voice = self.voice.read(cx);
-        let call_channel_id = voice.connected_place().map(|(_, channel_id)| channel_id);
+        let call_channel_id = voice.channel_id();
         let guild_id = voice.connected_place().map(|(guild_id, _)| guild_id);
         let is_paused = voice.is_video_paused(user_id);
         let is_deafened = voice.toggles().is_deafened();
         let state = self.session.read(cx).state();
-        let voice_state = state.voice_state_of(user_id).cloned();
+        let voice_state = place_voice_states(state, voice)
+            .into_iter()
+            .find(|voice_state| voice_state.user_id == user_id);
         let picture = self.pictures.read(cx).picture(user_id).cloned();
         let status =
             watched_stream_status(voice_state.as_ref(), call_channel_id, picture.is_some());

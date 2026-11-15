@@ -8,6 +8,7 @@
 //! The shell fills its conversation slot with this view and tells it the place
 //! ([`ConversationView::set_place`]); the view applies it in its next render, which has the window.
 
+mod call_banner;
 mod card_dialogs;
 mod cards;
 #[cfg(test)]
@@ -228,7 +229,7 @@ impl ConversationView {
                 view.note_reader_scrolled(!event.is_scrolled, cx);
             });
         });
-        let subscriptions = vec![
+        let mut subscriptions = vec![
             cx.subscribe_in(&composer, window, Self::follow_composer),
             cx.subscribe_in(
                 &session,
@@ -259,6 +260,10 @@ impl ConversationView {
                 cx.notify();
             }),
         ];
+        // The call banner follows the call view opening and closing.
+        if let Some(voice) = crate::voice::voice(cx) {
+            subscriptions.push(cx.observe(&voice, |_, _, cx| cx.notify()));
+        }
         Self {
             session,
             composer,
@@ -621,9 +626,11 @@ impl ConversationView {
         MessageMenuFacts {
             is_own: Some(message.author.id) == current_user_id,
             is_forward: message.forwarded_from.is_some(),
+            // A call's trace is neither edited, forwarded nor copied, as a poll (ADR-0062).
             is_rich: message.poll.is_some()
                 || message.checklist.is_some()
-                || message.progress_bar.is_some(),
+                || message.progress_bar.is_some()
+                || message.call.is_some(),
             is_poll_open: message
                 .poll
                 .as_ref()

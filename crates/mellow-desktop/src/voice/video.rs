@@ -370,7 +370,7 @@ impl Voice {
     pub(crate) fn pretend_call_for_tests(&mut self, guild_id: Snowflake, channel_id: Snowflake) {
         self.call = Some(super::Call {
             channel_id,
-            guild_id,
+            guild_id: Some(guild_id),
             phase: super::CallPhase::Connected,
             round_trip: None,
             is_self_speaking: false,

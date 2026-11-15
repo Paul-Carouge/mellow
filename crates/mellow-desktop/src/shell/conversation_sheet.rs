@@ -620,6 +620,8 @@ impl DuskShell {
                 (subject.topic.is_none() || has_navigation_drawer) && !has_friends_tabs,
                 |header| header.child(div().flex_1()),
             )
+            // First of the keys, folded or not: calling is what a conversation's header is for.
+            .children(self.render_call_key(cx))
             // In a narrow window Go to and the pins fold into "More options", as on phones.
             // "Go to… Ctrl K" reads as a field beside message search; where the header is too
             // narrow for both and the chat's minimum width, it folds into a compass.
@@ -724,6 +726,70 @@ impl DuskShell {
                         ),
                 )
             })
+    }
+
+    /// The header's phone (ADR-0062): calls the open conversation, joins the call going on, or
+    /// shows the one the reader is in. Hidden where the instance has no calls, and in a one-to-one
+    /// conversation with someone the reader blocked.
+    fn render_call_key(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let conversation_id = self.navigation.selected_channel_id()?;
+        let state = self.state(cx);
+        let conversation = state.direct_message_channel(conversation_id)?;
+        let current_user_id = state.current_user().map(|user| user.id);
+        let is_blocked_one_to_one = conversation.owner_id.is_none()
+            && conversation
+                .recipients
+                .iter()
+                .any(|person| Some(person.id) != current_user_id && state.is_blocked(person.id));
+        if !state.is_calls_enabled() || is_blocked_one_to_one {
+            return None;
+        }
+        let strings = strings(cx);
+        let tokens = theme(cx);
+        let phase = state.call_phase(conversation_id);
+        let is_in_this_call = self
+            .voice
+            .as_ref()
+            .is_some_and(|voice| voice.read(cx).call_conversation_id() == Some(conversation_id));
+        let name = conversation_display_name(conversation, current_user_id, strings);
+        let label = if is_in_this_call {
+            strings.calls().show_call().to_owned()
+        } else if phase.is_some() {
+            strings.calls().join_call().to_owned()
+        } else if conversation.owner_id.is_some() {
+            strings.calls().call_group(&name)
+        } else {
+            strings.calls().call_person(&name)
+        };
+        let entity = cx.entity();
+        let key = IconButton::new(
+            "call-conversation",
+            if phase.is_some() {
+                IconName::PhoneCall
+            } else {
+                IconName::Phone
+            },
+            label,
+        )
+        .sizes(
+            COMPONENT_CHAT_HEADER_BUTTON_SIZE,
+            COMPONENT_CHAT_HEADER_ICON_SIZE,
+        )
+        .on_click(move |_, cx| {
+            entity.update(cx, |shell, cx| shell.call_conversation(conversation_id, cx));
+        });
+        let key = if phase.is_some() {
+            key.icon_tint(color(tokens.component_call_banner_icon))
+        } else {
+            key
+        };
+        Some(
+            div()
+                .debug_selector(|| "call-conversation".to_owned())
+                .flex_none()
+                .child(key)
+                .into_any_element(),
+        )
     }
 
     /// A place without a conversation (loading, a server without channels, the Friends space):

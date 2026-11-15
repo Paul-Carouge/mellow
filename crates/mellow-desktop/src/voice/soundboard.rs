@@ -134,6 +134,10 @@ impl Voice {
     /// The reader's own call connected: their join sound in place of the join cue.
     pub(super) fn play_own_join(&mut self, cx: &mut Context<Self>) {
         let Some((guild_id, channel_id)) = self.connected_place() else {
+            // A conversation's call has no join sounds (ADR-0062): the cue.
+            if self.call_conversation_id().is_some() {
+                self.play_call_cue(VoiceCue::SelfJoin);
+            }
             return;
         };
         let state = self.session.read(cx).state();

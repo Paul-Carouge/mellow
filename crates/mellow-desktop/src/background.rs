@@ -111,6 +111,23 @@ pub fn open_main_window_and_stay_in_background(
     Ok(())
 }
 
+/// The main window while it is open; closed, Mellow runs in the background.
+#[must_use]
+pub fn main_window(cx: &App) -> Option<WindowHandle<MainWindow>> {
+    cx.try_global::<MainWindowSlot>()
+        .and_then(|slot| slot.window)
+}
+
+/// Whether the main window is open and in front (GPUI cannot tell a minimised window from one
+/// behind others: both are inactive).
+pub fn is_main_window_active(cx: &mut App) -> bool {
+    main_window(cx).is_some_and(|window| {
+        window
+            .update(cx, |_, window, _| window.is_window_active())
+            .unwrap_or(false)
+    })
+}
+
 /// Brings the main window to the front, opening it again if Mellow ran in the background.
 pub fn show_main_window(cx: &mut App) {
     let Some(slot) = cx.try_global::<MainWindowSlot>() else {

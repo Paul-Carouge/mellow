@@ -70,10 +70,10 @@ use mellow_client_core::shared_logic::voice_settings::{
 use mellow_client_core::state::StateChange;
 use mellow_media::{
     AudioDeviceDescription, AudioDeviceError, AudioDevices, AudioDirection, ConnectionProblem,
-    InMemoryPersonVoiceSettings, MicrophoneTest, MicrophoneTestOptions, PersonSoundSource,
-    PersonVoiceSettingsStore as _, SoundCache, SoundPlayer, SoundboardSoundsToStop,
-    SystemAudioDevices, VoiceCue, VoicePhase, VoiceSession, VoiceSessionEvent, VoiceSessionOptions,
-    VoiceToggles,
+    InMemoryPersonVoiceSettings, LocalSound, MicrophoneTest, MicrophoneTestOptions,
+    PersonSoundSource, PersonVoiceSettingsStore as _, SoundCache, SoundPlayer,
+    SoundboardSoundsToStop, SystemAudioDevices, VoiceCue, VoicePhase, VoiceSession,
+    VoiceSessionEvent, VoiceSessionOptions, VoiceToggles,
 };
 use mellow_protocol::{ClientFrame, Snowflake};
 
@@ -111,10 +111,11 @@ pub enum CallPhase {
     Reconnecting,
 }
 
-/// The joined channel.
+/// The joined channel, or conversation (a private call, ADR-0062).
 struct Call {
     channel_id: Snowflake,
-    guild_id: Snowflake,
+    /// `None` in a conversation's call.
+    guild_id: Option<Snowflake>,
     phase: CallPhase,
     round_trip: Option<Duration>,
     is_self_speaking: bool,
@@ -172,6 +173,8 @@ pub struct Voice {
     video: video::CallVideo,
     /// Your own shared screen.
     screen: screen_share::ScreenSharing,
+    /// Who was in the conversation's call at the last change, to tell who joins and leaves.
+    call_participant_ids: Vec<Snowflake>,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -202,6 +205,33 @@ fn person_settings_from_preferences(cx: &App) -> Arc<InMemoryPersonVoiceSettings
     video::seed_stream_sound_settings(&store, cx);
     store
 }
+
+/// In a conversation's call, people the user blocked start with their sound off for them
+/// (`is_muted_by_default_in_calls`, ADR-0062); a stored choice wins.
+fn seed_muted_by_default(
+    store: &InMemoryPersonVoiceSettings,
+    state: &mellow_client_core::state::ClientState,
+    cx: &App,
+) {
+    let stored = preferences(cx).map(|preferences| &preferences.voice_people);
+    for relationship in state.relationships_of_kind(mellow_protocol::RelationshipKind::Blocked) {
+        let user_id = relationship.user.id;
+        let is_stored = stored.is_some_and(|people| people.iter().any(|(id, _)| *id == user_id));
+        if !is_stored && state.is_muted_by_default_in_calls(user_id) {
+            store.write_person_setting(
+                PersonSoundSource::Voice,
+                user_id,
+                person_setting_of(MUTED_BY_DEFAULT_PERSON_SETTING),
+            );
+        }
+    }
+}
+
+/// Someone heard at the usual volume, but off until the user turns them up.
+const MUTED_BY_DEFAULT_PERSON_SETTING: PersonVoiceSetting = PersonVoiceSetting {
+    volume_percent: mellow_client_core::shared_logic::voice_settings::DEFAULT_VOLUME_PERCENT,
+    is_locally_muted: true,
+};
 
 /// The app's voice, as a global.
 struct VoiceGlobal(Entity<Voice>);
@@ -458,6 +488,7 @@ impl Voice {
             camera: camera::CameraState::new(system_cameras()),
             video: video::CallVideo::new(cx),
             screen: screen_share::ScreenSharing::system(),
+            call_participant_ids: Vec::new(),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -472,12 +503,20 @@ impl Voice {
         self.call.as_ref().map(|call| call.channel_id)
     }
 
-    /// The joined channel and its server.
+    /// The joined server channel and its server; `None` in a conversation's call.
     #[must_use]
     pub fn connected_place(&self) -> Option<(Snowflake, Snowflake)> {
+        let call = self.call.as_ref()?;
+        call.guild_id.map(|guild_id| (guild_id, call.channel_id))
+    }
+
+    /// The conversation whose call this is (ADR-0062), also while connecting.
+    #[must_use]
+    pub fn call_conversation_id(&self) -> Option<Snowflake> {
         self.call
             .as_ref()
-            .map(|call| (call.guild_id, call.channel_id))
+            .filter(|call| call.guild_id.is_none())
+            .map(|call| call.channel_id)
     }
 
     #[must_use]
@@ -595,6 +634,32 @@ impl Voice {
         })
     }
 
+    /// The volume and local mute `user_id` is heard with now: the stored choice, else off for
+    /// someone the user blocked while in a conversation's call (ADR-0062).
+    #[must_use]
+    pub fn heard_person_setting(&self, user_id: Snowflake, cx: &App) -> PersonVoiceSetting {
+        let stored = preferences(cx).and_then(|preferences| {
+            preferences
+                .voice_people
+                .iter()
+                .find(|(id, _)| *id == user_id)
+                .map(|(_, setting)| *setting)
+        });
+        stored.unwrap_or_else(|| {
+            let is_muted_by_default = self.call_conversation_id().is_some()
+                && self
+                    .session
+                    .read(cx)
+                    .state()
+                    .is_muted_by_default_in_calls(user_id);
+            if is_muted_by_default {
+                MUTED_BY_DEFAULT_PERSON_SETTING
+            } else {
+                PersonVoiceSetting::default()
+            }
+        })
+    }
+
     // ---- Joining and leaving ----
 
     // ---- The settings' microphone test ----
@@ -656,15 +721,38 @@ impl Voice {
     /// Joins `channel_id` (a click on its row). Joining another channel while in one moves
     /// there with the same microphone, as the web does.
     pub fn join(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        let state = self.session.read(cx).state();
+        let Some(guild_id) = state.guild_of_channel(channel_id).map(|guild| guild.id) else {
+            return;
+        };
+        let is_voice_enabled = state.is_voice_enabled();
+        self.join_place(channel_id, Some(guild_id), is_voice_enabled, cx);
+    }
+
+    /// Joins the call of the conversation `conversation_id` (ADR-0062): answering is joining.
+    /// Like a channel, it moves the voice there from a channel or another call.
+    pub fn join_call(&mut self, conversation_id: Snowflake, cx: &mut Context<Self>) {
+        let state = self.session.read(cx).state();
+        if state.direct_message_channel(conversation_id).is_none() {
+            return;
+        }
+        let is_calls_enabled = state.is_calls_enabled();
+        self.join_place(conversation_id, None, is_calls_enabled, cx);
+    }
+
+    fn join_place(
+        &mut self,
+        channel_id: Snowflake,
+        guild_id: Option<Snowflake>,
+        is_voice_enabled: bool,
+        cx: &mut Context<Self>,
+    ) {
         if self.channel_id() == Some(channel_id) {
             return;
         }
         let session = self.session.read(cx);
         let state = session.state();
-        let Some(guild_id) = state.guild_of_channel(channel_id).map(|guild| guild.id) else {
-            return;
-        };
-        if !state.is_voice_enabled() {
+        if !is_voice_enabled {
             self.problem = Some(VoiceProblem::Refused {
                 channel_id,
                 reason: mellow_protocol::VoiceJoinRefusal::VoiceUnavailable,
@@ -674,6 +762,12 @@ impl Voice {
         }
         self.problem = None;
         self.announcement = SharedString::default();
+        // Who is already there is not announced as joining.
+        self.call_participant_ids = if guild_id.is_none() {
+            self.call_participant_ids_now(channel_id, cx)
+        } else {
+            Vec::new()
+        };
         if self.call.is_none() {
             self.call = self.abandoned_start.take();
         }
@@ -713,6 +807,9 @@ impl Voice {
         let settings = current_settings(cx);
         self.applied_settings = settings.clone();
         let store = person_settings_from_preferences(cx);
+        if guild_id.is_none() {
+            seed_muted_by_default(&store, state, cx);
+        }
         let start = spawn_on_network_runtime(
             cx,
             start_engine(EngineStart {
@@ -974,10 +1071,21 @@ impl Voice {
         }
     }
 
-    /// Joins the channel of the problem again (its Try again).
+    /// Joins the channel or call of the problem again (its Try again).
     pub fn retry(&mut self, cx: &mut Context<Self>) {
         if let Some(problem) = self.problem.take() {
-            self.join(problem.channel_id(), cx);
+            let channel_id = problem.channel_id();
+            if self
+                .session
+                .read(cx)
+                .state()
+                .direct_message_channel(channel_id)
+                .is_some()
+            {
+                self.join_call(channel_id, cx);
+            } else {
+                self.join(channel_id, cx);
+            }
         }
     }
 
@@ -1028,6 +1136,7 @@ impl Voice {
                     user_id,
                     sound_id,
                 } => self.note_sound_played(channel_id, user_id, sound_id, cx),
+                StateChange::Call { channel_id } => self.note_call_change(channel_id, cx),
                 _ => {}
             }
         }
@@ -1073,6 +1182,88 @@ impl Voice {
             ParticipantChange::Left => self.play_call_cue(VoiceCue::PeerLeave),
         }
         cx.notify();
+    }
+
+    /// The people of the conversation's call the user is in, as the state has them now.
+    fn call_participant_ids_now(&self, conversation_id: Snowflake, cx: &App) -> Vec<Snowflake> {
+        self.session
+            .read(cx)
+            .state()
+            .call(conversation_id)
+            .map(|call| {
+                call.participants
+                    .iter()
+                    .map(|participant| participant.user_id)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    /// `CALL_CREATE`, `CALL_UPDATE` or `CALL_DELETE` of the call the user is in: others joining
+    /// and leaving are read out with the voice channels' cues, and the user's own entry gone while
+    /// connected means the instance dropped them, which the engine treats as a lost voice state.
+    fn note_call_change(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        if self.call_conversation_id() != Some(channel_id) {
+            return;
+        }
+        let now = self.call_participant_ids_now(channel_id, cx);
+        let before = std::mem::replace(&mut self.call_participant_ids, now.clone());
+        let state = self.session.read(cx).state();
+        let Some(own_user_id) = state.current_user().map(|user| user.id) else {
+            return;
+        };
+        if before.contains(&own_user_id)
+            && !now.contains(&own_user_id)
+            && let Some(engine) = self.engine()
+        {
+            // A call has no voice states: its participant list stands in for one.
+            engine.handle_gateway_event(&mellow_protocol::GatewayEvent::VoiceStateDelete {
+                guild_id: channel_id,
+                channel_id,
+                user_id: own_user_id,
+            });
+        }
+        if self.phase() != Some(CallPhase::Connected) {
+            return;
+        }
+        let strings = crate::i18n::strings(cx);
+        let conversation = state.direct_message_channel(channel_id);
+        let name_of = |user_id: Snowflake| {
+            conversation
+                .and_then(|conversation| {
+                    conversation
+                        .recipients
+                        .iter()
+                        .find(|recipient| recipient.id == user_id)
+                })
+                .map_or_else(
+                    || strings.voice().someone().to_owned(),
+                    |person| {
+                        mellow_client_core::shared_logic::format::display_name(person).to_owned()
+                    },
+                )
+        };
+        let joined: Vec<String> = now
+            .iter()
+            .filter(|user_id| **user_id != own_user_id && !before.contains(user_id))
+            .map(|user_id| name_of(*user_id))
+            .collect();
+        let left: Vec<String> = before
+            .iter()
+            .filter(|user_id| **user_id != own_user_id && !now.contains(user_id))
+            .map(|user_id| name_of(*user_id))
+            .collect();
+        for name in &joined {
+            self.announcement = strings.calls().peer_joined(name).into();
+            self.play_call_cue(VoiceCue::PeerJoin);
+        }
+        for name in &left {
+            self.announcement = strings.calls().peer_left(name).into();
+            self.play_call_cue(VoiceCue::PeerLeave);
+        }
+        if !joined.is_empty() || !left.is_empty() {
+            cx.notify();
+        }
     }
 
     // ---- Toggles ----
@@ -1274,6 +1465,8 @@ impl Voice {
     ) {
         let setting = PersonVoiceSetting {
             volume_percent: volume_percent.min(MAXIMUM_VOLUME_PERCENT),
+            // The stored choice, never the mute a call gives blocked people: that one is not
+            // kept (ADR-0062).
             ..Self::person_setting(user_id, cx)
         };
         self.set_person_setting(user_id, setting, cx);
@@ -1281,7 +1474,7 @@ impl Voice {
 
     /// Their local mute ("Mute for me").
     pub fn toggle_person_muted(&mut self, user_id: Snowflake, cx: &mut Context<Self>) {
-        let current = Self::person_setting(user_id, cx);
+        let current = self.heard_person_setting(user_id, cx);
         let setting = PersonVoiceSetting {
             is_locally_muted: !current.is_locally_muted,
             ..current
@@ -1426,6 +1619,32 @@ impl Voice {
         let output_device_id = self.applied_settings.output_device_id.clone();
         if let Some(player) = self.sound_player_on(output_device_id) {
             player.play_notification_chime();
+        }
+    }
+
+    /// A call's ringtone or waiting tone (ADR-0062), as long as the call may still ring, at the
+    /// voice output volume. Outside the call's engine, so others never hear it; `stop_call_sounds`
+    /// stops it.
+    pub fn play_looped_call_sound(&mut self, samples: LocalSound, cx: &App) {
+        let gain = gain_of_percent(current_settings(cx).output_volume_percent);
+        if let Some(player) = self.sound_player(cx) {
+            // The preview channel is the one the player can stop.
+            player.play_soundboard_preview(samples, gain);
+        }
+    }
+
+    /// A short call cue, played to its end.
+    pub fn play_call_cue_sound(&mut self, samples: LocalSound, cx: &App) {
+        let gain = gain_of_percent(current_settings(cx).output_volume_percent);
+        if let Some(player) = self.sound_player(cx) {
+            player.play(samples, gain);
+        }
+    }
+
+    /// Stops the ringtone and the waiting tone.
+    pub fn stop_call_sounds(&self) {
+        if let Some(player) = self.sound_player.as_ref() {
+            player.stop_soundboard_previews();
         }
     }
 
