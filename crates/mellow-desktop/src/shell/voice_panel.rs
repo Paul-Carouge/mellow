@@ -48,6 +48,8 @@ use crate::voice::{CallPhase, Voice, current_settings};
 pub(super) struct VoicePersonPopover {
     user_id: Snowflake,
     name: SharedString,
+    /// Their account, once their member is known: "Profile" opens their profile modal.
+    user: Option<mellow_protocol::PublicUser>,
     position: Point<Pixels>,
     focus: FocusHandle,
     /// The participant row, which gets focus back.
@@ -710,6 +712,7 @@ impl DuskShell {
         &mut self,
         user_id: Snowflake,
         name: SharedString,
+        user: Option<mellow_protocol::PublicUser>,
         position: Point<Pixels>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -720,6 +723,7 @@ impl DuskShell {
         self.voice_person_popover = Some(VoicePersonPopover {
             user_id,
             name,
+            user,
             position,
             focus,
             opener,
@@ -736,6 +740,7 @@ impl DuskShell {
         }
     }
 
+    #[allow(clippy::too_many_lines)] // One popover, in the order it is drawn.
     pub(super) fn render_voice_person_popover(
         &mut self,
         cx: &mut Context<Self>,
@@ -780,6 +785,30 @@ impl DuskShell {
             .flex()
             .flex_col()
             .gap(length(SPACE_XS))
+            // Their profile, as the person menu's « Profil » (DESIGN.md §5.7.3).
+            .children(popover.user.clone().map(|user| {
+                let shell = cx.entity().downgrade();
+                Button::new(
+                    child_id(&"voice-person-popover".into(), "profile"),
+                    strings.members().profile(),
+                )
+                .variant(ButtonVariant::Ghost)
+                .full_width()
+                .on_click(move |window, cx| {
+                    let opener = shell
+                        .update(cx, |shell, cx| {
+                            let opener = shell
+                                .voice_person_popover
+                                .as_ref()
+                                .and_then(|popover| popover.opener.clone());
+                            shell.close_voice_person_popover(window, cx);
+                            opener
+                        })
+                        .ok()
+                        .flatten();
+                    crate::profile_surfaces::open_profile_modal(user.clone(), opener, window, cx);
+                })
+            }))
             .child(
                 RangeField::new(
                     child_id(&"voice-person-popover".into(), "volume"),

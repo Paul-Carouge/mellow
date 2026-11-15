@@ -57,6 +57,9 @@ pub struct MessageMenuFacts {
     pub can_remove_reactions: bool,
     /// `MANAGE_MESSAGES` in a server channel; any participant in a conversation.
     pub can_manage_pins: bool,
+    /// "View X's profile": the keyboard's way to the author's profile, since the list keeps one
+    /// Tab stop and names are pointer-only (DESIGN.md §5.7.3).
+    pub can_view_author_profile: bool,
 }
 
 impl MessageMenuFacts {
@@ -89,6 +92,8 @@ pub enum MessageMenuAction {
     EndPoll,
     /// A moderator takes every reaction off the message, after a confirmation.
     RemoveAllReactions,
+    /// The author's profile modal, named after them ("View Ana's profile").
+    AuthorProfile,
     Delete,
 }
 
@@ -112,6 +117,11 @@ pub fn message_menu_actions(facts: MessageMenuFacts) -> Vec<MenuLine<MessageMenu
                 Action::Pin
             }),
             (facts.has_reactions && facts.can_join_reactions).then_some(Action::ViewReactions),
+        ],
+        vec![
+            facts
+                .can_view_author_profile
+                .then_some(Action::AuthorProfile),
         ],
         vec![
             (facts.is_own && facts.is_poll_open).then_some(Action::EndPoll),
@@ -161,8 +171,11 @@ pub enum PersonMenuAction {
 pub struct PersonMenuFacts {
     pub is_self: bool,
     pub relationship: Option<RelationshipKind>,
-    /// The member list shows profiles; elsewhere there is none to show.
+    /// "Profile" opens the profile modal (DESIGN.md §5.7.1); false inside that modal's own menu.
     pub can_show_profile: bool,
+    /// The profile modal's More menu: the modal already shows Message and the friend request,
+    /// accept and unblock actions as buttons, so the menu keeps only the rest.
+    pub is_in_profile: bool,
     /// Not from the conversation itself, which is already open.
     pub can_open_conversation: bool,
     /// A one-to-one conversation's row also copies the conversation's ID and mutes it.
@@ -178,17 +191,20 @@ pub fn person_menu_actions(facts: PersonMenuFacts) -> Vec<MenuLine<PersonMenuAct
     let is_blocked = relationship == Some(RelationshipKind::Blocked);
     let is_other = !facts.is_self;
     let has = |kind: RelationshipKind| is_other && relationship == Some(kind);
+    let is_outside_profile = !facts.is_in_profile;
     join_sections(vec![
         vec![
             facts.can_show_profile.then_some(Action::Profile),
-            (is_other && !is_blocked && facts.can_open_conversation).then_some(Action::Message),
+            (is_outside_profile && is_other && !is_blocked && facts.can_open_conversation)
+                .then_some(Action::Message),
         ],
         vec![
-            (is_other && relationship.is_none()).then_some(Action::AddFriend),
-            has(RelationshipKind::IncomingRequest).then_some(Action::AcceptRequest),
+            (is_outside_profile && is_other && relationship.is_none()).then_some(Action::AddFriend),
+            (is_outside_profile && has(RelationshipKind::IncomingRequest))
+                .then_some(Action::AcceptRequest),
             has(RelationshipKind::IncomingRequest).then_some(Action::IgnoreRequest),
             has(RelationshipKind::OutgoingRequest).then_some(Action::CancelRequest),
-            has(RelationshipKind::Blocked).then_some(Action::Unblock),
+            (is_outside_profile && has(RelationshipKind::Blocked)).then_some(Action::Unblock),
         ],
         if facts.is_conversation_row {
             vec![
@@ -275,11 +291,25 @@ mod tests {
         can_add_reactions: true,
         can_remove_reactions: false,
         can_manage_pins: false,
+        can_view_author_profile: false,
     };
     const OWN_TEXT: MessageMenuFacts = MessageMenuFacts {
         is_own: true,
         ..OTHERS_TEXT
     };
+
+    #[test]
+    fn the_author_s_profile_has_its_own_section_before_the_danger_one() {
+        use MessageMenuAction::{AuthorProfile, Delete};
+        let lines = message_menu_actions(MessageMenuFacts {
+            can_view_author_profile: true,
+            ..OWN_TEXT
+        });
+        assert_eq!(
+            actions(&lines[lines.len() - 4..]),
+            [None, Some(AuthorProfile), None, Some(Delete)]
+        );
+    }
 
     #[test]
     fn a_reader_of_someone_elses_message_gets_neither_edit_nor_delete() {
@@ -463,10 +493,50 @@ mod tests {
         is_self: false,
         relationship: None,
         can_show_profile: true,
+        is_in_profile: false,
         can_open_conversation: true,
         is_conversation_row: false,
         is_conversation_muted: false,
     };
+
+    #[test]
+    fn the_profile_modal_s_more_menu_leaves_out_what_its_buttons_do() {
+        use PersonMenuAction::{Block, CopyUserId, IgnoreRequest, RemoveFriend};
+        let in_profile = |relationship| PersonMenuFacts {
+            relationship,
+            can_show_profile: false,
+            is_in_profile: true,
+            ..STRANGER
+        };
+        assert_eq!(
+            actions(&person_menu_actions(in_profile(None))),
+            [Some(CopyUserId), None, Some(Block)]
+        );
+        assert_eq!(
+            actions(&person_menu_actions(in_profile(Some(
+                RelationshipKind::IncomingRequest
+            )))),
+            [
+                Some(IgnoreRequest),
+                None,
+                Some(CopyUserId),
+                None,
+                Some(Block)
+            ]
+        );
+        assert_eq!(
+            actions(&person_menu_actions(in_profile(Some(
+                RelationshipKind::Friend
+            )))),
+            [Some(CopyUserId), None, Some(RemoveFriend), Some(Block)]
+        );
+        assert_eq!(
+            actions(&person_menu_actions(in_profile(Some(
+                RelationshipKind::Blocked
+            )))),
+            [Some(CopyUserId)]
+        );
+    }
 
     #[test]
     fn someone_you_dont_know_gets_a_message_a_request_their_id_and_block() {

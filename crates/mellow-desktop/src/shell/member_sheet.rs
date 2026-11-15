@@ -1,7 +1,9 @@
 //! The member side sheet (`MemberList.svelte`, DESIGN.md §5.7, ADR-0022 §1): roles displayed
 //! separately first, then Online and Offline, by name; offline avatars dimmed while names keep
 //! full contrast. Docked beside the conversation where it fits, over it otherwise. Choosing a
-//! member shows their profile in the sheet (`member_profile`).
+//! member opens their profile modal; resting the pointer or keyboard focus on them shows their
+//! hover card beside the sheet (`profile_surfaces`, DESIGN.md §5.7.1 to §5.7.3). The sheet always
+//! stays the list.
 
 use gpui::{
     AnyElement, Context, ElementId, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -26,6 +28,10 @@ use crate::components::{
 use crate::home::group_sheet::group_sheet_rows;
 use crate::home::{PersonMenuRequest, conversation_display_name, presence_name, shown_presence};
 use crate::i18n::strings;
+use crate::profile_surfaces::{
+    HoverCardPlacement, ProfileHoverTrigger, close_profile_hover_card, enter_profile_trigger,
+    follow_keyboard_focus, leave_profile_trigger, open_profile_modal,
+};
 use crate::session::MembersLoad;
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
@@ -37,7 +43,7 @@ use crate::theme::tokens::{
     COMPONENT_ROLE_ICON_MEMBER_SIZE, COMPONENT_SIDE_SHEET_RADIUS, SPACE_2XS, SPACE_MD, SPACE_SM,
     SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_CATEGORY, TYPE_HEADING_MD, TYPE_MEMBER_NAME,
 };
-use crate::theme::{color, length, theme, window_width_at_default_zoom};
+use crate::theme::{color, length, theme};
 
 /// What a member row shows, read out of the state before drawing (which needs the context
 /// mutably).
@@ -86,6 +92,8 @@ impl DuskShell {
     ) -> impl IntoElement + use<> {
         let tokens = theme(cx);
         let strings = strings(cx);
+        // The column a member's hover card keeps clear of.
+        let sheet_bounds = remembered_bounds(&ElementId::from("side-sheet"), window, cx);
         let state = self.session.read(cx).state();
         let guild = self
             .member_sheet_place_id(cx)
@@ -96,37 +104,17 @@ impl DuskShell {
             .and_then(|group_id| state.direct_message_channel(group_id))
             .filter(|_| guild.is_none())
             .cloned();
-        // From the list, so a new avatar or name shows in an open profile too.
-        let profile_user = guild.as_ref().and_then(|guild| {
-            let user_id = self.member_profile.shown_user_id(guild.id)?;
-            state
-                .members(guild.id)
-                .iter()
-                .find(|member| member.user.id == user_id)
-                .map(|member| member.user.clone())
-        });
-        let sheet_label = match &profile_user {
-            Some(user) => strings.members().profile_of(display_name(user)),
-            None => self.member_sheet_label(cx),
-        };
-        let heading = if profile_user.is_some() {
-            strings.members().profile()
-        } else if group.is_some() {
+        let sheet_label = self.member_sheet_label(cx);
+        let heading = if group.is_some() {
             strings.groups().members()
         } else {
             strings.members().members()
         };
         let entity = cx.entity();
-        let back_entity = entity.clone();
-        let sheet_width = width.unwrap_or_else(|| window_width_at_default_zoom(window));
         let body: Vec<AnyElement> = match &guild {
             None => group
                 .map(|group| group_sheet_rows(&self.home, &self.session, &group, window, cx))
                 .unwrap_or_default(),
-            Some(_) if profile_user.is_some() => profile_user
-                .iter()
-                .map(|user| self.render_member_profile(user, sheet_width, window, cx))
-                .collect(),
             Some(guild) => {
                 let members = state.members(guild.id);
                 let load = self.session.read(cx).members_load(guild.id);
@@ -170,7 +158,6 @@ impl DuskShell {
                             .into_any_element(),
                     ]
                 } else {
-                    let guild_id = guild.id;
                     let sorted = members_sorted_by_display_name(members);
                     let is_online = |user_id| state.presence_of(user_id) != PresenceStatus::Offline;
                     // Role colours on names, readable on a hovered row, the sheet's least
@@ -295,10 +282,6 @@ impl DuskShell {
                             }
                             let row_id = ElementId::from(("member-row", user.id.raw()));
                             let focus_handle = remembered_focus_handle(&row_id, window, cx);
-                            if self.member_profile.take_row_to_focus(user.id) {
-                                let focus_handle = focus_handle.clone();
-                                window.defer(cx, move |window, cx| window.focus(&focus_handle, cx));
-                            }
                             let hover = remembered_hover(&row_id, window, cx);
                             let is_hovered = *hover.read(cx);
                             let is_ring_shown = is_focus_visible(&focus_handle, window);
@@ -312,8 +295,21 @@ impl DuskShell {
                                 )
                             });
                             let user_id = user.id;
-                            let row_entity = entity.clone();
                             let row_bounds = remembered_bounds(&row_id, window, cx);
+                            let hover_trigger = ProfileHoverTrigger {
+                                user: user.clone(),
+                                placement: HoverCardPlacement::Beside,
+                                anchor: row_bounds.downgrade(),
+                                column: Some(sheet_bounds.downgrade()),
+                                opener: Some(focus_handle.clone()),
+                            };
+                            follow_keyboard_focus(
+                                &row_id,
+                                &focus_handle,
+                                hover_trigger.clone(),
+                                window,
+                                cx,
+                            );
                             let open_menu = {
                                 let entity = entity.clone();
                                 let user = user.clone();
@@ -330,9 +326,9 @@ impl DuskShell {
                                     let Some(origin) = origin else {
                                         return false;
                                     };
+                                    close_profile_hover_card(cx);
                                     let request = PersonMenuRequest {
                                         opener: Some(opener.clone()),
-                                        profile_guild_id: Some(guild_id),
                                         ..PersonMenuRequest::new(user.clone(), origin)
                                     };
                                     entity.update(cx, |shell, cx| {
@@ -345,6 +341,7 @@ impl DuskShell {
                             };
                             let open_menu_by_key = open_menu.clone();
                             let row = div()
+                                .debug_selector(move || format!("member-row-{}", user_id.raw()))
                                 .id(row_id)
                                 .role(Role::Button)
                                 .aria_label(label)
@@ -362,16 +359,31 @@ impl DuskShell {
                                     row.bg(color(tokens.component_member_row_background_hover))
                                 })
                                 .cursor_pointer()
-                                .on_hover(move |is_hovered, _, cx| {
-                                    hover.update(cx, |remembered, cx| {
-                                        *remembered = *is_hovered;
-                                        cx.notify();
-                                    });
+                                .on_hover({
+                                    let hover_trigger = hover_trigger.clone();
+                                    move |is_hovered, _, cx| {
+                                        hover.update(cx, |remembered, cx| {
+                                            *remembered = *is_hovered;
+                                            cx.notify();
+                                        });
+                                        if *is_hovered {
+                                            enter_profile_trigger(hover_trigger.clone(), cx);
+                                        } else {
+                                            leave_profile_trigger(&hover_trigger, cx);
+                                        }
+                                    }
                                 })
-                                .on_click(move |_, window, cx| {
-                                    row_entity.update(cx, |shell, cx| {
-                                        shell.show_member_profile(guild_id, user_id, window, cx);
-                                    });
+                                .on_click({
+                                    let user = user.clone();
+                                    let opener = focus_handle.clone();
+                                    move |_, window, cx| {
+                                        open_profile_modal(
+                                            user.clone(),
+                                            Some(opener.clone()),
+                                            window,
+                                            cx,
+                                        );
+                                    }
                                 })
                                 .on_mouse_down(MouseButton::Right, move |event, window, cx| {
                                     cx.stop_propagation();
@@ -494,6 +506,8 @@ impl DuskShell {
             .role(Role::Complementary)
             .aria_label(sheet_label)
             .track_focus(&self.member_sheet_focus)
+            .relative()
+            .child(bounds_recorder(sheet_bounds))
             .h_full()
             .flex_none()
             .map(|sheet| match width {
@@ -515,24 +529,6 @@ impl DuskShell {
                     .items_center()
                     .gap(length(SPACE_2XS))
                     .text_color(color(tokens.color_text_heading))
-                    // The caret points back, towards the list.
-                    .when(profile_user.is_some(), |head| {
-                        head.child(
-                            IconButton::new(
-                                "back-to-members",
-                                IconName::CaretLeft,
-                                strings.members().back_to_members(),
-                            )
-                            .sizes(
-                                COMPONENT_CHAT_HEADER_BUTTON_SIZE,
-                                COMPONENT_CHAT_HEADER_ICON_SIZE,
-                            )
-                            .track_focus(self.member_profile.back_focus())
-                            .on_click(move |_, cx| {
-                                back_entity.update(cx, DuskShell::show_member_list);
-                            }),
-                        )
-                    })
                     .child(
                         with_type(div(), TYPE_HEADING_MD)
                             .flex_1()
@@ -558,9 +554,7 @@ impl DuskShell {
             .child(
                 div()
                     .id("member-list")
-                    // The profile replaces the list in the same scroller; it is no list.
-                    .when(profile_user.is_none(), |list| list.role(Role::List))
-                    .track_scroll(self.member_profile.list_scroll())
+                    .role(Role::List)
                     .flex_1()
                     .min_h_0()
                     .overflow_y_scroll()

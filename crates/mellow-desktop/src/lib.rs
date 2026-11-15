@@ -31,6 +31,7 @@ pub mod notifier;
 pub mod pictures;
 pub mod preferences;
 pub mod profile;
+mod profile_surfaces;
 pub mod self_update;
 pub mod session;
 pub mod session_store;

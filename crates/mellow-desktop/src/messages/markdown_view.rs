@@ -15,7 +15,9 @@ use mellow_client_core::shared_logic::markdown::{BlockNode, InlineNode, Markdown
 
 use super::body::MessageBody;
 use super::code_block::MessageCodeBlock;
-use super::rich_text::{EmojiRangesByText, RichText, RichTextContext, RichTextElement};
+use super::rich_text::{
+    EmojiRangesByText, MentionHover, RichText, RichTextContext, RichTextElement,
+};
 use crate::components::{child_id, with_type};
 use crate::i18n;
 use crate::theme::tokens::{
@@ -90,6 +92,8 @@ struct BlockContext<'a> {
     /// Numbers the texts and code blocks, so each keeps its own state between frames.
     next_index: usize,
     selection_order: u64,
+    /// Where the body's mention chips keep their hover state; `None` without a mention.
+    mention_hover: Option<MentionHover>,
 }
 
 impl BlockContext<'_> {
@@ -129,6 +133,11 @@ impl BlockContext<'_> {
             COMPONENT_CUSTOM_EMOJI_INLINE_SIZE
         };
         let id = self.next_id("text");
+        let text_index = self.next_index;
+        let mention_hover = self.mention_hover.clone().map(|hover| MentionHover {
+            text_index,
+            ..hover
+        });
         RichTextElement::new(
             id,
             rich_text,
@@ -137,6 +146,7 @@ impl BlockContext<'_> {
             self.tokens,
         )
         .selection_order(self.selection_order + self.next_index as u64)
+        .mention_hover(mention_hover)
     }
 }
 
@@ -350,6 +360,31 @@ impl MessageMarkdown {
     }
 }
 
+fn inlines_have_mention(nodes: &[InlineNode]) -> bool {
+    nodes.iter().any(|node| {
+        matches!(node, InlineNode::Mention { .. })
+            || node.children().is_some_and(inlines_have_mention)
+    })
+}
+
+fn list_has_mention(list: &MarkdownList) -> bool {
+    list.items.iter().any(|item| {
+        inlines_have_mention(&item.children) || item.sublists.iter().any(list_has_mention)
+    })
+}
+
+/// Whether a body names someone: only then do its texts follow the pointer for hover cards.
+fn blocks_have_mention(blocks: &[BlockNode]) -> bool {
+    blocks.iter().any(|block| match block {
+        BlockNode::Paragraph(children)
+        | BlockNode::Heading { children, .. }
+        | BlockNode::Subtext(children) => inlines_have_mention(children),
+        BlockNode::Quote(blocks) => blocks_have_mention(blocks),
+        BlockNode::List(list) => list_has_mention(list),
+        BlockNode::CodeBlock { .. } => false,
+    })
+}
+
 impl RenderOnce for MessageMarkdown {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let revealed_spoilers =
@@ -358,6 +393,12 @@ impl RenderOnce for MessageMarkdown {
             });
         let revealed = revealed_spoilers.read(cx).clone();
         let emoji_ranges = Self::emoji_ranges(&self.id, &self.body, window, cx);
+        // Kept with the body only when it names someone: most messages do not.
+        let mention_hover = blocks_have_mention(&self.body.blocks).then(|| MentionHover {
+            anchor: window.use_keyed_state(child_id(&self.id, "mention-anchor"), cx, |_, _| None),
+            hovered: window.use_keyed_state(child_id(&self.id, "mention-hovered"), cx, |_, _| None),
+            text_index: 0,
+        });
         let mut context = BlockContext {
             id: &self.id,
             tokens: theme(cx),
@@ -368,6 +409,7 @@ impl RenderOnce for MessageMarkdown {
             emoji_ranges: &emoji_ranges,
             next_index: 0,
             selection_order: self.selection_order,
+            mention_hover,
         };
         // A jumbo paragraph's size would carry over to "(edited)": it goes on its own line.
         let ends_in_text = !self.body.is_jumbo

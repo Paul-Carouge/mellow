@@ -7142,20 +7142,6 @@ impl MembersStrings {
         }
     }
 
-    pub fn profile_of(self, person: &str) -> String {
-        match self.language {
-            Language::English => format!("Profile of {person}"),
-            Language::French => format!("Profil de {person}"),
-        }
-    }
-
-    pub fn back_to_members(self) -> &'static str {
-        match self.language {
-            Language::English => "Back to members",
-            Language::French => "Retour aux membres",
-        }
-    }
-
     pub fn send_message(self) -> &'static str {
         match self.language {
             Language::English => "Send message",

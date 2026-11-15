@@ -137,11 +137,10 @@ pub(crate) fn open_media_viewer_view(cx: &App) -> Option<Entity<MediaViewer>> {
     cx.try_global::<MediaViewerHost>()?.0.clone()
 }
 
-/// Whether a layer covering the whole shell is open (the media viewer): the shell's own
-/// shortcuts (channels, servers, search, the switcher, settings) wait until it closes, since
-/// GPUI runs key bindings before the layer's key handler.
+/// Whether the viewer is open; with the profile modal, `shell::is_modal_layer_open` says what
+/// covers the shell.
 #[must_use]
-pub(crate) fn is_modal_layer_open(cx: &App) -> bool {
+pub(crate) fn is_media_viewer_open(cx: &App) -> bool {
     open_media_viewer_view(cx).is_some()
 }
 

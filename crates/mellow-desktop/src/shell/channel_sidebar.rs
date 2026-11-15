@@ -24,9 +24,10 @@ use super::regions::{Region, RovingTabStop};
 use super::server_rail::name_with_unread_state;
 use super::{DuskShell, profile_picture};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge, child_id,
-    focus_ring, icon, inset_focus_ring, is_focus_visible, is_row_hovered_or_focused,
-    remembered_focus_handle, remembered_hover, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, GroupAvatar, IconButton, MentionBadge,
+    bounds_recorder, child_id, focus_ring, icon, inset_focus_ring, is_focus_visible,
+    is_row_hovered_or_focused, remembered_bounds, remembered_focus_handle, remembered_hover,
+    with_type,
 };
 use crate::home::{conversation_display_name, shown_presence};
 use crate::i18n::strings;
@@ -800,6 +801,8 @@ impl DuskShell {
                     sound.map(|sound| sound.name.clone()).unwrap_or_default(),
                 )
             });
+        // Their hover card, beside the navigator (DESIGN.md §5.7.3), once their member is known.
+        let hover_user = person.clone();
         let (name, avatar) = if let Some(user) = person {
             let picture = user.avatar.map(|image| {
                 profile_picture(
@@ -894,6 +897,17 @@ impl DuskShell {
         let hover = remembered_hover(&id, window, cx);
         let is_hovered = *hover.read(cx);
         let is_ring_shown = is_focus_visible(&focus_handle, window);
+        let row_bounds = remembered_bounds(&id, window, cx);
+        let hover_trigger = hover_user.map(|user| crate::profile_surfaces::ProfileHoverTrigger {
+            user,
+            placement: crate::profile_surfaces::HoverCardPlacement::Beside,
+            anchor: row_bounds.downgrade(),
+            column: None,
+            opener: Some(focus_handle.clone()),
+        });
+        if let Some(trigger) = hover_trigger.clone() {
+            crate::profile_surfaces::follow_keyboard_focus(&id, &focus_handle, trigger, window, cx);
+        }
         let state_ink = color(tokens.component_voice_participant_state_icon);
         let ring = length(
             COMPONENT_VOICE_PARTICIPANT_SPEAKING_RING_GAP
@@ -921,11 +935,14 @@ impl DuskShell {
                 row.bg(color(tokens.component_voice_participant_background_hover))
             })
             .when(can_open, |row| {
+                let popover_user = hover_trigger.as_ref().map(|trigger| trigger.user.clone());
                 row.cursor_pointer().on_click(cx.listener(
                     move |shell, event: &gpui::ClickEvent, window, cx| {
+                        crate::profile_surfaces::close_profile_hover_card(cx);
                         shell.open_voice_person_popover(
                             user_id,
                             popover_name.clone(),
+                            popover_user.clone(),
                             event.position(),
                             window,
                             cx,
@@ -938,7 +955,17 @@ impl DuskShell {
                     *remembered = *is_hovered;
                     cx.notify();
                 });
+                match (&hover_trigger, *is_hovered) {
+                    (Some(trigger), true) => {
+                        crate::profile_surfaces::enter_profile_trigger(trigger.clone(), cx);
+                    }
+                    (Some(trigger), false) => {
+                        crate::profile_surfaces::leave_profile_trigger(trigger, cx);
+                    }
+                    (None, _) => {}
+                }
             })
+            .child(bounds_recorder(row_bounds))
             .child(
                 div()
                     .relative()

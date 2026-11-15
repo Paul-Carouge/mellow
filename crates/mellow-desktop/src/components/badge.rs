@@ -7,7 +7,7 @@ use gpui::{
 };
 use mellow_client_core::shared_logic::format::mention_badge_text;
 
-use super::{icon, with_type};
+use super::{icon, role_icon, with_type};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BADGE_HEIGHT, COMPONENT_BADGE_MIN_WIDTH, COMPONENT_BADGE_PADDING_INLINE,
@@ -75,8 +75,15 @@ impl RenderOnce for MentionBadge {
 /// One chip: a role with its colour (0 is the neutral role colour), or the owner's crown.
 #[derive(Debug, Clone)]
 pub enum RoleChip {
-    Owner { label: SharedString },
-    Role { name: SharedString, colour: u32 },
+    Owner {
+        label: SharedString,
+    },
+    Role {
+        name: SharedString,
+        colour: u32,
+        /// In a profile (DESIGN.md §5.7.1) the role's icon takes its dot's place, when it has one.
+        icon: Option<Box<mellow_protocol::Role>>,
+    },
 }
 
 /// A member's roles as small chips, highest first (the host sorts), each with its colour dot and a
@@ -85,6 +92,8 @@ pub enum RoleChip {
 pub struct RoleChips {
     label: SharedString,
     chips: Vec<RoleChip>,
+    /// The roles left out ("+2") and how a screen reader says it ("2 more roles").
+    hidden: Option<(usize, SharedString)>,
 }
 
 impl RoleChips {
@@ -93,7 +102,15 @@ impl RoleChips {
         Self {
             label: label.into(),
             chips,
+            hidden: None,
         }
+    }
+
+    /// A last "+2" chip for the roles left out.
+    #[must_use]
+    pub fn hidden(mut self, count: usize, label: impl Into<SharedString>) -> Self {
+        self.hidden = (count > 0).then(|| (count, label.into()));
+        self
     }
 }
 
@@ -115,9 +132,35 @@ pub(crate) fn role_chip_wash(role_colour: u32, chip_background: Hsla) -> Hsla {
 }
 
 impl RenderOnce for RoleChips {
-    fn render(self, _window: &mut Window, cx: &mut App) -> impl IntoElement {
+    fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
         let tokens = theme(cx);
         let chip_background = color(tokens.component_server_settings_chip_background);
+        let hidden = self.hidden.map(|(count, label)| {
+            with_type(div(), TYPE_BODY_SM)
+                .id("role-chips-hidden")
+                .aria_label(label)
+                .flex()
+                .items_center()
+                .h(length(COMPONENT_SERVER_SETTINGS_CHIP_HEIGHT))
+                .px(length(COMPONENT_SERVER_SETTINGS_CHIP_PADDING_INLINE))
+                .rounded(length(COMPONENT_SERVER_SETTINGS_CHIP_RADIUS))
+                .bg(chip_background)
+                .text_color(color(tokens.component_server_settings_chip_text))
+                .child(format!("+{count}"))
+        });
+        let chips: Vec<_> = self
+            .chips
+            .into_iter()
+            .map(|chip| {
+                let icon = match &chip {
+                    RoleChip::Role {
+                        icon: Some(role), ..
+                    } => role_icon(role, COMPONENT_SERVER_SETTINGS_CHIP_ICON_SIZE, window, cx),
+                    _ => None,
+                };
+                (chip, icon)
+            })
+            .collect();
         div()
             .id(SharedString::from(format!("role-chips-{}", self.label)))
             .role(Role::List)
@@ -125,7 +168,7 @@ impl RenderOnce for RoleChips {
             .flex()
             .flex_wrap()
             .gap(length(COMPONENT_SERVER_SETTINGS_CHIP_GAP))
-            .children(self.chips.into_iter().map(|chip| {
+            .children(chips.into_iter().map(|(chip, role_icon)| {
                 let (name, background, mark) = match chip {
                     RoleChip::Owner { label } => (
                         label,
@@ -137,7 +180,7 @@ impl RenderOnce for RoleChips {
                         )
                         .into_any_element(),
                     ),
-                    RoleChip::Role { name, colour } => {
+                    RoleChip::Role { name, colour, .. } => {
                         let (background, dot) = if colour == 0 {
                             (chip_background, color(tokens.component_roles_neutral_color))
                         } else {
@@ -146,16 +189,15 @@ impl RenderOnce for RoleChips {
                                 Hsla::from(rgb(colour)),
                             )
                         };
-                        (
-                            name,
-                            background,
+                        let mark = role_icon.unwrap_or_else(|| {
                             div()
                                 .flex_none()
                                 .size(length(COMPONENT_SERVER_SETTINGS_CHIP_DOT_SIZE))
                                 .rounded_full()
                                 .bg(dot)
-                                .into_any_element(),
-                        )
+                                .into_any_element()
+                        });
+                        (name, background, mark)
                     }
                 };
                 with_type(div(), TYPE_BODY_SM)
@@ -171,6 +213,7 @@ impl RenderOnce for RoleChips {
                     .child(mark)
                     .child(div().truncate().child(name))
             }))
+            .children(hidden)
     }
 }
 

@@ -68,12 +68,22 @@ impl DuskShell {
 
     /// The user card's gear and Ctrl+, (Cmd+, on macOS); does nothing while a screen is open.
     pub(super) fn open_user_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_settings.is_some() || crate::media_viewer::is_modal_layer_open(cx) {
+        self.open_user_settings_on(None, window, cx);
+    }
+
+    /// The user settings on `section` ("Edit profile" opens them on Profile).
+    pub(super) fn open_user_settings_on(
+        &mut self,
+        section: Option<mellow_client_core::shared_logic::user_settings::UserSettingsSection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if self.open_settings.is_some() || crate::shell::is_modal_layer_open(cx) {
             return;
         }
         let opener = window.focused(cx);
         let session = self.session.clone();
-        let screen = cx.new(|cx| UserSettings::new(session, window, cx));
+        let screen = cx.new(|cx| UserSettings::new(session, section, window, cx));
         let subscription = cx.subscribe_in(&screen, window, Self::close_settings);
         self.open_settings = Some(OpenSettings {
             screen: SettingsScreen::User(screen),
@@ -97,6 +107,13 @@ impl DuskShell {
             window.focus(&self.root_focus, cx);
         }
         cx.notify();
+    }
+
+    /// Whether something covers the whole shell, the settings sheet or a modal layer: the shell's
+    /// shortcuts wait until it closes, since GPUI runs key bindings before the layer's key handler.
+    #[must_use]
+    pub(super) fn is_shell_covered(&self, cx: &gpui::App) -> bool {
+        self.is_settings_screen_open() || super::is_modal_layer_open(cx)
     }
 
     #[must_use]

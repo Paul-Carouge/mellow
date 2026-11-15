@@ -96,11 +96,6 @@ pub enum HomeEvent {
     OpenConversation(Snowflake),
     /// Show the Friends space (after leaving a group, or "Add friend" in the picker), focus in it.
     ShowFriends,
-    /// A member row's menu chose Profile: show it in the side sheet.
-    ShowMemberProfile {
-        guild_id: Snowflake,
-        user_id: Snowflake,
-    },
     /// A menu's change failed: why, in words, for the notice bar.
     MenuActionFailed(String),
     /// "Add a server" in the empty Friends list: the rail's dialog.

@@ -822,6 +822,7 @@ impl ConversationView {
                         .update(cx, |view, cx| view.toggle_reaction(message_id, key, cx));
                 })
                 .map(|item| self.with_forward_and_previews(item, message, &view, cx))
+                .author_profile_opener(self.list_focus.clone())
                 .on_open_author_menu({
                     // The shell hands it to Home, which this view cannot reach.
                     let list_focus = self.list_focus.clone();

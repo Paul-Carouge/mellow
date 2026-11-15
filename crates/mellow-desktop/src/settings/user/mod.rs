@@ -85,11 +85,22 @@ impl std::fmt::Debug for UserSettings {
 }
 
 impl UserSettings {
-    /// Opens on My account, its nav item focused, so screen readers start in the navigation.
-    pub fn new(session: Entity<Session>, window: &mut Window, cx: &mut Context<Self>) -> Self {
-        let mut navigation = SettingsNavigation::new(None, is_wide(window), cx);
+    /// Opens on `initial_section`, or My account, its nav item focused, so screen readers start
+    /// in the navigation.
+    pub fn new(
+        session: Entity<Session>,
+        initial_section: Option<UserSettingsSection>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        let mut navigation = SettingsNavigation::new(initial_section, is_wide(window), cx);
         if let Some(section) = navigation.section(&sections()) {
-            let focus = navigation.nav_focus(section, cx);
+            // A narrow sheet opened on a section shows its page, not the navigation.
+            let focus = if navigation.is_page_shown_when_narrow() {
+                navigation.page_focus.clone()
+            } else {
+                navigation.nav_focus(section, cx)
+            };
             window.focus(&focus, cx);
         }
         cx.observe(&session, |_, _, cx| cx.notify()).detach();
@@ -100,6 +111,11 @@ impl UserSettings {
             sign_out_focus: cx.focus_handle(),
             is_closing: false,
         }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn page_focus_for_tests(&self) -> FocusHandle {
+        self.navigation.page_focus.clone()
     }
 
     fn navigation(&mut self) -> &mut SettingsNavigation<UserSettingsSection> {

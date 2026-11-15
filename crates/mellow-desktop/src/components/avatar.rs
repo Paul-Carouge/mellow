@@ -66,6 +66,7 @@ pub struct Avatar {
     person: AvatarPerson,
     size: f32,
     presence: Option<(ShownStatus, Hsla)>,
+    status_size: f32,
     is_dimmed: bool,
 }
 
@@ -77,6 +78,7 @@ impl Avatar {
             person,
             size,
             presence: None,
+            status_size: COMPONENT_STATUS_SIZE_SMALL,
             is_dimmed: false,
         }
     }
@@ -85,6 +87,13 @@ impl Avatar {
     #[must_use]
     pub fn presence(mut self, status: ShownStatus, ring: Hsla) -> Self {
         self.presence = Some((status, ring));
+        self
+    }
+
+    /// The status shape's size token, for avatars larger than a row's (the profile's).
+    #[must_use]
+    pub fn status_size(mut self, size: f32) -> Self {
+        self.status_size = size;
         self
     }
 
@@ -130,7 +139,7 @@ impl RenderOnce for Avatar {
             .as_ref()
             .is_some_and(|picture| is_picture_ready(picture, window, cx));
         let tokens = theme(cx);
-        let ring_box = COMPONENT_STATUS_SIZE_SMALL + 2.0 * COMPONENT_STATUS_RING_WIDTH;
+        let ring_box = self.status_size + 2.0 * COMPONENT_STATUS_RING_WIDTH;
         let face = div()
             .relative()
             .size_full()
@@ -170,7 +179,7 @@ impl RenderOnce for Avatar {
                         .items_center()
                         .justify_center()
                         .bg(ring)
-                        .child(StatusIndicator::new(status, COMPONENT_STATUS_SIZE_SMALL)),
+                        .child(StatusIndicator::new(status, self.status_size)),
                 )
             })
     }

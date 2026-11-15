@@ -126,6 +126,8 @@ pub struct Button {
     size: ButtonSize,
     is_disabled: bool,
     is_full_width: bool,
+    /// Shown instead of the label, which then names it (a square button, as the profile's More).
+    icon: Option<(IconName, f32)>,
     focus_handle: Option<FocusHandle>,
     on_click: Option<ActivationHandler>,
 }
@@ -141,9 +143,18 @@ impl Button {
             size: ButtonSize::Default,
             is_disabled: false,
             is_full_width: false,
+            icon: None,
             focus_handle: None,
             on_click: None,
         }
+    }
+
+    /// A square button showing `icon` at `icon_size`: the label becomes its accessible name and
+    /// tooltip.
+    #[must_use]
+    pub fn icon_only(mut self, icon: IconName, icon_size: f32) -> Self {
+        self.icon = Some((icon, icon_size));
+        self
     }
 
     #[must_use]
@@ -215,6 +226,8 @@ impl RenderOnce for Button {
         let is_ring_shown = is_focus_visible(&focus_handle, window);
         let is_disabled = self.is_disabled;
         let on_click = self.on_click;
+        let height = self.size.height();
+        let label = self.label.clone();
 
         with_type(div(), TYPE_BUTTON)
             .id(self.id)
@@ -226,9 +239,9 @@ impl RenderOnce for Button {
             .flex_none()
             .items_center()
             .justify_center()
-            .h(length(self.size.height()))
+            .h(length(height))
             // A short label ("OK") still makes a square button at least.
-            .min_w(length(self.size.height()))
+            .min_w(length(height))
             .px(length(COMPONENT_BUTTON_PADDING_INLINE))
             .rounded(length(COMPONENT_BUTTON_RADIUS))
             .bg(background)
@@ -254,7 +267,15 @@ impl RenderOnce for Button {
                     on_click(window, cx);
                 }
             })
-            .child(self.label)
+            .map(|button| match self.icon {
+                Some((glyph, icon_size)) => button
+                    .w(length(height))
+                    .px_0()
+                    .tooltip(move |_, cx| Tooltip::view(label.clone(), cx))
+                    .tooltip_show_delay(Tooltip::show_delay())
+                    .child(icon(glyph, icon_size, colours.label)),
+                None => button.child(self.label),
+            })
             .when(is_ring_shown, |button| {
                 button.child(focus_ring(COMPONENT_BUTTON_RADIUS, cx))
             })
