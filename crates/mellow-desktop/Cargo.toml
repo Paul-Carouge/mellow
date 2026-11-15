@@ -77,6 +77,9 @@ futures-lite.workspace = true
 # YouTube videos played in their card (ADR-0063): rustypipe asks YouTube's InnerTube API for a
 # video's tracks (GPL-3.0, compatible with Mellow's AGPL-3.0); rustls with Mozilla's roots, as
 # the rest of the app. Linux only: the other systems do not stream video yet.
+# Both aws-lc-rs (Mellow) and ring (rustypipe's reqwest) are in the tree, so rustls cannot pick a
+# process-wide provider by itself: `build_network_runtime` installs aws-lc-rs first.
+rustls = { version = "0.23.46", default-features = false, features = ["aws_lc_rs"] }
 rustypipe = { version = "0.11.4", default-features = false, features = ["rustls-tls-webpki-roots"] }
 # The system tray (StatusNotifierItem, ADR-0056), on the async-io zbus already in the tree for the
 # portals; only ksni itself and task-local are new (Unlicense, MIT/Apache-2.0).

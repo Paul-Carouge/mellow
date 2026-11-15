@@ -22,12 +22,20 @@ const NETWORK_THREAD_NAME: &str = "mellow-network";
 /// # Errors
 /// When the operating system refuses the worker threads.
 pub fn build_network_runtime() -> Result<Runtime> {
+    install_tls_provider();
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(NETWORK_WORKER_THREADS)
         .thread_name(NETWORK_THREAD_NAME)
         .enable_all()
         .build()
         .context("cannot start the network runtime")
+}
+
+/// rustls finds two providers in the tree (aws-lc-rs for Mellow, ring through rustypipe's reqwest)
+/// and then panics on the first TLS connection unless one is installed; Mellow uses aws-lc-rs. A
+/// second call (tests) finds it installed and changes nothing.
+fn install_tls_provider() {
+    let _already_installed = rustls::crypto::aws_lc_rs::default_provider().install_default();
 }
 
 /// The runtime's handle, kept as a GPUI global so views can spawn on it.
@@ -116,5 +124,14 @@ mod tests {
             "the Tokio future was dropped without sending"
         );
         runtime.shutdown_background();
+    }
+}
+
+#[cfg(test)]
+mod tls_provider_tests {
+    #[test]
+    fn the_network_runtime_has_a_tls_provider_to_connect_with() {
+        let _runtime = super::build_network_runtime().expect("a network runtime");
+        assert!(rustls::crypto::CryptoProvider::get_default().is_some());
     }
 }
