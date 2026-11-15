@@ -90,6 +90,7 @@ impl DuskShell {
         if self.quick_switcher.is_some()
             || self.is_member_overlay_open
             || self.is_settings_screen_open()
+            || crate::media_viewer::is_modal_layer_open(cx)
         {
             return;
         }

@@ -68,7 +68,7 @@ impl DuskShell {
 
     /// The user card's gear and Ctrl+, (Cmd+, on macOS); does nothing while a screen is open.
     pub(super) fn open_user_settings(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.open_settings.is_some() {
+        if self.open_settings.is_some() || crate::media_viewer::is_modal_layer_open(cx) {
             return;
         }
         let opener = window.focused(cx);

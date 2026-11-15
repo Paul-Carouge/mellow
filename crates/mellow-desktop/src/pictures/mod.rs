@@ -237,6 +237,9 @@ pub struct PictureStore {
     /// The one timer that draws those views again, with when it fires; replacing it cancels the
     /// previous one.
     frame_timer: Option<(Instant, Task<()>)>,
+    /// Attachments whose pictures fail, for tests without an instance.
+    #[cfg(test)]
+    failing_attachments: std::collections::HashSet<mellow_protocol::Snowflake>,
 }
 
 impl std::fmt::Debug for PictureStore {
@@ -290,6 +293,14 @@ impl PictureStore {
     /// Whether `request` still shows as failed at `now`; an expired failure is forgotten so the
     /// picture loads again.
     fn has_standing_failure(&mut self, request: &PictureRequest, now: Instant) -> bool {
+        #[cfg(test)]
+        if let PictureFile::Instance(
+            DownloadableFile::Attachment(id) | DownloadableFile::AttachmentPreview(id),
+        ) = request.file
+            && self.failing_attachments.contains(&id)
+        {
+            return true;
+        }
         match self.failed.get(request) {
             None => false,
             Some(PictureFailure::Permanent) => true,
@@ -470,6 +481,24 @@ pub fn picture_status(request: PictureRequest, cx: &mut App) -> PictureStatus {
     } else {
         PictureStatus::Loading
     }
+}
+
+/// Makes every picture of `attachment_id` fail, as an unreachable instance would.
+#[cfg(test)]
+pub(crate) fn fail_attachment_pictures_for_tests(
+    attachment_id: mellow_protocol::Snowflake,
+    cx: &mut App,
+) {
+    cx.default_global::<PictureStore>()
+        .failing_attachments
+        .insert(attachment_id);
+}
+
+/// Forgets that `request` failed, so the next view that draws it asks for it again (the
+/// viewer's "Try again").
+pub fn retry_picture(request: PictureRequest, cx: &mut App) {
+    let request = request.rounded_up_to_display_step();
+    cx.default_global::<PictureStore>().failed.remove(&request);
 }
 
 fn picture(

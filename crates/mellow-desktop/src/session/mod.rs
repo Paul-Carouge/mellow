@@ -535,6 +535,8 @@ impl Session {
         self.status_error = None;
         self.conversation = messages::ConversationRequests::default();
         end_attachment_audio_session(cx);
+        crate::attachment_download::forget_opened_attachments(cx);
+        crate::media_viewer::forget_media_viewer(cx);
         cx.emit(VoiceSignal::SessionEnded);
         if self.is_kept_on_this_device {
             end_picture_session(cx);

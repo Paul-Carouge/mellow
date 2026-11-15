@@ -726,6 +726,9 @@ pub struct ThemeTokens {
     pub component_user_panel_status_text_hover: u32,
     pub component_user_panel_toggle_muted_icon: u32,
     pub component_user_panel_update_badge: u32,
+    pub component_video_player_controls_scrim_end: u32,
+    pub component_video_player_controls_scrim_start: u32,
+    pub component_video_player_time_text: u32,
     pub component_voice_enhancement_preset_background_checked: u32,
     pub component_voice_enhancement_preset_text: u32,
     pub component_voice_enhancement_preset_text_checked: u32,
@@ -1472,6 +1475,9 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_user_panel_status_text_hover: 0xC5BE_C6FF,
     component_user_panel_toggle_muted_icon: 0xFA77_7CFF,
     component_user_panel_update_badge: 0x23A5_5AFF,
+    component_video_player_controls_scrim_end: 0x110B_1100,
+    component_video_player_controls_scrim_start: 0x110B_11B8,
+    component_video_player_time_text: 0xECE6_EDFF,
     component_voice_enhancement_preset_background_checked: 0x362E_37FF,
     component_voice_enhancement_preset_text: 0xC5BE_C6FF,
     component_voice_enhancement_preset_text_checked: 0xF8F4_F8FF,
@@ -2218,6 +2224,9 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_user_panel_status_text_hover: 0x594E_5BFF,
     component_user_panel_toggle_muted_icon: 0xC426_2BFF,
     component_user_panel_update_badge: 0x1A7F_45FF,
+    component_video_player_controls_scrim_end: 0x110B_1100,
+    component_video_player_controls_scrim_start: 0x110B_11B8,
+    component_video_player_time_text: 0xECE6_EDFF,
     component_voice_enhancement_preset_background_checked: 0xDFD8_DFFF,
     component_voice_enhancement_preset_text: 0x594E_5BFF,
     component_voice_enhancement_preset_text_checked: 0x221B_23FF,
@@ -3023,6 +3032,18 @@ pub const COMPONENT_USER_PANEL_TOGGLE_STRIKE_LENGTH: f32 = 24.0;
 pub const COMPONENT_USER_PANEL_TOGGLE_STRIKE_WIDTH: f32 = 2.0;
 pub const COMPONENT_USER_PANEL_UPDATE_BADGE_RING_WIDTH: f32 = 3.0;
 pub const COMPONENT_USER_PANEL_UPDATE_BADGE_SIZE: f32 = 10.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROL_ICON_SIZE: f32 = 20.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROL_ICON_SIZE_LARGE: f32 = 24.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROL_SIZE: f32 = 32.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROL_SIZE_LARGE: f32 = 44.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROLS_FADE_HEIGHT: f32 = 32.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROLS_GAP: f32 = 8.0;
+pub const COMPONENT_VIDEO_PLAYER_CONTROLS_HIDE_DELAY: Delay = Delay(2500);
+pub const COMPONENT_VIDEO_PLAYER_CONTROLS_PADDING: f32 = 8.0;
+pub const COMPONENT_VIDEO_PLAYER_PLAY_ICON_SIZE: f32 = 40.0;
+pub const COMPONENT_VIDEO_PLAYER_SEEK_JUMP: Delay = Delay(10000);
+pub const COMPONENT_VIDEO_PLAYER_SEEK_STEP: Delay = Delay(5000);
+pub const COMPONENT_VIDEO_PLAYER_VOLUME_WIDTH: f32 = 72.0;
 pub const COMPONENT_VOICE_ENHANCEMENT_PRESET_HEIGHT: f32 = 44.0;
 pub const COMPONENT_VOICE_ENHANCEMENT_PRESET_PADDING_INLINE: f32 = 12.0;
 pub const COMPONENT_VOICE_ENHANCEMENT_PRESET_RADIUS: f32 = 4.0;
@@ -3072,6 +3093,7 @@ pub const MOTION_DELAY_JUMP_HIGHLIGHT: Delay = Delay(2000);
 pub const MOTION_DELAY_LOADING_NOTICE: Delay = Delay(340);
 pub const MOTION_DELAY_LONG_PRESS: Delay = Delay(500);
 pub const MOTION_DELAY_PENDING_LABEL: Delay = Delay(2000);
+pub const MOTION_DELAY_PLAYER_CONTROLS: Delay = Delay(2500);
 pub const MOTION_DELAY_SKELETON: Delay = Delay(300);
 pub const MOTION_DELAY_STREAM_ENDED: Delay = Delay(3000);
 pub const MOTION_DELAY_STREAM_SLOW: Delay = Delay(10000);

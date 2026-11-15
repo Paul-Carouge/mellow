@@ -9,14 +9,14 @@ use gpui::{
 };
 
 use super::{
-    ActivationHandler, Tooltip, child_id, colour_transition, focus_ring, icon, is_focus_visible,
-    remembered_focus_handle, remembered_hover, with_type,
+    ActivationHandler, Tooltip, child_id, colour_transition, focus_ring, focus_ring_in, icon,
+    is_focus_visible, remembered_focus_handle, remembered_hover, with_type,
 };
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
     COMPONENT_BUTTON_DISABLED_OPACITY, COMPONENT_BUTTON_HEIGHT, COMPONENT_BUTTON_HEIGHT_LARGE,
     COMPONENT_BUTTON_HEIGHT_SMALL, COMPONENT_BUTTON_PADDING_INLINE, COMPONENT_BUTTON_RADIUS,
-    RADIUS_SM, TYPE_BUTTON, ThemeTokens,
+    DARK_THEME, RADIUS_SM, TYPE_BUTTON, ThemeTokens,
 };
 use crate::theme::{color, length, theme};
 
@@ -283,6 +283,8 @@ pub struct IconButton {
     /// Its own shortcut, for screen readers ("Control+E").
     key_shortcuts: Option<SharedString>,
     is_disabled: bool,
+    /// Drawn on the media stage (dark in both themes) with the dark theme's colours.
+    is_on_media_stage: bool,
     /// The host's handle, to move focus here; otherwise one kept while it is drawn.
     focus_handle: Option<FocusHandle>,
     on_click: Option<ActivationHandler>,
@@ -306,9 +308,18 @@ impl IconButton {
             expanded: None,
             key_shortcuts: None,
             is_disabled: false,
+            is_on_media_stage: false,
             focus_handle: None,
             on_click: None,
         }
+    }
+
+    /// On the media stage (a video, the picture viewer): the dark theme's colours in both
+    /// themes, as `color.media.*` are, so the icon and its focus ring show on the dark room.
+    #[must_use]
+    pub fn on_media_stage(mut self) -> Self {
+        self.is_on_media_stage = true;
+        self
     }
 
     /// The host's sizes, from its own tokens.
@@ -367,7 +378,11 @@ impl IconButton {
 
 impl RenderOnce for IconButton {
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let tokens = theme(cx);
+        let tokens = if self.is_on_media_stage {
+            &DARK_THEME
+        } else {
+            theme(cx)
+        };
         let focus_handle = self
             .focus_handle
             .clone()
@@ -439,7 +454,7 @@ impl RenderOnce for IconButton {
             })
             .child(icon(self.icon, self.icon_size, icon_tint))
             .when(is_ring_shown, |button| {
-                button.child(focus_ring(RADIUS_SM, cx))
+                button.child(focus_ring_in(RADIUS_SM, color(tokens.color_focus)))
             })
     }
 }

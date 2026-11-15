@@ -11,10 +11,10 @@ use gpui::{
     prelude::FluentBuilder as _,
 };
 
-use super::{child_id, focus_ring, is_focus_visible, remembered_focus_handle, with_type};
+use super::{child_id, focus_ring_in, is_focus_visible, remembered_focus_handle, with_type};
 use crate::theme::tokens::{
-    COMPONENT_BUTTON_DISABLED_OPACITY, RADIUS_SM, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_MD, SPACE_XS,
-    TYPE_BODY_SM, TYPE_CATEGORY,
+    COMPONENT_BUTTON_DISABLED_OPACITY, DARK_THEME, RADIUS_SM, SIZE_HIT_WEB_MIN, SPACE_2XS,
+    SPACE_MD, SPACE_XS, TYPE_BODY_SM, TYPE_CATEGORY,
 };
 use crate::theme::{color, length, theme};
 
@@ -90,6 +90,7 @@ pub struct RangeField {
     on_change: Option<ChangeHandler>,
     is_label_shown: bool,
     is_disabled: bool,
+    is_on_media_stage: bool,
 }
 
 impl RangeField {
@@ -110,6 +111,7 @@ impl RangeField {
             on_change: None,
             is_label_shown: true,
             is_disabled: false,
+            is_on_media_stage: false,
         }
     }
 
@@ -125,6 +127,13 @@ impl RangeField {
     #[must_use]
     pub fn disabled(mut self, is_disabled: bool) -> Self {
         self.is_disabled = is_disabled;
+        self
+    }
+
+    /// On the media stage (a video's controls): the dark theme's colours in both themes.
+    #[must_use]
+    pub fn on_media_stage(mut self) -> Self {
+        self.is_on_media_stage = true;
         self
     }
 
@@ -147,7 +156,11 @@ fn fraction_at(position_x: Pixels, track: Bounds<Pixels>) -> f32 {
 impl RenderOnce for RangeField {
     #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
-        let tokens = theme(cx);
+        let tokens = if self.is_on_media_stage {
+            &DARK_THEME
+        } else {
+            theme(cx)
+        };
         let focus_handle = remembered_focus_handle(&self.id, window, cx);
         let track_bounds = window.use_keyed_state(child_id(&self.id, "track"), cx, |_, _| {
             Bounds::<Pixels>::default()
@@ -270,7 +283,7 @@ impl RenderOnce for RangeField {
                     .bg(accent),
             )
             .when(is_ring_shown, |track| {
-                track.child(focus_ring(RADIUS_SM, cx))
+                track.child(focus_ring_in(RADIUS_SM, color(tokens.color_focus)))
             });
 
         if !self.is_label_shown {

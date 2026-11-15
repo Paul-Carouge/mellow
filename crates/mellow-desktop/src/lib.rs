@@ -23,6 +23,7 @@ pub mod home;
 pub mod i18n;
 mod local_widgets;
 pub mod main_window;
+mod media_viewer;
 pub mod message_search;
 pub mod messages;
 pub mod navigation;

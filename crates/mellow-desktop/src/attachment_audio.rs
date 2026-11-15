@@ -173,6 +173,8 @@ struct AttachmentAudio {
     settling_redraws: u8,
     /// Bumped by each session, so a late download of the previous one is dropped.
     session: u64,
+    /// How many surfaces (a message's card, the media viewer) show each attachment's player.
+    shown_surfaces: std::collections::HashMap<Snowflake, usize>,
 }
 
 impl Global for AttachmentAudio {}
@@ -272,9 +274,9 @@ pub fn stop_attachment_audio(cx: &mut App) {
     }
 }
 
-/// Keeps `attachment_id`'s player for as long as the element `id` is drawn: once its row leaves
-/// the list (scrolled far away, the conversation closed), the sound or video it plays stops, as
-/// the web's element is removed with its row.
+/// Keeps `attachment_id`'s player for as long as the element `id` is drawn: once no surface shows
+/// it any more (its row scrolled far away or was deleted, the conversation and the media viewer
+/// closed), the sound or video it plays stops, as the web's element is removed with its row.
 pub(crate) fn keep_player_while_shown(
     id: &ElementId,
     attachment_id: Snowflake,
@@ -282,17 +284,42 @@ pub(crate) fn keep_player_while_shown(
     cx: &mut App,
 ) {
     window.use_keyed_state(child_id(id, "shown"), cx, |_, cx| {
+        *cx.default_global::<AttachmentAudio>()
+            .shown_surfaces
+            .entry(attachment_id)
+            .or_default() += 1;
         cx.on_release(move |(), cx| {
-            if cx
-                .try_global::<AttachmentAudio>()
-                .is_some_and(|store| store.holds(attachment_id))
-            {
-                stop_playback(cx);
-                cx.refresh_windows();
+            let store = cx.default_global::<AttachmentAudio>();
+            let remaining = store.shown_surfaces.get_mut(&attachment_id).map(|count| {
+                *count = count.saturating_sub(1);
+                *count
+            });
+            if remaining == Some(0) {
+                store.shown_surfaces.remove(&attachment_id);
+                stop_attachment_playback(attachment_id, cx);
             }
         })
         .detach();
     });
+}
+
+/// Stops `attachment_id`'s sound or video, even while its file is still on its way: the surface
+/// that asked for it is gone.
+pub(crate) fn stop_attachment_playback(attachment_id: Snowflake, cx: &mut App) {
+    if cx
+        .try_global::<AttachmentAudio>()
+        .is_some_and(|store| store.holds(attachment_id))
+    {
+        stop_playback(cx);
+        cx.refresh_windows();
+    }
+}
+
+/// Puts `attachment_id` in the state of a file on its way, as after pressing play.
+#[cfg(test)]
+pub(crate) fn pretend_fetching_for_tests(attachment_id: Snowflake, cx: &mut App) {
+    cx.default_global::<AttachmentAudio>().fetching =
+        Some((attachment_id, Task::ready(()), Instant::now()));
 }
 
 /// Where `attachment_id`'s player stands.
@@ -1059,5 +1086,51 @@ mod tests {
         assert_eq!(playback(cx), AudioPlayback::Loading, "another row left");
         scroll_to(Vec::new(), cx);
         assert_eq!(playback(cx), AudioPlayback::Idle, "stopped with its row");
+    }
+
+    /// Surfaces showing players under their own ids: a card, the media viewer's screen.
+    struct Surfaces {
+        shown: Vec<(&'static str, Snowflake)>,
+    }
+
+    impl Render for Surfaces {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            for (name, attachment_id) in &self.shown {
+                keep_player_while_shown(
+                    &ElementId::Name((*name).into()),
+                    *attachment_id,
+                    window,
+                    cx,
+                );
+            }
+            div().size_full().child("surfaces")
+        }
+    }
+
+    #[gpui::test]
+    fn a_player_shown_in_the_viewer_too_stops_only_once_neither_shows_it(cx: &mut TestAppContext) {
+        let video = Snowflake::from_raw(3);
+        let (surfaces, cx) = cx.add_window_view(|_, _| Surfaces {
+            shown: vec![("card", video), ("viewer", video)],
+        });
+        cx.run_until_parked();
+        cx.update(|_, cx| pretend_fetching_for_tests(video, cx));
+        let show = |shown: Vec<(&'static str, Snowflake)>, cx: &mut gpui::VisualTestContext| {
+            surfaces.update(cx, |surfaces, cx| {
+                surfaces.shown = shown;
+                cx.notify();
+            });
+            cx.run_until_parked();
+            surfaces.update(cx, |_, cx| cx.notify());
+            cx.run_until_parked();
+        };
+        let playback = |cx: &mut gpui::VisualTestContext| {
+            cx.update(|_, cx| attachment_audio_view(video, cx).playback)
+        };
+        // The row left the list (new messages, a deletion): the viewer still plays it.
+        show(vec![("viewer", video)], cx);
+        assert_eq!(playback(cx), AudioPlayback::Loading);
+        show(Vec::new(), cx);
+        assert_eq!(playback(cx), AudioPlayback::Idle);
     }
 }

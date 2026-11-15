@@ -150,6 +150,12 @@ pub fn is_focus_visible(focus_handle: &FocusHandle, window: &Window) -> bool {
 /// its radius concentrically. A child of the element, so the element must not clip its overflow.
 #[must_use]
 pub fn focus_ring(element_radius: f32, cx: &App) -> impl IntoElement {
+    focus_ring_in(element_radius, color(crate::theme::theme(cx).color_focus))
+}
+
+/// The focus ring in `ring_colour`: on the media stage, the dark theme's in both themes.
+#[must_use]
+pub fn focus_ring_in(element_radius: f32, ring_colour: Hsla) -> impl IntoElement {
     let distance = SIZE_FOCUS_RING_WIDTH + SIZE_FOCUS_RING_OFFSET;
     let outside = -length(distance);
     div()
@@ -160,7 +166,7 @@ pub fn focus_ring(element_radius: f32, cx: &App) -> impl IntoElement {
         .bottom(outside)
         .rounded(length(element_radius + distance))
         .border(length(SIZE_FOCUS_RING_WIDTH))
-        .border_color(color(crate::theme::theme(cx).color_focus))
+        .border_color(ring_colour)
 }
 
 /// The ring drawn inside an element, for rows a scrolling list would clip (`focus-ring-inset`).

@@ -143,7 +143,14 @@ fn open_main_window(cx: &mut App) -> Result<WindowHandle<MainWindow>> {
             // Moves, resizes, maximising and full screen all report here; read only when the
             // next window opens.
             cx.observe_window_bounds(window, |_, window, cx| {
-                cx.global_mut::<MainWindowSlot>().bounds = Some(window.window_bounds());
+                let bounds = window.window_bounds();
+                // A video's full screen is the viewer's, not a size to open the next window at.
+                if matches!(bounds, WindowBounds::Fullscreen(_))
+                    && crate::media_viewer::is_window_fullscreen_by_viewer(cx)
+                {
+                    return;
+                }
+                cx.global_mut::<MainWindowSlot>().bounds = Some(bounds);
             })
             .detach();
             // macOS and Windows post no reduced-motion change gpui-base can follow, so the
