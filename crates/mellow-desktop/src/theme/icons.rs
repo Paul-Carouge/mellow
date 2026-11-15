@@ -25,6 +25,7 @@ pub enum IconName {
     ChatCircle,
     Check,
     CheckCircle,
+    CircleNotch,
     Clock,
     Code,
     CodeBlock,
@@ -116,7 +117,7 @@ pub enum IconName {
 }
 
 impl IconName {
-    pub const ALL: [Self; 107] = [
+    pub const ALL: [Self; 108] = [
         Self::AirplaneTilt,
         Self::ArrowBendUpLeft,
         Self::ArrowBendUpRight,
@@ -136,6 +137,7 @@ impl IconName {
         Self::ChatCircle,
         Self::Check,
         Self::CheckCircle,
+        Self::CircleNotch,
         Self::Clock,
         Self::Code,
         Self::CodeBlock,
@@ -249,6 +251,7 @@ impl IconName {
             Self::ChatCircle => "icons/chat-circle.svg",
             Self::Check => "icons/check.svg",
             Self::CheckCircle => "icons/check-circle.svg",
+            Self::CircleNotch => "icons/circle-notch.svg",
             Self::Clock => "icons/clock.svg",
             Self::Code => "icons/code.svg",
             Self::CodeBlock => "icons/code-block.svg",
@@ -362,6 +365,7 @@ impl IconName {
             "icons/chat-circle.svg" => Some(Self::ChatCircle),
             "icons/check.svg" => Some(Self::Check),
             "icons/check-circle.svg" => Some(Self::CheckCircle),
+            "icons/circle-notch.svg" => Some(Self::CircleNotch),
             "icons/clock.svg" => Some(Self::Clock),
             "icons/code.svg" => Some(Self::Code),
             "icons/code-block.svg" => Some(Self::CodeBlock),
@@ -476,6 +480,7 @@ impl IconName {
             Self::ChatCircle => include_bytes!("../../../../design/icons/chat-circle.svg"),
             Self::Check => include_bytes!("../../../../design/icons/check.svg"),
             Self::CheckCircle => include_bytes!("../../../../design/icons/check-circle.svg"),
+            Self::CircleNotch => include_bytes!("../../../../design/icons/circle-notch.svg"),
             Self::Clock => include_bytes!("../../../../design/icons/clock.svg"),
             Self::Code => include_bytes!("../../../../design/icons/code.svg"),
             Self::CodeBlock => include_bytes!("../../../../design/icons/code-block.svg"),

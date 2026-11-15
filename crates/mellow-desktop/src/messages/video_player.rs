@@ -207,6 +207,9 @@ pub(crate) struct VideoScreen {
     on_fullscreen: Option<FullscreenHandler>,
     /// The full screen button, in the viewer: whether the window is full screen now.
     fullscreen_button: Option<bool>,
+    /// Drawn over the screen while the video loads, in place of the resting play glyph and the
+    /// controls.
+    loading_cover: Option<AnyElement>,
     /// The host's size and shape.
     style: StyleRefinement,
 }
@@ -226,6 +229,7 @@ impl VideoScreen {
             focus_handle: None,
             on_fullscreen: None,
             fullscreen_button: None,
+            loading_cover: None,
             style: StyleRefinement::default(),
         }
     }
@@ -241,6 +245,13 @@ impl VideoScreen {
     #[must_use]
     pub(crate) fn track_focus(mut self, focus_handle: &FocusHandle) -> Self {
         self.focus_handle = Some(focus_handle.clone());
+        self
+    }
+
+    /// What covers the screen while the video loads (a card's poster with its loading note).
+    #[must_use]
+    pub(crate) fn loading_cover(mut self, cover: impl IntoElement) -> Self {
+        self.loading_cover = Some(cover.into_any_element());
         self
     }
 
@@ -267,6 +278,9 @@ impl RenderOnce for VideoScreen {
         let view = attachment_audio_view(attachment.id, cx);
         let picture = attachment_video_picture(attachment.id, cx);
         let is_playing = view.playback == AudioPlayback::Playing;
+        let loading_cover = self
+            .loading_cover
+            .filter(|_| view.playback == AudioPlayback::Loading);
         let focus_handle = self
             .focus_handle
             .unwrap_or_else(|| remembered_focus_handle(&id, window, cx));
@@ -296,7 +310,9 @@ impl RenderOnce for VideoScreen {
             now,
         );
         let name = attachment.file_name.clone();
-        let controls = is_shown.then(|| {
+        // Under a loading cover the controls would only crowd its words (a narrow card puts
+        // them on top of each other) and play is disabled anyway: a click on the screen cancels.
+        let controls = (is_shown && loading_cover.is_none()).then(|| {
             controls_bar(
                 &id,
                 &attachment,
@@ -367,13 +383,14 @@ impl RenderOnce for VideoScreen {
                     .child(video_view(picture, VideoFit::Contain))
             }))
             // Decorative: the play button in the controls is the one screen readers and Tab reach.
-            .when(!is_playing, |screen| {
+            .when(!is_playing && loading_cover.is_none(), |screen| {
                 screen.child(icon(
                     IconName::Play,
                     COMPONENT_VIDEO_PLAYER_PLAY_ICON_SIZE,
                     color(DARK_THEME.color_media_text),
                 ))
             })
+            .children(loading_cover)
             .children(controls)
             .when(is_screen_ring_shown, |screen| {
                 // Inside the edge: the screen clips what passes its corners.

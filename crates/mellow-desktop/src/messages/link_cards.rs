@@ -4,11 +4,13 @@
 //! `YouTubeMark`). On the desktop a screen plays in the Mellow player window (ADR-0061): while the
 //! window plays its video, the card dims under an apricot "Playing in the player" key.
 
+use std::time::Duration;
+
 use gpui::{
-    AnyElement, App, ElementId, FontWeight, Hsla, InteractiveElement as _, IntoElement, ObjectFit,
-    ParentElement as _, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    StyledImage as _, Window, div, img, linear_color_stop, linear_gradient,
-    prelude::FluentBuilder as _, svg,
+    Animation, AnimationExt as _, AnyElement, App, ElementId, FontWeight, Hsla, ImageSource,
+    InteractiveElement as _, IntoElement, ObjectFit, ParentElement as _, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, Transformation, Window, div,
+    img, linear_color_stop, linear_gradient, percentage, prelude::FluentBuilder as _, svg,
 };
 use gpui_base::motion::Transition;
 use mellow_client_core::DownloadableFile;
@@ -21,7 +23,9 @@ use mellow_protocol::{Attachment, LinkPreview};
 use super::rich_text::open_message_link;
 use super::video_player::{VideoScreen, play_video};
 use super::{picture_animation, picture_for_box};
-use crate::attachment_audio::{AudioPlayback, attachment_audio_view, toggle_attachment_audio};
+use crate::attachment_audio::{
+    AudioPlayback, attachment_audio_view, retry_youtube_video, toggle_attachment_audio,
+};
 use crate::components::{Button, IconButton};
 use crate::components::{
     Tooltip, child_id, colour_transition, easing, focus_ring, icon, is_focus_visible,
@@ -586,6 +590,72 @@ fn youtube_mark(id: ElementId, url: &str, tooltip: String, tokens: &ThemeTokens)
         .into_any_element()
 }
 
+/// One turn of the loading arc: calm enough to read as waiting, quick enough to read as alive.
+const LOADING_ARC_TURN: Duration = Duration::from_millis(900);
+/// The arc turns at most this often: smooth at its size, and light while YouTube answers.
+const LOADING_ARC_FRAMES_PER_SECOND: f32 = 30.0;
+
+/// What a card shows while YouTube is asked for the video's tracks, which takes a few seconds
+/// (ADR-0063): the poster dimmed, a turning arc in the play key's place and "Loading the
+/// video…", so a press is seen to have worked. The arc rests still under reduced motion (GPUI's
+/// animations stop there); the words say it either way.
+fn loading_cover(
+    card_id: &ElementId,
+    poster: Option<impl IntoElement>,
+    strings: Strings,
+    tokens: &ThemeTokens,
+) -> AnyElement {
+    let note: SharedString = strings.picture_viewer().loading_video().into();
+    let arc = icon(
+        IconName::CircleNotch,
+        COMPONENT_LINK_PREVIEW_PLAY_BUTTON_ICON_SIZE,
+        color(tokens.component_link_preview_play_button_icon),
+    )
+    .with_animation(
+        child_id(card_id, "loading-arc"),
+        Animation::new(LOADING_ARC_TURN)
+            .repeat()
+            .with_max_fps(LOADING_ARC_FRAMES_PER_SECOND),
+        |arc, turn| arc.with_transformation(Transformation::rotate(percentage(turn))),
+    );
+    div()
+        .debug_selector(|| "youtube-loading-cover".to_owned())
+        .absolute()
+        .inset_0()
+        .children(poster)
+        .child(
+            div()
+                .absolute()
+                .inset_0()
+                .flex()
+                .flex_col()
+                .items_center()
+                .justify_center()
+                .gap(length(SPACE_XS))
+                .bg(color(tokens.component_link_preview_now_playing_scrim))
+                .child(
+                    div()
+                        .size(length(COMPONENT_LINK_PREVIEW_PLAY_BUTTON_SIZE))
+                        .flex()
+                        .items_center()
+                        .justify_center()
+                        .rounded_full()
+                        .bg(color(tokens.component_link_preview_play_button_background))
+                        .child(arc),
+                )
+                .child(
+                    with_type(div(), TYPE_BODY_SM)
+                        .text_color(color(tokens.color_media_text))
+                        .child(note.clone()),
+                )
+                .child(crate::components::polite_live_region(
+                    child_id(card_id, "loading-note"),
+                    note,
+                )),
+        )
+        .into_any_element()
+}
+
 /// The media viewer's set for a card's video: itself, under its channel's name.
 fn youtube_viewer_set(attachment: &Attachment, channel: Option<&str>) -> ViewerSet {
     ViewerSet {
@@ -646,14 +716,16 @@ pub(super) fn screen_card(
         )
     };
     let inner_radius = length(COMPONENT_LINK_PREVIEW_RADIUS);
-    let poster = shown.picture.map(|file| {
-        let source = picture_for_box(
+    let poster_source = shown.picture.map(|file| {
+        picture_for_box(
             file,
             box_width,
             box_width / aspect_ratio,
             picture_animation(cx),
             window,
-        );
+        )
+    });
+    let poster_picture = |source: ImageSource| {
         // shortcut: GPUI cannot scale a picture inside its clip, so the poster does not grow to
         // `poster-hover-scale` under the pointer; add it once GPUI has element transforms.
         img(source)
@@ -663,7 +735,8 @@ pub(super) fn screen_card(
             .rounded_t(inner_radius)
             .object_fit(ObjectFit::Cover)
             .with_fallback(|| div().into_any_element())
-    });
+    };
+    let poster = poster_source.clone().map(poster_picture);
     let has_poster = poster.is_some();
     let fade = color(tokens.component_link_preview_screen_fade);
     let key_id = child_id(&shown.id, "play");
@@ -705,6 +778,11 @@ pub(super) fn screen_card(
     };
     let url = preview.url.clone();
     let played = attachment.clone().filter(|_| failure.is_none());
+    // The poster key and "Try again" leave the tree once pressed: focus goes on to the screen
+    // that takes their place, or a keyboard user would be dropped out of the list.
+    let screen_id = child_id(&shown.id, "screen");
+    let screen_focus = remembered_focus_handle(&screen_id, window, cx);
+    let poster_hand_off = screen_focus.clone();
     let tooltip = key_label.clone();
     let poster_key = div()
         .id(key_id)
@@ -728,8 +806,11 @@ pub(super) fn screen_card(
             });
         })
         // Enter or Space on the focused poster fire this too.
-        .on_click(move |_, _, cx| match played.as_ref() {
-            Some(played) => toggle_attachment_audio(played, cx),
+        .on_click(move |_, window, cx| match played.as_ref() {
+            Some(played) => {
+                poster_hand_off.focus(window, cx);
+                toggle_attachment_audio(played, cx);
+            }
             None => open_message_link(&url, cx),
         })
         .children(poster)
@@ -766,13 +847,20 @@ pub(super) fn screen_card(
         .clone()
         .filter(|_| is_on_screen)
         .map(|attachment| {
-            let screen_id = child_id(&shown.id, "screen");
-            let screen_focus = remembered_focus_handle(&screen_id, window, cx);
             let set = youtube_viewer_set(&attachment, channel);
             let enlarged = attachment.clone();
             let opener = screen_focus.clone();
-            VideoScreen::new(screen_id, attachment)
-                .track_focus(&screen_focus)
+            let mut screen =
+                VideoScreen::new(screen_id.clone(), attachment).track_focus(&screen_focus);
+            if playback == Some(AudioPlayback::Loading) {
+                screen = screen.loading_cover(loading_cover(
+                    &shown.id,
+                    poster_source.clone().map(poster_picture),
+                    strings,
+                    tokens,
+                ));
+            }
+            screen
                 .on_fullscreen(None, move |window, cx| {
                     open_media_viewer(&set, enlarged.id, Some(opener.clone()), true, window, cx);
                     play_video(&enlarged, cx);
@@ -848,6 +936,14 @@ pub(super) fn screen_card(
         }
         .into();
         let link = preview.url.clone();
+        // Only a refusal that may pass is worth asking again: a private, age restricted, live
+        // or removed video would fail the same way.
+        let retried = attachment.clone().filter(|_| {
+            matches!(
+                failure,
+                YouTubeFailure::CannotRead | YouTubeFailure::RobotCheck
+            )
+        });
         div()
             .flex()
             .flex_col()
@@ -871,11 +967,28 @@ pub(super) fn screen_card(
                     )),
             )
             .child(
-                Button::new(
-                    child_id(&shown.id, "open-on-youtube"),
-                    desktop.you_tube_open_on_you_tube(),
-                )
-                .on_click(move |_, cx| open_message_link(&link, cx)),
+                div()
+                    .flex()
+                    .flex_wrap()
+                    .gap(length(SPACE_XS))
+                    .children(retried.map(|retried| {
+                        let retry_hand_off = screen_focus.clone();
+                        Button::new(
+                            child_id(&shown.id, "retry-youtube"),
+                            strings.common().try_again(),
+                        )
+                        .on_click(move |window, cx| {
+                            retry_hand_off.focus(window, cx);
+                            retry_youtube_video(&retried, cx);
+                        })
+                    }))
+                    .child(
+                        Button::new(
+                            child_id(&shown.id, "open-on-youtube"),
+                            desktop.you_tube_open_on_you_tube(),
+                        )
+                        .on_click(move |_, cx| open_message_link(&link, cx)),
+                    ),
             )
     });
     let group_label: SharedString = match channel {
@@ -914,8 +1027,73 @@ pub(super) fn screen_card(
 
 #[cfg(test)]
 mod tests {
+    use mellow_protocol::Snowflake;
+
     use super::*;
     use crate::i18n::Language;
+
+    /// A card's screen as `screen_card` builds it: its loading cover only while loading.
+    struct LoadingScreen {
+        attachment: Attachment,
+    }
+
+    impl gpui::Render for LoadingScreen {
+        fn render(&mut self, _: &mut Window, cx: &mut gpui::Context<Self>) -> impl IntoElement {
+            let id = ElementId::from("card");
+            let is_loading =
+                attachment_audio_view(self.attachment.id, cx).playback == AudioPlayback::Loading;
+            let mut screen = VideoScreen::new(child_id(&id, "screen"), self.attachment.clone());
+            if is_loading {
+                screen = screen.loading_cover(loading_cover(
+                    &id,
+                    None::<gpui::Div>,
+                    crate::i18n::strings(cx),
+                    theme(cx),
+                ));
+            }
+            div()
+                .size_full()
+                .child(screen.w(gpui::px(480.0)).h(gpui::px(270.0)))
+        }
+    }
+
+    #[gpui::test]
+    fn the_loading_cover_shows_while_the_video_loads_and_hides_the_controls(
+        cx: &mut gpui::TestAppContext,
+    ) {
+        cx.update(|cx| {
+            cx.set_global(crate::theme::ActiveTheme::for_appearance(
+                gpui::WindowAppearance::Dark,
+            ));
+            gpui_component::init(cx);
+        });
+        let attachment = Attachment {
+            id: Snowflake::from_raw(11),
+            file_name: "Sintel".to_owned(),
+            content_type: crate::youtube_video::YOUTUBE_VIDEO_TYPE.to_owned(),
+            size_bytes: 0,
+            width: Some(16),
+            height: Some(9),
+        };
+        let attachment_id = attachment.id;
+        let (view, cx) = cx.add_window_view(|_, _| LoadingScreen { attachment });
+        cx.run_until_parked();
+        assert!(cx.debug_bounds("video-screen").is_some());
+        assert!(cx.debug_bounds("youtube-loading-cover").is_none(), "idle");
+        assert!(cx.debug_bounds("video-controls").is_some(), "idle controls");
+
+        cx.update(|_, cx| crate::attachment_audio::pretend_fetching_for_tests(attachment_id, cx));
+        view.update(cx, |_, cx| cx.notify());
+        cx.run_until_parked();
+        assert!(
+            cx.debug_bounds("youtube-loading-cover").is_some(),
+            "loading"
+        );
+        assert!(
+            cx.debug_bounds("video-controls").is_none(),
+            "the cover's words stand alone"
+        );
+    }
 
     fn video() -> YouTubeEmbed {
         YouTubeEmbed {
