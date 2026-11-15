@@ -81,8 +81,6 @@ pub(super) struct PlaceMenus {
     pub(super) server_header_bounds: Rc<Cell<Option<Bounds<Pixels>>>>,
     /// Whether the header's menu was open when it was pressed (see the chat header's).
     was_server_header_menu_open_at_press: Option<bool>,
-    /// The chat header's width last frame: "Go to…" folds into a compass below a threshold.
-    pub(super) chat_header_width: Rc<Cell<f32>>,
 }
 
 /// The target's own mute (`isTargetMuted`): a channel of a muted server is not "muted" itself.

@@ -747,7 +747,7 @@ impl DuskShell {
 
     // ---- The quick switcher ----
 
-    /// Ctrl+K and the header's "Go to…": opens it, or closes it when open.
+    /// Ctrl+K and the narrow header's "Go to…" menu item: opens it, or closes it when open.
     pub fn toggle_quick_switcher(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some((switcher, _)) = self.quick_switcher.take() {
             switcher.update(cx, |switcher, cx| switcher.give_focus_back(window, cx));
