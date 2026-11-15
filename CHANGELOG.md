@@ -4,6 +4,21 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.54.1] - 2026-11-15
+A fix for the Linux desktop app.
+
+### Fixed
+- Desktop on Linux: 0.54.0 never connected and stayed on "Connecting…": two TLS providers were built in (the YouTube extractor brought ring beside aws-lc-rs), so rustls chose none and the network thread stopped. Mellow now picks aws-lc-rs.
+
+## [0.54.0] - 2026-11-15
+YouTube videos play right in the message card on the desktop.
+
+### Added
+- Desktop: a YouTube link card plays the video inline, with Mellow's own player (yt-dlp when installed, a built-in extractor otherwise); no window, no sign-in page (ADR-0063).
+
+### Removed
+- Desktop: the separate YouTube player window and its `mellow-player` binary.
+
 ## [0.53.1] - 2026-11-15
 The tag `v0.53.0` points at a commit that still said 0.52.0 and was never released; 0.53.1 is that release.
 
