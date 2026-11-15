@@ -21,6 +21,7 @@ mod name_confirmation;
 mod navigation;
 mod permission_words;
 mod picture_crop;
+mod picture_crop_dialog;
 mod picture_upload;
 pub mod server;
 pub mod user;

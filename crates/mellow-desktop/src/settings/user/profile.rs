@@ -5,9 +5,9 @@
 //! meanwhile; one change runs at a time. Beside the editors, "Preview" shows the profile card
 //! with "About me" and the links as typed.
 //!
-//! shortcut: a chosen picture is sent as it is, so the instance keeps its centred square (avatar)
-//! or band (banner): the crop dialog (`settings/icon_editor.rs`, square icons only so far) still
-//! needs the avatar's circle and the banner's band.
+//! A chosen picture opens the crop dialog (`settings/picture_crop_dialog.rs`, DESIGN.md §6.54):
+//! a circle for the avatar, the card's band for the banner. The file is sent as it is with the
+//! crop, so an animated GIF stays animated.
 
 use std::path::PathBuf;
 
@@ -24,20 +24,25 @@ use mellow_client_core::shared_logic::user_settings::{
 };
 use mellow_client_core::{ClientError, DownloadableFile};
 use mellow_protocol::{
-    BannerCropQuery, IconCropQuery, MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH,
-    MAXIMUM_PROFILE_LINKS, PublicUser, UserProfile,
+    MAXIMUM_ABOUT_ME_LENGTH, MAXIMUM_PROFILE_LINK_LABEL_LENGTH, MAXIMUM_PROFILE_LINKS, PublicUser,
+    UserProfile,
 };
+use std::sync::Arc;
 
 use super::parts::{description_text, error_line, section_label};
 use crate::components::{
-    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, TextField, avatar_tint, focus_ring,
-    icon, with_type,
+    Avatar, AvatarPerson, Button, ButtonVariant, IconButton, ModalDialog, ModalDialogEvent,
+    TextField, avatar_tint, focus_ring, icon, with_type,
 };
 use crate::i18n::{Strings, strings};
 use crate::messages::{file_size_label, picture_animation, picture_for_box};
 use crate::session::Session;
+use crate::settings::picture_crop::{SentCrop, banner_crop_query, icon_crop_query};
+use crate::settings::picture_crop_dialog::{
+    ChosenPicture, CropKind, CropStage, open_crop_dialog, prepare_picture,
+};
 use crate::settings::picture_upload::{
-    PictureReadProblem, describe_image_failure, describe_read_problem, read_picture,
+    describe_image_failure, describe_read_problem, read_picture,
 };
 use crate::settings::{SettingsPage, SettingsPageEvent, saved_notice};
 use crate::sign_in_form::describe_error;
@@ -75,6 +80,23 @@ enum ImageAction {
     Remove,
 }
 
+/// A chosen picture's crop dialog, its stage, and its subscriptions (events, Enter).
+type OpenCropDialog = (
+    ImageKind,
+    Entity<ModalDialog>,
+    Entity<CropStage>,
+    [Subscription; 2],
+);
+
+/// A picture change before its crop dialog opens.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Choosing {
+    /// The file picker is open: a second click must not open another.
+    Picker,
+    /// The chosen file is being read and measured.
+    Reading,
+}
+
 /// One link row: its address and its name.
 struct LinkRow {
     url: Entity<InputState>,
@@ -92,9 +114,11 @@ enum DetailsLoad {
 pub struct ProfilePage {
     session: Entity<Session>,
     busy: Option<(ImageKind, ImageAction)>,
+    choosing: Option<(ImageKind, Choosing)>,
     image_error: Option<(ImageKind, SharedString)>,
     image_notice: Option<(ImageKind, SharedString)>,
     change_focus: [FocusHandle; 2],
+    crop_dialog: Option<OpenCropDialog>,
     details: DetailsLoad,
     saved: ProfileDraft,
     about_input: Option<Entity<TextareaState>>,
@@ -119,6 +143,7 @@ impl std::fmt::Debug for ProfilePage {
         formatter
             .debug_struct("ProfilePage")
             .field("busy", &self.busy)
+            .field("choosing", &self.choosing)
             .field("is_saving", &self.is_saving)
             .finish_non_exhaustive()
     }
@@ -189,9 +214,11 @@ impl ProfilePage {
         let mut page = Self {
             session,
             busy: None,
+            choosing: None,
             image_error: None,
             image_notice: None,
             change_focus: [cx.focus_handle(), cx.focus_handle()],
+            crop_dialog: None,
             details: DetailsLoad::Loading,
             saved: ProfileDraft::default(),
             about_input: None,
@@ -221,61 +248,131 @@ impl ProfilePage {
             })
     }
 
-    fn choose_picture(&mut self, kind: ImageKind, cx: &mut Context<Self>) {
-        if self.busy.is_some() {
+    /// No picture change under way: the picture buttons can be used.
+    fn is_idle(&self) -> bool {
+        self.busy.is_none() && self.choosing.is_none() && self.crop_dialog.is_none()
+    }
+
+    fn choose_picture(&mut self, kind: ImageKind, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.is_idle() {
             return;
         }
+        self.choosing = Some((kind, Choosing::Picker));
+        cx.notify();
         let picked = cx.prompt_for_paths(PathPromptOptions {
             files: true,
             directories: false,
             multiple: false,
             prompt: None,
         });
+        let window_handle = window.window_handle();
         cx.spawn(async move |page, cx| {
-            let path: PathBuf = match picked.await {
-                Ok(Ok(Some(paths))) => match paths.into_iter().next() {
-                    Some(path) => path,
-                    None => return,
-                },
-                Ok(Ok(None)) | Err(_) => return,
+            let path = match picked.await {
+                Ok(Ok(Some(paths))) => paths.into_iter().next(),
+                Ok(Ok(None)) | Err(_) => None,
                 Ok(Err(error)) => {
                     tracing::warn!(%error, "the file picker failed");
-                    return;
+                    None
                 }
             };
-            let read = cx
-                .background_spawn(async move { read_picture(&path) })
-                .await;
-            let _ = page.update(cx, |page, cx| page.upload(kind, read, cx));
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let _ = page.update(cx, |page, cx| {
+                    page.choosing = None;
+                    match path {
+                        Some(path) => page.open_picked_file(kind, path, window, cx),
+                        None => cx.notify(),
+                    }
+                });
+            });
         })
         .detach();
+    }
+
+    /// Reads and measures the picked file off the UI thread, then opens the crop dialog on it.
+    fn open_picked_file(
+        &mut self,
+        kind: ImageKind,
+        path: PathBuf,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.is_idle() {
+            return;
+        }
+        self.choosing = Some((kind, Choosing::Reading));
+        self.image_error = None;
+        self.image_notice = None;
+        cx.notify();
+        let window_handle = window.window_handle();
+        cx.spawn(async move |page, cx| {
+            let prepared = cx
+                .background_spawn(async move { read_picture(&path).and_then(prepare_picture) })
+                .await;
+            let _ = window_handle.update(cx, |_, window, cx| {
+                let _ = page.update(cx, |page, cx| {
+                    page.choosing = None;
+                    match prepared {
+                        Ok(picture) => page.open_crop_dialog(kind, picture, window, cx),
+                        Err(problem) => {
+                            let summary = image_words(kind, strings(cx)).change_failed;
+                            page.image_error =
+                                Some((kind, describe_read_problem(&problem, summary, cx).into()));
+                        }
+                    }
+                    cx.notify();
+                });
+            });
+        })
+        .detach();
+    }
+
+    fn open_crop_dialog(
+        &mut self,
+        kind: ImageKind,
+        picture: ChosenPicture,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let crop_kind = match kind {
+            ImageKind::Avatar => CropKind::Avatar,
+            ImageKind::Banner => {
+                let Some(person) = self.current_avatar_person(window, cx) else {
+                    return;
+                };
+                CropKind::Banner { person }
+            }
+        };
+        let bytes = Arc::clone(&picture.bytes);
+        let (dialog, stage, enter) = open_crop_dialog(picture, crop_kind, window, cx);
+        let subscribed_stage = stage.clone();
+        let subscription = cx.subscribe(&dialog, move |page, dialog, event, cx| match event {
+            ModalDialogEvent::Closed => {
+                page.crop_dialog = None;
+                cx.notify();
+            }
+            ModalDialogEvent::Submitted => {
+                let crop = subscribed_stage.read(cx).crop_to_send();
+                dialog.update(cx, |dialog, cx| {
+                    dialog.set_error(None, cx);
+                    dialog.set_busy(true, cx);
+                });
+                page.upload(kind, bytes.as_ref().clone(), crop, cx);
+            }
+        });
+        self.crop_dialog = Some((kind, dialog, stage, [subscription, enter]));
     }
 
     fn upload(
         &mut self,
         kind: ImageKind,
-        read: Result<Vec<u8>, PictureReadProblem>,
+        bytes: Vec<u8>,
+        crop: Option<SentCrop>,
         cx: &mut Context<Self>,
     ) {
-        if self.busy.is_some() {
-            return;
-        }
-        let catalogue = strings(cx);
-        let summary = image_words(kind, catalogue).change_failed;
-        let bytes = match read {
-            Ok(bytes) => bytes,
-            Err(problem) => {
-                self.image_notice = None;
-                self.image_error =
-                    Some((kind, describe_read_problem(&problem, summary, cx).into()));
-                cx.notify();
-                return;
-            }
-        };
         self.run(kind, ImageAction::Upload, cx, move |rest| async move {
             match kind {
-                ImageKind::Avatar => rest.set_avatar(bytes, &IconCropQuery::default()).await,
-                ImageKind::Banner => rest.set_banner(bytes, &BannerCropQuery::default()).await,
+                ImageKind::Avatar => rest.set_avatar(bytes, &icon_crop_query(crop)).await,
+                ImageKind::Banner => rest.set_banner(bytes, &banner_crop_query(crop)).await,
             }
         });
     }
@@ -333,6 +430,28 @@ impl ProfilePage {
     ) {
         self.busy = None;
         let words = image_words(kind, strings(cx));
+        let open_dialog = self
+            .crop_dialog
+            .as_ref()
+            .filter(|(dialog_kind, ..)| action == ImageAction::Upload && *dialog_kind == kind)
+            .map(|(_, dialog, ..)| dialog.clone());
+        if let Some(dialog) = open_dialog {
+            dialog.update(cx, |dialog, cx| dialog.set_busy(false, cx));
+            match &outcome {
+                Ok(()) => {
+                    // Saved: the dialog goes, and focus goes back to the button that opened it.
+                    self.crop_dialog = None;
+                    self.focus_on_render = Some(self.change_focus[kind.index()].clone());
+                }
+                Err(error) => {
+                    // The dialog stays open with its crop, so trying again needs no new pick.
+                    let message = describe_image_failure(error, words.change_failed, cx);
+                    dialog.update(cx, |dialog, cx| dialog.set_error(Some(message.into()), cx));
+                    cx.notify();
+                    return;
+                }
+            }
+        }
         match outcome {
             Ok(()) => {
                 let text = match action {
@@ -533,6 +652,7 @@ impl ProfilePage {
         let has_picture = self.has_picture(kind, cx);
         let is_this_busy = self.busy.map(|(busy_kind, _)| busy_kind) == Some(kind);
         let busy_action = self.busy.map(|(_, action)| action);
+        let is_idle = self.is_idle();
         let id = match kind {
             ImageKind::Avatar => "profile-avatar",
             ImageKind::Banner => "profile-banner",
@@ -560,16 +680,19 @@ impl ProfilePage {
                     .child(
                         Button::new(
                             SharedString::from(format!("{id}-change")),
-                            if is_this_busy && busy_action == Some(ImageAction::Upload) {
+                            if self.choosing == Some((kind, Choosing::Reading)) {
+                                strings(cx).icon_editor().crop().opening()
+                            } else if is_this_busy && busy_action == Some(ImageAction::Upload) {
                                 words.uploading
                             } else {
                                 words.change
                             },
                         )
-                        .disabled(self.busy.is_some())
+                        .disabled(!is_idle)
                         .track_focus(&self.change_focus[kind.index()])
-                        .on_click(move |_, cx| {
-                            change_page.update(cx, |page, cx| page.choose_picture(kind, cx));
+                        .on_click(move |window, cx| {
+                            change_page
+                                .update(cx, |page, cx| page.choose_picture(kind, window, cx));
                         }),
                     )
                     .when(has_picture, |buttons| {
@@ -582,7 +705,7 @@ impl ProfilePage {
                                     words.remove
                                 },
                             )
-                            .disabled(self.busy.is_some())
+                            .disabled(!is_idle)
                             .on_click(move |_, cx| {
                                 remove_page.update(cx, |page, cx| page.remove(kind, cx));
                             }),
@@ -843,24 +966,22 @@ impl ProfilePage {
 }
 
 impl ProfilePage {
-    /// "Preview" (`ProfileCard.svelte` in `ProfileSettings.svelte`): the card others open, with
-    /// the pictures as saved and "About me" and the links as typed, so a change shows before it
-    /// is saved. It repeats the page for the eye.
-    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
-    fn render_preview(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
-        let tokens = theme(cx);
-        let catalogue = strings(cx);
+    fn current_public_user(&self, cx: &App) -> Option<PublicUser> {
         let me = self.session.read(cx).state().current_user()?.clone();
-        let user = PublicUser {
+        Some(PublicUser {
             id: me.id,
             username: me.username,
             display_name: me.display_name,
             avatar: me.avatar,
             banner: me.banner,
-        };
+        })
+    }
+
+    /// The person's avatar as the profile card shows it.
+    fn card_avatar_person(user: &PublicUser, window: &Window, cx: &App) -> AvatarPerson {
         let animation = picture_animation(cx);
-        let person = AvatarPerson::from_user(
-            &user,
+        AvatarPerson::from_user(
+            user,
             user.avatar.map(|image| {
                 picture_for_box(
                     DownloadableFile::ProfileImage(image.id),
@@ -870,7 +991,25 @@ impl ProfilePage {
                     window,
                 )
             }),
-        );
+        )
+    }
+
+    /// Whose avatar covers the band in the banner's crop sample.
+    fn current_avatar_person(&self, window: &Window, cx: &App) -> Option<AvatarPerson> {
+        let user = self.current_public_user(cx)?;
+        Some(Self::card_avatar_person(&user, window, cx))
+    }
+
+    /// "Preview" (`ProfileCard.svelte` in `ProfileSettings.svelte`): the card others open, with
+    /// the pictures as saved and "About me" and the links as typed, so a change shows before it
+    /// is saved. It repeats the page for the eye.
+    #[allow(clippy::too_many_lines)] // One element tree, in the order it is drawn.
+    fn render_preview(&self, window: &mut Window, cx: &mut Context<Self>) -> Option<AnyElement> {
+        let tokens = theme(cx);
+        let catalogue = strings(cx);
+        let user = self.current_public_user(cx)?;
+        let animation = picture_animation(cx);
+        let person = Self::card_avatar_person(&user, window, cx);
         let tint = avatar_tint(tokens, person.tint_number);
         let surface = color(tokens.component_profile_popover_background);
         let banner = match user.banner {
@@ -1076,5 +1215,124 @@ impl Render for ProfilePage {
                     )
                     .children(preview),
             )
+            .when_some(self.crop_dialog.as_ref(), |page, (_, dialog, ..)| {
+                page.child(dialog.clone())
+            })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{TestAppContext, VisualTestContext, WindowAppearance};
+
+    use super::*;
+
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = Vec::new();
+        image::RgbaImage::new(64, 48)
+            .write_to(
+                &mut std::io::Cursor::new(&mut bytes),
+                image::ImageFormat::Png,
+            )
+            .unwrap();
+        bytes
+    }
+
+    fn profile_page(cx: &mut TestAppContext) -> (Entity<ProfilePage>, &mut VisualTestContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            cx.set_global(crate::strings_pending_i18n::ActiveStrings(
+                &crate::strings_pending_i18n::ENGLISH,
+            ));
+            cx.set_global(crate::theme::ActiveTheme::for_appearance(
+                WindowAppearance::Dark,
+            ));
+        });
+        let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+        let (page, cx) = cx.add_window_view(|_, cx| ProfilePage::new(session, cx));
+        cx.update(|window, _| window.activate_window());
+        cx.run_until_parked();
+        (page, cx)
+    }
+
+    fn open_avatar_dialog(
+        page: &Entity<ProfilePage>,
+        cx: &mut VisualTestContext,
+    ) -> Entity<ModalDialog> {
+        let picture = prepare_picture(png_bytes()).expect("a readable picture");
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.open_crop_dialog(ImageKind::Avatar, picture, window, cx);
+            });
+        });
+        cx.run_until_parked();
+        page.read_with(cx, |page, _| {
+            page.crop_dialog
+                .as_ref()
+                .map(|(_, dialog, ..)| dialog.clone())
+        })
+        .expect("the crop dialog is open")
+    }
+
+    #[gpui::test]
+    fn a_saved_picture_closes_the_dialog_and_gives_focus_back_to_change(cx: &mut TestAppContext) {
+        let (page, cx) = profile_page(cx);
+        open_avatar_dialog(&page, cx);
+        // The instance's answer to the upload: saved.
+        page.update(cx, |page, cx| {
+            page.busy = Some((ImageKind::Avatar, ImageAction::Upload));
+            page.finish_image(ImageKind::Avatar, ImageAction::Upload, Ok(()), cx);
+        });
+        cx.run_until_parked();
+        page.read_with(cx, |page, _| {
+            assert!(page.crop_dialog.is_none());
+            assert!(page.is_idle());
+            assert!(page.image_notice.is_some());
+        });
+        let is_change_focused = cx.update(|window, cx| {
+            page.read(cx).change_focus[ImageKind::Avatar.index()].is_focused(window)
+        });
+        assert!(is_change_focused);
+    }
+
+    #[gpui::test]
+    fn a_refused_picture_keeps_the_dialog_open_with_the_reason(cx: &mut TestAppContext) {
+        let (page, cx) = profile_page(cx);
+        let dialog = open_avatar_dialog(&page, cx);
+        // Saved as the button would; the session is signed out, so the request fails.
+        dialog.update(cx, ModalDialog::submit_now);
+        cx.run_until_parked();
+        page.read_with(cx, |page, _| {
+            assert!(page.crop_dialog.is_some());
+            assert!(page.busy.is_none());
+            // The reason is in the dialog, not under the editor.
+            assert!(page.image_error.is_none());
+        });
+        dialog.read_with(cx, |dialog, _| {
+            assert!(!dialog.is_busy());
+            assert!(dialog.error_message().is_some());
+        });
+    }
+
+    #[gpui::test]
+    fn an_unreadable_file_says_why_and_frees_the_buttons(cx: &mut TestAppContext) {
+        let (page, cx) = profile_page(cx);
+        cx.update(|window, cx| {
+            page.update(cx, |page, cx| {
+                page.open_picked_file(
+                    ImageKind::Banner,
+                    PathBuf::from("/nonexistent/mellow-test/banner.png"),
+                    window,
+                    cx,
+                );
+                assert_eq!(page.choosing, Some((ImageKind::Banner, Choosing::Reading)));
+            });
+        });
+        cx.run_until_parked();
+        page.read_with(cx, |page, _| {
+            assert!(page.is_idle());
+            assert!(page.crop_dialog.is_none());
+            assert!(matches!(page.image_error, Some((ImageKind::Banner, _))));
+        });
     }
 }

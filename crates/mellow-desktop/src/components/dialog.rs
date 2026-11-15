@@ -164,6 +164,13 @@ impl ModalDialog {
         self.is_busy
     }
 
+    /// The error the dialog shows, for tests of the views that set it.
+    #[cfg(test)]
+    #[must_use]
+    pub fn error_message(&self) -> Option<&SharedString> {
+        self.error_message.as_ref()
+    }
+
     #[must_use]
     pub fn is_submit_enabled(&self) -> bool {
         self.is_submit_enabled
