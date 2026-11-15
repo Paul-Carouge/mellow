@@ -318,7 +318,8 @@ pub(crate) fn stop_attachment_playback(attachment_id: Snowflake, cx: &mut App) {
 /// Puts `attachment_id` in the state of a file on its way, as after pressing play.
 #[cfg(test)]
 pub(crate) fn pretend_fetching_for_tests(attachment_id: Snowflake, cx: &mut App) {
-    cx.default_global::<AttachmentAudio>().fetching = Some((attachment_id, Task::ready(())));
+    cx.default_global::<AttachmentAudio>().fetching =
+        Some((attachment_id, Task::ready(()), Instant::now()));
 }
 
 /// Where `attachment_id`'s player stands.
