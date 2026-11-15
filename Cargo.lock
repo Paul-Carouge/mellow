@@ -5170,7 +5170,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-client-core"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "anyhow",
  "aws-lc-rs",
@@ -5196,7 +5196,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-desktop"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "anyhow",
  "ashpd",
@@ -5245,7 +5245,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-media"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "anyhow",
  "block2 0.6.2",
@@ -5296,7 +5296,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-protocol"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "bitflags 2.13.2",
  "serde",
@@ -5306,7 +5306,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-server"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "anyhow",
  "argon2",
@@ -5365,7 +5365,7 @@ dependencies = [
 
 [[package]]
 name = "mellow-update"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "minisign-verify",
  "reqwest 0.13.5",
@@ -10416,7 +10416,7 @@ checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
 
 [[package]]
 name = "vesper-audio"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "libc",
  "opus",
@@ -10428,7 +10428,7 @@ dependencies = [
 
 [[package]]
 name = "vesper-capture"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "ashpd",
  "async-io",
@@ -10442,18 +10442,18 @@ dependencies = [
 
 [[package]]
 name = "vesper-core"
-version = "0.54.0"
+version = "0.54.1"
 
 [[package]]
 name = "vesper-dsp"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "nnnoiseless",
 ]
 
 [[package]]
 name = "vesper-encode"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "libc",
  "rusty_ffmpeg",
@@ -11837,7 +11837,7 @@ checksum = "ec7a2a501ed189703dba8b08142f057e887dfc4b2cc4db2d343ac6376ba3e0b9"
 
 [[package]]
 name = "xtask"
-version = "0.54.0"
+version = "0.54.1"
 dependencies = [
  "anyhow",
  "resvg 0.48.1",
