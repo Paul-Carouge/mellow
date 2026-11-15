@@ -792,14 +792,9 @@ impl Render for ComponentGallery {
             })));
 
         let feedback = section("Progress, loading, unsaved changes", cx)
-            .child(div().w(length(SPACE_XL * 10.0)).child(ProgressMeter::new(
-                "progress",
-                "Checklist",
-                3,
-                5,
-                "3/5",
-                "3 of 5 done",
-            )))
+            .child(div().w(length(SPACE_XL * 10.0)).child(
+                ProgressMeter::new("progress", "Checklist", 3, 5, "3/5", "3 of 5 done").segmented(),
+            ))
             .child(
                 row()
                     .items_start()

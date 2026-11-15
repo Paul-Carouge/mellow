@@ -5511,6 +5511,27 @@ impl ChecklistsStrings {
         }
     }
 
+    pub fn all_done(self) -> &'static str {
+        match self.language {
+            Language::English => "All done",
+            Language::French => "Tout est coché",
+        }
+    }
+
+    pub fn read_only(self) -> &'static str {
+        match self.language {
+            Language::English => "Read only: you can't write here.",
+            Language::French => "Lecture seule\u{a0}: tu ne peux pas écrire ici.",
+        }
+    }
+
+    pub fn cannot_tick(self) -> &'static str {
+        match self.language {
+            Language::English => "You can't tick this list.",
+            Language::French => "Tu ne peux pas cocher cette liste.",
+        }
+    }
+
     pub fn tick_failed(self) -> &'static str {
         match self.language {
             Language::English => "Couldn't tick the item",

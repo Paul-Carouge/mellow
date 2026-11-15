@@ -35,7 +35,9 @@ pub use attachments::MessageAttachments;
 pub(crate) use attachments::{PREVIEWABLE_PICTURE_TYPES, file_size_label, picture_box};
 pub use body::{MessageBody, MessageBodyCache, MessageBodyKey, message_summary};
 pub use call_message::CallMessage;
-pub use cards::{ChecklistCard, PollCard, ProgressBarCard, poll_time_left_label};
+pub use cards::{
+    ChecklistCard, ChecklistTickLabels, PollCard, ProgressBarCard, poll_time_left_label,
+};
 pub use code_block::MessageCodeBlock;
 pub use dividers::{DayDivider, UnreadDivider};
 pub use forward::{ForwardFrame, ForwardOrigin};

@@ -682,6 +682,7 @@
     removeOwnPollVotes: (message) => void removeOwnPollVotes(message),
     viewPollVoters: (message, answerId) => (viewingVotersOf = { message, answerId }),
     askToEndPoll: (message) => (endingPollOf = message),
+    canSendMessages,
     canTickChecklists,
     canEditTracker,
     nameOfUser,

@@ -17,8 +17,8 @@ use crate::i18n::strings;
 use crate::session::{ChecklistItemChange, Session};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
-    COMPONENT_POLL_ANSWER_GAP, COMPONENT_POLL_MARK_GLYPH_SIZE, SIZE_HIT_WEB_MIN, SPACE_2XS,
-    TYPE_BODY_SM,
+    COMPONENT_CHECKLIST_MARK_GLYPH_SIZE, COMPONENT_CHECKLIST_ROW_GAP,
+    COMPONENT_CHECKLIST_ROW_PADDING_INLINE, SIZE_HIT_WEB_MIN, SPACE_2XS, TYPE_BODY_SM,
 };
 use crate::theme::{color, length, theme};
 
@@ -276,7 +276,7 @@ impl Render for ChecklistEditor {
                             IconName::Trash,
                             words.remove(&field.saved_text),
                         )
-                        .sizes(SIZE_HIT_WEB_MIN, COMPONENT_POLL_MARK_GLYPH_SIZE)
+                        .sizes(SIZE_HIT_WEB_MIN, COMPONENT_CHECKLIST_MARK_GLYPH_SIZE)
                         .tone(IconButtonTone::Danger)
                         .on_click(move |window, cx| {
                             entity.update(cx, |editor, cx| editor.remove(item_id, window, cx));
@@ -290,7 +290,7 @@ impl Render for ChecklistEditor {
         div()
             .flex()
             .flex_col()
-            .gap(length(COMPONENT_POLL_ANSWER_GAP))
+            .gap(length(COMPONENT_CHECKLIST_ROW_GAP))
             .children(rows)
             .child(
                 div()
@@ -306,7 +306,7 @@ impl Render for ChecklistEditor {
                     )
                     .child(
                         Button::new("checklist-edit-add", words.add_item())
-                            .variant(ButtonVariant::Ghost)
+                            .variant(ButtonVariant::Secondary)
                             .disabled(is_full)
                             .on_click(move |window, cx| {
                                 add_entity.update(cx, |editor, cx| editor.add(window, cx));
@@ -315,7 +315,8 @@ impl Render for ChecklistEditor {
             )
             .child(
                 with_type(div(), TYPE_BODY_SM)
-                    .text_color(color(tokens.component_poll_footer_text))
+                    .px(length(COMPONENT_CHECKLIST_ROW_PADDING_INLINE))
+                    .text_color(color(tokens.component_checklist_footer_text))
                     .child(if can_remove {
                         words.items_left(left)
                     } else {
