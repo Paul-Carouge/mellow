@@ -26,6 +26,8 @@ export interface ReactionAndPinActions {
   removeOwnPollVotes: (message: Message) => void;
   viewPollVoters: (message: Message, answerId: number) => void;
   askToEndPoll: (message: Message) => void;
+  /** Writing here: says why a checklist is inert. */
+  canSendMessages: boolean;
   /** Writing here (ADR-0047). */
   canTickChecklists: boolean;
   /** Its author while they may write here, or a moderator of a server channel. */

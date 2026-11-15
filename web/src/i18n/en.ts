@@ -908,6 +908,12 @@ export const en = {
     /** The bar's spoken value, also announced when it changes. */
     doneSpoken: (done: number, total: number) => `${count(done)} of ${count(total)} done`,
     tickedBy: (name: string, date: string) => `Ticked by ${name}, ${date}`,
+    /** Beside the level once every item is ticked. */
+    allDone: "All done",
+    /** Under the items when the reader may not write here, so may not tick. */
+    readOnly: "Read only: you can't write here.",
+    /** Under the items when the reader may write here but still may not tick (no access to the history). */
+    cannotTick: "You can't tick this list.",
     tickFailed: "Couldn't tick the item",
     edit: "Edit list",
     doneEditing: "Done",

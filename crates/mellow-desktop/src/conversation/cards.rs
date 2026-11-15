@@ -22,7 +22,8 @@ use super::poll_voters_dialog::PollVotersBody;
 use crate::components::{ModalDialog, ModalDialogEvent};
 use crate::i18n::strings;
 use crate::messages::{
-    ChecklistCard, PollCard, ProgressBarCard, full_timestamp_label, local_date_time,
+    ChecklistCard, ChecklistTickLabels, PollCard, ProgressBarCard, full_timestamp_label,
+    local_date_time, message_timestamp_label,
 };
 use crate::session::now_unix_milliseconds;
 
@@ -280,18 +281,22 @@ impl ConversationView {
         let can_edit = rights.can_edit_tracker(is_own);
         if let Some(checklist) = &message.checklist {
             let catalogue = strings(cx);
+            let now = local_date_time(now_unix_milliseconds());
             let ticked_by = checklist
                 .items
                 .iter()
                 .map(|item| {
                     item.checked.map(|tick| {
-                        let when = full_timestamp_label(
-                            local_date_time(tick.at_unix_milliseconds),
-                            catalogue,
-                        );
-                        catalogue
+                        let at = local_date_time(tick.at_unix_milliseconds);
+                        let name = self.name_of_user(tick.user_id, cx);
+                        let sentence = catalogue
                             .checklists()
-                            .ticked_by(&self.name_of_user(tick.user_id, cx), &when)
+                            .ticked_by(&name, &full_timestamp_label(at, catalogue));
+                        ChecklistTickLabels {
+                            name,
+                            when: message_timestamp_label(at, now, catalogue),
+                            sentence,
+                        }
                     })
                 })
                 .collect();
@@ -305,6 +310,7 @@ impl ConversationView {
             return Some(
                 ChecklistCard::new(id, checklist.clone(), ticked_by)
                     .can_tick(rights.can_tick)
+                    .can_write(rights.can_send)
                     .can_edit(can_edit)
                     .editor(editor)
                     .on_toggle(move |item_id, _, cx| {

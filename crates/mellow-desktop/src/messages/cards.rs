@@ -30,6 +30,12 @@ use crate::i18n::catalogue::MinutesOrHoursOrDays;
 use crate::i18n::{Strings, strings};
 use crate::theme::icons::IconName;
 use crate::theme::tokens::{
+    COMPONENT_BUTTON_HEIGHT_SMALL, COMPONENT_CHECKLIST_GAP, COMPONENT_CHECKLIST_HEADER_GAP,
+    COMPONENT_CHECKLIST_MARK_BORDER_WIDTH, COMPONENT_CHECKLIST_MARK_GLYPH_SIZE,
+    COMPONENT_CHECKLIST_MARK_RADIUS, COMPONENT_CHECKLIST_MARK_SIZE, COMPONENT_CHECKLIST_MAX_WIDTH,
+    COMPONENT_CHECKLIST_PADDING, COMPONENT_CHECKLIST_ROW_GAP, COMPONENT_CHECKLIST_ROW_INNER_GAP,
+    COMPONENT_CHECKLIST_ROW_MIN_HEIGHT, COMPONENT_CHECKLIST_ROW_PADDING_BLOCK,
+    COMPONENT_CHECKLIST_ROW_PADDING_INLINE, COMPONENT_CHECKLIST_ROW_RADIUS,
     COMPONENT_POLL_ANSWER_BORDER_WIDTH, COMPONENT_POLL_ANSWER_GAP, COMPONENT_POLL_ANSWER_INNER_GAP,
     COMPONENT_POLL_ANSWER_MIN_HEIGHT, COMPONENT_POLL_ANSWER_PADDING_BLOCK,
     COMPONENT_POLL_ANSWER_PADDING_INLINE, COMPONENT_POLL_ANSWER_RADIUS,
@@ -37,9 +43,9 @@ use crate::theme::tokens::{
     COMPONENT_POLL_GAP, COMPONENT_POLL_HEADER_GAP, COMPONENT_POLL_LEADER_ICON_SIZE,
     COMPONENT_POLL_MARK_BORDER_WIDTH, COMPONENT_POLL_MARK_GLYPH_SIZE,
     COMPONENT_POLL_MARK_RADIUS_CHECKBOX, COMPONENT_POLL_MARK_SIZE, COMPONENT_POLL_MAX_WIDTH,
-    COMPONENT_POLL_PADDING, COMPONENT_POLL_RADIUS, MOTION_DURATION_SLOW, MOTION_EASING_STANDARD,
-    RADIUS_XS, SIZE_HIT_DESKTOP_MIN, SIZE_HIT_WEB_MIN, SPACE_2XS, SPACE_3XS, TYPE_BODY,
-    TYPE_BODY_SM, TYPE_HEADING_MD, TYPE_MESSAGE,
+    COMPONENT_POLL_PADDING, COMPONENT_POLL_RADIUS, MOTION_DURATION_SETTLE, MOTION_DURATION_SLOW,
+    MOTION_EASING_SETTLE, MOTION_EASING_STANDARD, RADIUS_XS, SIZE_HIT_DESKTOP_MIN, SPACE_2XS,
+    SPACE_3XS, SPACE_XS, TYPE_BODY, TYPE_BODY_SM, TYPE_HEADING_MD, TYPE_MESSAGE, TypeToken,
 };
 use crate::theme::{animation_duration, color, length, theme};
 
@@ -66,21 +72,14 @@ fn card_frame(id: ElementId, label: SharedString, gap: f32, cx: &App) -> gpui::S
         .bg(color(tokens.component_poll_background))
 }
 
-/// The card's heading: an optional glyph and the title, at heading size.
-fn card_heading(glyph: Option<IconName>, title: SharedString, cx: &App) -> impl IntoElement {
+/// A poll's heading: its question, at heading size.
+fn card_heading(title: SharedString, cx: &App) -> impl IntoElement {
     let tokens = theme(cx);
     with_type(div(), TYPE_HEADING_MD)
         .flex()
         .items_center()
         .gap(length(SPACE_2XS))
         .text_color(color(tokens.component_poll_question_text))
-        .when_some(glyph, |heading, glyph| {
-            heading.child(icon(
-                glyph,
-                COMPONENT_POLL_MARK_SIZE,
-                color(tokens.component_poll_hint_text),
-            ))
-        })
         .child(div().min_w_0().child(title))
 }
 
@@ -127,6 +126,102 @@ fn link_button(
             button.child(focus_ring(RADIUS_XS, cx))
         })
         .into_any_element()
+}
+
+/// A quiet action under a checklist or a progress bar ("Edit list", "Update"): its glyph and words
+/// in `text.secondary`, lit like a row under the pointer.
+fn quiet_button(
+    id: ElementId,
+    glyph: IconName,
+    label: SharedString,
+    on_click: ActivationHandler,
+    window: &mut Window,
+    cx: &mut App,
+) -> AnyElement {
+    let tokens = theme(cx);
+    let focus_handle = remembered_focus_handle(&id, window, cx);
+    let hover = remembered_hover(&id, window, cx);
+    let is_hovered = *hover.read(cx);
+    let ink = color(if is_hovered {
+        tokens.color_text_heading
+    } else {
+        tokens.color_text_secondary
+    });
+    let background = colour_transition(
+        child_id(&id, "background"),
+        if is_hovered {
+            color(tokens.component_checklist_row_background_hover)
+        } else {
+            color(tokens.component_checklist_row_background_hover).opacity(0.0)
+        },
+        window,
+        cx,
+    );
+    with_type(div(), TYPE_BODY)
+        .id(id)
+        .role(Role::Button)
+        .aria_label(label.clone())
+        .track_focus(&focus_handle)
+        .relative()
+        .flex()
+        .items_center()
+        .gap(length(SPACE_2XS))
+        .h(length(COMPONENT_BUTTON_HEIGHT_SMALL))
+        .px(length(COMPONENT_CHECKLIST_ROW_PADDING_INLINE))
+        .rounded(length(COMPONENT_CHECKLIST_ROW_RADIUS))
+        .cursor_pointer()
+        .font_weight(FontWeight::MEDIUM)
+        .text_color(ink)
+        .bg(background)
+        .on_hover(move |is_hovered, _, cx| {
+            hover.update(cx, |remembered, cx| {
+                *remembered = *is_hovered;
+                cx.notify();
+            });
+        })
+        .on_click(move |_, window, cx| on_click(window, cx))
+        .child(icon(glyph, COMPONENT_CHECKLIST_MARK_GLYPH_SIZE, ink))
+        .child(label)
+        .when(is_focus_visible(&focus_handle, window), |button| {
+            button.child(focus_ring(COMPONENT_CHECKLIST_ROW_RADIUS, cx))
+        })
+        .into_any_element()
+}
+
+/// The frame of a checklist or a progress bar: the poll's well, wider, its title glyph over the
+/// column of boxes.
+fn tracker_frame(id: ElementId, label: SharedString, cx: &App) -> gpui::Stateful<gpui::Div> {
+    card_frame(id, label, COMPONENT_CHECKLIST_GAP, cx)
+        .max_w(length(COMPONENT_CHECKLIST_MAX_WIDTH))
+        .p(length(COMPONENT_CHECKLIST_PADDING))
+}
+
+/// A checklist's or a progress bar's heading and level, inset like the rows below.
+fn tracker_header(glyph: IconName, title: SharedString, level: AnyElement, cx: &App) -> gpui::Div {
+    let tokens = theme(cx);
+    div()
+        .flex()
+        .flex_col()
+        .gap(length(SPACE_XS))
+        .px(length(COMPONENT_CHECKLIST_ROW_PADDING_INLINE))
+        .pt(length(SPACE_2XS))
+        .child(
+            with_type(div(), TYPE_HEADING_MD)
+                .flex()
+                .items_start()
+                .gap(length(COMPONENT_CHECKLIST_HEADER_GAP))
+                .text_color(color(tokens.component_poll_question_text))
+                .child(
+                    icon(
+                        glyph,
+                        COMPONENT_CHECKLIST_MARK_SIZE,
+                        color(tokens.component_poll_hint_text),
+                    )
+                    .mt(length(first_line_nudge(TYPE_HEADING_MD))),
+                )
+                .child(div().min_w_0().child(title)),
+        )
+        .child(level)
 }
 
 /// A radio dot or a checkbox square, filled with its glyph when chosen.
@@ -617,7 +712,7 @@ impl RenderOnce for PollCard {
                 .flex()
                 .flex_col()
                 .gap(length(COMPONENT_POLL_HEADER_GAP))
-                .child(card_heading(None, poll.question.clone().into(), cx))
+                .child(card_heading(poll.question.clone().into(), cx))
                 .when(!is_ended, |header| {
                     header.child(
                         with_type(div(), TYPE_BODY_SM)
@@ -662,17 +757,29 @@ impl std::fmt::Debug for PollCard {
 
 // ---- Checklist -----------------------------------------------------------------------------
 
-/// A checklist in a message: the title and its "3/5" level, then one checkbox row per item with
-/// who ticked it and when. Its author and moderators switch it to editing, where `editor` (the
-/// conversation's field rows) replaces the rows.
+/// Who ticked an item and when: "Chloé · Today at 14:32" under it, and the full sentence for
+/// screen readers ("Ticked by Chloé, Sunday, November 15, 2026 at 14:32").
+#[derive(Debug, Clone)]
+pub struct ChecklistTickLabels {
+    pub name: String,
+    pub when: String,
+    pub sentence: String,
+}
+
+/// A checklist in a message (redesigned 2026-11-15): the title and its segmented level, then one
+/// borderless row per item, a large box and its text, with who ticked it and when. Its author and
+/// moderators switch it to editing, where `editor` (the conversation's field rows) replaces the
+/// rows.
 #[derive(IntoElement)]
+#[allow(clippy::struct_excessive_bools)] // One flag per state and right, as the web's props.
 pub struct ChecklistCard {
     id: ElementId,
     checklist: Checklist,
-    /// "Ticked by Ada, November 5, 2026 at 14:32", one per item, `None` while not ticked.
-    ticked_by: Vec<Option<String>>,
+    /// One per item, `None` while not ticked.
+    ticked_by: Vec<Option<ChecklistTickLabels>>,
     is_pending: bool,
     can_tick: bool,
+    can_write: bool,
     can_edit: bool,
     editor: Option<AnyView>,
     on_toggle: Option<CardItemHandler>,
@@ -684,7 +791,7 @@ impl ChecklistCard {
     pub fn new(
         id: impl Into<ElementId>,
         checklist: Checklist,
-        ticked_by: Vec<Option<String>>,
+        ticked_by: Vec<Option<ChecklistTickLabels>>,
     ) -> Self {
         Self {
             id: id.into(),
@@ -692,6 +799,7 @@ impl ChecklistCard {
             ticked_by,
             is_pending: false,
             can_tick: false,
+            can_write: true,
             can_edit: false,
             editor: None,
             on_toggle: None,
@@ -708,6 +816,13 @@ impl ChecklistCard {
     #[must_use]
     pub fn can_tick(mut self, can_tick: bool) -> Self {
         self.can_tick = can_tick;
+        self
+    }
+
+    /// Whether the reader may write here: says why the boxes are inert when they are.
+    #[must_use]
+    pub fn can_write(mut self, can_write: bool) -> Self {
+        self.can_write = can_write;
         self
     }
 
@@ -738,6 +853,82 @@ impl ChecklistCard {
     }
 }
 
+/// The box of an item: empty with a border that brightens under the pointer, or filled with the
+/// lamp, its check growing in when it is ticked. `transition` adopts its first value at once, so a
+/// page of history appears with its checks already in place.
+fn checklist_box(
+    row_id: &ElementId,
+    is_checked: bool,
+    is_hovered: bool,
+    can_tick: bool,
+    window: &mut Window,
+    cx: &mut App,
+) -> gpui::Div {
+    let tokens = theme(cx);
+    let checked = color(tokens.component_checklist_mark_checked);
+    let border = if is_checked {
+        checked
+    } else if !can_tick {
+        color(tokens.component_checklist_mark_border_inert)
+    } else if is_hovered {
+        color(tokens.component_checklist_mark_border_hover)
+    } else {
+        color(tokens.component_checklist_mark_border)
+    };
+    let fill = if is_checked {
+        checked
+    } else {
+        checked.opacity(0.0)
+    };
+    let glyph_size = transition(
+        child_id(row_id, "glyph"),
+        if is_checked {
+            COMPONENT_CHECKLIST_MARK_GLYPH_SIZE
+        } else {
+            0.0
+        },
+        Transition::new(animation_duration(MOTION_DURATION_SETTLE, cx))
+            .easing(easing(MOTION_EASING_SETTLE)),
+        window,
+        cx,
+    );
+    div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .justify_center()
+        .mt(length(first_line_nudge(TYPE_MESSAGE)))
+        .size(length(COMPONENT_CHECKLIST_MARK_SIZE))
+        .rounded(length(COMPONENT_CHECKLIST_MARK_RADIUS))
+        .border(length(COMPONENT_CHECKLIST_MARK_BORDER_WIDTH))
+        .border_color(colour_transition(
+            child_id(row_id, "box-border"),
+            border,
+            window,
+            cx,
+        ))
+        .bg(colour_transition(
+            child_id(row_id, "box-fill"),
+            fill,
+            window,
+            cx,
+        ))
+        .when(glyph_size > 0.5, |mark| {
+            mark.child(icon(
+                IconName::Check,
+                glyph_size,
+                color(tokens.component_checklist_mark_glyph),
+            ))
+        })
+}
+
+/// What centres a 22 px glyph or box on the first line of `text` (negative when the line is
+/// shorter than the box), as the web's `mt-[calc(…)]`: at the default chat font size, since the
+/// box does not grow with it.
+fn first_line_nudge(text: TypeToken) -> f32 {
+    (text.font_size * text.line_height - COMPONENT_CHECKLIST_MARK_SIZE) / 2.0
+}
+
 impl RenderOnce for ChecklistCard {
     #[allow(clippy::too_many_lines)] // One card, in the order it is drawn, as the web's markup.
     fn render(self, window: &mut Window, cx: &mut App) -> impl IntoElement {
@@ -750,15 +941,16 @@ impl RenderOnce for ChecklistCard {
             u32::try_from(progress.done).unwrap_or(u32::MAX),
             u32::try_from(progress.total).unwrap_or(u32::MAX),
         );
+        let is_all_done = total > 0 && done == total;
         let can_tick_now = self.can_tick && !self.is_pending;
         let title: SharedString = self.checklist.title.clone().into();
-        let is_editing = self.editor.is_some();
 
         let rows: Vec<AnyElement> = self
             .checklist
             .items
             .iter()
-            .zip(self.ticked_by)
+            // A pending card has no labels yet: its items still get their rows.
+            .zip(self.ticked_by.into_iter().chain(std::iter::repeat(None)))
             .map(|(item, ticked_by)| {
                 let item_id = item.id;
                 let row_id = ElementId::NamedChild(
@@ -770,13 +962,15 @@ impl RenderOnce for ChecklistCard {
                 let hover = remembered_hover(&row_id, window, cx);
                 let is_hovered = can_tick_now && *hover.read(cx);
                 let on_toggle = self.on_toggle.clone().filter(|_| can_tick_now);
-                let border = color(if is_checked {
-                    tokens.component_poll_answer_border_mine
+                let mark = checklist_box(&row_id, is_checked, is_hovered, can_tick_now, window, cx);
+                let row_background = if is_hovered {
+                    color(tokens.component_checklist_row_background_hover)
                 } else {
-                    tokens.component_poll_answer_border
-                });
+                    color(tokens.component_checklist_row_background_hover).opacity(0.0)
+                };
                 let row = div()
                     .id(row_id.clone())
+                    .debug_selector(move || format!("checklist-row-{item_id}"))
                     .role(Role::CheckBox)
                     .aria_label(item.text.clone())
                     .aria_toggled(if is_checked {
@@ -784,30 +978,24 @@ impl RenderOnce for ChecklistCard {
                     } else {
                         Toggled::False
                     })
-                    .when_some(ticked_by.clone(), |row, ticked_by| {
-                        row.aria_description(ticked_by)
+                    .when_some(ticked_by.as_ref(), |row, ticked_by| {
+                        row.aria_description(ticked_by.sentence.clone())
                     })
                     .track_focus(&focus_handle)
                     .relative()
                     .flex()
-                    .items_center()
-                    .gap(length(COMPONENT_POLL_ANSWER_INNER_GAP))
-                    .min_h(length(SIZE_HIT_WEB_MIN))
-                    .px(length(COMPONENT_POLL_ANSWER_PADDING_INLINE))
-                    .py(length(COMPONENT_POLL_ANSWER_PADDING_BLOCK))
-                    .rounded(length(COMPONENT_POLL_ANSWER_RADIUS))
-                    .border(length(COMPONENT_POLL_ANSWER_BORDER_WIDTH))
-                    .border_color(colour_transition(
-                        child_id(&row_id, "border"),
-                        border,
+                    .items_start()
+                    .gap(length(COMPONENT_CHECKLIST_ROW_INNER_GAP))
+                    .min_h(length(COMPONENT_CHECKLIST_ROW_MIN_HEIGHT))
+                    .px(length(COMPONENT_CHECKLIST_ROW_PADDING_INLINE))
+                    .py(length(COMPONENT_CHECKLIST_ROW_PADDING_BLOCK))
+                    .rounded(length(COMPONENT_CHECKLIST_ROW_RADIUS))
+                    .bg(colour_transition(
+                        child_id(&row_id, "background"),
+                        row_background,
                         window,
                         cx,
                     ))
-                    .bg(color(if is_hovered {
-                        tokens.color_state_hover
-                    } else {
-                        tokens.component_poll_answer_background
-                    }))
                     .when(can_tick_now, gpui::Styled::cursor_pointer)
                     .on_hover(move |is_hovered, _, cx| {
                         hover.update(cx, |remembered, cx| {
@@ -820,43 +1008,59 @@ impl RenderOnce for ChecklistCard {
                             on_toggle(item_id, window, cx);
                         }
                     })
-                    .child(mark(true, is_checked, cx))
+                    .child(mark)
                     .child(
                         div()
                             .flex()
                             .flex_col()
+                            .flex_1()
                             .min_w_0()
                             .child(
                                 with_type(div(), TYPE_MESSAGE)
-                                    .text_color(color(tokens.component_poll_answer_text))
+                                    .text_color(color(if is_checked {
+                                        tokens.component_checklist_item_text_done
+                                    } else {
+                                        tokens.component_checklist_item_text
+                                    }))
                                     .when(is_checked, gpui::Styled::line_through)
                                     .child(item.text.clone()),
                             )
                             .when_some(ticked_by, |text, ticked_by| {
                                 text.child(
                                     with_type(div(), TYPE_BODY_SM)
-                                        .text_color(color(tokens.component_poll_count_text))
-                                        .child(ticked_by),
+                                        .flex()
+                                        .flex_wrap()
+                                        .text_color(color(tokens.component_checklist_meta_text))
+                                        .child(
+                                            div()
+                                                .font_weight(FontWeight::MEDIUM)
+                                                .text_color(color(
+                                                    tokens.component_checklist_meta_name_text,
+                                                ))
+                                                .child(ticked_by.name),
+                                        )
+                                        .child(format!("\u{a0}· {}", ticked_by.when)),
                                 )
                             }),
                     )
                     .when(is_focus_visible(&focus_handle, window), |row| {
-                        row.child(inset_focus_ring(COMPONENT_POLL_ANSWER_RADIUS, cx))
+                        row.child(inset_focus_ring(COMPONENT_CHECKLIST_ROW_RADIUS, cx))
                     });
                 inert_for_screen_readers(row, !can_tick_now).into_any_element()
             })
             .collect();
 
+        let is_editing = self.editor.is_some();
         let edit_button = (self.can_edit && !self.is_pending)
             .then_some(self.on_edit)
             .flatten()
             .map(|on_edit| {
                 let (glyph, label) = if is_editing {
-                    (None, words.done_editing())
+                    (IconName::Check, words.done_editing())
                 } else {
-                    (Some(IconName::PencilSimple), words.edit())
+                    (IconName::PencilSimple, words.edit())
                 };
-                link_button(
+                quiet_button(
                     child_id(&id, "edit"),
                     glyph,
                     label.into(),
@@ -865,25 +1069,41 @@ impl RenderOnce for ChecklistCard {
                     cx,
                 )
             });
+        let can_write = self.can_write;
+        let read_only_hint = (!self.can_tick && !self.is_pending).then(|| {
+            with_type(div(), TYPE_BODY_SM)
+                .debug_selector(move || {
+                    if can_write {
+                        "checklist-cannot-tick".to_owned()
+                    } else {
+                        "checklist-read-only".to_owned()
+                    }
+                })
+                .px(length(COMPONENT_CHECKLIST_ROW_PADDING_INLINE))
+                .text_color(color(tokens.component_checklist_footer_text))
+                .child(if can_write {
+                    words.cannot_tick()
+                } else {
+                    words.read_only()
+                })
+        });
+        let has_footer = edit_button.is_some() || read_only_hint.is_some();
 
-        card_frame(id.clone(), title.clone(), COMPONENT_POLL_GAP, cx)
-            .child(
-                div()
-                    .flex()
-                    .flex_col()
-                    .gap(length(COMPONENT_POLL_HEADER_GAP))
-                    .child(card_heading(Some(IconName::ListChecks), title.clone(), cx))
-                    .child(level(
-                        &child_id(&id, "level"),
-                        title,
-                        done,
-                        total,
-                        words.done(i64::from(done), i64::from(total)),
-                        words.done_spoken(i64::from(done), i64::from(total)),
-                        window,
-                        cx,
-                    )),
-            )
+        let level = level(
+            &child_id(&id, "level"),
+            title.clone(),
+            done,
+            total,
+            words.done(i64::from(done), i64::from(total)),
+            words.done_spoken(i64::from(done), i64::from(total)),
+            LevelShape::Segmented {
+                complete_label: is_all_done.then(|| SharedString::from(words.all_done())),
+            },
+            window,
+            cx,
+        );
+        tracker_frame(id.clone(), title.clone(), cx)
+            .child(tracker_header(IconName::ListChecks, title, level, cx))
             .map(|card| match self.editor {
                 Some(editor) => card.child(editor),
                 None => card.child(
@@ -892,11 +1112,22 @@ impl RenderOnce for ChecklistCard {
                         .role(Role::List)
                         .flex()
                         .flex_col()
-                        .gap(length(COMPONENT_POLL_ANSWER_GAP))
+                        .gap(length(COMPONENT_CHECKLIST_ROW_GAP))
                         .children(rows),
                 ),
             })
-            .children(edit_button.map(|button| div().flex().child(button)))
+            .when(has_footer, |card| {
+                card.child(
+                    div()
+                        .flex()
+                        .flex_wrap()
+                        .items_center()
+                        .justify_between()
+                        .gap(length(SPACE_XS))
+                        .children(read_only_hint)
+                        .children(edit_button),
+                )
+            })
     }
 }
 
@@ -907,6 +1138,14 @@ impl std::fmt::Debug for ChecklistCard {
             .field("id", &self.id)
             .finish_non_exhaustive()
     }
+}
+
+/// A checklist's segmented level, or a progress bar's continuous one.
+enum LevelShape {
+    Segmented {
+        complete_label: Option<SharedString>,
+    },
+    Continuous,
 }
 
 /// A level with its figure, and a polite live region saying each new value once it changes:
@@ -920,9 +1159,10 @@ fn level(
     maximum: u32,
     figure: String,
     spoken: String,
+    shape: LevelShape,
     window: &mut Window,
     cx: &mut App,
-) -> impl IntoElement {
+) -> AnyElement {
     let first_spoken = window.use_keyed_state(child_id(id, "first-spoken"), cx, {
         let spoken = spoken.clone();
         move |_, _| (spoken, false)
@@ -942,15 +1182,18 @@ fn level(
     div()
         .flex()
         .flex_col()
-        .child(ProgressMeter::new(
-            id.clone(),
-            label,
-            value,
-            maximum,
-            figure,
-            spoken,
-        ))
+        .child(
+            ProgressMeter::new(id.clone(), label, value, maximum, figure, spoken).map(|meter| {
+                match shape {
+                    LevelShape::Segmented { complete_label } => {
+                        meter.segmented().complete_label(complete_label)
+                    }
+                    LevelShape::Continuous => meter,
+                }
+            }),
+        )
         .child(polite_live_region(child_id(id, "announcement"), announced))
+        .into_any_element()
 }
 
 // ---- Progress bar --------------------------------------------------------------------------
@@ -1001,27 +1244,33 @@ impl RenderOnce for ProgressBarCard {
             .on_update
             .filter(|_| !self.is_pending)
             .map(|on_update| {
-                link_button(
+                quiet_button(
                     child_id(&id, "update"),
-                    Some(IconName::PencilSimple),
+                    IconName::PencilSimple,
                     words.update().into(),
                     on_update,
                     window,
                     cx,
                 )
             });
-        card_frame(id.clone(), label.clone(), COMPONENT_POLL_HEADER_GAP, cx)
-            .child(card_heading(Some(IconName::Gauge), label.clone(), cx))
-            .child(level(
-                &child_id(&id, "level"),
+        let level = level(
+            &child_id(&id, "level"),
+            label.clone(),
+            bar.value,
+            bar.maximum,
+            words.figure(value, maximum, percent),
+            words.spoken(value, maximum, percent),
+            LevelShape::Continuous,
+            window,
+            cx,
+        );
+        tracker_frame(id.clone(), label.clone(), cx)
+            .child(div().pb(length(SPACE_2XS)).child(tracker_header(
+                IconName::Gauge,
                 label,
-                bar.value,
-                bar.maximum,
-                words.figure(value, maximum, percent),
-                words.spoken(value, maximum, percent),
-                window,
+                level,
                 cx,
-            ))
+            )))
             .children(update_button.map(|button| div().flex().child(button)))
     }
 }
@@ -1032,5 +1281,156 @@ impl std::fmt::Debug for ProgressBarCard {
             .debug_struct("ProgressBarCard")
             .field("id", &self.id)
             .finish_non_exhaustive()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use gpui::{Context, Render, TestAppContext, VisualTestContext, WindowAppearance};
+    use mellow_protocol::{ChecklistItem, ChecklistTick, Snowflake};
+
+    use super::*;
+    use crate::theme::ActiveTheme;
+
+    /// One checklist card, drawn as the conversation draws it.
+    struct ChecklistHarness {
+        checklist: Checklist,
+        is_pending: bool,
+        can_tick: bool,
+        can_write: bool,
+    }
+
+    impl Render for ChecklistHarness {
+        fn render(&mut self, _: &mut Window, _: &mut Context<Self>) -> impl IntoElement {
+            let ticked_by = if self.is_pending {
+                // The outbox has no labels: a pending card gets none, as `card_for_pending`.
+                Vec::new()
+            } else {
+                self.checklist
+                    .items
+                    .iter()
+                    .map(|item| {
+                        item.checked.map(|_| ChecklistTickLabels {
+                            name: "Ada".into(),
+                            when: "Today at 14:32".into(),
+                            sentence: "Ticked by Ada, Sunday at 14:32".into(),
+                        })
+                    })
+                    .collect()
+            };
+            div().size_full().child(
+                ChecklistCard::new("checklist", self.checklist.clone(), ticked_by)
+                    .pending(self.is_pending)
+                    .can_tick(self.can_tick)
+                    .can_write(self.can_write),
+            )
+        }
+    }
+
+    fn release(ticked: &[u32]) -> Checklist {
+        let item = |id: u32, text: &str| ChecklistItem {
+            id,
+            text: text.into(),
+            checked: ticked.contains(&id).then_some(ChecklistTick {
+                user_id: Snowflake::from_raw(7),
+                at_unix_milliseconds: 1_000,
+            }),
+        };
+        Checklist {
+            title: "Release".into(),
+            items: vec![item(1, "Tag"), item(2, "Build"), item(3, "Deploy")],
+            revision: 1,
+        }
+    }
+
+    fn draw(harness: ChecklistHarness, cx: &mut TestAppContext) -> &mut VisualTestContext {
+        cx.update(|cx| cx.set_global(ActiveTheme::for_appearance(WindowAppearance::Dark)));
+        let (_, cx) = cx.add_window_view(|_, _| harness);
+        cx.run_until_parked();
+        cx
+    }
+
+    fn ticking(checklist: Checklist) -> ChecklistHarness {
+        ChecklistHarness {
+            checklist,
+            is_pending: false,
+            can_tick: true,
+            can_write: true,
+        }
+    }
+
+    #[gpui::test]
+    fn the_level_lights_one_segment_per_ticked_item(cx: &mut TestAppContext) {
+        let cx = draw(ticking(release(&[1])), cx);
+        assert!(cx.debug_bounds("meter-segment-0-lit").is_some());
+        assert!(cx.debug_bounds("meter-segment-1-dim").is_some());
+        assert!(cx.debug_bounds("meter-segment-2-dim").is_some());
+        assert!(
+            cx.debug_bounds("meter-segment-3-dim").is_none(),
+            "one per item"
+        );
+        assert!(cx.debug_bounds("meter-complete").is_none());
+    }
+
+    #[gpui::test]
+    fn a_finished_list_says_so_instead_of_its_figure(cx: &mut TestAppContext) {
+        let cx = draw(ticking(release(&[1, 2, 3])), cx);
+        assert!(cx.debug_bounds("meter-complete").is_some());
+        assert!(cx.debug_bounds("meter-segment-2-lit").is_some());
+    }
+
+    #[gpui::test]
+    fn inert_boxes_say_why_in_words(cx: &mut TestAppContext) {
+        let cx = draw(
+            ChecklistHarness {
+                can_tick: false,
+                can_write: false,
+                ..ticking(release(&[]))
+            },
+            cx,
+        );
+        assert!(cx.debug_bounds("checklist-read-only").is_some());
+        assert!(cx.debug_bounds("checklist-cannot-tick").is_none());
+    }
+
+    #[gpui::test]
+    fn a_reader_who_writes_but_may_not_tick_is_not_told_the_place_is_read_only(
+        cx: &mut TestAppContext,
+    ) {
+        let cx = draw(
+            ChecklistHarness {
+                can_tick: false,
+                ..ticking(release(&[]))
+            },
+            cx,
+        );
+        assert!(cx.debug_bounds("checklist-cannot-tick").is_some());
+        assert!(cx.debug_bounds("checklist-read-only").is_none());
+    }
+
+    #[gpui::test]
+    fn a_reader_who_ticks_sees_no_hint(cx: &mut TestAppContext) {
+        let cx = draw(ticking(release(&[])), cx);
+        assert!(cx.debug_bounds("checklist-read-only").is_none());
+        assert!(cx.debug_bounds("checklist-cannot-tick").is_none());
+    }
+
+    #[gpui::test]
+    fn a_pending_card_shows_every_item_without_labels_or_hint(cx: &mut TestAppContext) {
+        let cx = draw(
+            ChecklistHarness {
+                is_pending: true,
+                ..ticking(release(&[]))
+            },
+            cx,
+        );
+        for row in ["checklist-row-1", "checklist-row-2", "checklist-row-3"] {
+            assert!(
+                cx.debug_bounds(row).is_some(),
+                "{row} must be drawn while the card is sending"
+            );
+        }
+        assert!(cx.debug_bounds("checklist-read-only").is_none());
+        assert!(cx.debug_bounds("checklist-cannot-tick").is_none());
     }
 }

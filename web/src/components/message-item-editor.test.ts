@@ -51,6 +51,7 @@ function renderedEditingRow(editor: MessageEditor): string {
         removeOwnPollVotes: ignore,
         viewPollVoters: ignore,
         askToEndPoll: ignore,
+        canSendMessages: false,
         canTickChecklists: false,
         canEditTracker: () => false,
         nameOfUser: () => "",

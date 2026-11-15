@@ -600,6 +600,7 @@
       {checklist}
       isPending={row.kind === "pending"}
       canTick={actions.canTickChecklists}
+      canWrite={actions.canSendMessages}
       canEdit={message !== null && actions.canEditTracker(message)}
       nameOfUser={actions.nameOfUser}
       ontoggle={(itemId) => message && actions.toggleChecklistItem(message, itemId)}

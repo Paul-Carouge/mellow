@@ -868,6 +868,9 @@ export const fr: Catalogue = {
     doneSpoken: (done, total) =>
       `${count(done)}${NO_BREAK_SPACE}sur ${count(total)}${NO_BREAK_SPACE}${plural(done, { one: "faite", other: "faites" })}`,
     tickedBy: (name, date) => `Cochée par ${name}, ${date}`,
+    allDone: "Tout est coché",
+    readOnly: `Lecture seule${NO_BREAK_SPACE}: tu ne peux pas écrire ici.`,
+    cannotTick: "Tu ne peux pas cocher cette liste.",
     tickFailed: "Impossible de cocher l’élément",
     edit: "Modifier la liste",
     doneEditing: "Terminé",
