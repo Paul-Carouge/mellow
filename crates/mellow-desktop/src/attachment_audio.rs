@@ -27,8 +27,8 @@ use crate::preferences::{change_preferences, preferences};
 use crate::tokio_bridge::spawn_on_network_runtime;
 use crate::voice::video_view::VideoPicture;
 use crate::youtube_video::{
-    is_youtube_attachment, plays_youtube_here, set_youtube_failure, start_of as start_of_youtube,
-    youtube_tracks, youtube_video_of,
+    YouTubeFailure, YouTubeTracks, YouTubeVideo, is_youtube_attachment, plays_youtube_here,
+    set_youtube_failure, start_of as start_of_youtube, youtube_tracks, youtube_video_of,
 };
 
 /// Larger sounds and videos are offered as downloads: the whole file is held in memory while it
@@ -512,6 +512,21 @@ pub fn toggle_attachment_audio(attachment: &Attachment, cx: &mut App) {
     cx.refresh_windows();
 }
 
+/// Plays a card's YouTube video again after YouTube refused it or its tracks could not be read:
+/// the refusal is forgotten and the tracks are asked for anew.
+pub fn retry_youtube_video(attachment: &Attachment, cx: &mut App) {
+    if !is_youtube_attachment(attachment) {
+        return;
+    }
+    fetch_and_play(attachment, cx);
+    // After: stopping the refused stream marks it refused again.
+    cx.default_global::<AttachmentAudio>()
+        .unplayable
+        .remove(&attachment.id);
+    keep_redrawing(cx);
+    cx.refresh_windows();
+}
+
 /// Moves the loaded sound to `position`; another attachment's seek bar does nothing.
 pub fn seek_attachment_audio(attachment_id: Snowflake, position: Duration, cx: &mut App) {
     if let Some(store) = cx.try_global::<AttachmentAudio>()
@@ -687,8 +702,20 @@ fn stream_youtube_video(attachment_id: Snowflake, cx: &mut App) {
     if !ensure_player(output_device_id, cx) {
         return;
     }
+    let tracks = youtube_tracks(video.video_id.clone());
+    ask_for_youtube_tracks(attachment_id, video, tracks, cx);
+}
+
+/// Waits for `tracks` on the network runtime, the video loading meanwhile, then plays them or
+/// says why it cannot.
+fn ask_for_youtube_tracks(
+    attachment_id: Snowflake,
+    video: YouTubeVideo,
+    tracks: impl Future<Output = Result<YouTubeTracks, YouTubeFailure>> + Send + 'static,
+    cx: &mut App,
+) {
     let session = cx.global::<AttachmentAudio>().session;
-    let asking = spawn_on_network_runtime(cx, youtube_tracks(video.video_id.clone()));
+    let asking = spawn_on_network_runtime(cx, tracks);
     let task = cx.spawn(async move |cx| {
         let answer = asking.await;
         cx.update(|cx| {
@@ -722,10 +749,15 @@ fn stream_youtube_video(attachment_id: Snowflake, cx: &mut App) {
                     store.fetching = None;
                     store.unplayable.insert(attachment_id);
                 }
+                // The extraction panicked (rustypipe unwraps some network errors): the card
+                // says it could not play and offers to try again, rather than silently going
+                // back to its play key as if the press had been lost.
                 Err(_) => {
+                    tracing::warn!("asking YouTube for a video's tracks stopped");
+                    set_youtube_failure(attachment_id, Some(YouTubeFailure::CannotRead), cx);
                     let store = cx.global_mut::<AttachmentAudio>();
                     store.fetching = None;
-                    store.stopped.insert(attachment_id);
+                    store.unplayable.insert(attachment_id);
                 }
             }
             keep_redrawing(cx);
@@ -974,6 +1006,67 @@ mod tests {
     };
 
     use super::*;
+
+    /// Asks for a video's tracks with `tracks` in place of YouTube, and waits for the answer.
+    async fn answer_youtube_tracks(
+        tracks: impl Future<Output = Result<YouTubeTracks, YouTubeFailure>> + Send + 'static,
+        cx: &mut TestAppContext,
+    ) -> (AudioPlayback, Option<YouTubeFailure>) {
+        /// Each turn lets the network runtime's thread run; the answer comes in a few.
+        const MAXIMUM_TURNS: usize = 500;
+        let video_id = Snowflake::from_raw(5);
+        let runtime = crate::tokio_bridge::build_network_runtime().unwrap();
+        cx.update(|cx| {
+            crate::tokio_bridge::install_network_runtime(runtime.handle().clone(), cx);
+            let video = YouTubeVideo {
+                link: "https://www.youtube.com/watch?v=aqz-KE-bpKQ".to_owned(),
+                video_id: "aqz-KE-bpKQ".to_owned(),
+                start_seconds: None,
+            };
+            // The player's store, as the press that asks for the tracks leaves it.
+            cx.default_global::<AttachmentAudio>();
+            ask_for_youtube_tracks(video_id, video, tracks, cx);
+        });
+        cx.executor().allow_parking();
+        let mut answer = None;
+        for _ in 0..MAXIMUM_TURNS {
+            cx.run_until_parked();
+            let playback = cx.update(|cx| attachment_audio_view(video_id, cx).playback);
+            if playback != AudioPlayback::Loading {
+                answer = Some(playback);
+                break;
+            }
+            cx.background_executor.timer(Duration::from_millis(5)).await;
+        }
+        runtime.shutdown_background();
+        let failure = cx.update(|cx| crate::youtube_video::youtube_failure_of(video_id, cx));
+        (answer.expect("YouTube's answer arrives"), failure)
+    }
+
+    #[gpui::test]
+    async fn a_youtube_refusal_is_said_on_the_card(cx: &mut TestAppContext) {
+        let answer = answer_youtube_tracks(async { Err(YouTubeFailure::Private) }, cx).await;
+        assert_eq!(
+            answer,
+            (AudioPlayback::CannotPlay, Some(YouTubeFailure::Private))
+        );
+    }
+
+    #[gpui::test]
+    async fn an_extraction_that_panics_says_it_cannot_read_rather_than_resetting(
+        cx: &mut TestAppContext,
+    ) {
+        // As rustypipe does on some network errors (an `unwrap` in its visitor data).
+        let answer = answer_youtube_tracks(
+            async { panic!("error sending request for url (https://music.youtube.com/)") },
+            cx,
+        )
+        .await;
+        assert_eq!(
+            answer,
+            (AudioPlayback::CannotPlay, Some(YouTubeFailure::CannotRead))
+        );
+    }
 
     fn attachment(content_type: &str, size_bytes: u64) -> Attachment {
         Attachment {
