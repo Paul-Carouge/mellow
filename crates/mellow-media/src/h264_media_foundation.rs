@@ -9,7 +9,8 @@ use windows::Win32::Media::MediaFoundation::{
     IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
     MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
     MF_MT_SUBTYPE, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFT_MESSAGE_COMMAND_FLUSH, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
+    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
     MFVideoArea, MFVideoFormat_H264, MFVideoFormat_I420, MFVideoFormat_IYUV,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
@@ -21,6 +22,8 @@ use crate::windows_media_foundation::ensure_media_foundation;
 /// Media Foundation counts time in 100 ns units; pictures are stamped 1/30 s apart (the decoder
 /// wants increasing times, never shows them).
 const SAMPLE_DURATION_HUNDRED_NANOSECONDS: i64 = 10_000_000 / 30;
+/// The caller's output samples kept: the one holding the newest picture and one to read on into.
+const OUTPUT_SAMPLES: usize = 2;
 /// The most pictures read out after one access unit (a sender may pack several in one); the
 /// newest is shown.
 const MAXIMUM_OUTPUTS_PER_ACCESS_UNIT: usize = 8;
@@ -67,9 +70,10 @@ impl PictureLayout {
 pub(crate) struct H264Decoder {
     transform: IMFTransform,
     layout: Option<PictureLayout>,
-    /// The caller's output sample when the decoder does not provide its own, kept across
-    /// pictures (re-made when the layout grows).
-    output_sample: Option<(IMFSample, u32)>,
+    /// The caller's output samples when the decoder does not provide its own, each with its one
+    /// buffer and that buffer's size, kept across pictures (re-made when the layout grows). Two:
+    /// reading out a second picture of one access unit must not empty the first.
+    output_samples: Vec<(IMFSample, IMFMediaBuffer, u32)>,
     /// The buffer behind the last picture, locked while the picture is borrowed.
     locked: Option<IMFMediaBuffer>,
     next_sample_time: i64,
@@ -109,11 +113,21 @@ impl H264Decoder {
             let mut decoder = Self {
                 transform,
                 layout: None,
-                output_sample: None,
+                output_samples: Vec::with_capacity(OUTPUT_SAMPLES),
                 locked: None,
                 next_sample_time: 0,
             };
             decoder.choose_planar_output()?;
+            // What a pipeline tells a decoder before its first sample; optional for this one,
+            // sent so it never waits for them.
+            for message in [
+                MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
+                MFT_MESSAGE_NOTIFY_START_OF_STREAM,
+            ] {
+                if let Err(error) = decoder.transform.ProcessMessage(message, 0) {
+                    tracing::debug!(%error, "the H.264 decoder refused a streaming message");
+                }
+            }
             Ok(decoder)
         }
     }
@@ -163,8 +177,12 @@ impl H264Decoder {
         }
     }
 
-    /// The sample the decoder writes into, when it wants the caller's.
-    fn output_sample(&mut self) -> Result<Option<IMFSample>, H264Error> {
+    /// The sample the decoder writes into, when it wants the caller's: never `holding`, the one
+    /// with the newest picture of this access unit.
+    fn output_sample(
+        &mut self,
+        holding: Option<&IMFSample>,
+    ) -> Result<Option<IMFSample>, H264Error> {
         // SAFETY: plain calls on objects this decoder owns.
         unsafe {
             let info = self
@@ -180,9 +198,18 @@ impl H264Decoder {
                     .and_then(|length| u32::try_from(length).ok())
                     .unwrap_or(0),
             );
-            if let Some((sample, size)) = &self.output_sample
-                && *size >= needed
+            let is_free = |sample: &IMFSample| holding != Some(sample);
+            if let Some((sample, buffer, _)) = self
+                .output_samples
+                .iter()
+                .find(|(sample, _, size)| *size >= needed && is_free(sample))
             {
+                // The decoder writes after the buffer's current length: a reused buffer still
+                // holding a picture fails ("CopyDecodedFrame failed", E_FAIL) or gets the new
+                // picture after the old one, which is then read again (a frozen picture).
+                buffer
+                    .SetCurrentLength(0)
+                    .map_err(failed("reuse a picture"))?;
                 return Ok(Some(sample.clone()));
             }
             let sample = MFCreateSample().map_err(failed("allocate a picture"))?;
@@ -190,7 +217,16 @@ impl H264Decoder {
             sample
                 .AddBuffer(&buffer)
                 .map_err(failed("allocate a picture"))?;
-            self.output_sample = Some((sample.clone(), needed));
+            // Replaces a free one too small (or any free one) once two are kept.
+            if self.output_samples.len() >= OUTPUT_SAMPLES
+                && let Some(index) = self
+                    .output_samples
+                    .iter()
+                    .position(|(kept, _, _)| is_free(kept))
+            {
+                self.output_samples.remove(index);
+            }
+            self.output_samples.push((sample.clone(), buffer, needed));
             Ok(Some(sample))
         }
     }
@@ -241,7 +277,7 @@ impl H264Decoder {
         let mut newest = None;
         let mut has_just_changed = false;
         for _ in 0..MAXIMUM_OUTPUTS_PER_ACCESS_UNIT {
-            let sample = self.output_sample()?;
+            let sample = self.output_sample(newest.as_ref())?;
             let mut output = [MFT_OUTPUT_DATA_BUFFER {
                 dwStreamID: 0,
                 pSample: ManuallyDrop::new(sample),
