@@ -28,6 +28,21 @@ use crate::video_sender::{EncodedVideoInput, EncoderRequests};
 /// encoded again this often, as the VP8 path does: late watchers get a picture and the server
 /// never sees the screen as silent.
 const LONGEST_INTERVAL_BETWEEN_FRAMES: Duration = Duration::from_secs(1);
+/// After new content (a new picture, a keyframe asked for), the top layer encodes the same
+/// picture again at its encoder's rate while the screen stays still, for this long. A constant
+/// rate gives a changed picture one picture's share of the second's bits, so a page of text that
+/// changed at once stays blurred until encoded again; each repeat sharpens it. Measured with
+/// `spikes/screen-share-quality` (a document page replacing a code page, 1440p, 8 Mbit/s):
+/// 43.6 dB PSNR (luma) over the still page before, 58.1 dB with these repeats at 30 a second;
+/// 33.3 and 56.1 dB at 60. The cost: up to the layer's rate for that second.
+const REFINING_WINDOW: Duration = Duration::from_secs(1);
+/// Refining waits until no new picture came for twice the interval between the source's last
+/// two pictures, within these bounds (the shortest also after an isolated change): a repeat
+/// taken just before a source's next picture would hold that picture back (measured: 8 ms on
+/// average for a source at 10 or 15 a second with the encoder at 30), and its bits would go to
+/// a picture about to be replaced.
+const SHORTEST_STILL_BEFORE_REFINING: Duration = Duration::from_millis(50);
+const LONGEST_STILL_BEFORE_REFINING: Duration = Duration::from_millis(300);
 /// How often the thread looks at the server's requests while no picture comes.
 const REQUEST_POLL_INTERVAL: Duration = Duration::from_millis(50);
 /// The size and rate of the probe that tells whether the GPU encodes Constrained Baseline.
@@ -320,6 +335,12 @@ impl TokenBucket {
         self.tokens_at(now) >= 1.0 - TOKEN_ROUNDING
     }
 
+    /// Full: taking a token still leaves half of one, so a new picture right after waits half
+    /// an interval at most.
+    fn is_full(&self, now: Instant) -> bool {
+        self.tokens_at(now) >= MAXIMUM_TOKENS - TOKEN_ROUNDING
+    }
+
     /// Takes a token at `now`, borrowing one when there is none (a forced encode).
     fn take(&mut self, now: Instant) {
         self.tokens = (self.tokens_at(now) - 1.0).max(MINIMUM_TOKENS);
@@ -328,7 +349,16 @@ impl TokenBucket {
 
     /// How long until a token is there.
     fn until_token(&self, now: Instant) -> Duration {
-        let missing = 1.0 - self.tokens_at(now);
+        self.until_tokens(now, 1.0)
+    }
+
+    /// How long until the bucket is full.
+    fn until_full(&self, now: Instant) -> Duration {
+        self.until_tokens(now, MAXIMUM_TOKENS)
+    }
+
+    fn until_tokens(&self, now: Instant, wanted: f64) -> Duration {
+        let missing = wanted - self.tokens_at(now);
         if missing <= TOKEN_ROUNDING {
             Duration::ZERO
         } else {
@@ -349,14 +379,20 @@ struct EncodePlan {
 }
 
 /// When the layers encode: the top layer takes the waiting picture at most at the encoder's
-/// rate on average (so its constant rate, budgeted per picture, holds), and repeats its last
-/// picture once a second when the screen is still; the lower layers follow it at 30 a second
-/// at most on average, whatever rhythm the pictures come at.
+/// rate on average (so its constant rate, budgeted per picture, holds), refines new content
+/// while the screen stays still (`REFINING_WINDOW`), and repeats its last picture once a second
+/// when the screen is still; the lower layers follow it at 30 a second at most on average,
+/// whatever rhythm the pictures come at.
 #[derive(Debug)]
 struct Pacing {
     top: TokenBucket,
     lower: TokenBucket,
     last_top: Option<Instant>,
+    /// When the top layer last encoded new content: a new picture or a keyframe asked for.
+    last_change: Option<Instant>,
+    /// When the top layer last took a new picture, and how long after the one before.
+    last_picture: Option<Instant>,
+    picture_interval: Option<Duration>,
     /// A top picture the lower layers have not taken yet.
     is_lower_pending: bool,
 }
@@ -367,6 +403,9 @@ impl Pacing {
             top: TokenBucket::full(frames_per_second),
             lower: TokenBucket::full(FRAMES_PER_SECOND),
             last_top: None,
+            last_change: None,
+            last_picture: None,
+            picture_interval: None,
             is_lower_pending: false,
         }
     }
@@ -388,11 +427,23 @@ impl Pacing {
             .last_top
             .is_some_and(|at| now.saturating_duration_since(at) >= LONGEST_INTERVAL_BETWEEN_FRAMES);
         let takes_picture = has_waiting_picture && self.top.has_token(now);
-        let top = takes_picture || is_keyframe_asked || is_repeat_due;
+        // Only from a full bucket: a refinement never holds a new picture back more than half
+        // an interval, nor takes a token a moving source needs.
+        let is_refining_due = self.is_refining(now) && self.top.is_full(now);
+        let top = takes_picture || is_keyframe_asked || is_repeat_due || is_refining_due;
         if top {
             self.top.take(now);
             self.last_top = Some(now);
             self.is_lower_pending = true;
+        }
+        if takes_picture {
+            self.picture_interval = self
+                .last_picture
+                .map(|at| now.saturating_duration_since(at));
+            self.last_picture = Some(now);
+        }
+        if takes_picture || is_keyframe_asked {
+            self.last_change = Some(now);
         }
         let lower = self.is_lower_pending && self.lower.has_token(now);
         if lower {
@@ -418,7 +469,36 @@ impl Pacing {
         if self.is_lower_pending {
             wait = wait.min(self.lower.until_token(now));
         }
+        if let Some(at) = self.last_change
+            && now.saturating_duration_since(at) < REFINING_WINDOW
+        {
+            let until_still = (at + self.still_before_refining()).saturating_duration_since(now);
+            wait = wait.min(until_still.max(self.top.until_full(now)));
+        }
         wait
+    }
+
+    /// Whether the top layer's last new content is still being refined: the screen has been
+    /// still for a moment, within the refining window.
+    fn is_refining(&self, now: Instant) -> bool {
+        self.last_change.is_some_and(|at| {
+            (self.still_before_refining()..REFINING_WINDOW)
+                .contains(&now.saturating_duration_since(at))
+        })
+    }
+
+    /// How long the screen must stay still before refining: twice the source's last interval
+    /// between pictures, bounded; the shortest after an isolated change (no picture within the
+    /// refining window before it).
+    fn still_before_refining(&self) -> Duration {
+        self.picture_interval
+            .filter(|interval| *interval < REFINING_WINDOW)
+            .map_or(SHORTEST_STILL_BEFORE_REFINING, |interval| {
+                (interval * 2).clamp(
+                    SHORTEST_STILL_BEFORE_REFINING,
+                    LONGEST_STILL_BEFORE_REFINING,
+                )
+            })
     }
 }
 
@@ -859,17 +939,114 @@ mod tests {
         }
     }
 
-    #[test]
-    fn a_still_screen_is_repeated_once_a_second() {
+    /// When the top layer encodes its last picture again (`plan.top` without a picture), for a
+    /// pass every millisecond with pictures at `pictures` and the encoder at `frames_per_second`.
+    fn repeats(milliseconds: u64, pictures: &[u64], frames_per_second: u32) -> Vec<u64> {
         let start = Instant::now();
-        let mut pacing = Pacing::new(FRAMES_PER_SECOND);
-        let repeats: Vec<u64> = (0..3_000)
+        let mut pacing = Pacing::new(frames_per_second);
+        let mut is_waiting = false;
+        (0..milliseconds)
             .filter(|&at| {
-                let plan = pacing.plan(start + Duration::from_millis(at), at == 0, false);
+                is_waiting |= pictures.contains(&at);
+                let plan = pacing.plan(start + Duration::from_millis(at), is_waiting, false);
+                is_waiting &= !plan.takes_picture;
                 plan.top && !plan.takes_picture
             })
-            .collect();
-        assert_eq!(repeats, [1_000, 2_000]);
+            .collect()
+    }
+
+    #[test]
+    fn a_changed_screen_is_refined_while_still_for_a_second_then_repeated_once_a_second() {
+        for frames_per_second in [FRAMES_PER_SECOND, HARDWARE_SCREEN_FRAMES_PER_SECOND] {
+            let repeats = repeats(4_000, &[0], frames_per_second);
+            let (refining, still): (Vec<u64>, Vec<u64>) =
+                repeats.iter().partition(|&&at| at < 1_000);
+            // From 50 ms on, at the encoder's rate (one interval apart, from a full bucket).
+            assert_eq!(refining.first(), Some(&50), "{repeats:?}");
+            let interval = 1_000 / u64::from(frames_per_second);
+            assert!(
+                refining
+                    .windows(2)
+                    .all(|pair| (interval..=interval + 1).contains(&(pair[1] - pair[0]))),
+                "{repeats:?}"
+            );
+            let last = *refining.last().unwrap();
+            assert!(last >= 1_000 - interval - 1, "{repeats:?}");
+            assert_eq!(still, [last + 1_000, last + 2_000, last + 3_000]);
+        }
+    }
+
+    #[test]
+    fn refining_never_holds_a_new_picture_back_more_than_half_an_interval() {
+        for frames_per_second in [FRAMES_PER_SECOND, HARDWARE_SCREEN_FRAMES_PER_SECOND] {
+            let half = 1_000 / u64::from(frames_per_second) / 2 + 1;
+            // A new picture at every offset of the first refining intervals.
+            for picture in 50..150 {
+                let (top, _) = run_pacing(400, &[0, picture], frames_per_second);
+                let taken = top.iter().find(|&&(_, id)| id == picture).unwrap().0;
+                assert!(taken - picture <= half, "{picture} taken at {taken}");
+            }
+        }
+    }
+
+    #[test]
+    fn a_slow_source_is_never_held_back_and_is_refined_once_it_stops() {
+        for frames_per_second in [FRAMES_PER_SECOND, HARDWARE_SCREEN_FRAMES_PER_SECOND] {
+            for source in [4_u64, 10, 12, 15, 20, 24] {
+                let pictures = every(1_000_000 / source, 2_000);
+                let (top, _) = run_pacing(4_000, &pictures, frames_per_second);
+                assert!(
+                    top.iter().all(|&(at, picture)| at - picture <= 1),
+                    "{source}/s at {frames_per_second}: {top:?}"
+                );
+                // Only after the source's first two pictures is its rhythm known.
+                let repeats = repeats(4_000, &pictures, frames_per_second);
+                let [.., (before_last, _), (last, _)] = top[..] else {
+                    panic!("{top:?}");
+                };
+                assert!(
+                    repeats.iter().all(|&at| at < top[1].0 || at > last),
+                    "{source}/s at {frames_per_second}: {repeats:?}"
+                );
+                let still = (2 * (last - before_last)).clamp(50, 300);
+                assert_eq!(
+                    repeats.iter().find(|&&at| at > last),
+                    Some(&(last + still)),
+                    "{source}/s at {frames_per_second}: {repeats:?}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn a_source_moving_at_the_encoder_s_rate_is_never_refined() {
+        assert_eq!(
+            repeats(1_000, &every(33_334, 1_000), FRAMES_PER_SECOND),
+            Vec::<u64>::new()
+        );
+        let sixty = every(16_667, 1_000);
+        assert_eq!(
+            repeats(1_000, &sixty, HARDWARE_SCREEN_FRAMES_PER_SECOND),
+            Vec::<u64>::new()
+        );
+    }
+
+    #[test]
+    fn a_keyframe_asked_on_a_still_screen_is_refined_too() {
+        let start = Instant::now();
+        let mut pacing = Pacing::new(FRAMES_PER_SECOND);
+        let at = |milliseconds| start + Duration::from_millis(milliseconds);
+        for ms in 0..1_100 {
+            pacing.plan(at(ms), ms == 0, false);
+        }
+        // Past the refining window: nothing until the once-a-second repeat.
+        let is_quiet = !(1_100..1_500).any(|ms| pacing.plan(at(ms), false, false).top);
+        assert!(is_quiet);
+        assert!(pacing.plan(at(1_500), false, true).top);
+        assert!(
+            pacing.plan(at(1_550), false, false).top,
+            "refined 50 ms after"
+        );
     }
 
     /// The encoder rate after each picture of a source whose pictures come at `rates` (pictures

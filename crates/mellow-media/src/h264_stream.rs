@@ -210,6 +210,39 @@ mod tests {
         assert!(matches!(sets.complete(&units[1]), Cow::Borrowed(_)));
     }
 
+    /// AMD's VA-API constant bit rate pads every picture with filler data (NAL type 12, most of
+    /// the encoder's output on a screen that changes little): str0m's packetizer, which
+    /// `transport.rs` sends every H.264 frame through, never puts it on the network.
+    #[test]
+    fn str0m_never_sends_filler_data() {
+        use str0m::unversioned::{H264Packetizer, Packetizer};
+        const NAL_FILLER_DATA: u8 = 12;
+        const STAP_A: u8 = 24;
+        const FU_A: u8 = 28;
+        let units = access_units(CONSTRAINED_BASELINE);
+        let filler: Vec<u8> = [0, 0, 0, 1, 0x0c]
+            .into_iter()
+            .chain(std::iter::repeat_n(0xff, 3_000))
+            .chain([0x80])
+            .collect();
+        let mut packetizer = H264Packetizer::default();
+        for unit in &units {
+            let padded = [&unit[..], &filler].concat();
+            let payloads = packetizer.packetize(1_100, &padded).unwrap();
+            assert_ne!(payloads, Vec::<Vec<u8>>::new());
+            for payload in payloads {
+                let kind = payload[0] & 0x1f;
+                // The type a fragment or an aggregate carries is in its next header.
+                let carried = match kind {
+                    FU_A => payload[1] & 0x1f,
+                    STAP_A => payload[3] & 0x1f,
+                    _ => kind,
+                };
+                assert_ne!(carried, NAL_FILLER_DATA, "{payload:?}");
+            }
+        }
+    }
+
     #[test]
     fn start_codes_of_three_and_four_bytes_and_trailing_zeros_are_read() {
         let stream = [
