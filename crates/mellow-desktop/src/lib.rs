@@ -22,6 +22,7 @@ pub mod gif_picker;
 mod gif_video;
 pub mod home;
 pub mod i18n;
+pub mod launch_preview;
 mod local_widgets;
 pub mod main_window;
 mod media_viewer;
@@ -44,6 +45,7 @@ pub mod sign_in_form;
 pub mod sign_in_screen;
 pub mod single_instance;
 pub mod soundboard;
+pub mod splash;
 pub mod strings_pending_i18n;
 pub mod theme;
 pub mod tokio_bridge;
@@ -110,7 +112,6 @@ pub fn start(
     let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
     voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
     calls::install_calls(&session, cx);
-    self_update::install_self_update(cx);
 
     cx.on_action(|_: &Quit, cx| cx.quit());
     cx.bind_keys([KeyBinding::new(QUIT_KEYSTROKE, Quit, None)]);
@@ -118,6 +119,10 @@ pub fn start(
     set_app_menus(cx);
     dock_and_tray::install_menu_bar_item(cx);
 
+    if let Some(request) = launch_preview::preview_requested() {
+        return launch_preview::open_launch_preview(request, cx)
+            .context("cannot open the launch preview");
+    }
     if let Some(forced_appearance) = components::gallery::gallery_requested() {
         cx.on_window_closed(|cx, _| cx.quit()).detach();
         cx.open_window(
@@ -128,6 +133,9 @@ pub fn start(
         cx.activate(true);
         return Ok(());
     }
+    // Only the app itself updates itself: the preview and the gallery leave above, so neither
+    // can check, download or install a release.
+    self_update::install_self_update(cx);
     // The theme, language and picture animation chosen in User settings, once the preferences
     // are read and at each change; most changes are of something else, so each applies only what
     // differs.

@@ -43,6 +43,7 @@ mod status;
 mod switch;
 mod tabs;
 mod text_field;
+mod toast;
 mod tooltip;
 mod unsaved_bar;
 
@@ -84,6 +85,7 @@ pub use status::{ShownStatus, StatusIndicator};
 pub use switch::Switch;
 pub use tabs::{Tabs, next_tab_index};
 pub use text_field::{PasswordToggle, TextField, sync_text_input_colours};
+pub use toast::{Toast, ToastProgress, ToastTone};
 pub use tooltip::Tooltip;
 pub use unsaved_bar::{UnsavedChangesBar, UnsavedChangesLabels, shake_offset};
 

@@ -6,14 +6,20 @@
 
 pub mod package;
 #[cfg(test)]
+mod state_tests;
+#[cfg(test)]
 mod tests;
+pub mod toast;
+#[cfg(test)]
+mod toast_tests;
 
 use std::hash::BuildHasher as _;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::time::Duration;
 
 use gpui::{App, AppContext as _, Context, Entity, Global, Subscription, Task, WeakEntity};
-use mellow_update::{Release, UpdateClient};
+use mellow_update::{DownloadProgress, Release, UpdateClient};
 use semver::Version;
 
 use self::package::{Installation, Relaunch, StagedUpdate};
@@ -30,6 +36,9 @@ const CHECK_JITTER: Duration = Duration::from_hours(2);
 const IN_CALL_RETRY_DELAY: Duration = Duration::from_mins(15);
 /// The preferences file is read within moments of starting.
 const PREFERENCES_RETRY_DELAY: Duration = Duration::from_secs(5);
+/// How often the toast's progress bar is redrawn while a download it asked for runs: smooth
+/// enough to read, and nothing between downloads.
+const PROGRESS_REDRAW_INTERVAL: Duration = Duration::from_millis(125);
 
 /// Why the app could not update itself, each with its sentence in the interface.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -57,6 +66,50 @@ pub enum UpdateProblem {
     /// macOS: the new app is not signed with this app's certificate.
     WrongCertificate,
     InstallFailed,
+}
+
+/// What the person can do about a copy that cannot update itself once a newer version is known
+/// (ADR-0064).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ManualRemedy {
+    /// Install the new version by hand: the latest release's page.
+    DownloadPage,
+    /// Fix what the sentence says (install FFmpeg), then check again from this copy.
+    CheckAgain,
+    /// The sentence says what to do outside this copy (move the app to Applications and open it
+    /// from there): no button here would help.
+    FollowTheSentence,
+}
+
+impl UpdateProblem {
+    /// The remedy the update toast offers, or `None` when nobody here can fix it (a package
+    /// manager's copy, a build from source, an unsupported system): those stay offline and
+    /// silent, as ADR-0057 decided.
+    #[must_use]
+    pub fn manual_remedy(self) -> Option<ManualRemedy> {
+        match self {
+            Self::InstalledElsewhere | Self::NotWritable => Some(ManualRemedy::DownloadPage),
+            Self::NoFfmpeg => Some(ManualRemedy::CheckAgain),
+            Self::Translocated => Some(ManualRemedy::FollowTheSentence),
+            _ => None,
+        }
+    }
+}
+
+/// Why a check found no update to prepare, and the newer version it saw if it got that far.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CheckFailure {
+    problem: UpdateProblem,
+    newer_version: Option<Version>,
+}
+
+impl From<UpdateProblem> for CheckFailure {
+    fn from(problem: UpdateProblem) -> Self {
+        Self {
+            problem,
+            newer_version: None,
+        }
+    }
 }
 
 /// Where the self-update stands, as the interface shows it.
@@ -114,6 +167,22 @@ pub struct SelfUpdate {
     restart_path_after_call: Option<PathBuf>,
     /// The check, download or installation under way; dropping it cancels it.
     work: Option<Task<()>>,
+    /// The bytes of the package being downloaded, for the toast's progress bar.
+    download_progress: Option<Arc<DownloadProgress>>,
+    /// Redraws the toast while a download it asked for runs.
+    progress_redraw: Option<Task<()>>,
+    /// "Update and restart" was pressed: restart as soon as the update is ready, and say in the
+    /// toast what goes wrong on the way.
+    is_restart_requested: bool,
+    /// The newest version the last check found, whether it could be prepared or not.
+    newest_version: Option<Version>,
+    /// This copy cannot update itself for this reason, but `newest_version` is out (ADR-0064).
+    manual_update_problem: Option<UpdateProblem>,
+    /// Where checks ask for the newest release.
+    release_lookup: ReleaseLookup,
+    /// The toast was closed for this version; it shows again for a newer one, or at the next
+    /// launch (nothing is written to disk).
+    dismissed_version: Option<Version>,
     _schedule: Task<()>,
     _quit_subscription: Subscription,
 }
@@ -185,6 +254,13 @@ impl SelfUpdate {
             applied: None,
             restart_path_after_call: None,
             work: None,
+            download_progress: None,
+            progress_redraw: None,
+            is_restart_requested: false,
+            newest_version: None,
+            manual_update_problem: None,
+            dismissed_version: None,
+            release_lookup: ReleaseLookup::ReleaseHost,
             _schedule: schedule,
             _quit_subscription: quit_subscription,
         }
@@ -193,6 +269,111 @@ impl SelfUpdate {
     #[must_use]
     pub fn status(&self) -> &UpdateStatus {
         &self.status
+    }
+
+    /// What the update toast shows now, if anything (ADR-0064).
+    #[must_use]
+    pub fn toast_phase(&self, is_in_call: bool) -> Option<toast::UpdateToastPhase> {
+        let progress = self
+            .download_progress
+            .as_deref()
+            .map(|progress| toast::DownloadedBytes {
+                received: progress.received_bytes(),
+                total: progress.total_bytes(),
+            });
+        toast::update_toast_phase(&toast::UpdateToastInputs {
+            status: &self.status,
+            newest_version: self.newest_version.as_ref(),
+            manual_update_problem: self.manual_update_problem,
+            is_restart_requested: self.is_restart_requested,
+            progress,
+            dismissed_version: self.dismissed_version.as_ref(),
+            is_in_call,
+        })
+    }
+
+    /// "Update and restart" (and "Try again"): restarts into the ready update, or downloads,
+    /// verifies and stages it first, then restarts. Never during a call.
+    pub fn update_and_restart(&mut self, cx: &mut Context<Self>) {
+        if is_in_call(cx) {
+            return;
+        }
+        match self.status {
+            UpdateStatus::Ready(_) => self.restart_to_update(cx),
+            UpdateStatus::Installing(_) => {}
+            UpdateStatus::Downloading(_) | UpdateStatus::Checking => {
+                self.is_restart_requested = true;
+                self.redraw_progress_while_downloading(cx);
+                cx.notify();
+            }
+            UpdateStatus::Idle | UpdateStatus::UpToDate | UpdateStatus::Failed(_) => {
+                self.check_now(cx);
+                // After the check started: `check_now` clears the request of any earlier click.
+                self.is_restart_requested = true;
+                cx.notify();
+            }
+        }
+    }
+
+    /// "Check again", for a copy that cannot update itself until the person fixes something.
+    pub fn check_again(&mut self, cx: &mut Context<Self>) {
+        self.check_now(cx);
+    }
+
+    /// Closes the toast for the version it shows; a download it asked for goes on quietly and
+    /// waits for a restart or the quit, as ADR-0057's do.
+    pub fn dismiss_toast(&mut self, cx: &mut Context<Self>) {
+        if matches!(self.status, UpdateStatus::Installing(_)) {
+            return;
+        }
+        let shown = match &self.status {
+            UpdateStatus::Downloading(version) | UpdateStatus::Ready(version) => {
+                Some(version.clone())
+            }
+            _ => self.newest_version.clone(),
+        };
+        self.dismissed_version = shown.max(self.dismissed_version.take());
+        self.is_restart_requested = false;
+        self.progress_redraw = None;
+        cx.notify();
+    }
+
+    /// Redraws the toast a few times a second while the download it asked for runs; stops by
+    /// itself when the download ends.
+    fn redraw_progress_while_downloading(&mut self, cx: &mut Context<Self>) {
+        if self.progress_redraw.is_some() {
+            return;
+        }
+        self.progress_redraw = Some(cx.spawn(async move |this, cx| {
+            let mut shown_bytes = None;
+            loop {
+                cx.background_executor()
+                    .timer(PROGRESS_REDRAW_INTERVAL)
+                    .await;
+                let is_still_downloading = this.update(cx, |this, cx| {
+                    let is_downloading = this.is_restart_requested
+                        && matches!(
+                            this.status,
+                            UpdateStatus::Downloading(_) | UpdateStatus::Checking
+                        );
+                    let bytes = this
+                        .download_progress
+                        .as_deref()
+                        .map(DownloadProgress::received_bytes);
+                    if is_downloading && bytes != shown_bytes {
+                        shown_bytes = bytes;
+                        cx.notify();
+                    }
+                    if !is_downloading {
+                        this.progress_redraw = None;
+                    }
+                    is_downloading
+                });
+                if !matches!(is_still_downloading, Ok(true)) {
+                    return;
+                }
+            }
+        }));
     }
 
     /// Returns when to look again.
@@ -220,6 +401,9 @@ impl SelfUpdate {
         {
             return;
         }
+        // Only "Update and restart" asks to restart, right after starting its check: a scheduled
+        // check never restarts the app, and its failures stay silent (ADR-0017).
+        self.is_restart_requested = false;
         let newest_known = if let Some(staged) = &self.staged {
             staged.version.clone()
         } else {
@@ -227,22 +411,100 @@ impl SelfUpdate {
             cx.notify();
             mellow_update::current_version()
         };
-        // Detected at each check: installing FFmpeg or fixing the folder's rights takes effect.
-        let find = spawn_on_network_runtime(cx, async move {
-            let installation = tokio::task::spawn_blocking(package::detect_installation)
-                .await
-                .unwrap_or(Err(UpdateProblem::InstallFailed))?;
-            find_update_for(installation, &newest_known).await
-        });
+        let find = self.look_up_release(newest_known, cx);
         self.work = Some(cx.spawn(async move |this, cx| {
             // Only a panic or the runtime shutting down lose the answer.
-            let found = find.await.unwrap_or(Err(UpdateProblem::InstallFailed));
+            let found = find
+                .await
+                .unwrap_or_else(|_| Err(UpdateProblem::InstallFailed.into()));
             let _ = this.update(cx, |this, cx| match found {
-                Ok(None) => this.finish_unless_ready(UpdateStatus::UpToDate, cx),
-                Ok(Some(update)) => this.download(update, cx),
-                Err(problem) => this.finish_unless_ready(UpdateStatus::Failed(problem), cx),
+                Ok(None) => {
+                    this.manual_update_problem = None;
+                    this.finish_unless_ready(UpdateStatus::UpToDate, cx);
+                }
+                Ok(Some(update)) => {
+                    this.manual_update_problem = None;
+                    this.download(update, cx);
+                }
+                Err(failure) => {
+                    let is_manual = failure.problem.manual_remedy().is_some()
+                        && failure.newer_version.is_some();
+                    if this.staged.is_none() {
+                        this.manual_update_problem = is_manual.then_some(failure.problem);
+                        if failure.newer_version.is_some() {
+                            this.newest_version = failure.newer_version;
+                        }
+                    }
+                    this.finish_unless_ready(UpdateStatus::Failed(failure.problem), cx);
+                }
             });
         }));
+    }
+
+    /// The newest release and what this copy can do with it: from the release host, or the
+    /// answers a test scripted.
+    fn look_up_release(&mut self, newest_known: Version, cx: &mut Context<Self>) -> CheckTask {
+        match &mut self.release_lookup {
+            ReleaseLookup::ReleaseHost => {}
+            #[cfg(test)]
+            ReleaseLookup::Scripted(answers) => {
+                let answer = answers.pop_front().unwrap_or(Ok(None));
+                return Task::ready(Ok(answer));
+            }
+        }
+        // Detected at each check: installing FFmpeg or fixing the folder's rights takes effect.
+        spawn_on_network_runtime(cx, async move {
+            let installation = match tokio::task::spawn_blocking(package::detect_installation)
+                .await
+                .unwrap_or(Err(UpdateProblem::InstallFailed))
+            {
+                Ok(installation) => installation,
+                Err(problem) if problem.manual_remedy().is_some() => {
+                    // A development build is nobody's installed copy: it asks nothing of the
+                    // release host. A release build compiled from source is a copy put somewhere
+                    // by hand, and learns of new versions like one (ADR-0064).
+                    let newer_version = if cfg!(debug_assertions) {
+                        None
+                    } else {
+                        newer_version_than(&newest_known).await
+                    };
+                    return Err(CheckFailure {
+                        problem,
+                        newer_version,
+                    });
+                }
+                Err(problem) => return Err(problem.into()),
+            };
+            find_update_for(installation, &newest_known).await
+        })
+    }
+
+    /// A self-update whose checks get `answers` in turn, then "no newer release": no network, no
+    /// installation, no timer that fires unless the test moves the clock.
+    #[cfg(test)]
+    pub(crate) fn with_scripted_checks(
+        answers: Vec<Result<Option<FoundUpdate>, CheckFailure>>,
+        cx: &mut Context<Self>,
+    ) -> Self {
+        Self {
+            release_lookup: ReleaseLookup::Scripted(answers.into()),
+            ..Self::new(cx)
+        }
+    }
+
+    /// Puts the self-update where a check or a download would have left it.
+    #[cfg(test)]
+    pub(crate) fn set_status_for_tests(&mut self, status: UpdateStatus, cx: &mut Context<Self>) {
+        if let UpdateStatus::Downloading(version) | UpdateStatus::Ready(version) = &status {
+            self.newest_version = Some(version.clone());
+        }
+        self.status = status;
+        cx.notify();
+    }
+
+    #[cfg(test)]
+    pub(crate) fn is_restart_requested(&self) -> bool {
+        self.is_restart_requested
     }
 
     /// Ends a check or a download; with an update still ready, its status stays.
@@ -265,8 +527,14 @@ impl SelfUpdate {
 
     fn download(&mut self, update: FoundUpdate, cx: &mut Context<Self>) {
         let version = update.release.version.clone();
+        let progress = Arc::new(DownloadProgress::default());
         if self.staged.is_none() {
+            self.newest_version = Some(version.clone());
+            self.download_progress = Some(Arc::clone(&progress));
             self.status = UpdateStatus::Downloading(version.clone());
+            if self.is_restart_requested {
+                self.redraw_progress_while_downloading(cx);
+            }
             cx.notify();
         }
         let download = spawn_on_network_runtime(cx, async move {
@@ -274,6 +542,7 @@ impl SelfUpdate {
                 &update.client,
                 &update.release,
                 &update.asset_name,
+                Some(&progress),
             )
             .await?;
             // Unpacking a large archive and running `codesign` block: off the network workers.
@@ -285,15 +554,24 @@ impl SelfUpdate {
         });
         self.work = Some(cx.spawn(async move |this, cx| {
             let staged = download.await.unwrap_or(Err(UpdateProblem::InstallFailed));
-            let _ = this.update(cx, |this, cx| match staged {
-                Ok(staged) => {
-                    let version = staged.version.clone();
-                    // Replacing an older ready update removes its staging directory.
-                    this.staged = Some(staged);
-                    this.work = None;
-                    this.finish(UpdateStatus::Ready(version), cx);
+            let _ = this.update(cx, |this, cx| {
+                this.download_progress = None;
+                match staged {
+                    Ok(staged) => {
+                        let version = staged.version.clone();
+                        // Replacing an older ready update removes its staging directory.
+                        this.staged = Some(staged);
+                        this.work = None;
+                        this.newest_version = Some(version.clone());
+                        this.finish(UpdateStatus::Ready(version), cx);
+                        if this.is_restart_requested {
+                            this.restart_to_update(cx);
+                        }
+                    }
+                    Err(problem) => {
+                        this.finish_unless_ready(UpdateStatus::Failed(problem), cx);
+                    }
                 }
-                Err(problem) => this.finish_unless_ready(UpdateStatus::Failed(problem), cx),
             });
         }));
     }
@@ -301,8 +579,14 @@ impl SelfUpdate {
     /// Swaps the ready update in and starts it; does nothing during a call.
     pub fn restart_to_update(&mut self, cx: &mut Context<Self>) {
         if !can_restart_to_update(&self.status, is_in_call(cx)) {
+            // A download asked for from the toast finished during a call: the toast offers the
+            // restart again rather than cutting the call later.
+            self.is_restart_requested = false;
+            cx.notify();
             return;
         }
+        // From here on, what goes wrong is said in the toast too.
+        self.is_restart_requested = true;
         if let Some(restart_path) = self.restart_path_after_call.take() {
             self.work = Some(cx.spawn(async move |this, cx| {
                 cx.update(|cx| restart_unless_in_call(&this, restart_path, cx));
@@ -370,27 +654,56 @@ fn restart_unless_in_call(this: &WeakEntity<SelfUpdate>, restart_path: PathBuf, 
 }
 
 /// A newer release, the client that found it and the asset for this installation.
-struct FoundUpdate {
+pub(crate) struct FoundUpdate {
     installation: Installation,
     client: UpdateClient,
     release: Release,
     asset_name: String,
 }
 
+/// What a check found: an update to prepare, nothing newer, or why not.
+type CheckOutcome = Result<Option<FoundUpdate>, CheckFailure>;
+/// A check under way; only a panic or the runtime shutting down lose its answer.
+type CheckTask = Task<Result<CheckOutcome, tokio::task::JoinError>>;
+
+/// Where checks ask for the newest release.
+enum ReleaseLookup {
+    /// The release host, from the network runtime.
+    ReleaseHost,
+    /// Answers a test scripted, given in turn.
+    #[cfg(test)]
+    Scripted(std::collections::VecDeque<CheckOutcome>),
+}
+
 /// A release newer than `newest_known` (the running version, or the update already ready).
 async fn find_update_for(
     installation: Installation,
     newest_known: &Version,
-) -> Result<Option<FoundUpdate>, UpdateProblem> {
+) -> Result<Option<FoundUpdate>, CheckFailure> {
     let client = UpdateClient::new().map_err(|_| UpdateProblem::Network)?;
     let Some(release) = package::find_newer_release(&client, newest_known).await? else {
         return Ok(None);
     };
-    let asset_name = package::asset_name_for(&installation, &release)?;
+    let asset_name =
+        package::asset_name_for(&installation, &release).map_err(|problem| CheckFailure {
+            problem,
+            newer_version: Some(release.version.clone()),
+        })?;
     Ok(Some(FoundUpdate {
         installation,
         client,
         release,
         asset_name,
     }))
+}
+
+/// The newest release's version if it is newer than `newest_known`, for a copy that cannot
+/// update itself: the same anonymous request as a check, and no package fetched (ADR-0064).
+async fn newer_version_than(newest_known: &Version) -> Option<Version> {
+    let client = UpdateClient::new().ok()?;
+    package::find_newer_release(&client, newest_known)
+        .await
+        .ok()
+        .flatten()
+        .map(|release| release.version)
 }

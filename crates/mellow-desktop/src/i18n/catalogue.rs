@@ -15564,6 +15564,98 @@ impl DesktopStrings {
         }
     }
 
+    pub fn update_toast_title(self, version: &str) -> String {
+        match self.language {
+            Language::English => format!("Mellow {version} is available"),
+            Language::French => format!("Mellow {version} est disponible"),
+        }
+    }
+
+    pub fn update_toast_body(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow restarts once the update is installed.",
+            Language::French => "Mellow redémarre une fois la mise à jour installée.",
+        }
+    }
+
+    pub fn update_and_restart(self) -> &'static str {
+        match self.language {
+            Language::English => "Update and restart",
+            Language::French => "Mettre à jour et redémarrer",
+        }
+    }
+
+    pub fn update_toast_dismiss(self) -> &'static str {
+        match self.language {
+            Language::English => "Hide the update notice",
+            Language::French => "Masquer l’avis de mise à jour",
+        }
+    }
+
+    pub fn update_toast_progress(self, percent: i64) -> String {
+        let percent = percent as f64;
+        match self.language {
+            Language::English => format!("{}%", super::format_count(Language::English, percent)),
+            Language::French => format!("{}\u{202f}%", super::format_count(Language::French, percent)),
+        }
+    }
+
+    pub fn update_toast_verifying(self) -> &'static str {
+        match self.language {
+            Language::English => "Checking the signature and unpacking…",
+            Language::French => "Vérification de la signature et décompression…",
+        }
+    }
+
+    pub fn update_toast_restarting(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow restarts in a moment.",
+            Language::French => "Mellow redémarre dans un instant.",
+        }
+    }
+
+    pub fn update_toast_failed_title(self) -> &'static str {
+        match self.language {
+            Language::English => "The update didn't finish",
+            Language::French => "La mise à jour n’a pas abouti",
+        }
+    }
+
+    pub fn open_download_page(self) -> &'static str {
+        match self.language {
+            Language::English => "Open the download page",
+            Language::French => "Ouvrir la page de téléchargement",
+        }
+    }
+
+    pub fn check_again(self) -> &'static str {
+        match self.language {
+            Language::English => "Check again",
+            Language::French => "Vérifier à nouveau",
+        }
+    }
+
+    pub fn splash_label(self) -> &'static str {
+        match self.language {
+            Language::English => "Mellow is starting",
+            Language::French => "Mellow démarre",
+        }
+    }
+
+    pub fn splash_opening_session(self) -> &'static str {
+        match self.language {
+            Language::English => "Opening your session…",
+            Language::French => "Ouverture de ta session…",
+        }
+    }
+
+    pub fn splash_connecting(self, instance: &str) -> String {
+        match self.language {
+            Language::English => format!("Connecting to {instance}…"),
+            Language::French => format!("Connexion à {instance}…"),
+        }
+    }
+
     pub fn codes_saved(self) -> &'static str {
         match self.language {
             Language::English => "Recovery codes saved.",

@@ -10,6 +10,7 @@
 use std::process::ExitCode;
 
 use mellow_desktop::components::gallery::gallery_requested;
+use mellow_desktop::launch_preview::preview_requested;
 use mellow_desktop::session::LOGOUT_ON_EXIT_TIMEOUT;
 use mellow_desktop::single_instance::{InstanceClaim, claim_single_instance};
 use mellow_desktop::theme::EmbeddedAssets;
@@ -36,8 +37,9 @@ fn main() -> ExitCode {
     let _ = mellow_desktop::profile::active_profile_name();
 
     // Before anything else: a second launch only shows the running Mellow's window. The component
-    // gallery opens next to a running Mellow.
-    let claim = gallery_requested().is_none().then(claim_single_instance);
+    // gallery and the launch preview open next to a running Mellow.
+    let claim = (gallery_requested().is_none() && preview_requested().is_none())
+        .then(claim_single_instance);
     let show_requests = match claim {
         None => None,
         Some(Ok(InstanceClaim::First(show_requests))) => Some(show_requests),
