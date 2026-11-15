@@ -44,6 +44,8 @@ const SOUND_CLOCK_TICKS_PER_FRAME: u64 = 960;
 const SETTLE_TIME: Duration = Duration::from_millis(300);
 /// A slow bot keeps one media datagram in this many, as a link far too slow for its tiles.
 const SLOW_LINK_KEEPS_ONE_DATAGRAM_IN: u32 = 4;
+/// A lossy bot loses one media datagram in this many (4 %).
+const LOSSY_LINK_LOSES_ONE_DATAGRAM_IN: u32 = 25;
 /// Long enough for the server's estimate of a lossy link to fall below a single small tile.
 const SLOW_LINK_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -77,6 +79,10 @@ enum BotLink {
     Steady,
     /// With congestion feedback, losing most media datagrams it receives.
     Slow,
+    /// As `Steady`, but losing one media datagram it receives in
+    /// `LOSSY_LINK_LOSES_ONE_DATAGRAM_IN`, as a watcher across the Internet; it counts only the
+    /// frames that arrive whole and in order (what a decoder can show).
+    Lossy,
 }
 
 /// The video codecs a bot offers on its camera and receive lines.
@@ -301,7 +307,7 @@ async fn join_camera_bot(
         offer,
     } = pending_camera_bot(has_screen_sound, codecs);
     let offer = match link {
-        BotLink::Steady => without_congestion_feedback(&offer),
+        BotLink::Steady | BotLink::Lossy => without_congestion_feedback(&offer),
         BotLink::Slow => offer,
     };
     let answer = join(socket, channel_id, &offer).await;
@@ -365,6 +371,9 @@ fn run_camera_bot(
                     }
                 }
                 Output::Event(Event::MediaData(frame)) => {
+                    if link == BotLink::Lossy && !frame.contiguous {
+                        continue;
+                    }
                     if let Some(key) = marker_of_received(&frame) {
                         *received.lock().unwrap().entry(key).or_default() += 1;
                     }
@@ -449,13 +458,17 @@ fn marker_of_received(frame: &str0m::media::MediaData) -> Option<(u8, u8)> {
 }
 
 /// Whether the bot's link loses the datagram starting with `first_byte`: a slow link loses most
-/// media datagrams once connected (RTP and RTCP start with 128 to 191), never ICE or DTLS.
+/// media datagrams once connected (RTP and RTCP start with 128 to 191), a lossy one a few, never
+/// ICE or DTLS.
 fn is_lost(link: BotLink, is_connected: bool, first_byte: u8, media_datagrams: &mut u32) -> bool {
-    if link != BotLink::Slow || !is_connected || !(128..=191).contains(&first_byte) {
+    if link == BotLink::Steady || !is_connected || !(128..=191).contains(&first_byte) {
         return false;
     }
     *media_datagrams += 1;
-    !media_datagrams.is_multiple_of(SLOW_LINK_KEEPS_ONE_DATAGRAM_IN)
+    match link {
+        BotLink::Slow => !media_datagrams.is_multiple_of(SLOW_LINK_KEEPS_ONE_DATAGRAM_IN),
+        _ => media_datagrams.is_multiple_of(LOSSY_LINK_LOSES_ONE_DATAGRAM_IN),
+    }
 }
 
 /// A frame the H.264 depacketizer accepts: for keyframes a 320 × 180 Constrained Baseline SPS, a
@@ -1225,4 +1238,60 @@ async fn a_camera_reconnecting_in_another_codec_loses_and_regains_its_watchers_s
     assert_eq!(frames_while_h264, 0);
     assert!(is_slot_given_for_vp8_again);
     assert!(frames_on_vp8_again > 0, "the camera reaches it again");
+}
+
+/// Frames of a large H.264 layer, each split over about ten packets, as a shared screen's.
+const SCREEN_LIKE_FRAMES: FrameBytes = FrameBytes {
+    quarter: 600,
+    low: 2_000,
+    high: 12_000,
+};
+/// How long a lossy watcher is counted for.
+const LOSSY_WATCH_TIME: Duration = Duration::from_secs(3);
+
+/// A watcher across the Internet loses a few packets: the server retransmits them when asked
+/// (NACK, RTX), so its pictures keep coming whole instead of freezing at the first loss.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_watcher_losing_some_packets_keeps_receiving_whole_frames() {
+    let fixture = fixture().await;
+    let (mut owner, mut member) = identified_pair(&fixture).await;
+    let owner_id = fixture.user_id("owner");
+    let _owner_bot = join_camera_bot(
+        &mut owner,
+        fixture.lounge,
+        1,
+        SCREEN_LIKE_FRAMES,
+        false,
+        BotLink::Steady,
+        BotCodecs::H264,
+    )
+    .await;
+    let member_bot = join_camera_bot(
+        &mut member,
+        fixture.lounge,
+        2,
+        TINY_FRAMES,
+        false,
+        BotLink::Lossy,
+        BotCodecs::H264,
+    )
+    .await;
+
+    send(&mut owner, &camera_state(true)).await;
+    wait_for_camera_in(&mut member, owner_id, VideoCodec::H264).await;
+    send(&mut member, &watch(owner_id, VideoTileSize::Large)).await;
+    member_bot.wait_until_receiving(1, "h").await;
+    let before = member_bot.received(1, "h");
+    tokio::time::sleep(LOSSY_WATCH_TIME).await;
+    let whole_frames = member_bot.received(1, "h") - before;
+    drop(member_bot);
+    fixture.close().await;
+
+    // 30 frames a second are sent; at most a few may come too late.
+    let sent = u32::try_from(LOSSY_WATCH_TIME.as_millis() / VIDEO_FRAME_INTERVAL.as_millis())
+        .unwrap_or(u32::MAX);
+    assert!(
+        whole_frames >= sent * 2 / 3,
+        "{whole_frames} whole frames of about {sent}"
+    );
 }
