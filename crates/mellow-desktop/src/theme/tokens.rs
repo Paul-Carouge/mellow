@@ -701,6 +701,11 @@ pub struct ThemeTokens {
     pub component_sidebar_header_text: u32,
     pub component_slider_accent: u32,
     pub component_slider_value_text: u32,
+    pub component_splash_ground: u32,
+    pub component_splash_sky: u32,
+    pub component_splash_status_text: u32,
+    pub component_splash_sun: u32,
+    pub component_splash_wordmark_text: u32,
     pub component_status_dnd: u32,
     pub component_status_idle: u32,
     pub component_status_offline: u32,
@@ -728,6 +733,14 @@ pub struct ThemeTokens {
     pub component_text_field_label_text: u32,
     pub component_text_field_placeholder: u32,
     pub component_text_field_text: u32,
+    pub component_toast_background: u32,
+    pub component_toast_body_text: u32,
+    pub component_toast_border: u32,
+    pub component_toast_error_text: u32,
+    pub component_toast_progress_fill: u32,
+    pub component_toast_progress_track: u32,
+    pub component_toast_shadow: &'static [ShadowLayer],
+    pub component_toast_title_text: u32,
     pub component_tooltip_background: u32,
     pub component_tooltip_shadow: &'static [ShadowLayer],
     pub component_tooltip_text: u32,
@@ -1470,6 +1483,11 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_sidebar_header_text: 0xF8F4_F8FF,
     component_slider_accent: 0xF2A4_6EFF,
     component_slider_value_text: 0xC5BE_C6FF,
+    component_splash_ground: 0x110B_11FF,
+    component_splash_sky: 0x4A34_50CC,
+    component_splash_status_text: 0xC5BE_C6FF,
+    component_splash_sun: 0xF2A4_6EBF,
+    component_splash_wordmark_text: 0xF8F4_F8FF,
     component_status_dnd: 0xF45A_5EFF,
     component_status_idle: 0xF0B2_32FF,
     component_status_offline: 0x988E_9AFF,
@@ -1497,6 +1515,14 @@ pub const DARK_THEME: ThemeTokens = ThemeTokens {
     component_text_field_label_text: 0xC5BE_C6FF,
     component_text_field_placeholder: 0xA99F_AAFF,
     component_text_field_text: 0xD6D0_D7FF,
+    component_toast_background: 0x2B24_2CFF,
+    component_toast_body_text: 0xC5BE_C6FF,
+    component_toast_border: 0x3C35_3EFF,
+    component_toast_error_text: 0xFA77_7CFF,
+    component_toast_progress_fill: 0xF2A4_6EFF,
+    component_toast_progress_track: 0x362E_37FF,
+    component_toast_shadow: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_toast_title_text: 0xF8F4_F8FF,
     component_tooltip_background: 0x2E27_2FFF,
     component_tooltip_shadow: &[ShadowLayer { color: 0x0000_003D, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     component_tooltip_text: 0xD6D0_D7FF,
@@ -2239,6 +2265,11 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_sidebar_header_text: 0x221B_23FF,
     component_slider_accent: 0xE889_4BFF,
     component_slider_value_text: 0x594E_5BFF,
+    component_splash_ground: 0xF5F1_F6FF,
+    component_splash_sky: 0xDCC5_E3B3,
+    component_splash_status_text: 0x594E_5BFF,
+    component_splash_sun: 0xF2A4_6EA6,
+    component_splash_wordmark_text: 0x221B_23FF,
     component_status_dnd: 0xDA37_3CFF,
     component_status_idle: 0xA06E_00FF,
     component_status_offline: 0x7268_74FF,
@@ -2266,6 +2297,14 @@ pub const LIGHT_THEME: ThemeTokens = ThemeTokens {
     component_text_field_label_text: 0x594E_5BFF,
     component_text_field_placeholder: 0x695F_6BFF,
     component_text_field_text: 0x392F_3AFF,
+    component_toast_background: 0xFFFF_FFFF,
+    component_toast_body_text: 0x594E_5BFF,
+    component_toast_border: 0xE3DD_E4FF,
+    component_toast_error_text: 0xC426_2BFF,
+    component_toast_progress_fill: 0xA84F_1AFF,
+    component_toast_progress_track: 0xDFD8_DFFF,
+    component_toast_shadow: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
+    component_toast_title_text: 0x221B_23FF,
     component_tooltip_background: 0xFFFF_FFFF,
     component_tooltip_shadow: &[ShadowLayer { color: 0x0000_0029, offset_x: 0.0, offset_y: 8.0, blur: 16.0, spread: 0.0 }],
     component_tooltip_text: 0x392F_3AFF,
@@ -3048,6 +3087,16 @@ pub const COMPONENT_SIDEBAR_HEADER_MENU_MARGIN: f32 = 8.0;
 pub const COMPONENT_SIDEBAR_HEADER_PADDING_INLINE: f32 = 16.0;
 pub const COMPONENT_SIDEBAR_LIST_PADDING_TOP: f32 = 8.0;
 pub const COMPONENT_SIDEBAR_WIDTH: f32 = 240.0;
+pub const COMPONENT_SPLASH_EXIT_DURATION: AnimationDuration = AnimationDuration(200);
+pub const COMPONENT_SPLASH_GAP: f32 = 24.0;
+pub const COMPONENT_SPLASH_LONGEST_WAIT: Delay = Delay(8000);
+pub const COMPONENT_SPLASH_MELLI_SIZE: f32 = 128.0;
+pub const COMPONENT_SPLASH_STATUS_DELAY: Delay = Delay(340);
+pub const COMPONENT_SPLASH_SUN_BLUR: f32 = 240.0;
+pub const COMPONENT_SPLASH_SUN_OFFSET: f32 = 0.0;
+pub const COMPONENT_SPLASH_SUN_RISE_DURATION: Delay = Delay(900);
+pub const COMPONENT_SPLASH_SUN_RISE_OFFSET: f32 = 24.0;
+pub const COMPONENT_SPLASH_SUN_SIZE: f32 = 560.0;
 pub const COMPONENT_STATUS_RING_WIDTH: f32 = 3.0;
 pub const COMPONENT_STATUS_SIZE_LARGE: f32 = 16.0;
 pub const COMPONENT_STATUS_SIZE_MENU: f32 = 12.0;
@@ -3078,6 +3127,19 @@ pub const COMPONENT_TEXT_FIELD_ICON_SIZE: f32 = 20.0;
 pub const COMPONENT_TEXT_FIELD_LABEL_GAP: f32 = 8.0;
 pub const COMPONENT_TEXT_FIELD_PADDING_INLINE: f32 = 12.0;
 pub const COMPONENT_TEXT_FIELD_RADIUS: f32 = 4.0;
+pub const COMPONENT_TOAST_BORDER_WIDTH: f32 = 1.0;
+pub const COMPONENT_TOAST_BOTTOM_OFFSET: f32 = 80.0;
+pub const COMPONENT_TOAST_ENTER_DURATION: AnimationDuration = AnimationDuration(340);
+pub const COMPONENT_TOAST_ENTER_OFFSET: f32 = 8.0;
+pub const COMPONENT_TOAST_ERROR_ICON_SIZE: f32 = 20.0;
+pub const COMPONENT_TOAST_GAP: f32 = 12.0;
+pub const COMPONENT_TOAST_LEADING_GAP: f32 = 12.0;
+pub const COMPONENT_TOAST_MARGIN: f32 = 16.0;
+pub const COMPONENT_TOAST_MELLI_SIZE: f32 = 40.0;
+pub const COMPONENT_TOAST_PADDING: f32 = 16.0;
+pub const COMPONENT_TOAST_PROGRESS_HEIGHT: f32 = 6.0;
+pub const COMPONENT_TOAST_RADIUS: f32 = 16.0;
+pub const COMPONENT_TOAST_WIDTH: f32 = 368.0;
 pub const COMPONENT_TOOLTIP_ARROW_SIZE: f32 = 5.0;
 pub const COMPONENT_TOOLTIP_DELAY: Delay = Delay(500);
 pub const COMPONENT_TOOLTIP_MAX_WIDTH: f32 = 190.0;

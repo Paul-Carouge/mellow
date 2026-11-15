@@ -5,7 +5,7 @@
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 
-use mellow_update::{Release, UpdateClient, UpdateError};
+use mellow_update::{DownloadProgress, Release, UpdateClient, UpdateError};
 use semver::Version;
 
 use super::UpdateProblem;
@@ -445,9 +445,10 @@ pub async fn download_verified_package(
     client: &UpdateClient,
     release: &Release,
     asset_name: &str,
+    progress: Option<&DownloadProgress>,
 ) -> Result<Vec<u8>, UpdateProblem> {
     client
-        .download_verified_asset(release, asset_name, MAXIMUM_PACKAGE_BYTES)
+        .download_verified_asset_with_progress(release, asset_name, MAXIMUM_PACKAGE_BYTES, progress)
         .await
         .map_err(|error| problem_of(&error))
 }
