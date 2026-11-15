@@ -5,13 +5,14 @@
 use std::mem::ManuallyDrop;
 
 use windows::Win32::Media::MediaFoundation::{
-    CLSID_MSH264DecoderMFT, CODECAPI_AVLowLatencyMode, IMFMediaBuffer, IMFMediaType, IMFSample,
-    IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT, MF_E_TRANSFORM_STREAM_CHANGE,
-    MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE, MF_MT_MINIMUM_DISPLAY_APERTURE,
-    MF_MT_SUBTYPE, MFCreateMediaType, MFCreateMemoryBuffer, MFCreateSample, MFMediaType_Video,
-    MFT_MESSAGE_COMMAND_FLUSH, MFT_MESSAGE_NOTIFY_BEGIN_STREAMING,
-    MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER, MFT_OUTPUT_STREAM_PROVIDES_SAMPLES,
-    MFVideoArea, MFVideoFormat_H264, MFVideoFormat_I420, MFVideoFormat_IYUV,
+    CLSID_MSH264DecoderMFT, CODECAPI_AVDecNumWorkerThreads, CODECAPI_AVLowLatencyMode,
+    IMFMediaBuffer, IMFMediaType, IMFSample, IMFTransform, MF_E_TRANSFORM_NEED_MORE_INPUT,
+    MF_E_TRANSFORM_STREAM_CHANGE, MF_MT_DEFAULT_STRIDE, MF_MT_FRAME_SIZE, MF_MT_MAJOR_TYPE,
+    MF_MT_MINIMUM_DISPLAY_APERTURE, MF_MT_SUBTYPE, MFCreateMediaType, MFCreateMemoryBuffer,
+    MFCreateSample, MFMediaType_Video, MFT_MESSAGE_COMMAND_FLUSH,
+    MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, MFT_MESSAGE_NOTIFY_START_OF_STREAM, MFT_OUTPUT_DATA_BUFFER,
+    MFT_OUTPUT_STREAM_PROVIDES_SAMPLES, MFVideoArea, MFVideoFormat_H264, MFVideoFormat_I420,
+    MFVideoFormat_IYUV,
 };
 use windows::Win32::System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance};
 
@@ -97,10 +98,21 @@ impl H264Decoder {
             let transform: IMFTransform =
                 CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)
                     .map_err(failed("create the H.264 decoder"))?;
-            // Without it the decoder keeps pictures for reordering, which Constrained Baseline
-            // never needs.
-            if let Ok(attributes) = transform.GetAttributes() {
-                let _ = attributes.SetUINT32(&CODECAPI_AVLowLatencyMode, 1);
+            // Low latency: without it the decoder keeps pictures for reordering, which
+            // Constrained Baseline never needs. One worker thread: with several, a picture is
+            // still being decoded when `ProcessOutput` asks right after `ProcessInput`, so it
+            // comes out one access unit late, or not at all for the last one (seen on Windows CI
+            // with a stream that reorders nothing: `max_num_reorder_frames` 0, POC type 2).
+            let attributes = transform
+                .GetAttributes()
+                .map_err(failed("configure the H.264 decoder"))?;
+            for (attribute, value, what) in [
+                (&CODECAPI_AVLowLatencyMode, 1, "low latency"),
+                (&CODECAPI_AVDecNumWorkerThreads, 1, "one worker thread"),
+            ] {
+                if let Err(error) = attributes.SetUINT32(attribute, value) {
+                    tracing::warn!(%error, what, "the H.264 decoder refused a setting");
+                }
             }
             let input = MFCreateMediaType().map_err(failed("describe H.264"))?;
             input
