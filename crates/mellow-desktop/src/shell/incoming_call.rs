@@ -154,6 +154,7 @@ impl DuskShell {
             && !modifiers.alt;
         let is_decline = keystroke.key == "escape"
             && !modifiers.modified()
+            && !crate::profile_surfaces::is_profile_hover_card_shown(cx)
             && self.incoming_call_focus.card.contains_focused(window, cx);
         if is_answer {
             self.answer_call(channel_id, window, cx);

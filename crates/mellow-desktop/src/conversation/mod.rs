@@ -140,6 +140,8 @@ pub struct ConversationView {
     open_conversation: Option<OpenConversation>,
     /// Asked by the shell; applied by the next render.
     requested_place: Option<OpenConversation>,
+    /// The voice's call, its view and a watched screen, as the call banner last read them.
+    shown_call_look: (Option<Snowflake>, bool, bool),
     list: ListState,
     entries: Vec<Entry>,
     /// Each entry's key and version, to splice and remeasure only what changed.
@@ -261,12 +263,29 @@ impl ConversationView {
             }),
         ];
         // The call banner follows the call view opening and closing.
+        // A call stopping ringing here makes it joinable in the banner.
+        if let Some(calls) = crate::calls::calls(cx) {
+            subscriptions.push(cx.observe(&calls, |_, _, cx| cx.notify()));
+        }
+        // Only what the banner reads: the voice changes a few times a second during a call.
         if let Some(voice) = crate::voice::voice(cx) {
-            subscriptions.push(cx.observe(&voice, |_, _, cx| cx.notify()));
+            subscriptions.push(cx.observe(&voice, |view, voice, cx| {
+                let voice = voice.read(cx);
+                let look = (
+                    voice.call_conversation_id(),
+                    voice.is_call_view_open(),
+                    voice.watched_stream_user_id().is_some(),
+                );
+                if look != view.shown_call_look {
+                    view.shown_call_look = look;
+                    cx.notify();
+                }
+            }));
         }
         Self {
             session,
             composer,
+            shown_call_look: (None, false, false),
             open_conversation: None,
             requested_place: None,
             list,

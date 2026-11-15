@@ -233,7 +233,8 @@ fn sample_state_on_instance(unreads: &[(Snowflake, u32)], calls_enabled: bool) -
         relationships: Vec::new(),
         may_create_guilds: true,
         voice_states: Vec::new(),
-        voice_enabled: false,
+        // An instance with calls has voice (`Ready.calls_enabled` says both).
+        voice_enabled: calls_enabled,
         maximum_attachment_bytes: None,
         calls: Vec::new(),
         calls_enabled,

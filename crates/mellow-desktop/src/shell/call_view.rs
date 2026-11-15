@@ -68,11 +68,16 @@ use crate::voice::{CameraPhase, ShownPicture, Voice};
 /// 16:9, the shape of cameras and of most screens.
 const TILE_ASPECT_RATIO: f32 = 16.0 / 9.0;
 
-/// What the call view asks of the shell, which owns the screen picker.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// What the call view asks of the shell, which owns the screen picker and the popovers.
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) enum CallViewEvent {
     /// The share control: start a share (the picker or the system's dialog), or stop it.
     PressScreenShare,
+    /// A right-click on someone else's tile: their volume and "Mute for me", as in a channel.
+    OpenPerson {
+        user: PublicUser,
+        position: gpui::Point<Pixels>,
+    },
 }
 
 impl gpui::EventEmitter<CallViewEvent> for CallView {}
@@ -134,6 +139,8 @@ struct TileLook {
     is_own: bool,
     is_speaking: bool,
     is_microphone_off: bool,
+    /// The reader turned them off for themselves, or a call does by default (blocked).
+    is_muted_for_me: bool,
     is_paused: bool,
     sentence: Option<&'static str>,
     is_small: bool,
@@ -601,6 +608,10 @@ impl CallView {
                     is_own,
                     is_speaking: speaking.contains(&person.user_id),
                     is_microphone_off,
+                    is_muted_for_me: !is_own
+                        && voice
+                            .effective_person_setting(person.user_id, cx)
+                            .is_locally_muted,
                     is_paused: !is_own && voice.is_video_paused(person.user_id),
                     sentence: if is_own && voice.camera_phase() == CameraPhase::Starting {
                         Some(strings.call().starting_camera())
@@ -1135,6 +1146,7 @@ impl CallView {
         };
         let states: Vec<&str> = [
             (look.is_microphone_off, strings.voice().microphone_off()),
+            (look.is_muted_for_me, strings.voice().muted_for_you()),
             (
                 look.video == Some(CallVideo::Camera),
                 strings.camera().camera_on(),
@@ -1196,6 +1208,18 @@ impl CallView {
                 move |_, cx| crate::components::Tooltip::view(label.clone(), cx)
             })
             .tooltip_show_delay(crate::components::Tooltip::show_delay())
+            .when(!look.is_own, |tile| {
+                let user = look.person.clone();
+                let opener = cx.entity().downgrade();
+                tile.on_mouse_down(gpui::MouseButton::Right, move |event, _, cx| {
+                    cx.stop_propagation();
+                    let user = user.clone();
+                    let position = event.position;
+                    let _ = opener.update(cx, |_, cx| {
+                        cx.emit(CallViewEvent::OpenPerson { user, position });
+                    });
+                })
+            })
             .on_click(move |_, window, cx| {
                 if watches_screen {
                     let _ = voice.update(cx, |voice, cx| voice.watch_stream(Some(user_id), cx));
@@ -1290,7 +1314,7 @@ impl CallView {
                             label_ink,
                         ))
                     })
-                    .when(look.is_microphone_off, |chip| {
+                    .when(look.is_microphone_off || look.is_muted_for_me, |chip| {
                         chip.child(icon(
                             IconName::MicrophoneSlash,
                             COMPONENT_CALL_VIEW_LABEL_ICON_SIZE,
@@ -1726,6 +1750,17 @@ impl super::DuskShell {
                 // Lives as long as the view, which goes with the call view.
                 cx.subscribe_in(&view, window, |shell, _, event, window, cx| match event {
                     CallViewEvent::PressScreenShare => shell.press_screen_share(window, cx),
+                    CallViewEvent::OpenPerson { user, position } => {
+                        let name = SharedString::from(display_name(user).to_owned());
+                        shell.open_voice_person_popover(
+                            user.id,
+                            name,
+                            Some(user.clone()),
+                            *position,
+                            window,
+                            cx,
+                        );
+                    }
                 })
                 .detach();
                 let opener = window.focused(cx);

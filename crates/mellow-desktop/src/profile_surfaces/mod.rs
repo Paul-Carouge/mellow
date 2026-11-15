@@ -178,6 +178,11 @@ fn surfaces(cx: &App) -> Option<Entity<ProfileSurfaces>> {
 /// Whether the profile modal covers the shell: the shell's shortcuts wait until it closes, since
 /// GPUI runs key bindings before the modal's key handler.
 #[must_use]
+/// Whether a hover card shows: Esc closes it first, before any other use of the key.
+pub(crate) fn is_profile_hover_card_shown(cx: &App) -> bool {
+    surfaces(cx).is_some_and(|surfaces| surfaces.read(cx).hover.shown.is_some())
+}
+
 pub(crate) fn is_profile_modal_open(cx: &App) -> bool {
     surfaces(cx).is_some_and(|surfaces| surfaces.read(cx).modal.is_some())
 }

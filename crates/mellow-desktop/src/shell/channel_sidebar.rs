@@ -837,8 +837,13 @@ impl DuskShell {
             .as_ref()
             .is_some_and(|voice| voice.read(cx).is_self_speaking());
         let is_speaking = is_speaking_by_server || (is_me && is_self_speaking);
-        let is_muted_for_me =
-            !is_me && crate::voice::Voice::person_setting(user_id, cx).is_locally_muted;
+        let is_muted_for_me = !is_me
+            && self.voice.as_ref().is_some_and(|voice| {
+                voice
+                    .read(cx)
+                    .effective_person_setting(user_id, cx)
+                    .is_locally_muted
+            });
         let (is_deafened, is_self_muted, is_suppressed) =
             voice_state
                 .as_ref()

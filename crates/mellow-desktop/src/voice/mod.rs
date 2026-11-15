@@ -48,6 +48,7 @@ pub use camera::{
     open_camera_system_settings, system_cameras,
 };
 
+use std::collections::HashSet;
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::Arc;
 use std::time::Duration;
@@ -175,6 +176,12 @@ pub struct Voice {
     screen: screen_share::ScreenSharing,
     /// Who was in the conversation's call at the last change, to tell who joins and leaves.
     call_participant_ids: Vec<Snowflake>,
+    /// People muted by default in this call (blocked) whom the reader turned up for it.
+    turned_up_user_ids: HashSet<Snowflake>,
+    /// People the default mute covers now, so it is lifted when it no longer applies.
+    default_muted_user_ids: HashSet<Snowflake>,
+    #[cfg(test)]
+    call_sound_counts: CallSoundCounts,
     _subscriptions: Vec<Subscription>,
 }
 
@@ -206,32 +213,19 @@ fn person_settings_from_preferences(cx: &App) -> Arc<InMemoryPersonVoiceSettings
     store
 }
 
-/// In a conversation's call, people the user blocked start with their sound off for them
-/// (`is_muted_by_default_in_calls`, ADR-0062); a stored choice wins.
-fn seed_muted_by_default(
-    store: &InMemoryPersonVoiceSettings,
-    state: &mellow_client_core::state::ClientState,
-    cx: &App,
-) {
-    let stored = preferences(cx).map(|preferences| &preferences.voice_people);
-    for relationship in state.relationships_of_kind(mellow_protocol::RelationshipKind::Blocked) {
-        let user_id = relationship.user.id;
-        let is_stored = stored.is_some_and(|people| people.iter().any(|(id, _)| *id == user_id));
-        if !is_stored && state.is_muted_by_default_in_calls(user_id) {
-            store.write_person_setting(
-                PersonSoundSource::Voice,
-                user_id,
-                person_setting_of(MUTED_BY_DEFAULT_PERSON_SETTING),
-            );
-        }
-    }
+/// Looped call sounds handed to the sound player and stopped there, counted in tests.
+#[cfg(test)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) struct CallSoundCounts {
+    pub started: u32,
+    pub stopped: u32,
 }
 
-/// Someone heard at the usual volume, but off until the user turns them up.
-const MUTED_BY_DEFAULT_PERSON_SETTING: PersonVoiceSetting = PersonVoiceSetting {
-    volume_percent: mellow_client_core::shared_logic::voice_settings::DEFAULT_VOLUME_PERCENT,
-    is_locally_muted: true,
-};
+/// The user's own entry left the call's participants while they were in it: the instance
+/// dropped them, which the engine treats as a lost voice state (it offers again after a grace).
+fn is_own_call_entry_dropped(before: &[Snowflake], now: &[Snowflake], own: Snowflake) -> bool {
+    before.contains(&own) && !now.contains(&own)
+}
 
 /// The app's voice, as a global.
 struct VoiceGlobal(Entity<Voice>);
@@ -489,6 +483,10 @@ impl Voice {
             video: video::CallVideo::new(cx),
             screen: screen_share::ScreenSharing::system(),
             call_participant_ids: Vec::new(),
+            turned_up_user_ids: HashSet::new(),
+            default_muted_user_ids: HashSet::new(),
+            #[cfg(test)]
+            call_sound_counts: CallSoundCounts::default(),
             _subscriptions: subscriptions,
         };
         voice.follow_preferences(cx);
@@ -634,30 +632,88 @@ impl Voice {
         })
     }
 
-    /// The volume and local mute `user_id` is heard with now: the stored choice, else off for
-    /// someone the user blocked while in a conversation's call (ADR-0062).
-    #[must_use]
-    pub fn heard_person_setting(&self, user_id: Snowflake, cx: &App) -> PersonVoiceSetting {
-        let stored = preferences(cx).and_then(|preferences| {
+    /// The setting stored for `user_id`, if the reader chose one.
+    fn stored_person_setting(user_id: Snowflake, cx: &App) -> Option<PersonVoiceSetting> {
+        preferences(cx).and_then(|preferences| {
             preferences
                 .voice_people
                 .iter()
                 .find(|(id, _)| *id == user_id)
                 .map(|(_, setting)| *setting)
-        });
-        stored.unwrap_or_else(|| {
-            let is_muted_by_default = self.call_conversation_id().is_some()
-                && self
-                    .session
-                    .read(cx)
-                    .state()
-                    .is_muted_by_default_in_calls(user_id);
-            if is_muted_by_default {
-                MUTED_BY_DEFAULT_PERSON_SETTING
-            } else {
-                PersonVoiceSetting::default()
-            }
         })
+    }
+
+    /// Whether `user_id` is off for the reader by default now: someone they blocked, in the
+    /// conversation's call they are in, not turned up during it (ADR-0062).
+    fn is_muted_by_default_now(&self, user_id: Snowflake, cx: &App) -> bool {
+        self.call_conversation_id().is_some()
+            && !self.turned_up_user_ids.contains(&user_id)
+            && self
+                .session
+                .read(cx)
+                .state()
+                .is_muted_by_default_in_calls(user_id)
+    }
+
+    /// The volume and local mute `user_id` is heard with now: the stored choice (or the default),
+    /// turned off while they are muted by default in a call. The default mute is never stored.
+    #[must_use]
+    pub fn effective_person_setting(&self, user_id: Snowflake, cx: &App) -> PersonVoiceSetting {
+        let base = Self::stored_person_setting(user_id, cx).unwrap_or_default();
+        if self.is_muted_by_default_now(user_id, cx) {
+            PersonVoiceSetting {
+                is_locally_muted: true,
+                ..base
+            }
+        } else {
+            base
+        }
+    }
+
+    /// Hands the engine (or the store a starting engine reads) the effective setting of everyone
+    /// the default mute may concern: the people the user blocked, and those it covered before.
+    /// Run after each join or move, and after each relationship change.
+    fn apply_default_mutes(&mut self, cx: &App) {
+        let blocked: Vec<Snowflake> = self
+            .session
+            .read(cx)
+            .state()
+            .relationships_of_kind(mellow_protocol::RelationshipKind::Blocked)
+            .iter()
+            .map(|relationship| relationship.user.id)
+            .collect();
+        let concerned: HashSet<Snowflake> = blocked
+            .into_iter()
+            .chain(self.default_muted_user_ids.iter().copied())
+            .collect();
+        let mut now_muted = HashSet::new();
+        for user_id in concerned {
+            let setting = self.effective_person_setting(user_id, cx);
+            if self.is_muted_by_default_now(user_id, cx) {
+                now_muted.insert(user_id);
+            }
+            self.push_person_setting(user_id, setting);
+        }
+        self.default_muted_user_ids = now_muted;
+    }
+
+    /// The engine hears `user_id` with `setting`; a starting engine reads it from its store.
+    fn push_person_setting(&self, user_id: Snowflake, setting: PersonVoiceSetting) {
+        let Some(call) = self.call.as_ref() else {
+            return;
+        };
+        match call.engine.as_ref() {
+            Some(engine) => engine.set_person_setting(
+                PersonSoundSource::Voice,
+                user_id,
+                person_setting_of(setting),
+            ),
+            None => call.person_settings.write_person_setting(
+                PersonSoundSource::Voice,
+                user_id,
+                person_setting_of(setting).clamped(),
+            ),
+        }
     }
 
     // ---- Joining and leaving ----
@@ -790,6 +846,9 @@ impl Voice {
                 call.round_trip = None;
                 call.is_self_speaking = false;
             }
+            // Another place: the default mute of blocked people follows, both ways.
+            self.turned_up_user_ids.clear();
+            self.apply_default_mutes(cx);
             cx.notify();
             return;
         }
@@ -807,9 +866,7 @@ impl Voice {
         let settings = current_settings(cx);
         self.applied_settings = settings.clone();
         let store = person_settings_from_preferences(cx);
-        if guild_id.is_none() {
-            seed_muted_by_default(&store, state, cx);
-        }
+
         let start = spawn_on_network_runtime(
             cx,
             start_engine(EngineStart {
@@ -850,6 +907,8 @@ impl Voice {
             engine: None,
             event_pump: None,
         });
+        self.turned_up_user_ids.clear();
+        self.apply_default_mutes(cx);
         cx.notify();
     }
 
@@ -1050,6 +1109,8 @@ impl Voice {
 
     fn stop_call(&mut self, should_tell_the_server: bool, cx: &mut Context<Self>) {
         self.attempt += 1;
+        self.turned_up_user_ids.clear();
+        self.default_muted_user_ids.clear();
         self.is_push_to_talk_pressed = false;
         // Hearing the call's microphone ends with it; the settings' test keeps its own.
         if self.microphone_test.is_none() {
@@ -1137,6 +1198,11 @@ impl Voice {
                     sound_id,
                 } => self.note_sound_played(channel_id, user_id, sound_id, cx),
                 StateChange::Call { channel_id } => self.note_call_change(channel_id, cx),
+                // A block placed or lifted during a call changes who is off by default.
+                StateChange::Relationships if self.call.is_some() => {
+                    self.apply_default_mutes(cx);
+                    cx.notify();
+                }
                 _ => {}
             }
         }
@@ -1212,8 +1278,7 @@ impl Voice {
         let Some(own_user_id) = state.current_user().map(|user| user.id) else {
             return;
         };
-        if before.contains(&own_user_id)
-            && !now.contains(&own_user_id)
+        if is_own_call_entry_dropped(&before, &now, own_user_id)
             && let Some(engine) = self.engine()
         {
             // A call has no voice states: its participant list stands in for one.
@@ -1456,7 +1521,7 @@ impl Voice {
 
     // ---- Per person ----
 
-    /// Their volume, for the reader only (0 to 200 %).
+    /// Their volume, for the reader only (0 to 200 %). Stored, without the call's default mute.
     pub fn set_person_volume(
         &mut self,
         user_id: Snowflake,
@@ -1465,50 +1530,62 @@ impl Voice {
     ) {
         let setting = PersonVoiceSetting {
             volume_percent: volume_percent.min(MAXIMUM_VOLUME_PERCENT),
-            // The stored choice, never the mute a call gives blocked people: that one is not
-            // kept (ADR-0062).
-            ..Self::person_setting(user_id, cx)
+            ..Self::stored_person_setting(user_id, cx).unwrap_or_default()
         };
-        self.set_person_setting(user_id, setting, cx);
+        self.store_person_setting(user_id, setting, cx);
     }
 
-    /// Their local mute ("Mute for me").
+    /// Their local mute ("Mute for me"). Turning up someone muted by default in a call, or
+    /// muting them again, lasts for the call and is never stored.
     pub fn toggle_person_muted(&mut self, user_id: Snowflake, cx: &mut Context<Self>) {
-        let current = self.heard_person_setting(user_id, cx);
+        let base = Self::stored_person_setting(user_id, cx).unwrap_or_default();
+        let is_blocked_in_call = self.call_conversation_id().is_some()
+            && self
+                .session
+                .read(cx)
+                .state()
+                .is_muted_by_default_in_calls(user_id);
+        if is_blocked_in_call && !base.is_locally_muted {
+            if !self.turned_up_user_ids.remove(&user_id) {
+                self.turned_up_user_ids.insert(user_id);
+            }
+            let setting = self.effective_person_setting(user_id, cx);
+            self.push_person_setting(user_id, setting);
+            if setting.is_locally_muted {
+                self.stop_soundboard_sounds(SoundboardSoundsToStop::PlayedBy(user_id));
+            }
+            cx.notify();
+            return;
+        }
         let setting = PersonVoiceSetting {
-            is_locally_muted: !current.is_locally_muted,
-            ..current
+            is_locally_muted: !base.is_locally_muted,
+            ..base
         };
-        self.set_person_setting(user_id, setting, cx);
+        self.store_person_setting(user_id, setting, cx);
         if setting.is_locally_muted {
             self.stop_soundboard_sounds(SoundboardSoundsToStop::PlayedBy(user_id));
         }
     }
 
-    fn set_person_setting(
+    /// Keeps the reader's choice, and hands the engine what it means now.
+    fn store_person_setting(
         &mut self,
         user_id: Snowflake,
         setting: PersonVoiceSetting,
         cx: &mut Context<Self>,
     ) {
-        if let Some(call) = self.call.as_ref() {
-            match call.engine.as_ref() {
-                Some(engine) => engine.set_person_setting(
-                    PersonSoundSource::Voice,
-                    user_id,
-                    person_setting_of(setting),
-                ),
-                // The engine reads its store when it starts.
-                None => call.person_settings.write_person_setting(
-                    PersonSoundSource::Voice,
-                    user_id,
-                    person_setting_of(setting).clamped(),
-                ),
-            }
-        }
         change_preferences(cx, move |preferences| {
             preferences.set_voice_person(user_id, setting);
         });
+        let effective = if self.is_muted_by_default_now(user_id, cx) {
+            PersonVoiceSetting {
+                is_locally_muted: true,
+                ..setting
+            }
+        } else {
+            setting
+        };
+        self.push_person_setting(user_id, effective);
         cx.notify();
     }
 
@@ -1623,18 +1700,26 @@ impl Voice {
     }
 
     /// A call's ringtone or waiting tone (ADR-0062), as long as the call may still ring, at the
-    /// voice output volume. Outside the call's engine, so others never hear it; `stop_call_sounds`
-    /// stops it.
+    /// voice output volume, on the sound player's call channel: outside the call's engine, so
+    /// others never hear it, and stopped only by `stop_call_sounds`.
     pub fn play_looped_call_sound(&mut self, samples: LocalSound, cx: &App) {
         let gain = gain_of_percent(current_settings(cx).output_volume_percent);
         if let Some(player) = self.sound_player(cx) {
-            // The preview channel is the one the player can stop.
-            player.play_soundboard_preview(samples, gain);
+            player.play_call_sound(samples, gain);
+        }
+        #[cfg(test)]
+        {
+            self.call_sound_counts.started += 1;
         }
     }
 
-    /// A short call cue, played to its end.
+    /// A short call cue, played to its end: through the call during one, so the echo canceller
+    /// hears it.
     pub fn play_call_cue_sound(&mut self, samples: LocalSound, cx: &App) {
+        if let Some(engine) = self.engine() {
+            engine.play_soundboard_sound(samples, mellow_media::SoundboardPlayer::Preview);
+            return;
+        }
         let gain = gain_of_percent(current_settings(cx).output_volume_percent);
         if let Some(player) = self.sound_player(cx) {
             player.play(samples, gain);
@@ -1642,10 +1727,20 @@ impl Voice {
     }
 
     /// Stops the ringtone and the waiting tone.
-    pub fn stop_call_sounds(&self) {
+    pub fn stop_call_sounds(&mut self) {
         if let Some(player) = self.sound_player.as_ref() {
-            player.stop_soundboard_previews();
+            player.stop_call_sounds();
         }
+        #[cfg(test)]
+        {
+            self.call_sound_counts.stopped += 1;
+        }
+    }
+
+    /// How many looped call sounds were started and stopped, for tests.
+    #[cfg(test)]
+    pub(crate) fn call_sound_counts(&self) -> CallSoundCounts {
+        self.call_sound_counts
     }
 
     fn sound_player(&mut self, cx: &App) -> Option<&SoundPlayer> {
@@ -1684,3 +1779,7 @@ mod tests;
 
 #[cfg(test)]
 mod screen_share_tests;
+
+#[cfg(test)]
+#[path = "call_tests.rs"]
+mod call_tests;

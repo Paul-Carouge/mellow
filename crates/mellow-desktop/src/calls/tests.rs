@@ -213,14 +213,22 @@ fn ringing_lasts_at_most_thirty_local_seconds_whatever_the_instance_s_clock_says
 #[gpui::test]
 fn a_failed_start_says_why_and_whether_calling_again_may_work(cx: &mut TestAppContext) {
     let (_, calls, _) = calls_on_a_test_clock(cx);
+    let second_answer = Rc::new(Cell::new(None));
+    let second = Rc::clone(&second_answer);
     // No instance behind the session: the start fails as a network failure would.
     calls.update(cx, |calls, cx| {
         calls.start_call(CONVERSATION_ANA, cx, |_, _| {});
         assert!(calls.is_starting(CONVERSATION_ANA));
-        // A second press while it starts does nothing.
-        calls.start_call(CONVERSATION_ANA, cx, |_, _| {});
+        // A second press while it starts does nothing, but its caller still hears back.
+        calls.start_call(CONVERSATION_ANA, cx, move |outcome, _| {
+            second.set(Some(outcome));
+        });
     });
     cx.run_until_parked();
+    assert_eq!(
+        second_answer.get(),
+        Some(Err(CallStartFailure::AlreadyStarting))
+    );
     let problem = calls.read_with(cx, |calls, _| calls.start_problem());
     assert_eq!(
         problem,
@@ -244,4 +252,121 @@ fn a_failed_start_says_why_and_whether_calling_again_may_work(cx: &mut TestAppCo
         CallStartFailure::RateLimited
     );
     assert!(!CallStartFailure::AlreadyCalling.may_work_again());
+}
+
+#[gpui::test]
+fn a_late_answer_about_a_call_that_ended_does_not_bring_it_back(cx: &mut TestAppContext) {
+    let (session, calls, _) = calls_on_a_test_clock(cx);
+    let call = anas_call(&[ME], &[ANA]);
+    apply(&session, GatewayEvent::CallCreate(call.clone()), cx);
+    apply(
+        &session,
+        GatewayEvent::CallDelete {
+            channel_id: CONVERSATION_ANA,
+        },
+        cx,
+    );
+    let outcome = calls.update(cx, |calls, cx| {
+        calls.follow_start_answer(CONVERSATION_ANA, Ok(call), cx)
+    });
+    assert_eq!(outcome, Ok(()));
+    assert!(
+        session.read_with(cx, |session, _| session
+            .state()
+            .call(CONVERSATION_ANA)
+            .is_none()),
+        "the ended call stays ended"
+    );
+}
+
+#[gpui::test]
+fn a_new_call_s_answer_is_known_at_once(cx: &mut TestAppContext) {
+    let (session, calls, _) = calls_on_a_test_clock(cx);
+    let outcome = calls.update(cx, |calls, cx| {
+        calls.follow_start_answer(CONVERSATION_ANA, Ok(anas_call(&[ME], &[ANA])), cx)
+    });
+    assert_eq!(outcome, Ok(()));
+    assert!(session.read_with(cx, |session, _| {
+        session.state().call(CONVERSATION_ANA).is_some()
+    }));
+}
+
+#[gpui::test]
+fn the_notification_s_decline_stops_the_ringing(cx: &mut TestAppContext) {
+    let (session, calls, _) = calls_on_a_test_clock(cx);
+    apply(
+        &session,
+        GatewayEvent::CallCreate(anas_call(&[ME], &[ANA])),
+        cx,
+    );
+    assert_eq!(
+        CallNotificationAction::of(Some(ANSWER_ACTION_ID)),
+        CallNotificationAction::Answer
+    );
+    assert_eq!(
+        CallNotificationAction::of(None),
+        CallNotificationAction::Open
+    );
+    assert_eq!(
+        call_of_notification_tag(&notification_tag(CONVERSATION_ANA)),
+        Some(CONVERSATION_ANA)
+    );
+    cx.update(|cx| follow_call_notification(CONVERSATION_ANA, Some(DECLINE_ACTION_ID), cx));
+    cx.run_until_parked();
+    calls.read_with(cx, |calls, cx| {
+        assert!(calls.ringing_call(cx).is_none());
+        assert_eq!(calls.incoming_sound(), None);
+    });
+}
+
+#[gpui::test]
+fn the_ringtone_reaches_the_sound_player_and_its_stop_too(cx: &mut TestAppContext) {
+    let session = cx.new(|_| Session::signed_out_kept_in_memory_only());
+    session.update(cx, |session, _| {
+        *session.state_mut() = sample_state_with_calls();
+        session.pretend_signed_in();
+    });
+    cx.update(|cx| {
+        cx.set_global(crate::preferences::PreferencesStore::default());
+    });
+    let format = mellow_media::StreamFormat {
+        sample_rate: 48_000,
+        channels: 1,
+    };
+    let voice = cx.update(|cx| {
+        crate::voice::install_voice(
+            &session,
+            std::sync::Arc::new(move || {
+                Box::new(mellow_media::SyntheticAudioDevices::new(
+                    mellow_media::SyntheticSound::Silence,
+                    format,
+                    format,
+                ))
+            }),
+            cx,
+        )
+    });
+    let clock: Rc<dyn Fn() -> u64> = Rc::new(|| STARTED_AT);
+    cx.update(|cx| install_calls_with_clock(&session, clock, cx));
+    apply(
+        &session,
+        GatewayEvent::CallCreate(anas_call(&[ME], &[ANA])),
+        cx,
+    );
+    // The ringtone is decoded off the interface thread first.
+    cx.run_until_parked();
+    let counts = voice.read_with(cx, |voice, _| voice.call_sound_counts());
+    assert_eq!(counts.started, 1);
+    assert_eq!(counts.stopped, 0);
+    apply(
+        &session,
+        GatewayEvent::CallDelete {
+            channel_id: CONVERSATION_ANA,
+        },
+        cx,
+    );
+    assert_eq!(
+        voice.read_with(cx, |voice, _| voice.call_sound_counts().stopped),
+        1
+    );
 }

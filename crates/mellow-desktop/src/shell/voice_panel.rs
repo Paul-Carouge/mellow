@@ -15,7 +15,7 @@ use mellow_client_core::shared_logic::voice_panel::{
     LatencyQuality, VoiceProblem, latency_quality,
 };
 use mellow_client_core::shared_logic::voice_settings::{
-    MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT, VoiceInputMode,
+    MAXIMUM_VOLUME_PERCENT, MINIMUM_VOLUME_PERCENT, PersonVoiceSetting, VoiceInputMode,
 };
 use mellow_protocol::{Snowflake, VoiceDisconnectReason, VoiceJoinRefusal};
 
@@ -884,7 +884,12 @@ impl DuskShell {
         let tokens = theme(cx);
         let strings = strings(cx);
         let user_id = popover.user_id;
-        let setting = Voice::person_setting(user_id, cx);
+        let setting = self
+            .voice
+            .as_ref()
+            .map_or_else(PersonVoiceSetting::default, |voice| {
+                voice.read(cx).effective_person_setting(user_id, cx)
+            });
         let volume_voice = voice.downgrade();
         let mute_voice = voice.downgrade();
         let bounds = RangeBounds {

@@ -6,7 +6,9 @@ use mellow_client_core::shared_logic::format::display_name;
 use mellow_client_core::shared_logic::group_conversations::other_participants;
 use mellow_client_core::shared_logic::voice_panel::VoiceProblem;
 use mellow_client_core::state::CallMessageSummary;
-use mellow_protocol::{Call, DirectMessageChannel, PublicUser, Snowflake, VoiceDisconnectReason};
+use mellow_protocol::{
+    Call, DirectMessageChannel, PublicUser, Snowflake, VoiceDisconnectReason, VoiceJoinRefusal,
+};
 
 use super::CallStartFailure;
 use crate::home::conversation_display_name;
@@ -147,10 +149,22 @@ pub fn call_problem_look(
     place: &str,
     strings: Strings,
 ) -> Option<CallProblemLook> {
+    let calls = strings.calls();
+    if let VoiceProblem::Refused {
+        reason: VoiceJoinRefusal::MissingPermissions,
+        ..
+    } = problem
+    {
+        return Some(CallProblemLook {
+            title: strings.voice().could_not_join(place),
+            sentence: calls.cannot_join(),
+            is_notice: false,
+            can_call_again: false,
+        });
+    }
     let VoiceProblem::Disconnected { reason, .. } = problem else {
         return None;
     };
-    let calls = strings.calls();
     match reason {
         VoiceDisconnectReason::CallEnded => Some(CallProblemLook {
             title: calls.no_answer_title().to_owned(),
@@ -183,7 +197,8 @@ pub fn call_start_failure_sentence(failure: CallStartFailure, strings: Strings) 
         CallStartFailure::RateLimited => failures.rate_limited(),
         CallStartFailure::Unreachable => failures.unreachable(),
         CallStartFailure::VoiceUnavailable => failures.voice_unavailable(),
-        CallStartFailure::Other => failures.other(),
+        // Not said: the start already under way says how it went.
+        CallStartFailure::Other | CallStartFailure::AlreadyStarting => failures.other(),
     }
 }
 
@@ -191,6 +206,23 @@ pub fn call_start_failure_sentence(failure: CallStartFailure, strings: Strings) 
 mod tests {
     use super::*;
     use crate::i18n::Language;
+
+    #[test]
+    fn a_call_says_it_can_no_longer_be_joined_in_its_own_words() {
+        let strings = Strings::new(Language::French);
+        let refused = VoiceProblem::Refused {
+            channel_id: Snowflake::from_raw(1),
+            reason: VoiceJoinRefusal::MissingPermissions,
+        };
+        let look = call_problem_look(refused, "Ana", strings).unwrap();
+        assert_eq!(look.sentence, "Tu ne peux plus participer à cet appel.");
+        assert!(!look.can_call_again);
+        let full = VoiceProblem::Refused {
+            channel_id: Snowflake::from_raw(1),
+            reason: VoiceJoinRefusal::ChannelFull,
+        };
+        assert!(call_problem_look(full, "Ana", strings).is_none());
+    }
 
     #[test]
     fn a_call_reads_its_length_in_minutes_then_hours() {

@@ -95,7 +95,7 @@ impl Voice {
             self.channel_id(),
             self.phase() == Some(CallPhase::Connected),
             self.toggles.is_deafened(),
-            !is_mine && Self::person_setting(player, cx).is_locally_muted,
+            !is_mine && self.effective_person_setting(player, cx).is_locally_muted,
         );
         if is_heard {
             self.play_sound(
@@ -126,7 +126,7 @@ impl Voice {
             join_sound_id,
             state.sounds_of(guild_id),
             self.toggles.is_deafened(),
-            Self::person_setting(user_id, cx).is_locally_muted,
+            self.effective_person_setting(user_id, cx).is_locally_muted,
         );
         self.play_join(guild_id, user_id, cue, VoiceCue::PeerJoin, cx);
     }
@@ -313,7 +313,7 @@ impl Voice {
                     .is_some_and(|user| user.id == player);
                 let is_wanted = self.channel_id() == Some(channel_id)
                     && !self.toggles.is_deafened()
-                    && (is_mine || !Self::person_setting(player, cx).is_locally_muted);
+                    && (is_mine || !self.effective_person_setting(player, cx).is_locally_muted);
                 if let Some(engine) = self.engine().filter(|_| is_wanted) {
                     engine.play_soundboard_sound(sound, SoundboardPlayer::Person(player));
                 }

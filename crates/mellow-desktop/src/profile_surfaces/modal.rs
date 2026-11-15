@@ -21,6 +21,7 @@ use mellow_protocol::{PublicUser, RelationshipKind, SendFriendRequest, SetRelati
 
 use super::facts::{ProfileFacts, profile_facts};
 use super::{ProfileSurfaces, ProfileSurfacesEvent};
+use crate::calls::CallStartFailure;
 use crate::components::{
     Avatar, AvatarPerson, Button, ButtonVariant, FocusNextControl, FocusPreviousControl,
     IconButton, LiveRegion as _, MenuAlignment, Tooltip, avatar_tint, bounds_recorder, easing,
@@ -242,6 +243,8 @@ impl ProfileSurfaces {
                                             }
                                         });
                                     }
+                                    // The start already under way ends this wait too.
+                                    Err(CallStartFailure::AlreadyStarting) => {}
                                     Err(start_failure) => {
                                         modal.error = Some(format!(
                                             "{failure}. {}",

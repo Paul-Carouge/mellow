@@ -12,7 +12,8 @@ use crate::calls::{Calls, install_calls_with_clock};
 use crate::navigation::Place;
 use crate::session::{Session, StateChanged};
 use crate::shell_fixtures::{
-    ANA, CONVERSATION_ANA, ME, person, sample_state, sample_state_with_calls, session_for_shell,
+    ANA, CONVERSATION_ANA, GUILD_RUST, ME, RUST_VOICE, person, sample_state,
+    sample_state_with_calls, session_for_shell,
 };
 
 fn shell_with_calls(
@@ -206,4 +207,118 @@ fn the_call_key_hides_on_an_instance_without_calls(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert!(cx.debug_bounds("chat-header").is_some());
     assert!(cx.debug_bounds("call-conversation").is_none());
+}
+
+#[gpui::test]
+fn a_call_that_stopped_ringing_here_shows_the_join_banner(cx: &mut TestAppContext) {
+    let (shell, session, calls, cx) = shell_with_calls(cx, sample_state_with_calls());
+    cx.update(|window, cx| {
+        shell.update(cx, |shell, cx| {
+            shell.open_channel(CONVERSATION_ANA, window, cx);
+        });
+    });
+    ring(&session, cx);
+    assert!(
+        cx.debug_bounds("call-banner").is_none(),
+        "the card shows instead"
+    );
+    // Declined here before the instance heard it: the call still lists the reader as rung.
+    calls.update(cx, |calls, cx| calls.decline_call(CONVERSATION_ANA, cx));
+    cx.run_until_parked();
+    assert!(cx.debug_bounds("incoming-call").is_none());
+    assert!(
+        cx.debug_bounds("call-banner").is_some(),
+        "joinable, as on the web"
+    );
+}
+
+#[gpui::test]
+fn esc_closes_a_hover_card_before_it_declines_a_call(cx: &mut TestAppContext) {
+    use gpui::{AppContext as _, Bounds, point};
+
+    let (shell, session, calls, cx) = shell_with_calls(cx, sample_state_with_calls());
+    ring(&session, cx);
+    assert!(is_focused(&answer_focus(&shell, cx), cx));
+    let anchor = cx.new(|_| {
+        Some(Bounds::new(
+            point(px(400.0), px(200.0)),
+            size(px(80.0), px(24.0)),
+        ))
+    });
+    let trigger = crate::profile_surfaces::ProfileHoverTrigger {
+        user: person(ANA, "ana", "Ana"),
+        placement: crate::profile_surfaces::HoverCardPlacement::Below,
+        anchor: anchor.downgrade(),
+        column: None,
+        opener: None,
+    };
+    cx.update(|_, cx| crate::profile_surfaces::enter_profile_trigger(trigger, cx));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(
+            crate::theme::tokens::MOTION_DELAY_HOVER_CARD.0,
+        ));
+    cx.run_until_parked();
+    assert!(cx.update(|_, cx| crate::profile_surfaces::is_profile_hover_card_shown(cx)));
+
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!cx.update(|_, cx| crate::profile_surfaces::is_profile_hover_card_shown(cx)));
+    assert!(is_ringing(&calls, cx), "the first Esc only closed the card");
+    cx.simulate_keystrokes("escape");
+    cx.run_until_parked();
+    assert!(!is_ringing(&calls, cx), "the next one declines");
+    drop(anchor);
+}
+
+#[gpui::test]
+fn the_conversation_redraws_only_when_what_the_banner_reads_of_the_voice_changes(
+    cx: &mut TestAppContext,
+) {
+    use std::cell::Cell;
+
+    let session = session_for_shell(cx, sample_state_with_calls());
+    session.update(cx, |session, _| session.pretend_signed_in());
+    cx.update(|cx| cx.set_global(crate::preferences::PreferencesStore::default()));
+    let format = mellow_media::StreamFormat {
+        sample_rate: 48_000,
+        channels: 1,
+    };
+    let voice = cx.update(|cx| {
+        crate::voice::install_voice(
+            &session,
+            std::sync::Arc::new(move || {
+                Box::new(mellow_media::SyntheticAudioDevices::new(
+                    mellow_media::SyntheticSound::Silence,
+                    format,
+                    format,
+                ))
+            }),
+            cx,
+        )
+    });
+    let shell_session = session.clone();
+    let (shell, cx) = cx.add_window_view(|window, cx| DuskShell::new(shell_session, window, cx));
+    cx.run_until_parked();
+    let conversation = shell.read_with(cx, |shell, _| shell.conversation().clone());
+    let redraws = Rc::new(Cell::new(0_u32));
+    let counted = Rc::clone(&redraws);
+    let _counting =
+        cx.update(|_, cx| cx.observe(&conversation, move |_, _| counted.set(counted.get() + 1)));
+
+    // Speaking edges, the round trip, the meter: the voice notifies, the banner reads nothing new.
+    for _ in 0..5 {
+        voice.update(cx, |_, cx| cx.notify());
+    }
+    cx.run_until_parked();
+    assert_eq!(redraws.get(), 0);
+
+    voice.update(cx, |voice, cx| {
+        voice.pretend_call_for_tests(GUILD_RUST, RUST_VOICE);
+        voice.open_call_view(cx);
+    });
+    cx.run_until_parked();
+    assert!(
+        redraws.get() >= 1,
+        "the call view opening is news to the banner"
+    );
 }

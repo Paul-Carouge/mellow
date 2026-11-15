@@ -57,6 +57,8 @@ pub enum CallStartFailure {
     VoiceUnavailable,
     /// Anything else, the network included.
     Other,
+    /// A start of this conversation's call is already waiting for the instance.
+    AlreadyStarting,
 }
 
 impl CallStartFailure {
@@ -157,6 +159,25 @@ fn notification_tag(channel_id: Snowflake) -> String {
     format!("{NOTIFICATION_TAG_PREFIX}{channel_id}")
 }
 
+/// What pressing a call's notification does.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CallNotificationAction {
+    Answer,
+    Decline,
+    /// The notification itself: the conversation opens.
+    Open,
+}
+
+impl CallNotificationAction {
+    fn of(action_id: Option<&str>) -> Self {
+        match action_id {
+            Some(ANSWER_ACTION_ID) => Self::Answer,
+            Some(DECLINE_ACTION_ID) => Self::Decline,
+            _ => Self::Open,
+        }
+    }
+}
+
 /// A call notification was pressed: Answer opens the window at the conversation and joins the
 /// call, Decline stops the ringing, the notification itself opens the conversation. Mellow may
 /// have run in the background, its window closed: the window opens first.
@@ -164,7 +185,8 @@ pub fn follow_call_notification(channel_id: Snowflake, action_id: Option<&str>, 
     let Some(calls) = calls(cx) else {
         return;
     };
-    if action_id == Some(DECLINE_ACTION_ID) {
+    let action = CallNotificationAction::of(action_id);
+    if action == CallNotificationAction::Decline {
         calls.update(cx, |calls, cx| calls.decline_call(channel_id, cx));
         return;
     }
@@ -172,7 +194,7 @@ pub fn follow_call_notification(channel_id: Snowflake, action_id: Option<&str>, 
     let Some(window) = crate::background::main_window(cx) else {
         return;
     };
-    let should_answer = action_id == Some(ANSWER_ACTION_ID);
+    let should_answer = action == CallNotificationAction::Answer;
     let shown = window.update(cx, |main_window, window, cx| {
         let Some(shell) = main_window.shell().cloned() else {
             return;
@@ -204,6 +226,10 @@ pub struct Calls {
     notified_call: Option<(Snowflake, Snowflake)>,
     /// Wakes when the earliest ringing ends, so the card and the sounds go on time.
     deadline: Option<(u64, Task<()>)>,
+    /// The calls that ended during this session, by message: a late answer never revives one.
+    ended_message_ids: HashSet<Snowflake>,
+    /// The calls going on at the last change, by conversation, to see which ended.
+    ongoing_message_by_channel: HashMap<Snowflake, Snowflake>,
     /// When this device first saw each call ring, by its local clock: ringing is bounded by it
     /// (`ringing_end`), whatever the instance's clock says.
     first_rung_at: HashMap<(Snowflake, Snowflake), u64>,
@@ -255,6 +281,8 @@ impl Calls {
             notified_call: None,
             deadline: None,
             first_rung_at: HashMap::new(),
+            ended_message_ids: HashSet::new(),
+            ongoing_message_by_channel: HashMap::new(),
             shown_ringing_key: None,
             clock,
             _subscriptions: subscriptions,
@@ -316,6 +344,13 @@ impl Calls {
             .iter()
             .map(|call| (call.channel_id, call.message_id))
             .collect();
+        let now_known: HashMap<Snowflake, Snowflake> = calls.iter().copied().collect();
+        for (channel_id, message_id) in &self.ongoing_message_by_channel {
+            if now_known.get(channel_id) != Some(message_id) {
+                self.ended_message_ids.insert(*message_id);
+            }
+        }
+        self.ongoing_message_by_channel = now_known;
         // A declined call stays declined until it is gone: a late update never rings it again.
         self.declined.retain(|key| calls.contains(key));
     }
@@ -368,6 +403,8 @@ impl Calls {
             return;
         }
         if !self.starting_channel_ids.insert(channel_id) {
+            // Already starting: the caller still hears back, later.
+            cx.defer(move |cx| on_done(Err(CallStartFailure::AlreadyStarting), cx));
             return;
         }
         self.start_problem = None;
@@ -377,29 +414,54 @@ impl Calls {
         let calls = cx.entity().downgrade();
         self.session.update(cx, |session, cx| {
             session.start_call(channel_id, cx, move |answer, cx| {
-                let outcome = answer.map_err(|error| CallStartFailure::of(&error));
-                let _ = calls.update(cx, |calls, cx| {
-                    calls.starting_channel_ids.remove(&channel_id);
-                    match outcome {
-                        Ok(()) => calls.join_call(channel_id, cx),
-                        Err(failure) => {
-                            calls.start_problem = Some(CallStartProblem {
-                                channel_id,
-                                failure,
-                            });
-                        }
-                    }
-                    cx.notify();
-                });
+                let outcome = calls
+                    .update(cx, |calls, cx| {
+                        calls.follow_start_answer(channel_id, answer, cx)
+                    })
+                    .unwrap_or(Err(CallStartFailure::Other));
                 on_done(outcome, cx);
             });
         });
         cx.notify();
     }
 
+    /// The instance answered a start: the call joins, unless it ended meanwhile (a stale answer
+    /// never brings it back), or the refusal goes to `start_problem`.
+    pub(crate) fn follow_start_answer(
+        &mut self,
+        channel_id: Snowflake,
+        answer: Result<Call, ClientError>,
+        cx: &mut Context<Self>,
+    ) -> Result<(), CallStartFailure> {
+        self.starting_channel_ids.remove(&channel_id);
+        let outcome = match answer {
+            Ok(call) if self.ended_message_ids.contains(&call.message_id) => Ok(()),
+            Ok(call) => {
+                self.session
+                    .update(cx, |session, cx| session.note_started_call(call, cx));
+                self.join_call(channel_id, cx);
+                Ok(())
+            }
+            Err(error) => {
+                let failure = CallStartFailure::of(&error);
+                self.start_problem = Some(CallStartProblem {
+                    channel_id,
+                    failure,
+                });
+                Err(failure)
+            }
+        };
+        cx.notify();
+        outcome
+    }
+
     /// Answering is joining (ADR-0062): this device holds the connection, the others stop
     /// ringing. The call view opens.
     pub fn join_call(&mut self, channel_id: Snowflake, cx: &mut Context<Self>) {
+        // A call gone (ended, or never known) is not brought back by joining its id.
+        if self.session.read(cx).state().call(channel_id).is_none() {
+            return;
+        }
         self.start_problem = None;
         if let Some(voice) = voice(cx) {
             voice.update(cx, |voice, cx| {
@@ -424,7 +486,12 @@ impl Calls {
         }
         self.session
             .update(cx, |session, cx| session.decline_call(channel_id, cx));
-        self.refresh(cx);
+        // Later: declining runs inside a key or click event, during which the window cannot be
+        // asked whether it is in front.
+        let calls = cx.entity().downgrade();
+        cx.defer(move |cx| {
+            let _ = calls.update(cx, Self::refresh);
+        });
         cx.notify();
     }
 
@@ -440,6 +507,8 @@ impl Calls {
         self.starting_channel_ids.clear();
         self.declined.clear();
         self.first_rung_at.clear();
+        self.ended_message_ids.clear();
+        self.ongoing_message_by_channel.clear();
         self.shown_ringing_key = None;
         if let Some((channel_id, _)) = self.notified_call.take() {
             cx.dismiss_system_notification(&notification_tag(channel_id));
@@ -560,7 +629,7 @@ impl Calls {
 
     fn stop_looped_sounds(cx: &mut App) {
         if let Some(voice) = voice(cx) {
-            voice.read(cx).stop_call_sounds();
+            voice.update(cx, |voice, _| voice.stop_call_sounds());
         }
         tracing::info!("call sounds stopped");
     }

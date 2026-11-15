@@ -39,7 +39,17 @@ impl ConversationView {
                 && !voice.is_call_view_open()
                 && voice.watched_stream_user_id().is_none()
         });
-        phase == Some(CallPhase::Joinable) || (phase.is_some() && is_in_it_with_the_view_closed)
+        // A call that stopped ringing here (its 30 seconds, or declined before the instance
+        // heard it) is one the reader may still join, as on the web.
+        let is_ringing_here = crate::calls::calls(cx).is_some_and(|calls| {
+            calls
+                .read(cx)
+                .ringing_call(cx)
+                .is_some_and(|call| call.channel_id == channel_id)
+        });
+        let is_joinable = phase == Some(CallPhase::Joinable)
+            || (phase == Some(CallPhase::Incoming) && !is_ringing_here);
+        is_joinable || (phase.is_some() && is_in_it_with_the_view_closed)
     }
 
     pub(super) fn render_call_banner(&self, cx: &mut Context<Self>) -> Option<AnyElement> {
@@ -79,6 +89,7 @@ impl ConversationView {
         Some(
             div()
                 .id("call-banner")
+                .debug_selector(|| "call-banner".to_owned())
                 .role(Role::Region)
                 .aria_label(strings.calls().ongoing())
                 .absolute()

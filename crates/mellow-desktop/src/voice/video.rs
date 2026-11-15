@@ -366,6 +366,25 @@ fn pump_own_camera(cx: &mut Context<Voice>) -> Task<()> {
 
 #[cfg(test)]
 impl Voice {
+    /// The call's media connected, for tests that read what happens once it is.
+    pub(crate) fn pretend_connected_for_tests(&mut self) {
+        if let Some(call) = self.call.as_mut() {
+            call.phase = super::CallPhase::Connected;
+        }
+    }
+
+    /// What the call's engine hears `user_id` with (or will, once it starts).
+    pub(crate) fn engine_person_setting_for_tests(
+        &self,
+        user_id: Snowflake,
+    ) -> Option<mellow_media::PersonVoiceSetting> {
+        use mellow_media::PersonVoiceSettingsStore as _;
+        self.call.as_ref().map(|call| {
+            call.person_settings
+                .person_setting(PersonSoundSource::Voice, user_id)
+        })
+    }
+
     /// A call still starting (no engine), so views of a call can be drawn without a server.
     pub(crate) fn pretend_call_for_tests(&mut self, guild_id: Snowflake, channel_id: Snowflake) {
         self.call = Some(super::Call {

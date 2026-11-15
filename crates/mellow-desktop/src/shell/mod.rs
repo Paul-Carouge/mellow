@@ -318,9 +318,22 @@ impl DuskShell {
             cx.new(|_| conversation_sheet::FilledSlot::new(friends_pane))
         };
         let message_search = cx.new(|cx| MessageSearchView::new(session.clone(), window, cx));
+        // Ctrl+Enter answers the ringing call from anywhere, Esc in the card declines it: before
+        // key bindings, so the composer's own Ctrl+Enter and Esc never see them. Registered before
+        // the profile surfaces' own interceptor, so it sees a hover card still shown and leaves
+        // that Esc to close it.
+        let shell_for_keys = cx.entity().downgrade();
+        let call_keys = cx.intercept_keystrokes(move |event, window, cx| {
+            let _ = shell_for_keys.update(cx, |shell, cx| {
+                if shell.answer_or_decline_with_key(&event.keystroke, window, cx) {
+                    cx.stop_propagation();
+                }
+            });
+        });
         let profile_surfaces = cx.new(|cx| ProfileSurfaces::new(session.clone(), window, cx));
         let voice = crate::voice::voice(cx);
         let mut subscriptions = vec![
+            call_keys,
             cx.subscribe_in(&profile_surfaces, window, Self::follow_profile_surfaces),
             cx.subscribe_in(&home, window, Self::follow_home),
             cx.subscribe_in(&message_search, window, Self::follow_message_search),
@@ -353,16 +366,6 @@ impl DuskShell {
                 cx.notify();
             }));
         }
-        // Ctrl+Enter answers the ringing call from anywhere, Esc in the card declines it: before
-        // key bindings, so the composer's own Ctrl+Enter and Esc never see them.
-        let shell_for_keys = cx.entity().downgrade();
-        subscriptions.push(cx.intercept_keystrokes(move |event, window, cx| {
-            let _ = shell_for_keys.update(cx, |shell, cx| {
-                if shell.answer_or_decline_with_key(&event.keystroke, window, cx) {
-                    cx.stop_propagation();
-                }
-            });
-        }));
         // The user card's "Restart to update" button (ADR-0057).
         if let Some(self_update) = crate::self_update::self_update(cx) {
             subscriptions.push(cx.observe(&self_update, |_, _, cx| cx.notify()));
