@@ -2629,12 +2629,14 @@ export const en = {
     openWithDefaultApp: "Open with the default app",
     attachmentOpening: (fileName: string) => `Opening ${fileName}…`,
     attachmentOpenFailed: (fileName: string) => `Couldn't open ${fileName}. Try again, or download it.`,
-    /** The YouTube player window (ADR-0061): a card whose video plays there. */
-    youTubePlayingInPlayerWindow: "Playing in the player",
-    /** The card's key that brings the player window to the front (DESIGN.md 5.4, "Link cards"). */
-    youTubeShowPlayer: (title: string) => `Show the Mellow player: ${title}`,
-    /** The player window could not start (no web view on this system): the browser plays it. */
-    youTubePlayerUnavailable: "The player window couldn't open, so the video opened in your browser.",
+    /** A YouTube video played in its card (ADR-0063), when it cannot play: why, then a way to YouTube. */
+    youTubeRobotCheck: "YouTube wants to check that you're not a robot, so this video can't play here.",
+    youTubePrivate: "This video is private.",
+    youTubeAgeRestricted: "This video is age-restricted, so it can't play here.",
+    youTubeLive: "Live streams can't play here yet.",
+    youTubeUnavailable: "This video isn't available here.",
+    youTubeCannotPlay: "Couldn't play this video here.",
+    youTubeOpenOnYouTube: "Open on YouTube",
   },
 };
 

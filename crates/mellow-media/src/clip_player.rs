@@ -11,6 +11,7 @@ use std::time::Duration;
 
 use crate::clip_decoder::{ClipDecoder, ClipError, open_clip};
 use crate::devices::{AudioDevices, PlaybackStream, has_failed};
+use crate::remote_media::RemoteTrack;
 use crate::resampling::{Interpolation, StreamResampler};
 use crate::time_stretch::TimeStretcher;
 
@@ -66,8 +67,7 @@ impl Default for ClipStatus {
 enum Command {
     Load {
         clip: u64,
-        bytes: Arc<[u8]>,
-        content_type: String,
+        source: ClipSource,
         start: ClipStart,
     },
     Play,
@@ -79,6 +79,30 @@ enum Command {
     SetVolume(f32),
     SetOutputDevice(Option<String>),
     Stop,
+}
+
+/// What a loaded sound is read from.
+enum ClipSource {
+    /// A whole file of `content_type`.
+    Bytes {
+        bytes: Arc<[u8]>,
+        content_type: String,
+    },
+    /// A sound track streamed over HTTPS (a YouTube video's, ADR-0063).
+    Remote(RemoteTrack),
+}
+
+/// A streamed sound track's decoder: only Linux reads one so far.
+fn open_remote_clip(track: &RemoteTrack) -> Result<Box<dyn ClipDecoder>, ClipError> {
+    #[cfg(target_os = "linux")]
+    {
+        crate::video_file_ffmpeg::open_remote_sound(track)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = track;
+        Err(ClipError::Unsupported)
+    }
 }
 
 /// Where a loaded sound starts.
@@ -133,9 +157,22 @@ impl ClipPlayer {
         start: ClipStart,
     ) {
         self.send(Command::Load {
+            source: ClipSource::Bytes {
+                bytes,
+                content_type: content_type.to_owned(),
+            },
             clip,
-            bytes,
-            content_type: content_type.to_owned(),
+            start,
+        });
+        self.send(Command::Play);
+    }
+
+    /// Replaces the loaded sound with a track streamed over HTTPS and plays it from `start`.
+    /// Opening it waits on the network on the player's thread, never the caller's.
+    pub fn load_remote_and_play_from(&self, clip: u64, track: RemoteTrack, start: ClipStart) {
+        self.send(Command::Load {
+            clip,
+            source: ClipSource::Remote(track),
             start,
         });
         self.send(Command::Play);
@@ -439,18 +476,19 @@ fn run(devices: &dyn AudioDevices, commands: &Receiver<Command>, status: &Mutex<
 }
 
 /// Replaces the loaded sound and moves to where it starts.
-fn load(
-    state: &mut PlayerState,
-    clip: u64,
-    bytes: Arc<[u8]>,
-    content_type: &str,
-    start: ClipStart,
-) {
+fn load(state: &mut PlayerState, clip: u64, source: ClipSource, start: ClipStart) {
     state.output = None;
     state.key = Some(clip);
     state.speed = 1.0;
     state.stretcher = None;
-    match without_panics(|| open_clip(bytes, content_type)) {
+    let opened = without_panics(|| match source {
+        ClipSource::Bytes {
+            bytes,
+            content_type,
+        } => open_clip(bytes, &content_type),
+        ClipSource::Remote(track) => open_remote_clip(&track),
+    });
+    match opened {
         Ok(decoder) => {
             state.loaded = Some(LoadedClip {
                 decoder,
@@ -479,10 +517,9 @@ fn apply(state: &mut PlayerState, command: Command) {
     match command {
         Command::Load {
             clip,
-            bytes,
-            content_type,
+            source,
             start,
-        } => load(state, clip, bytes, &content_type, start),
+        } => load(state, clip, source, start),
         Command::Play => {
             if state.loaded.is_none() {
                 return;

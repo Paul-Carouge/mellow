@@ -30,6 +30,7 @@ symphonia = { workspace = true, features = ["ogg", "vorbis"] }
 tempfile.workspace = true
 thiserror.workspace = true
 tracing.workspace = true
+url.workspace = true
 yuv.workspace = true
 
 # Linux desktops run PipeWire: its own host lists the devices by their PipeWire node name, stable
@@ -49,6 +50,9 @@ x11rb = { version = "0.13.2", default-features = false, features = ["composite",
 # Received H.264 (ADR-0052) through the system FFmpeg the Linux desktop already links for
 # Vesper's encoder (ADR-0051's amendment).
 rusty_ffmpeg.workspace = true
+# YouTube's picture and sound tracks, streamed in byte ranges on their own threads (ADR-0063):
+# the workspace's client, blocking, as the demuxers that read them are.
+reqwest = { workspace = true, features = ["blocking"] }
 
 # Cameras through AVFoundation, with the objc2 crates GPUI already brings (ADR-0051).
 [target.'cfg(target_os = "macos")'.dependencies]

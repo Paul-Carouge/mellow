@@ -17,6 +17,7 @@ use std::sync::{Arc, Condvar, Mutex, MutexGuard, PoisonError};
 use std::time::{Duration, Instant};
 
 use crate::clip_decoder::{ClipDecoder, ClipError};
+use crate::remote_media::RemoteTrack;
 use crate::video_frame::{DecodedPixelFormat, DecodedVideoFrame};
 
 /// The video types the instance serves inline (ADR-0038's `PLAYABLE_MEDIA_TYPES`).
@@ -335,6 +336,51 @@ impl VideoStream {
         content_type: &str,
         timing: VideoTiming,
     ) -> std::io::Result<Self> {
+        let container = video_container(&bytes, content_type);
+        let is_played = plays_video_type(content_type);
+        Self::start_with(
+            move || {
+                container
+                    .filter(|_| is_played)
+                    .ok_or(ClipError::Unsupported)
+                    .and_then(|container| open_video_track(bytes, container))
+            },
+            timing,
+        )
+    }
+
+    /// Starts decoding a picture track streamed over HTTPS (a YouTube video's, ADR-0063); only
+    /// Linux decodes one so far, elsewhere it fails as `Unsupported`.
+    ///
+    /// # Errors
+    /// The thread could not be started.
+    // Only Linux consumes the track; elsewhere it is dropped unread.
+    #[cfg_attr(not(target_os = "linux"), allow(clippy::needless_pass_by_value))]
+    pub fn start_remote(track: RemoteTrack, timing: VideoTiming) -> std::io::Result<Self> {
+        Self::start_with(
+            move || {
+                #[cfg(target_os = "linux")]
+                {
+                    Ok(
+                        Box::new(crate::video_file_ffmpeg::FfmpegVideoTrack::open_remote(
+                            &track,
+                        )?) as Box<dyn VideoTrackDecoder>,
+                    )
+                }
+                #[cfg(not(target_os = "linux"))]
+                {
+                    let _ = track;
+                    Err(ClipError::Unsupported)
+                }
+            },
+            timing,
+        )
+    }
+
+    fn start_with(
+        open: impl FnOnce() -> Result<Box<dyn VideoTrackDecoder>, ClipError> + Send + 'static,
+        timing: VideoTiming,
+    ) -> std::io::Result<Self> {
         let is_loop_playing = matches!(timing, VideoTiming::Loop { is_playing: true });
         let shared = Arc::new(Shared {
             state: Mutex::new(StreamState {
@@ -350,19 +396,12 @@ impl VideoStream {
             waker: Mutex::new(None),
         });
         let thread_shared = Arc::clone(&shared);
-        let container = video_container(&bytes, content_type);
-        let is_played = plays_video_type(content_type);
         // Detached: the stream never joins it (see `VideoStream`), so it reports its own panic.
         std::thread::Builder::new()
             .name("mellow-video-file".into())
             .spawn(move || {
                 let decoding = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                    let opened = container
-                        .filter(|_| is_played)
-                        .ok_or(ClipError::Unsupported)
-                        .and_then(|container| {
-                            without_panics(|| open_video_track(bytes, container))
-                        });
+                    let opened = without_panics(open);
                     match opened {
                         Ok(decoder) => run(decoder, timing, &thread_shared),
                         Err(error) => {

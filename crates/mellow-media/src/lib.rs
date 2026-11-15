@@ -102,6 +102,9 @@ mod video_compression;
 #[allow(unsafe_code)]
 mod video_compression_linux;
 // AVFoundation, reached through `unsafe` Objective-C calls; each states its invariant.
+#[cfg(target_os = "linux")]
+mod remote_file;
+mod remote_media;
 #[cfg(target_os = "macos")]
 #[allow(unsafe_code)]
 mod video_compression_macos;
@@ -154,6 +157,7 @@ pub use person_settings::{
     InMemoryPersonVoiceSettings, PersonSoundSource, PersonVoiceSetting, PersonVoiceSettingsStore,
 };
 pub use processing::{NoiseSuppressionMode, ProcessingSettings};
+pub use remote_media::{RemoteTrack, is_allowed_stream_url};
 pub use resampling::ResamplingError;
 pub use screen_capture::{
     RunningScreenCapture, ScreenCaptureError, ScreenChoice, ScreenPicker, ScreenShare,

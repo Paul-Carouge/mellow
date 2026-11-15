@@ -16031,24 +16031,52 @@ impl DesktopStrings {
         }
     }
 
-    pub fn you_tube_playing_in_player_window(self) -> &'static str {
+    pub fn you_tube_robot_check(self) -> &'static str {
         match self.language {
-            Language::English => "Playing in the player",
-            Language::French => "En lecture dans le lecteur",
+            Language::English => "YouTube wants to check that you're not a robot, so this video can't play here.",
+            Language::French => "YouTube veut vérifier que tu n’es pas un robot\u{a0}: cette vidéo ne peut pas être lue ici.",
         }
     }
 
-    pub fn you_tube_show_player(self, title: &str) -> String {
+    pub fn you_tube_private(self) -> &'static str {
         match self.language {
-            Language::English => format!("Show the Mellow player: {title}"),
-            Language::French => format!("Afficher le lecteur Mellow\u{a0}: {title}"),
+            Language::English => "This video is private.",
+            Language::French => "Cette vidéo est privée.",
         }
     }
 
-    pub fn you_tube_player_unavailable(self) -> &'static str {
+    pub fn you_tube_age_restricted(self) -> &'static str {
         match self.language {
-            Language::English => "The player window couldn't open, so the video opened in your browser.",
-            Language::French => "La fenêtre du lecteur n’a pas pu s’ouvrir\u{a0}: la vidéo s’est ouverte dans ton navigateur.",
+            Language::English => "This video is age-restricted, so it can't play here.",
+            Language::French => "Cette vidéo est soumise à une limite d’âge\u{a0}: elle ne peut pas être lue ici.",
+        }
+    }
+
+    pub fn you_tube_live(self) -> &'static str {
+        match self.language {
+            Language::English => "Live streams can't play here yet.",
+            Language::French => "Les directs ne peuvent pas encore être lus ici.",
+        }
+    }
+
+    pub fn you_tube_unavailable(self) -> &'static str {
+        match self.language {
+            Language::English => "This video isn't available here.",
+            Language::French => "Cette vidéo n’est pas disponible ici.",
+        }
+    }
+
+    pub fn you_tube_cannot_play(self) -> &'static str {
+        match self.language {
+            Language::English => "Couldn't play this video here.",
+            Language::French => "Impossible de lire cette vidéo ici.",
+        }
+    }
+
+    pub fn you_tube_open_on_you_tube(self) -> &'static str {
+        match self.language {
+            Language::English => "Open on YouTube",
+            Language::French => "Ouvrir sur YouTube",
         }
     }
 }

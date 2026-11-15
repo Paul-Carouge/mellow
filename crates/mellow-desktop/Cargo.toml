@@ -49,9 +49,6 @@ keyring-core = "1.0.1"
 mellow-client-core.workspace = true
 # Its sound player plays the web's notification chime (the voice engine comes with step 7).
 mellow-media.workspace = true
-# What the YouTube player window may be asked and may load (ADR-0061): its library only, so the
-# app links no web engine; the window is the crate's own binary.
-mellow-player.workspace = true
 # The release check, download and signature verification the server's `update` uses (ADR-0057).
 mellow-update.workspace = true
 mellow-protocol.workspace = true
@@ -66,7 +63,7 @@ serde_json.workspace = true
 sys-locale = "0.3.2"
 tempfile.workspace = true
 thiserror.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "io-util"] }
 tracing.workspace = true
 # `tracing-log` forwards the `log` records of GPUI and wgpu, whose errors would otherwise be lost.
 tracing-subscriber = { workspace = true, features = ["tracing-log"] }
@@ -77,6 +74,10 @@ zeroize.workspace = true
 [target.'cfg(target_os = "linux")'.dependencies]
 ashpd = { workspace = true, features = ["global_shortcuts"] }
 futures-lite.workspace = true
+# YouTube videos played in their card (ADR-0063): rustypipe asks YouTube's InnerTube API for a
+# video's tracks (GPL-3.0, compatible with Mellow's AGPL-3.0); rustls with Mozilla's roots, as
+# the rest of the app. Linux only: the other systems do not stream video yet.
+rustypipe = { version = "0.11.4", default-features = false, features = ["rustls-tls-webpki-roots"] }
 # The system tray (StatusNotifierItem, ADR-0056), on the async-io zbus already in the tree for the
 # portals; only ksni itself and task-local are new (Unlicense, MIT/Apache-2.0).
 ksni = { version = "0.3.7", default-features = false, features = ["async-io"] }

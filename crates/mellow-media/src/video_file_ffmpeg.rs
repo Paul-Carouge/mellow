@@ -12,6 +12,7 @@
 #![allow(clippy::cast_possible_wrap, clippy::cast_ptr_alignment)]
 
 use std::ffi::{CStr, c_int, c_void};
+use std::io::{Cursor, Read, Seek, SeekFrom};
 use std::ptr;
 use std::sync::Arc;
 use std::time::Duration;
@@ -19,6 +20,8 @@ use std::time::Duration;
 use rusty_ffmpeg::ffi as ff;
 
 use crate::clip_decoder::{ClipDecoder, ClipError};
+use crate::remote_file::RemoteFile;
+use crate::remote_media::RemoteTrack;
 use crate::video_file::{
     MAXIMUM_SHOWN_VIDEO_SIZE, MAXIMUM_SOURCE_PIXELS, SoundTrack, TimedPicture, VideoContainer,
     VideoTrackDecoder, quarter_turns_from_counterclockwise_degrees, turned_bgra,
@@ -47,50 +50,72 @@ const MICROSECONDS: ff::AVRational = ff::AVRational {
     den: 1_000_000,
 };
 
+/// What a demuxer reads: a whole file in memory, or a track over the network.
+pub(crate) trait MediaInput: Read + Seek + Send {}
+impl<T: Read + Seek + Send> MediaInput for T {}
+
 /// The file being read, behind libavformat's opaque pointer.
-struct MemoryInput {
-    bytes: Arc<[u8]>,
-    position: usize,
+pub(crate) struct Input {
+    reader: Box<dyn MediaInput>,
+    length: u64,
+}
+
+impl Input {
+    fn memory(bytes: Arc<[u8]>) -> Self {
+        let length = bytes.len() as u64;
+        Self {
+            reader: Box::new(Cursor::new(bytes)),
+            length,
+        }
+    }
+
+    fn remote(track: &RemoteTrack) -> Result<Self, ClipError> {
+        let file = RemoteFile::open(track)?;
+        let length = file.length();
+        Ok(Self {
+            reader: Box::new(file),
+            length,
+        })
+    }
 }
 
 /// libavformat's read callback: copies the next bytes of the file.
 unsafe extern "C" fn read_input(opaque: *mut c_void, buffer: *mut u8, size: c_int) -> c_int {
     // SAFETY: `opaque` is the demuxer's boxed input, alive while its context is.
-    let input = unsafe { &mut *opaque.cast::<MemoryInput>() };
-    let rest = input.bytes.get(input.position..).unwrap_or_default();
-    if rest.is_empty() {
-        return ff::AVERROR_EOF;
+    let input = unsafe { &mut *opaque.cast::<Input>() };
+    let size = usize::try_from(size).unwrap_or(0);
+    // SAFETY: libavformat hands a buffer of `size` bytes.
+    let target = unsafe { std::slice::from_raw_parts_mut(buffer, size) };
+    match input.reader.read(target) {
+        Ok(0) => ff::AVERROR_EOF,
+        Ok(count) => c_int::try_from(count).unwrap_or(0),
+        Err(_) => ff::AVERROR(ff::EIO),
     }
-    let count = rest.len().min(usize::try_from(size).unwrap_or(0));
-    // SAFETY: libavformat hands a buffer of `size` bytes; `count` is at most that.
-    unsafe { ptr::copy_nonoverlapping(rest.as_ptr(), buffer, count) };
-    input.position += count;
-    c_int::try_from(count).unwrap_or(0)
 }
 
 /// libavformat's seek callback, `AVSEEK_SIZE` included.
 unsafe extern "C" fn seek_input(opaque: *mut c_void, offset: i64, whence: c_int) -> i64 {
     // SAFETY: as in `read_input`.
-    let input = unsafe { &mut *opaque.cast::<MemoryInput>() };
-    let length = i64::try_from(input.bytes.len()).unwrap_or(i64::MAX);
-    let base = match whence & !(ff::AVSEEK_FORCE as c_int) {
+    let input = unsafe { &mut *opaque.cast::<Input>() };
+    let length = i64::try_from(input.length).unwrap_or(i64::MAX);
+    let target = match whence & !(ff::AVSEEK_FORCE as c_int) {
         whence if whence == ff::AVSEEK_SIZE as c_int => return length,
-        whence if whence == ff::SEEK_SET as c_int => 0,
-        whence if whence == ff::SEEK_CUR as c_int => {
-            i64::try_from(input.position).unwrap_or(i64::MAX)
-        }
-        whence if whence == ff::SEEK_END as c_int => length,
-        _ => return -1,
+        whence if whence == ff::SEEK_SET as c_int => Some(offset),
+        whence if whence == ff::SEEK_CUR as c_int => input
+            .reader
+            .stream_position()
+            .ok()
+            .and_then(|position| i64::try_from(position).ok())
+            .and_then(|position| position.checked_add(offset)),
+        whence if whence == ff::SEEK_END as c_int => length.checked_add(offset),
+        _ => None,
     };
-    match base
-        .checked_add(offset)
+    match target
         .filter(|target| (0..=length).contains(target))
-        .and_then(|target| usize::try_from(target).ok())
+        .and_then(|target| u64::try_from(target).ok())
+        .and_then(|target| input.reader.seek(SeekFrom::Start(target)).ok())
     {
-        Some(target) => {
-            input.position = target;
-            i64::try_from(target).unwrap_or(-1)
-        }
+        Some(target) => i64::try_from(target).unwrap_or(-1),
         None => -1,
     }
 }
@@ -136,12 +161,12 @@ struct Demuxer {
     format: *mut ff::AVFormatContext,
     io: *mut ff::AVIOContext,
     /// Boxed: the I/O context holds its address. Dropped after both.
-    _input: Box<MemoryInput>,
+    _input: Box<Input>,
 }
 
 impl Demuxer {
-    fn open(bytes: Arc<[u8]>, container: VideoContainer) -> Result<Self, ClipError> {
-        let mut input = Box::new(MemoryInput { bytes, position: 0 });
+    fn open(input: Input, container: VideoContainer) -> Result<Self, ClipError> {
+        let mut input = Box::new(input);
         let demuxer_name: &CStr = match container {
             VideoContainer::Mp4 => c"mov",
             VideoContainer::WebM => c"matroska",
@@ -157,7 +182,7 @@ impl Demuxer {
                 buffer,
                 IO_BUFFER_BYTES,
                 0,
-                ptr::from_mut::<MemoryInput>(&mut input).cast(),
+                ptr::from_mut::<Input>(&mut input).cast(),
                 Some(read_input),
                 None,
                 Some(seek_input),
@@ -426,7 +451,15 @@ unsafe impl Send for FfmpegVideoTrack {}
 
 impl FfmpegVideoTrack {
     pub(crate) fn open(bytes: Arc<[u8]>, container: VideoContainer) -> Result<Self, ClipError> {
-        let demuxer = Demuxer::open(bytes, container)?;
+        Self::open_input(Input::memory(bytes), container)
+    }
+
+    pub(crate) fn open_remote(track: &RemoteTrack) -> Result<Self, ClipError> {
+        Self::open_input(Input::remote(track)?, track.container())
+    }
+
+    fn open_input(input: Input, container: VideoContainer) -> Result<Self, ClipError> {
+        let demuxer = Demuxer::open(input, container)?;
         let stream = demuxer.open_stream(ff::AVMEDIA_TYPE_VIDEO)?;
         // SAFETY: the opened stream's parameters and their side data.
         let quarter_turns = unsafe {
@@ -576,7 +609,19 @@ pub(crate) fn open_sound_track(
     bytes: Arc<[u8]>,
     container: VideoContainer,
 ) -> Result<SoundTrack, ClipError> {
-    let demuxer = Demuxer::open(bytes, container)?;
+    open_sound_input(Input::memory(bytes), container)
+}
+
+/// A streamed sound track (a YouTube video's own): it must have sound.
+pub(crate) fn open_remote_sound(track: &RemoteTrack) -> Result<Box<dyn ClipDecoder>, ClipError> {
+    match open_sound_input(Input::remote(track)?, track.container())? {
+        SoundTrack::Sound(decoder) => Ok(decoder),
+        SoundTrack::Silent { .. } => Err(ClipError::Unsupported),
+    }
+}
+
+fn open_sound_input(input: Input, container: VideoContainer) -> Result<SoundTrack, ClipError> {
+    let demuxer = Demuxer::open(input, container)?;
     let duration = demuxer.duration();
     // A sound this FFmpeg or Mellow cannot play (surround beyond 7.1, an odd rate) leaves the
     // pictures playing over silence, as on macOS.

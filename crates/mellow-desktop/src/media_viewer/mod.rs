@@ -75,6 +75,7 @@ use crate::theme::tokens::{
     COMPONENT_PICTURE_VIEWER_STATUS_PADDING, COMPONENT_PICTURE_VIEWER_STATUS_RADIUS,
     MOTION_DURATION_BASE, MOTION_EASING_ENTER, TYPE_BODY, TYPE_BODY_LG, TYPE_BODY_SM, TYPE_BUTTON,
 };
+use crate::youtube_video::{is_youtube_attachment, youtube_video_of};
 
 use crate::theme::{animation_duration, color, delay, length, theme};
 
@@ -121,7 +122,8 @@ pub(crate) fn is_viewer_picture(attachment: &Attachment) -> bool {
 /// A video the list plays, so the viewer can too.
 #[must_use]
 pub(crate) fn is_viewer_video(attachment: &Attachment) -> bool {
-    PLAYABLE_ATTACHMENT_VIDEO_TYPES.contains(&attachment.content_type.as_str())
+    (PLAYABLE_ATTACHMENT_VIDEO_TYPES.contains(&attachment.content_type.as_str())
+        || is_youtube_attachment(attachment))
         && is_video_played_in_app(attachment)
 }
 
@@ -649,7 +651,11 @@ impl MediaViewer {
     }
 
     fn copy_link(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(link) = self.shown().and_then(|shown| attachment_link(shown.id, cx)) else {
+        let Some(link) = self.shown().and_then(|shown| {
+            youtube_video_of(shown.id, cx)
+                .map(|video| video.link)
+                .or_else(|| attachment_link(shown.id, cx))
+        }) else {
             return;
         };
         cx.write_to_clipboard(ClipboardItem::new_string(link));
@@ -1084,15 +1090,20 @@ impl Render for MediaViewer {
 
         let position_label =
             viewer_strings.position_label(count(self.index + 1), count(self.set.media.len()));
-        let caption = viewer_strings.caption(
-            &self.set.author_name,
-            &message_timestamp_label(
-                local_date_time(self.set.sent_at_unix_milliseconds),
-                local_date_time(crate::session::now_unix_milliseconds()),
-                strings,
-            ),
-            &file_size_label(shown.size_bytes, strings),
-        );
+        let caption = if is_youtube_attachment(&shown) {
+            // A card's YouTube video: its channel under its title, nothing of a file.
+            self.set.author_name.to_string()
+        } else {
+            viewer_strings.caption(
+                &self.set.author_name,
+                &message_timestamp_label(
+                    local_date_time(self.set.sent_at_unix_milliseconds),
+                    local_date_time(crate::session::now_unix_milliseconds()),
+                    strings,
+                ),
+                &file_size_label(shown.size_bytes, strings),
+            )
+        };
         let band = self.band(&shown, caption.clone(), cx);
         let description: SharedString = if self.set.media.len() > 1 {
             format!("{caption}, {position_label}").into()
@@ -1230,19 +1241,23 @@ impl MediaViewer {
         } else {
             (IconName::Copy, viewer_strings.copy_link())
         };
+        // A card's YouTube video is no file: nothing to download or open elsewhere.
+        let is_file = !is_youtube_attachment(shown);
         let actions = div()
             .flex()
             .items_center()
             .gap(length(COMPONENT_PICTURE_VIEWER_CONTROL_GAP))
-            .child(
-                button(
-                    "media-viewer-download",
-                    IconName::DownloadSimple,
-                    strings.messages().download(&shown.file_name).into(),
+            .when(is_file, |actions| {
+                actions.child(
+                    button(
+                        "media-viewer-download",
+                        IconName::DownloadSimple,
+                        strings.messages().download(&shown.file_name).into(),
+                    )
+                    .disabled(is_saving)
+                    .on_click(move |_, cx| save_attachment(&saved, cx)),
                 )
-                .disabled(is_saving)
-                .on_click(move |_, cx| save_attachment(&saved, cx)),
-            )
+            })
             .child(
                 button("media-viewer-copy", copy_icon, copy_label.into()).on_click(
                     move |window, cx| {
@@ -1251,17 +1266,20 @@ impl MediaViewer {
                 ),
             )
             // Only a picture or video type a viewer opens; anything else is downloaded instead.
-            .when(opened_extension(&shown.content_type).is_some(), |actions| {
-                actions.child(
-                    button(
-                        "media-viewer-open",
-                        IconName::ArrowSquareOut,
-                        strings.desktop().open_with_default_app().into(),
+            .when(
+                is_file && opened_extension(&shown.content_type).is_some(),
+                |actions| {
+                    actions.child(
+                        button(
+                            "media-viewer-open",
+                            IconName::ArrowSquareOut,
+                            strings.desktop().open_with_default_app().into(),
+                        )
+                        .disabled(is_opening)
+                        .on_click(move |_, cx| open_attachment_with_default_app(&opened, cx)),
                     )
-                    .disabled(is_opening)
-                    .on_click(move |_, cx| open_attachment_with_default_app(&opened, cx)),
-                )
-            })
+                },
+            )
             .child(
                 button(
                     "media-viewer-close",

@@ -49,7 +49,9 @@ pub mod theme;
 pub mod tokio_bridge;
 pub mod voice;
 pub mod window_chrome;
-pub mod youtube_player;
+pub mod youtube_video;
+#[cfg(target_os = "linux")]
+mod youtube_yt_dlp;
 
 use anyhow::{Context as _, Result};
 use gpui::{App, AppContext as _, KeyBinding, Menu, MenuItem, actions};
@@ -104,7 +106,6 @@ pub fn start(
     // Before the session's own: quit handlers run in order, and the call is left on its gateway.
     voice::leave_the_call_when_the_app_quits(cx);
     Session::end_connection_when_the_app_quits(&session, cx);
-    youtube_player::close_youtube_player_when_the_app_quits(cx);
     notifier::follow_session_for_notifications(&session, cx);
     let voice = voice::install_voice(&session, voice::system_audio_devices(), cx);
     voice::global_push_to_talk::install_global_push_to_talk(&voice, cx);
