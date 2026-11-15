@@ -28,10 +28,6 @@ ignore = [
     # directory, whose pages SQLCipher authenticates with a key kept outside it. Drop this entry
     # when sqlx allows libsqlite3-sys 0.39.
     { id = "RUSTSEC-2026-0459", reason = "sqlx-sqlite 0.9 caps libsqlite3-sys below the fixed 0.39; local only, needs write access to the data directory" },
-    # glib < 0.20's `VariantStrIter` is unsound. glib 0.18 comes with GTK 3's bindings, which
-    # WebKitGTK 4.1 (wry, the YouTube player window, ADR-0061) needs and which stay on 0.18; the
-    # player never builds a GVariant. Drop this entry when wry moves to GTK 4.
-    { id = "RUSTSEC-2024-0429", reason = "glib 0.18 under wry's GTK 3 and WebKitGTK 4.1 bindings, no newer release for GTK 3; the player window builds no GVariant" },
 ]
 
 [licenses]

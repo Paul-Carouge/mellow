@@ -5,15 +5,15 @@
 //! manifest and the desktop client's token and icon modules from `design/tokens.json` and
 //! `design/icons`, and enforces the declared WCAG contrast pairs (DESIGN.md §3.5).
 //!
-//! `cargo xtask macos-app [--binary PATH] [--player PATH] [--output DIRECTORY] [--sign IDENTITY]`:
-//! builds `Mellow.app` around a built `mellow` and `mellow-player` (by default the release builds)
-//! and signs it, ad hoc unless an identity is given (ADR-0055, ADR-0061).
+//! `cargo xtask macos-app [--binary PATH] [--output DIRECTORY] [--sign IDENTITY]`: builds
+//! `Mellow.app` around a built `mellow` (by default the release build) and signs it, ad hoc unless
+//! an identity is given (ADR-0055).
 //!
-//! `cargo xtask linux-package --binary PATH --player PATH --output DIRECTORY`: lays out the Linux
-//! package the release workflow archives (ADR-0055).
+//! `cargo xtask linux-package --binary PATH --output DIRECTORY`: lays out the Linux package the
+//! release workflow archives (ADR-0055).
 //!
-//! `cargo xtask windows-package --binary PATH --player PATH --output DIRECTORY`: lays out the
-//! folder Inno Setup compiles into the Windows installer (ADR-0060).
+//! `cargo xtask windows-package --binary PATH --output DIRECTORY`: lays out the folder Inno Setup
+//! compiles into the Windows installer (ADR-0060).
 
 // A command-line program: its messages to the operator go to stderr.
 #![allow(clippy::print_stderr)]
@@ -37,9 +37,9 @@ use anyhow::{Context as _, Result, anyhow, bail};
 use crate::design_tokens::{DesignTokens, Rgba, Theme, contrast_ratio};
 
 const USAGE: &str = "usage: cargo xtask tokens [--check] | cargo xtask i18n [--check] \
-| cargo xtask macos-app [--binary PATH] [--player PATH] [--output DIRECTORY] [--sign IDENTITY] \
-| cargo xtask linux-package --binary PATH --player PATH --output DIRECTORY \
-| cargo xtask windows-package --binary PATH --player PATH --output DIRECTORY";
+| cargo xtask macos-app [--binary PATH] [--output DIRECTORY] [--sign IDENTITY] \
+| cargo xtask linux-package --binary PATH --output DIRECTORY \
+| cargo xtask windows-package --binary PATH --output DIRECTORY";
 /// codesign's name for an ad hoc signature, which needs no certificate.
 const AD_HOC_SIGNING_IDENTITY: &str = "-";
 const TOKENS_SOURCE_PATH: &str = "design/tokens.json";
@@ -101,15 +101,12 @@ fn cargo_target_directory(root: &Path) -> PathBuf {
 }
 
 fn build_macos_app(arguments: &[&str]) -> Result<()> {
-    let options = parse_options(arguments, &["--binary", "--player", "--output", "--sign"])?;
+    let options = parse_options(arguments, &["--binary", "--output", "--sign"])?;
     let root = workspace_root()?;
     let release_directory = cargo_target_directory(&root).join("release");
     let binary = options
         .get("--binary")
         .map_or_else(|| release_directory.join("mellow"), PathBuf::from);
-    let player = options
-        .get("--player")
-        .map_or_else(|| release_directory.join("mellow-player"), PathBuf::from);
     let output = options
         .get("--output")
         .map_or(release_directory, PathBuf::from);
@@ -117,43 +114,29 @@ fn build_macos_app(arguments: &[&str]) -> Result<()> {
         .get("--sign")
         .copied()
         .unwrap_or(AD_HOC_SIGNING_IDENTITY);
-    let app = desktop_package::build_macos_app(&root, &binary, &player, &output, identity)?;
+    let app = desktop_package::build_macos_app(&root, &binary, &output, identity)?;
     eprintln!("built {} ({})", app.display(), desktop_package::VERSION);
     Ok(())
 }
 
 fn build_linux_package(arguments: &[&str]) -> Result<()> {
-    let options = parse_options(arguments, &["--binary", "--player", "--output"])?;
-    let (Some(binary), Some(player), Some(output)) = (
-        options.get("--binary"),
-        options.get("--player"),
-        options.get("--output"),
-    ) else {
+    let options = parse_options(arguments, &["--binary", "--output"])?;
+    let (Some(binary), Some(output)) = (options.get("--binary"), options.get("--output")) else {
         bail!("{USAGE}");
     };
-    desktop_package::build_linux_package(
-        &workspace_root()?,
-        Path::new(binary),
-        Path::new(player),
-        Path::new(output),
-    )?;
+    desktop_package::build_linux_package(&workspace_root()?, Path::new(binary), Path::new(output))?;
     eprintln!("laid out {output} ({})", desktop_package::VERSION);
     Ok(())
 }
 
 fn build_windows_package(arguments: &[&str]) -> Result<()> {
-    let options = parse_options(arguments, &["--binary", "--player", "--output"])?;
-    let (Some(binary), Some(player), Some(output)) = (
-        options.get("--binary"),
-        options.get("--player"),
-        options.get("--output"),
-    ) else {
+    let options = parse_options(arguments, &["--binary", "--output"])?;
+    let (Some(binary), Some(output)) = (options.get("--binary"), options.get("--output")) else {
         bail!("{USAGE}");
     };
     windows_installer::build_windows_installer_folder(
         &workspace_root()?,
         Path::new(binary),
-        Path::new(player),
         Path::new(output),
     )?;
     eprintln!(

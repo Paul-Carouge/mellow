@@ -4,7 +4,6 @@ members = [
     "crates/mellow-client-core",
     "crates/mellow-desktop",
     "crates/mellow-media",
-    "crates/mellow-player",
     "crates/mellow-protocol",
     "crates/mellow-server",
     "crates/mellow-update",
@@ -73,7 +72,6 @@ mellow-protocol = { path = "crates/mellow-protocol" }
 mellow-client-core = { path = "crates/mellow-client-core" }
 mellow-update = { path = "crates/mellow-update" }
 mellow-media = { path = "crates/mellow-media" }
-mellow-player = { path = "crates/mellow-player" }
 # Vesper's capture and encoding engine, copied by permission of its author (ADR-0051, NOTICE files).
 vesper-audio = { path = "crates/vesper-audio" }
 vesper-capture = { path = "crates/vesper-capture" }

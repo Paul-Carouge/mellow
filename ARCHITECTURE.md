@@ -286,7 +286,6 @@ The client core contains everything that is not drawing pixels, for the native c
 | At rest | See [ADR-0006](docs/adr/0006-tls-and-encryption-at-rest.md) |
 | Supply chain | `Cargo.lock` committed, `cargo deny` in CI (RustSec advisories, licenses, sources, banned crates) on every PR and weekly, actions pinned by SHA, signed releases |
 | Logs | Structured, no message content, no tokens, no emails, no IPs beyond rate-limit needs |
-| Desktop web content | The YouTube player window is its own process (`mellow-player`, [ADR-0061](docs/adr/0061-youtube-player-window-on-the-desktop.md)); the app, which holds the session, links no web engine, and on Linux the page runs in WebKitGTK's bubblewrap sandbox (`WEBKIT_FORCE_SANDBOX=1`). The web view loads only `https://www.youtube-nocookie.com/embed/<checked id>`, blocks every other navigation (YouTube pages go to the system browser after a second check by the app), runs incognito with downloads, permissions, developer tools and any page-to-app channel off, and closes when the app's end of its standard input does |
 
 ## 8. Quality and CI
 

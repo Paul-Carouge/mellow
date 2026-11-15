@@ -18,8 +18,6 @@ pub const PACKAGING_DIRECTORY: &str = "crates/mellow-desktop/packaging";
 /// Committed and checked by `cargo xtask tokens --check`.
 const FAVICON_PATH: &str = "web/public/favicon.svg";
 const EXECUTABLE_NAME: &str = "mellow";
-/// The YouTube player window's executable, beside the app's (ADR-0061).
-const PLAYER_EXECUTABLE_NAME: &str = "mellow-player";
 
 pub const MACOS_APP_NAME: &str = "Mellow.app";
 const MACOS_ICON_FILE_NAME: &str = "Mellow.icns";
@@ -120,12 +118,11 @@ fn copy_executable(source: &Path, destination: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Builds `<output_directory>/Mellow.app` around `binary` and the player window's `player`, and
-/// signs it with `signing_identity` (`-` for an ad hoc signature, as local builds use).
+/// Builds `<output_directory>/Mellow.app` around `binary` and signs it with `signing_identity`
+/// (`-` for an ad hoc signature, as local builds use).
 pub fn build_macos_app(
     root: &Path,
     binary: &Path,
-    player: &Path,
     output_directory: &Path,
     signing_identity: &str,
 ) -> Result<PathBuf> {
@@ -144,7 +141,6 @@ pub fn build_macos_app(
         info_plist(&template, VERSION)?,
     )?;
     copy_executable(binary, &contents.join("MacOS").join(EXECUTABLE_NAME))?;
-    copy_executable(player, &contents.join("MacOS").join(PLAYER_EXECUTABLE_NAME))?;
     let resources = contents.join("Resources");
     let (_, favicon) = read_favicon(root)?;
     write_file(&resources.join(MACOS_ICON_FILE_NAME), macos_icon(&favicon)?)?;
@@ -161,12 +157,6 @@ pub fn build_macos_app(
 }
 
 fn sign_macos_app(app: &Path, entitlements: &Path, signing_identity: &str) -> Result<()> {
-    // A second executable in `Contents/MacOS` is signed on its own first, without the app's
-    // entitlements (camera, microphone): the player window needs none.
-    run(Command::new("codesign")
-        .args(["--force", "--options", "runtime", "--timestamp=none"])
-        .args(["--sign", signing_identity])
-        .arg(app.join("Contents/MacOS").join(PLAYER_EXECUTABLE_NAME)))?;
     run(Command::new("codesign")
         .args(["--force", "--options", "runtime", "--timestamp=none"])
         .arg("--entitlements")
@@ -188,14 +178,9 @@ fn run(command: &mut Command) -> Result<()> {
     Ok(())
 }
 
-/// Lays out the Linux package in `output_directory`: `bin/mellow`, `bin/mellow-player` (the
-/// YouTube player window), `share/` as under `~/.local/share`, `install.sh` and the licence.
-pub fn build_linux_package(
-    root: &Path,
-    binary: &Path,
-    player: &Path,
-    output_directory: &Path,
-) -> Result<()> {
+/// Lays out the Linux package in `output_directory`: `bin/mellow`, `share/` as under
+/// `~/.local/share`, `install.sh` and the licence.
+pub fn build_linux_package(root: &Path, binary: &Path, output_directory: &Path) -> Result<()> {
     if output_directory.exists() {
         bail!(
             "{} already exists; the package starts from an empty directory",
@@ -205,10 +190,6 @@ pub fn build_linux_package(
     let packaging = root.join(PACKAGING_DIRECTORY).join("linux");
     let share = output_directory.join("share");
     copy_executable(binary, &output_directory.join("bin").join(EXECUTABLE_NAME))?;
-    copy_executable(
-        player,
-        &output_directory.join("bin").join(PLAYER_EXECUTABLE_NAME),
-    )?;
     copy_executable(
         &packaging.join("install.sh"),
         &output_directory.join("install.sh"),
@@ -314,13 +295,10 @@ mod tests {
         let scratch = tempfile::tempdir().unwrap();
         let binary = scratch.path().join("mellow-binary");
         std::fs::write(&binary, b"#!/bin/sh\n").unwrap();
-        let player = scratch.path().join("player-binary");
-        std::fs::write(&player, b"#!/bin/sh\n").unwrap();
         let package = scratch.path().join("package");
-        build_linux_package(&workspace_root(), &binary, &player, &package).unwrap();
+        build_linux_package(&workspace_root(), &binary, &package).unwrap();
         for relative in [
             "bin/mellow",
-            "bin/mellow-player",
             "install.sh",
             "LICENSE",
             "share/applications/mellow.desktop",
@@ -334,15 +312,13 @@ mod tests {
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt as _;
-            for executable in ["bin/mellow", "bin/mellow-player"] {
-                let mode = std::fs::metadata(package.join(executable))
-                    .unwrap()
-                    .permissions()
-                    .mode();
-                assert_eq!(mode & 0o777, 0o755, "{executable}");
-            }
+            let mode = std::fs::metadata(package.join("bin/mellow"))
+                .unwrap()
+                .permissions()
+                .mode();
+            assert_eq!(mode & 0o777, 0o755);
         }
         // A second run into the same directory would mix two packages.
-        assert!(build_linux_package(&workspace_root(), &binary, &player, &package).is_err());
+        assert!(build_linux_package(&workspace_root(), &binary, &package).is_err());
     }
 }
