@@ -205,6 +205,7 @@ fn hit(id: u64) -> MessageSearchHit {
             checklist: None,
             progress_bar: None,
             forwarded_from: None,
+            call: None,
         },
         highlights: Vec::new(),
     }

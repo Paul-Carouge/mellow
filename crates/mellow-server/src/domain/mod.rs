@@ -6,6 +6,7 @@ pub mod account_rules;
 pub mod accounts;
 pub(crate) mod attachments;
 pub(crate) mod audio_transcoding;
+pub(crate) mod call_rules;
 pub mod clock;
 pub(crate) mod gifs;
 pub(crate) mod guild_rules;

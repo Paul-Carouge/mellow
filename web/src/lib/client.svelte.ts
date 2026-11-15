@@ -951,6 +951,12 @@ export class MellowClient {
       case "VOICE_VIDEO_PAUSED":
         this.voice.noteVideoPaused(event.data.channel_id, event.data.user_id, event.data.is_paused);
         return;
+      // Private calls (ADR-0062): known on the wire, shown once the call interface lands.
+      case "CALL_CREATE":
+      case "CALL_UPDATE":
+      case "CALL_DELETE":
+      case "CALL_SPEAKING":
+        return;
       default: {
         // An event this client does not know yet: skipped, as the native clients do.
         const unknown: never = event;

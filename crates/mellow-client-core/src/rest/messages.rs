@@ -1,9 +1,9 @@
-//! Reactions, polls, checklists, progress bars, pins, conversation search and group
-//! conversations.
+//! Reactions, polls, checklists, progress bars, pins, conversation search, group conversations
+//! and calls.
 
 use mellow_protocol::{
-    Checklist, ChecklistItemRequest, CreateGroupConversationRequest, DirectMessageChannel, Message,
-    MessageSearchQuery, MessageSearchResults, NewProgressBar, ProgressBar, PublicUser,
+    Call, Checklist, ChecklistItemRequest, CreateGroupConversationRequest, DirectMessageChannel,
+    Message, MessageSearchQuery, MessageSearchResults, NewProgressBar, ProgressBar, PublicUser,
     ReactionUsersQuery, Snowflake, UpdateGroupConversationRequest,
 };
 use reqwest::Method;
@@ -400,6 +400,29 @@ impl RestClient {
         self.call_without_answer(
             Method::DELETE,
             &format!("api/v1/group-conversations/{channel_id}/recipients/{user_id}"),
+        )
+        .await
+    }
+
+    /// Starts a call in the conversation, or answers the one going on there (ADR-0062); join it
+    /// next with the voice session, the conversation's id as the channel.
+    ///
+    /// # Errors
+    /// `NOT_FOUND` for a conversation the user may not call in, a validation error when voice is
+    /// off on the instance, `RATE_LIMITED`, or the transport's errors.
+    pub async fn start_call(&self, channel_id: Snowflake) -> Result<Call, ClientError> {
+        self.call(Method::POST, &format!("api/v1/channels/{channel_id}/call"))
+            .await
+    }
+
+    /// Stops the call ringing on all the user's devices.
+    ///
+    /// # Errors
+    /// `RATE_LIMITED`, or the transport's errors.
+    pub async fn decline_call(&self, channel_id: Snowflake) -> Result<(), ClientError> {
+        self.call_without_answer(
+            Method::POST,
+            &format!("api/v1/channels/{channel_id}/call/decline"),
         )
         .await
     }

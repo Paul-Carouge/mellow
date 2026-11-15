@@ -119,6 +119,11 @@ impl Guilds {
         self.events.publish_to_users(user_ids, event);
     }
 
+    /// Someone joined or left the group `channel_id`: its call is checked again (ADR-0062).
+    pub(crate) fn note_conversation_access_changed(&self, channel_id: Snowflake) {
+        self.events.note_conversation_access_changed(channel_id);
+    }
+
     /// `event` to `recipients`, but `own_event` to `own_user_id`'s sessions among them.
     pub(crate) fn publish_with_own_copy(
         &self,

@@ -2020,6 +2020,13 @@ impl VoiceDisconnectionsStrings {
             Language::French => "Ton son n’arrivait plus à l’instance.",
         }
     }
+
+    pub fn call_ended(self) -> &'static str {
+        match self.language {
+            Language::English => "The call ended: nobody answered.",
+            Language::French => "L’appel est terminé : personne n’a répondu.",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

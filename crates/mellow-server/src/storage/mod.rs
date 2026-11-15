@@ -6,6 +6,7 @@ pub(crate) mod attachment_files;
 pub(crate) mod attachments;
 pub(crate) mod audit_log;
 pub(crate) mod backups;
+pub(crate) mod call_messages;
 pub(crate) mod checklists;
 mod database;
 pub(crate) mod direct_messages;

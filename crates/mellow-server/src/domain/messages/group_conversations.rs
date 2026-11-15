@@ -88,6 +88,8 @@ impl Messages {
             GroupAddOutcome::Added => {
                 self.announce_group_change(channel_id, Some(new_participant_id))
                     .await;
+                // The newcomer sees a call going on there (ADR-0062).
+                self.guilds.note_conversation_access_changed(channel_id);
             }
             // A retried add changes nothing and tells no one.
             GroupAddOutcome::AlreadyIn => {}
@@ -123,6 +125,8 @@ impl Messages {
             &GatewayEvent::DirectMessageChannelDelete { id: channel_id },
         );
         self.announce_group_change(channel_id, None).await;
+        // The person who went leaves the group's call (ADR-0062).
+        self.guilds.note_conversation_access_changed(channel_id);
         Ok(())
     }
 

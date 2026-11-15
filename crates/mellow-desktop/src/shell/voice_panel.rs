@@ -212,6 +212,7 @@ fn problem_words(
                 VoiceDisconnectReason::ChannelDeleted => disconnections.channel_deleted(),
                 VoiceDisconnectReason::RemovedFromGuild => disconnections.removed_from_guild(),
                 VoiceDisconnectReason::MediaTimeout => disconnections.media_timeout(),
+                VoiceDisconnectReason::CallEnded => disconnections.call_ended(),
             };
             let title = if reason == VoiceDisconnectReason::MovedElsewhere {
                 voice.moved_elsewhere().to_owned()

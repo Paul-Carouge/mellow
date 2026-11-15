@@ -5,10 +5,11 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use mellow_protocol::{
-    Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions, Presence,
-    PublicUser, Ready, Relationship, Snowflake, VoiceState, compute_channel_permissions,
+    Call, Channel, CurrentUser, DirectMessageChannel, GatewayEvent, Guild, Member, Permissions,
+    Presence, PublicUser, Ready, Relationship, Snowflake, VoiceState, compute_channel_permissions,
 };
 
+mod calls;
 mod checklists;
 mod direct_messages;
 mod guilds;
@@ -23,6 +24,10 @@ mod reactions;
 mod unreads;
 mod voice;
 
+pub use calls::{
+    CallMessageSummary, CallPhase, CallSound, call_message_summary, call_phase, call_sound,
+    ringing_ends_at_unix_milliseconds,
+};
 pub use checklists::{
     ChecklistProgress, Revisioned, checklist_progress, keep_newest, progress_percent, set_item_tick,
 };
@@ -127,6 +132,11 @@ pub enum StateChange {
         previous_channel_id: Option<Snowflake>,
         channel_id: Option<Snowflake>,
     },
+    /// A call started, changed or ended in this conversation (ADR-0062): ring, stop ringing, or
+    /// redraw its banner.
+    Call {
+        channel_id: Snowflake,
+    },
     /// Someone started or stopped speaking.
     Speaking {
         channel_id: Snowflake,
@@ -155,6 +165,8 @@ struct InstanceCapabilities {
     may_create_guilds: bool,
     is_voice_enabled: bool,
     maximum_attachment_bytes: Option<u64>,
+    /// `Ready.calls_enabled` (ADR-0062).
+    is_calls_enabled: bool,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
@@ -192,7 +204,9 @@ pub struct ClientState {
     in_flight: InFlightChanges,
     /// Who is in which voice channel, in join order (one connection each, ADR-0030).
     voice_states: Vec<VoiceState>,
-    /// People whose voice the instance hears now (`SPEAKING`).
+    /// The calls going on in the user's conversations (ADR-0062).
+    calls: Vec<Call>,
+    /// People whose voice the instance hears now (`SPEAKING`, `CALL_SPEAKING`).
     speaking_user_ids: HashSet<Snowflake>,
     /// The sound each person played last, while its emoji shows by their name.
     sound_indicator_by_user_id: HashMap<Snowflake, SoundIndicator>,
@@ -406,6 +420,7 @@ impl ClientState {
                 may_create_guilds: ready.may_create_guilds,
                 is_voice_enabled: ready.voice_enabled,
                 maximum_attachment_bytes: ready.maximum_attachment_bytes,
+                is_calls_enabled: ready.calls_enabled,
             },
             guilds: ready.guilds,
             direct_message_channels,
@@ -438,6 +453,11 @@ impl ClientState {
             .voice_states
             .into_iter()
             .filter(|state| self.is_known_channel(state.channel_id))
+            .collect();
+        self.calls = ready
+            .calls
+            .into_iter()
+            .filter(|call| self.direct_message_channel(call.channel_id).is_some())
             .collect();
         StateChange::Guilds
     }
@@ -591,6 +611,15 @@ impl ClientState {
             | GatewayEvent::VoiceVideoLayers { .. }
             | GatewayEvent::VoiceVideoPaused { .. }
             | GatewayEvent::VoiceDisconnected { .. } => StateChange::Nothing,
+            GatewayEvent::CallCreate(call) | GatewayEvent::CallUpdate(call) => {
+                self.apply_call(call)
+            }
+            GatewayEvent::CallDelete { channel_id } => self.drop_call(channel_id),
+            GatewayEvent::CallSpeaking {
+                channel_id,
+                user_id,
+                speaking,
+            } => self.note_call_speaking(channel_id, user_id, speaking),
         }
     }
 
@@ -634,6 +663,7 @@ impl ClientState {
         });
         self.typing_until
             .retain(|(typing_channel_id, _), _| *typing_channel_id != channel_id);
+        self.drop_call(channel_id);
     }
 }
 

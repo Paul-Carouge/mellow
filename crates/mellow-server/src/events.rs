@@ -225,6 +225,24 @@ impl HubState {
     }
 }
 
+/// The access changes noted since the voice service last looked.
+#[derive(Debug, Default, PartialEq, Eq)]
+pub(crate) struct AccessChanges {
+    pub(crate) guild_ids: HashSet<Snowflake>,
+    /// Groups someone joined or left (ADR-0062).
+    pub(crate) conversation_ids: HashSet<Snowflake>,
+    /// Two people whose relationship changed: a block, a friendship or request ended.
+    pub(crate) relationship_pairs: HashSet<(Snowflake, Snowflake)>,
+}
+
+impl AccessChanges {
+    fn is_empty(&self) -> bool {
+        self.guild_ids.is_empty()
+            && self.conversation_ids.is_empty()
+            && self.relationship_pairs.is_empty()
+    }
+}
+
 /// Registering more sessions than allowed for one user.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct TooManySessions;
@@ -235,6 +253,9 @@ pub(crate) struct EventHub {
     /// Guilds where who may view, connect or speak may have changed since the voice service last
     /// looked (ADR-0030); a set, so a burst of changes costs one re-evaluation per guild.
     guilds_with_access_changes: Mutex<HashSet<Snowflake>>,
+    /// Groups and relationships that changed since the voice service last re-checked the calls
+    /// (ADR-0062); `guild_ids` stays empty here.
+    conversation_access_changes: Mutex<AccessChanges>,
     guild_access_changed: Notify,
 }
 
@@ -570,17 +591,49 @@ impl EventHub {
         self.guild_access_changed.notify_one();
     }
 
-    /// Waits until at least one guild had an access change, and takes them all.
-    pub(crate) async fn next_guild_access_changes(&self) -> HashSet<Snowflake> {
+    /// Someone joined or left the group `channel_id`: the voice service re-checks its call
+    /// (ADR-0062).
+    pub(crate) fn note_conversation_access_changed(&self, channel_id: Snowflake) {
+        self.conversation_access_changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .conversation_ids
+            .insert(channel_id);
+        self.guild_access_changed.notify_one();
+    }
+
+    /// A block, an ended friendship or request between two people: the voice service re-checks
+    /// the calls of conversations holding both (ADR-0062).
+    pub(crate) fn note_relationship_changed(&self, user_id: Snowflake, other_user_id: Snowflake) {
+        self.conversation_access_changes
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .relationship_pairs
+            .insert((user_id, other_user_id));
+        self.guild_access_changed.notify_one();
+    }
+
+    /// Waits until at least one guild, group or relationship had an access change, and takes
+    /// them all.
+    pub(crate) async fn next_access_changes(&self) -> AccessChanges {
         loop {
-            let changed = std::mem::take(
+            let guild_ids = std::mem::take(
                 &mut *self
                     .guilds_with_access_changes
                     .lock()
                     .unwrap_or_else(PoisonError::into_inner),
             );
-            if !changed.is_empty() {
-                return changed;
+            let changes = AccessChanges {
+                guild_ids,
+                ..std::mem::take(
+                    &mut *self
+                        .conversation_access_changes
+                        .lock()
+                        .unwrap_or_else(PoisonError::into_inner),
+                )
+            };
+            if !changes.is_empty() {
+                return changes;
             }
             self.guild_access_changed.notified().await;
         }

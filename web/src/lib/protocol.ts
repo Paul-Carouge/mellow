@@ -210,6 +210,8 @@ export const VOICE_RECEIVE_SLOTS = 16;
 export const VIDEO_RECEIVE_SLOTS = 9;
 /** Audio receive m-lines after the video ones: the most shared screens heard at once (ADR-0037). */
 export const SCREEN_SOUND_RECEIVE_SLOTS = 3;
+/** How long a call rings (ADR-0062): clients stop their ringtone after it, even without an event. */
+export const CALL_RING_TIMEOUT_MILLISECONDS = 30_000;
 
 export interface PermissionOverwrite {
   id: Snowflake;
@@ -407,6 +409,8 @@ export interface Message {
   link_previews?: LinkPreview[];
   /** Set on a forward (ADR-0039): its content and files copy that message's. */
   forwarded_from?: ForwardOrigin;
+  /** Set on a call's message (ADR-0062), whose content is empty. Absent from older servers. */
+  call?: MessageCall;
   /** The message's poll (ADR-0043); its content is then empty. */
   poll?: Poll;
   /** The message's checklist (ADR-0047); its content is then empty. */
@@ -914,6 +918,41 @@ export interface Ready {
   voice_enabled?: boolean;
   /** The largest attachment the instance accepts, in bytes; absent from older servers (added after v0.45.0). */
   maximum_attachment_bytes?: number;
+  /** The calls going on in the user's conversations (ADR-0062); absent from older servers. */
+  calls?: Call[];
+  /** The server knows calls and voice works: show the call button. Absent (false) on older servers. */
+  calls_enabled?: boolean;
+}
+
+/** A call going on in a conversation (ADR-0062). Answer or join it with `voice_join` on `channel_id`. */
+export interface Call {
+  /** The conversation's id. */
+  channel_id: Snowflake;
+  /** The call's message in the conversation (`Message.call`). */
+  message_id: Snowflake;
+  caller_id: Snowflake;
+  /** Whose devices ring now; ring while your own id is here. */
+  ringing_user_ids: Snowflake[];
+  /** Who is connected, in the order they came. */
+  participants: CallParticipant[];
+}
+
+/** One person connected to a call. */
+export interface CallParticipant {
+  user_id: Snowflake;
+  self_mute: boolean;
+  self_deaf: boolean;
+  self_video: boolean;
+  self_stream: boolean;
+  /** Absent when their offer has no video. */
+  video_codec?: VideoCodec | null;
+}
+
+/** A call message's record: who joined (written when it ends) and when it ended. */
+export interface MessageCall {
+  participant_ids: Snowflake[];
+  /** Absent while the call goes on; the duration counts from the message's id. */
+  ended_at_unix_milliseconds?: number;
 }
 
 /** One person connected to a voice channel; a user has at most one (ADR-0030). */
@@ -971,7 +1010,9 @@ export type VoiceDisconnectReason =
   | "permissions_changed"
   | "channel_deleted"
   | "removed_from_guild"
-  | "media_timeout";
+  | "media_timeout"
+  /** The conversation's call ended while this session was in it (ADR-0062). */
+  | "call_ended";
 
 /** `incoming_request`: they asked; `outgoing_request`: you asked; `blocked`: never shown to them. */
 export type RelationshipKind = "friend" | "incoming_request" | "outgoing_request" | "blocked";
@@ -1097,7 +1138,15 @@ export type GatewayEvent =
       data: { guild_id: Snowflake; channel_id: Snowflake; user_id: Snowflake; speaking: boolean };
     }
   /** To every session connected to the channel, the player's own included: each plays it locally. */
-  | { t: "VOICE_SOUND_PLAYED"; data: { channel_id: Snowflake; user_id: Snowflake; sound_id: Snowflake } };
+  | { t: "VOICE_SOUND_PLAYED"; data: { channel_id: Snowflake; user_id: Snowflake; sound_id: Snowflake } }
+  /** A call started, or became visible to the user (ADR-0062). */
+  | { t: "CALL_CREATE"; data: Call }
+  /** The whole call after any change: who rings, who is connected and their state. */
+  | { t: "CALL_UPDATE"; data: Call }
+  /** The call ended, or the user can no longer see it. */
+  | { t: "CALL_DELETE"; data: { channel_id: Snowflake } }
+  /** Edges only, as `SPEAKING`, for a call's participants. */
+  | { t: "CALL_SPEAKING"; data: { channel_id: Snowflake; user_id: Snowflake; speaking: boolean } };
 
 export type ServerFrame =
   | { op: "hello"; d: { heartbeat_interval_milliseconds: number } }

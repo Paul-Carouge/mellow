@@ -344,6 +344,7 @@ export const fr: Catalogue = {
       channel_deleted: "Le salon a été supprimé.",
       removed_from_guild: "Tu ne fais plus partie de ce serveur.",
       media_timeout: "Ton son n’arrivait plus à l’instance.",
+      call_ended: "L’appel est terminé : personne n’a répondu.",
     },
     unknownReason: "L’instance a mis fin à la connexion.",
     mutedForYou: "muet pour toi",

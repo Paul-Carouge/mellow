@@ -222,7 +222,7 @@ async fn write_backup(
 mod tests {
     use super::*;
     use crate::storage::{DatabaseKey, attachments, messages, open_encrypted_database};
-    use mellow_protocol::Snowflake;
+    use mellow_protocol::{MessageCall, Snowflake};
 
     const SQLITE_PLAINTEXT_HEADER: &[u8] = b"SQLite format 3\0";
 
@@ -2307,6 +2307,98 @@ mod tests {
         assert_eq!(bars, [32]);
         assert!(above_maximum.is_err(), "a value is at most the maximum");
         assert!(half_tick.is_err(), "who ticked and when go together");
+    }
+
+    #[tokio::test]
+    async fn call_records_go_with_their_message_and_unfinished_ones_end_at_start() {
+        let directory = tempfile::tempdir().unwrap();
+        let database = open_encrypted_database(&directory.path().join("mellow.db"), &test_key())
+            .await
+            .unwrap();
+        // The last migration before call messages (0044), with a conversation and its history.
+        MIGRATOR.run_to(43, database.writer()).await.unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO users (id, username, display_name, email, password_hash, \
+             created_at_unix_milliseconds) VALUES (1, 'ada', 'Ada', 'ada@example.org', 'x', 0), \
+             (2, 'bob', 'Bob', 'bob@example.org', 'x', 0), (3, 'cy', 'Cy', 'cy@example.org', 'x', 0); \
+             INSERT INTO channels (id, guild_id, kind, name, position) \
+             VALUES (21, NULL, 'direct_message', '', 0); \
+             INSERT INTO direct_message_participants (channel_id, user_id) VALUES (21, 1), (21, 2); \
+             INSERT INTO direct_message_pairs (lower_user_id, higher_user_id, channel_id) \
+             VALUES (1, 2, 21); \
+             INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (30, 21, 1, 'hi'), (31, 21, 2, 'hello');",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        migrate_with_backup(&database, &directory.path().join("backups"))
+            .await
+            .unwrap();
+        let older_messages_are_calls: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM call_messages")
+                .fetch_one(database.writer())
+                .await
+                .unwrap();
+        sqlx::raw_sql(
+            "INSERT INTO messages (id, channel_id, author_id, content) \
+             VALUES (32, 21, 1, ''), (33, 21, 2, ''), (34, 21, 1, ''); \
+             INSERT INTO call_messages (message_id, ended_at_unix_milliseconds) \
+             VALUES (32, 500), (33, NULL), (34, NULL); \
+             INSERT INTO call_message_participants (message_id, user_id) \
+             VALUES (32, 1), (32, 2), (32, 3), (34, 1); \
+             DELETE FROM users WHERE id = 3; \
+             DELETE FROM messages WHERE id = 34;",
+        )
+        .execute(database.writer())
+        .await
+        .unwrap();
+        let ended = crate::storage::call_messages::end_unfinished_calls(&database, 9_000)
+            .await
+            .unwrap();
+        let records = crate::storage::call_messages::calls_of_messages(
+            &database,
+            &[
+                Snowflake::from_raw(30),
+                Snowflake::from_raw(32),
+                Snowflake::from_raw(33),
+                Snowflake::from_raw(34),
+            ],
+        )
+        .await
+        .unwrap();
+        let participants_left: i64 =
+            sqlx::query_scalar("SELECT count(*) FROM call_message_participants")
+                .fetch_one(database.writer())
+                .await
+                .unwrap();
+        let negative_end = sqlx::query(
+            "UPDATE call_messages SET ended_at_unix_milliseconds = -1 WHERE message_id = 32",
+        )
+        .execute(database.writer())
+        .await;
+        database.close().await;
+
+        assert_eq!(older_messages_are_calls, 0);
+        assert_eq!(ended, 1, "only the unfinished call left");
+        assert_eq!(records.len(), 2, "{records:?}");
+        assert_eq!(
+            records[&Snowflake::from_raw(32)],
+            MessageCall {
+                participant_ids: vec![Snowflake::from_raw(1), Snowflake::from_raw(2)],
+                ended_at_unix_milliseconds: Some(500),
+            },
+            "a deleted account leaves the record"
+        );
+        assert_eq!(
+            records[&Snowflake::from_raw(33)].ended_at_unix_milliseconds,
+            Some(9_000)
+        );
+        assert_eq!(
+            participants_left, 2,
+            "deleted with their message or account"
+        );
+        assert!(negative_end.is_err());
     }
 
     #[tokio::test]

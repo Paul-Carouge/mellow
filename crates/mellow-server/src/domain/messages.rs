@@ -2,6 +2,7 @@
 //! (`Guilds::channel_and_member_permissions`, ADR-0007), or for a direct-message conversation
 //! through its participants (`permissions::direct_message_permissions`).
 
+mod calls;
 mod checklists;
 mod direct_messages;
 mod group_conversations;
@@ -11,6 +12,7 @@ mod polls;
 mod reactions;
 mod search;
 
+pub(crate) use calls::{CallAccess, CallMembers};
 pub(crate) use link_previews::fetch_link_previews_in_background;
 #[cfg(test)]
 pub(crate) use link_previews::{fetch_queued_link_previews, run_queued_link_preview_jobs};
@@ -133,6 +135,8 @@ fn message_from_stored(
         poll: None,
         checklist: None,
         progress_bar: None,
+        // Filled by `calls::fill_calls`.
+        call: None,
     }
 }
 
@@ -211,6 +215,7 @@ async fn already_sent_with_nonce(
     )
     .await?;
     checklists::fill_trackers(database, std::slice::from_mut(&mut message)).await?;
+    calls::fill_calls(database, std::slice::from_mut(&mut message)).await?;
     link_previews::fill_link_previews(database, std::slice::from_mut(&mut message)).await?;
     Ok(Some(message))
 }
@@ -675,6 +680,7 @@ impl Messages {
                     forward,
                     poll,
                     tracker: tracker.clone(),
+                    is_call: false,
                 },
             )
             .await?;
@@ -834,6 +840,7 @@ impl Messages {
         if tracker_storage::has_tracker(&self.database, message.id).await? {
             return Err(MessageRuleViolation::TrackerChange.into());
         }
+        self.require_not_a_call_message(message.id).await?;
         let attachments = attachments_of(&self.database, message.id).await?;
         Ok(ForwardedMessage {
             // A forward of a forward names the message written first.
@@ -894,6 +901,7 @@ impl Messages {
         fill_reactions(&self.database, viewer_id, &mut messages).await?;
         polls::fill_polls(&self.database, Some(viewer_id), &mut messages).await?;
         checklists::fill_trackers(&self.database, &mut messages).await?;
+        calls::fill_calls(&self.database, &mut messages).await?;
         link_previews::fill_link_previews(&self.database, &mut messages).await?;
         Ok(messages)
     }
@@ -928,6 +936,7 @@ impl Messages {
         if tracker_storage::has_tracker(&self.database, message.id).await? {
             return Err(MessageRuleViolation::TrackerChange.into());
         }
+        self.require_not_a_call_message(message.id).await?;
         let content = normalize_line_endings(&request.content);
         validate_message_content(&content)?;
         let audience = self.audience(&channel).await?;
@@ -1605,6 +1614,7 @@ mod tests {
                         }),
                         poll: None,
                         tracker: None,
+                        is_call: false,
                     },
                 )
                 .await,

@@ -672,6 +672,7 @@ async fn build_ready(
         }
     };
     let voice_states = visible_voice_states(state, &guilds).await;
+    let calls = state.voice.calls_in(user.id, &direct_channel_ids).await;
     let relationships = match state.relationships.list(user.id).await {
         Ok(relationships) => relationships,
         Err(error) => {
@@ -703,6 +704,8 @@ async fn build_ready(
         voice_states,
         voice_enabled: state.voice.is_available(),
         maximum_attachment_bytes: Some(state.maximum_attachment_bytes),
+        calls,
+        calls_enabled: state.voice.is_available(),
     })
 }
 

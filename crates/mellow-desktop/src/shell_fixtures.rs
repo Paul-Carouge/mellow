@@ -69,6 +69,7 @@ pub fn text_message(
         checklist: None,
         progress_bar: None,
         forwarded_from: None,
+        call: None,
     }
 }
 
@@ -225,6 +226,8 @@ pub fn sample_state_with_unreads(unreads: &[(Snowflake, u32)]) -> ClientState {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
     });
     state.set_members(
         GUILD_RUST,

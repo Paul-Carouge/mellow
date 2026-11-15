@@ -133,6 +133,22 @@ pub fn direct_message_permissions(
     }
 }
 
+/// Whether someone may start, answer or join a conversation's call (ADR-0062): a participant who
+/// may write there (`direct_message_permissions`), so a block or the loss of the only shared guild
+/// ends a one-to-one call as it ends writing, while every participant of a group takes part.
+/// `conversation_permissions` are theirs in the conversation.
+#[must_use]
+pub(crate) fn may_take_part_in_call(conversation_permissions: Permissions) -> bool {
+    conversation_permissions.contains(Permissions::VIEW_CHANNEL | Permissions::SEND_MESSAGES)
+}
+
+/// Whether a call started by someone else rings this participant (ADR-0062): never across a
+/// block, either way (ADR-0025), even in a group where both may still take part.
+#[must_use]
+pub(crate) const fn rings_in_call(is_caller: bool, has_block_with_caller: bool) -> bool {
+    !is_caller && !has_block_with_caller
+}
+
 /// Something done with reactions on a message.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ReactionAction {
@@ -873,5 +889,26 @@ mod tests {
             direct_message_permissions(false, true, true),
             Permissions::empty()
         );
+    }
+
+    #[test]
+    fn calls_follow_writing_and_never_ring_across_a_block() {
+        let reachable = direct_message_permissions(true, false, true);
+        let blocked = direct_message_permissions(true, false, false);
+        let group = direct_message_permissions(true, true, false);
+        let outsider = direct_message_permissions(false, true, true);
+        assert!(may_take_part_in_call(reachable));
+        assert!(
+            !may_take_part_in_call(blocked),
+            "a block ends one-to-one calls"
+        );
+        assert!(
+            may_take_part_in_call(group),
+            "a group calls whatever its blocks"
+        );
+        assert!(!may_take_part_in_call(outsider));
+        assert!(rings_in_call(false, false));
+        assert!(!rings_in_call(true, false), "the caller never rings");
+        assert!(!rings_in_call(false, true), "never across a block");
     }
 }

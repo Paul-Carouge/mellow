@@ -357,6 +357,7 @@ export const en = {
       channel_deleted: "The channel was deleted.",
       removed_from_guild: "You're no longer a member of this server.",
       media_timeout: "Your sound stopped reaching the instance.",
+      call_ended: "The call ended: nobody answered.",
     },
     /** A reason a newer instance sends that this client does not know. */
     unknownReason: "The instance ended the connection.",

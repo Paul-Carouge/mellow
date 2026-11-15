@@ -72,6 +72,8 @@ impl Messages {
         let poll = super::polls::poll_of(&self.database, message.id).await?;
         let (mut checklists, mut bars) =
             crate::storage::checklists::trackers_of_messages(&self.database, &[message.id]).await?;
+        let mut calls =
+            crate::storage::call_messages::calls_of_messages(&self.database, &[message.id]).await?;
         let audit = channel
             .guild_id()
             .map(|guild_id| {
@@ -122,6 +124,7 @@ impl Messages {
             // Possibly older than a tick that lands meanwhile: clients keep the higher revision.
             changed.checklist = checklists.remove(&message.id);
             changed.progress_bar = bars.remove(&message.id);
+            changed.call = calls.remove(&message.id);
             publish(
                 &self.guilds,
                 &audience,

@@ -61,6 +61,7 @@ pub(super) fn message(id: u64, author: Snowflake) -> Message {
         checklist: None,
         progress_bar: None,
         forwarded_from: None,
+        call: None,
     }
 }
 
@@ -109,6 +110,8 @@ pub(super) fn ready_state() -> ClientState {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
     });
     state
 }
@@ -693,6 +696,8 @@ fn outbox_keeps_unsent_text_until_confirmed_retried_or_discarded() {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
     });
     let statuses: Vec<(&str, PendingMessageStatus)> = state
         .pending_messages(GENERAL)
@@ -794,6 +799,8 @@ fn outbox_forgets_messages_of_deleted_channels_and_guilds() {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
     });
     assert_eq!(state.pending_messages(GENERAL).count(), 0);
 }
@@ -883,6 +890,8 @@ fn an_empty_conversation_with_an_unsent_message_survives_ready() {
         voice_states: Vec::new(),
         voice_enabled: false,
         maximum_attachment_bytes: None,
+        calls: Vec::new(),
+        calls_enabled: false,
     });
     assert_eq!(
         state.direct_message_channels(),
@@ -911,4 +920,95 @@ fn a_participant_reacts_and_sends_polls_and_checklists_in_a_conversation_as_the_
         | Permissions::SEND_POLLS
         | Permissions::SEND_CHECKLISTS;
     assert_eq!(DIRECT_MESSAGE_PERMISSIONS, expected);
+}
+
+#[test]
+fn calls_follow_their_events_in_known_conversations_and_go_with_them() {
+    use mellow_protocol::{Call, CallParticipant};
+
+    use super::{CallPhase, StateChange};
+
+    let conversation_id = Snowflake::from_raw(300);
+    let participant = |user_id| CallParticipant {
+        user_id,
+        self_mute: false,
+        self_deaf: false,
+        self_video: false,
+        self_stream: false,
+        video_codec: None,
+    };
+    let ringing_me = Call {
+        channel_id: conversation_id,
+        message_id: Snowflake::from_raw(310),
+        caller_id: OTHER,
+        ringing_user_ids: vec![ME],
+        participants: vec![participant(OTHER)],
+    };
+    let mut state = ready_state();
+    let unknown = state.apply_event(GatewayEvent::CallCreate(ringing_me.clone()), NOW);
+    state.upsert_direct_message_channel(conversation(300, OTHER, Some(310)));
+    let created = state.apply_event(GatewayEvent::CallCreate(ringing_me.clone()), NOW);
+    let incoming: Vec<Snowflake> = state.incoming_calls().map(|call| call.channel_id).collect();
+    let speaking = state.apply_event(
+        GatewayEvent::CallSpeaking {
+            channel_id: conversation_id,
+            user_id: OTHER,
+            speaking: true,
+        },
+        NOW,
+    );
+    let stranger_speaking = state.apply_event(
+        GatewayEvent::CallSpeaking {
+            channel_id: conversation_id,
+            user_id: Snowflake::from_raw(9),
+            speaking: true,
+        },
+        NOW,
+    );
+    // Answered on another device of the user's.
+    state.apply_event(
+        GatewayEvent::CallUpdate(Call {
+            ringing_user_ids: Vec::new(),
+            participants: vec![participant(OTHER), participant(ME)],
+            ..ringing_me.clone()
+        }),
+        NOW,
+    );
+    let answered_phase = state.call_phase(conversation_id);
+    let is_busy = state.is_in_a_call_or_voice_channel();
+    let ended = state.apply_event(
+        GatewayEvent::CallDelete {
+            channel_id: conversation_id,
+        },
+        NOW,
+    );
+    let speaking_after_the_end = state.is_speaking(OTHER);
+    state.apply_event(GatewayEvent::CallCreate(ringing_me), NOW);
+    state.apply_event(
+        GatewayEvent::DirectMessageChannelDelete {
+            id: conversation_id,
+        },
+        NOW,
+    );
+
+    assert_eq!(unknown, StateChange::Nothing, "a conversation unknown here");
+    assert_eq!(
+        created,
+        StateChange::Call {
+            channel_id: conversation_id
+        }
+    );
+    assert_eq!(incoming, [conversation_id]);
+    assert!(matches!(speaking, StateChange::Speaking { .. }));
+    assert_eq!(stranger_speaking, StateChange::Nothing);
+    assert_eq!(answered_phase, Some(CallPhase::Ongoing));
+    assert!(is_busy);
+    assert_eq!(
+        ended,
+        StateChange::Call {
+            channel_id: conversation_id
+        }
+    );
+    assert!(!speaking_after_the_end);
+    assert!(state.calls().is_empty(), "gone with its conversation");
 }

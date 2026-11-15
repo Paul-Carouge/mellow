@@ -33,6 +33,7 @@ fn message(id: u64, channel_id: Snowflake, author: Snowflake, content: &str) -> 
         checklist: None,
         progress_bar: None,
         forwarded_from: None,
+        call: None,
     }
 }
 

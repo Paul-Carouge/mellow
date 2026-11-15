@@ -102,6 +102,7 @@ fn message(author: &PublicUser, sent_at: u64, content: &str) -> Message {
         checklist: None,
         progress_bar: None,
         forwarded_from: None,
+        call: None,
     }
 }
 

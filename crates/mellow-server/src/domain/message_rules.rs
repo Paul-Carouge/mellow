@@ -86,6 +86,8 @@ pub enum MessageRuleViolation {
     ProgressBar,
     #[error("a checklist or a progress bar changes through its own routes and cannot be forwarded")]
     TrackerChange,
+    #[error("a call's message cannot be edited or forwarded")]
+    CallChange,
     #[error(transparent)]
     SearchQuery(#[from] crate::domain::search_query::SearchQueryViolation),
 }
