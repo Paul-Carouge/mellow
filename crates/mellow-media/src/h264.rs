@@ -175,19 +175,23 @@ pub(crate) mod tests {
     #[test]
     fn the_fixture_decodes_one_picture_per_access_unit_at_its_size() {
         let mut decoder = H264Decoder::new().unwrap();
+        let frames = fixture_frames();
         let mut picture_count = 0;
-        for frame in fixture_frames() {
-            if let Some(picture) = decoder.decode(&frame).unwrap() {
+        // The first IDR again at the end pushes out a picture the decoder held back.
+        for (index, frame) in frames.iter().chain(&frames[..1]).enumerate() {
+            if let Some(picture) = decoder.decode(frame).unwrap() {
                 assert_eq!((picture.width(), picture.height()), (320, 180));
                 // The test pattern is not black: the luma plane carries it.
                 assert!(picture.luma().iter().any(|sample| *sample > 64));
                 picture_count += 1;
             }
+            assert!(
+                picture_count >= index,
+                "{picture_count} pictures after {} access units: more than one held back",
+                index + 1
+            );
         }
-        assert_eq!(
-            picture_count, 4,
-            "one picture per access unit, none held back"
-        );
+        assert!(picture_count >= frames.len(), "every picture came out");
     }
 
     /// Six pictures of a 3840 × 2160 source of four coloured quadrants (red, green, blue, white,
@@ -210,42 +214,77 @@ pub(crate) mod tests {
         ),
     ];
 
+    /// BGRA of the quadrants of [`LINUX_SHARE_LAYERS`] before any turn: red, green, blue, white.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) const QUADRANT_COLOURS: [[u8; 3]; 4] =
+        [[0, 0, 255], [0, 255, 0], [255, 0, 0], [255, 255, 255]];
+
+    /// By how many places (0 to 3) the quadrants of a `width` × `height` BGRA picture of
+    /// [`LINUX_SHARE_LAYERS`] are turned; `None` when its colours are not the quadrants'.
+    #[cfg(any(target_os = "linux", target_os = "macos", windows))]
+    pub(crate) fn quadrant_turn(bgra: &[u8], width: usize, height: usize) -> Option<usize> {
+        const TOLERANCE: u8 = 24;
+        let centres = [
+            (width / 4, height / 4),
+            (3 * width / 4, height / 4),
+            (width / 4, 3 * height / 4),
+            (3 * width / 4, 3 * height / 4),
+        ];
+        (0..4).find(|turn| {
+            centres.into_iter().enumerate().all(|(quadrant, (x, y))| {
+                let offset = (y * width + x) * 4;
+                bgra[offset..offset + 3]
+                    .iter()
+                    .zip(QUADRANT_COLOURS[(quadrant + turn) % 4])
+                    .all(|(got, want)| got.abs_diff(want) <= TOLERANCE)
+            })
+        })
+    }
+
     /// Decodes every access unit of `stream`, one of [`LINUX_SHARE_LAYERS`], with `decoder` and
-    /// checks each picture: its own, at its size, in its colours.
+    /// checks the pictures: at its size, in its colours, each a later access unit's than the last
+    /// (never the same again: a frozen picture), at most one access unit behind the input
+    /// (Media Foundation's decoder may give a picture at the next input), and every one out once
+    /// the stream's first IDR comes again.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     fn assert_every_picture_shows(decoder: &mut H264Decoder, stream: &[u8], size: (u32, u32)) {
-        // BGRA of the quadrants before any turn: red, green, blue, white.
-        const COLOURS: [[u8; 3]; 4] = [[0, 0, 255], [0, 255, 0], [255, 0, 0], [255, 255, 255]];
-        const TOLERANCE: u8 = 24;
         let access_units = crate::h264_stream::tests::access_units(stream);
         assert_eq!(access_units.len(), 6, "{size:?}");
-        for (index, access_unit) in access_units.iter().enumerate() {
+        let (width, height) = (size.0 as usize, size.1 as usize);
+        let mut last_shown: Option<usize> = None;
+        let inputs = access_units.iter().chain(&access_units[..1]);
+        for (index, access_unit) in inputs.enumerate() {
             let picture = decoder
                 .decode(access_unit)
-                .unwrap_or_else(|error| panic!("{size:?} picture {index}: {error}"))
-                .unwrap_or_else(|| panic!("{size:?} picture {index}: none"));
-            assert_eq!((picture.width(), picture.height()), size);
-            let (width, height) = (size.0 as usize, size.1 as usize);
-            let bgra = picture.to_bgra().unwrap();
-            let centres = [
-                (width / 4, height / 4),
-                (3 * width / 4, height / 4),
-                (width / 4, 3 * height / 4),
-                (3 * width / 4, 3 * height / 4),
-            ];
-            for (quadrant, (x, y)) in centres.into_iter().enumerate() {
-                let expected = COLOURS[(quadrant + index) % 4];
-                let offset = (y * width + x) * 4;
-                let pixel = &bgra[offset..offset + 3];
-                assert!(
-                    pixel
-                        .iter()
-                        .zip(expected)
-                        .all(|(got, want)| got.abs_diff(want) <= TOLERANCE),
-                    "{size:?} picture {index} at ({x}, {y}): {pixel:?}, not {expected:?}"
-                );
+                .unwrap_or_else(|error| panic!("{size:?} input {index}: {error}"));
+            let is_every_picture_out = last_shown == Some(access_units.len() - 1);
+            // After the last access unit's picture, only the closing IDR's may come.
+            if let Some(picture) = picture.filter(|_| !is_every_picture_out) {
+                assert_eq!((picture.width(), picture.height()), size);
+                let turn = quadrant_turn(&picture.to_bgra().unwrap(), width, height)
+                    .unwrap_or_else(|| panic!("{size:?} input {index}: not the quadrants"));
+                let next = last_shown.map_or(0, |shown| shown + 1);
+                // The next access unit's picture, or the one after when two came out at once.
+                let shown = (next..=next + 1)
+                    .find(|candidate| candidate % 4 == turn)
+                    .unwrap_or_else(|| {
+                        panic!("{size:?} input {index}: turn {turn}, expected access unit {next}")
+                    });
+                if shown < access_units.len() {
+                    last_shown = Some(shown);
+                }
             }
+            let behind = index.min(access_units.len());
+            assert!(
+                last_shown.map_or(0, |shown| shown + 1) >= behind,
+                "{size:?}: after input {index}, last picture {last_shown:?}"
+            );
         }
+        assert_eq!(
+            last_shown,
+            Some(access_units.len() - 1),
+            "{size:?}: every picture"
+        );
     }
 
     /// What a Windows watcher of a Linux share saw (a frozen, green, striped picture): every

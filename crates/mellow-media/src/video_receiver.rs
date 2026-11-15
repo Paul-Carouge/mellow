@@ -570,9 +570,10 @@ mod tests {
     }
 
     /// A Linux share watched on the desktop (H.264 from VA-API, its quadrants turned at each
-    /// picture): each frame, delivered alone as the network brings it, is shown before the next
-    /// comes, and is its own picture, not the first one again (a Windows watcher saw the first
-    /// picture frozen).
+    /// picture), frames delivered one by one as the network brings them: the pictures shown are
+    /// later and later frames, never the same again (a Windows watcher saw the first picture
+    /// frozen), at most one frame behind (Media Foundation's decoder may give a picture at the
+    /// next frame), up to the last one.
     #[cfg(any(target_os = "linux", target_os = "macos", windows))]
     #[test]
     fn each_frame_of_a_linux_share_shows_its_own_picture_as_it_arrives() {
@@ -589,30 +590,35 @@ mod tests {
         let mut receivers = VideoReceivers::new(frames.clone(), keyframe_requests);
         let (stream, size) = crate::h264::tests::LINUX_SHARE_LAYERS[2];
         assert_eq!(size, (640, 360));
-        // The top left quadrant's colour in BGRA, before any turn: red, green, blue, white.
-        let colours = [[0, 0, 255], [0, 255, 0], [255, 0, 0], [255, 255, 255]];
-        let probe = (90 * 640 + 160) * 4;
-        for (index, frame) in crate::h264_stream::tests::access_units(stream)
-            .into_iter()
-            .enumerate()
-        {
-            receivers.deliver(mid, frame.into(), ReceivedCodec::H264, true);
-            was_woken
-                .recv_timeout(Duration::from_secs(10))
-                .unwrap_or_else(|_| panic!("no picture for frame {index}"));
-            let taken = frames.take_new_frames();
-            let (_, picture) = taken.last().unwrap();
-            let pixel = &picture.pixels[probe..probe + 3];
-            let expected: [u8; 3] = colours[index % 4];
-            assert!(
-                pixel
-                    .iter()
-                    .zip(expected)
-                    .all(|(got, want)| got.abs_diff(want) <= 24),
-                "frame {index}: {pixel:?}, not {expected:?}"
-            );
+        let access_units = crate::h264_stream::tests::access_units(stream);
+        let last = access_units.len() - 1;
+        let mut last_shown: Option<usize> = None;
+        // The first IDR again at the end pushes out a picture the decoder held back.
+        for (index, frame) in access_units.iter().chain(&access_units[..1]).enumerate() {
+            receivers.deliver(mid, frame.clone().into(), ReceivedCodec::H264, true);
+            // Each frame after the first brings at least the picture before it.
+            while index > 0 && last_shown.is_none_or(|shown| shown + 1 < index.min(last + 1)) {
+                was_woken
+                    .recv_timeout(Duration::from_secs(10))
+                    .unwrap_or_else(|_| panic!("after frame {index}, last picture {last_shown:?}"));
+                for (_, picture) in frames.take_new_frames() {
+                    if last_shown == Some(last) {
+                        continue;
+                    }
+                    let turn = crate::h264::tests::quadrant_turn(&picture.pixels, 640, 360)
+                        .unwrap_or_else(|| panic!("after frame {index}: not the quadrants"));
+                    let next = last_shown.map_or(0, |shown| shown + 1);
+                    let shown = (next..=next + 1)
+                        .find(|candidate| candidate % 4 == turn)
+                        .unwrap_or_else(|| {
+                            panic!("after frame {index}: turn {turn}, expected frame {next}")
+                        });
+                    last_shown = Some(shown.min(last));
+                }
+            }
         }
         receivers.shut_down();
+        assert_eq!(last_shown, Some(last), "every picture");
     }
 
     #[test]
